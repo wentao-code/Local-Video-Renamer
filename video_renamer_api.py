@@ -128,6 +128,32 @@ class VideoRenamerAPI:
             raise FileNotFoundError(f'文件夹不存在: {folder_path}')
 
         plans = []
+        # 使用 rglob('*') 替代 os.listdir() 进行递归遍历所有子文件和文件夹
+        for file_path in folder_path.rglob('*'):
+            # 过滤非文件以及后缀名不匹配的文件
+            if not file_path.is_file() or file_path.suffix.lower() not in self.video_exts:
+                continue
+
+            code = extract_code_from_filename(file_path.stem)
+            if not code or code not in self.video_db:
+                continue
+
+            metadata = self.video_db[code]
+            new_name = build_normalized_filename(metadata, file_path.suffix)
+
+            # 关键修改：使用 file_path.parent，确保文件在其原本所在的子文件夹中重命名
+            new_path = file_path.parent / new_name
+
+            # 比较新旧名称时使用 file_path.name
+            if new_name != file_path.name:
+                plans.append(RenamePlan(file_path, new_path, metadata))
+
+        return plans
+
+        if not folder_path.exists() or not folder_path.is_dir():
+            raise FileNotFoundError(f'文件夹不存在: {folder_path}')
+
+        plans = []
         for filename in os.listdir(folder_path):
             file_path = folder_path / filename
             if not file_path.is_file() or file_path.suffix.lower() not in self.video_exts:
