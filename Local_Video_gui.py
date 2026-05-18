@@ -83,33 +83,39 @@ class VidNormApp(QWidget):
             self.btn_execute.setEnabled(False)
 
     def scan_files(self):
-        folder_path = self.path_input.text()
-        if not folder_path:
-            QMessageBox.warning(self, "错误", "请先选择文件夹")
-            return
-
-        try:
-            self.pending_renames = self.api.scan_folder(folder_path)
-        except Exception as exc:
-            QMessageBox.warning(self, "错误", str(exc))
-            return
+        # ... 前面获取 folder_path 和 plans 的代码保持不变 ...
+        # try:
+        #     self.pending_renames = self.api.scan_folder(folder_path)
+        # ...
 
         self.table.setRowCount(0)
+        has_files_to_rename = False  # 记录是否真的有需要改名的文件
+
         for row, plan in enumerate(self.pending_renames):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(plan.old_name))
             self.table.setItem(row, 1, QTableWidgetItem(plan.new_name))
-            status_item = QTableWidgetItem("匹配成功")
-            status_item.setForeground(Qt.darkGreen)
+
+            # 👇 核心状态显示逻辑
+            if plan.needs_rename:
+                status_item = QTableWidgetItem("待重命名")
+                status_item.setForeground(Qt.blue)  # 蓝色表示需要操作
+                has_files_to_rename = True
+            else:
+                status_item = QTableWidgetItem("已规范")
+                status_item.setForeground(Qt.darkGreen)  # 绿色表示完美状态
+
             self.table.setItem(row, 2, status_item)
 
-        self.btn_execute.setEnabled(len(self.pending_renames) > 0)
+        # 只有在扫描结果不为空，且至少有一个文件需要改名时，才启用“执行重命名”按钮
+        self.btn_execute.setEnabled(has_files_to_rename)
+
         QMessageBox.information(
             self,
             "扫描完成",
-            f"匹配到 {len(self.pending_renames)} 个可规范化的视频。",
+            f"共识别到 {len(self.pending_renames)} 个视频，其中有待重命名视频。" if has_files_to_rename else f"共识别到 {len(self.pending_renames)} 个视频，全部符合规范！",
         )
-
+        
     def execute_rename(self):
         results = self.api.execute_renames(self.pending_renames)
         success = 0

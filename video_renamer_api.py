@@ -34,7 +34,9 @@ class RenamePlan:
     @property
     def new_name(self):
         return self.new_path.name
-
+    @property
+    def needs_rename(self):
+        return self.old_name != self.new_name
 
 @dataclass(frozen=True)
 class RenameResult:
@@ -138,18 +140,13 @@ class VideoRenamerAPI:
         for file_path in folder_path.rglob('*'):
             if not file_path.is_file() or file_path.suffix.lower() not in self.video_exts:
                 continue
-
             code = extract_code_from_filename(file_path.stem)
             if not code or code not in self.video_db:
                 continue
-
             metadata = self.video_db[code]
             new_name = build_normalized_filename(metadata, file_path.suffix)
             new_path = file_path.parent / new_name
-
-            if new_name != file_path.name:
-                plans.append(RenamePlan(file_path, new_path, metadata))
-
+            plans.append(RenamePlan(file_path, new_path, metadata))
         return plans
 
     def execute_renames(self, plans):
@@ -157,6 +154,9 @@ class VideoRenamerAPI:
 
         for plan in plans:
             try:
+                if not plan.needs_rename:
+                    results.append(RenameResult(plan, True, '已规范，无需修改'))
+                    continue
                 if plan.new_path.exists():
                     results.append(RenameResult(plan, False, '目标已存在'))
                     continue
