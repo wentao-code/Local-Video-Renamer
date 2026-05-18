@@ -83,10 +83,17 @@ class VidNormApp(QWidget):
             self.btn_execute.setEnabled(False)
 
     def scan_files(self):
-        # ... 前面获取 folder_path 和 plans 的代码保持不变 ...
-        # try:
-        #     self.pending_renames = self.api.scan_folder(folder_path)
-        # ...
+        folder_path = self.path_input.text()
+        if not folder_path:
+            QMessageBox.warning(self, "错误", "请先选择文件夹")
+            return
+
+        try:
+            # 👇 这句话是软件的“发动机”，绝对不能被注释掉！
+            self.pending_renames = self.api.scan_folder(folder_path)
+        except Exception as exc:
+            QMessageBox.warning(self, "错误", str(exc))
+            return
 
         self.table.setRowCount(0)
         has_files_to_rename = False  # 记录是否真的有需要改名的文件
@@ -96,7 +103,7 @@ class VidNormApp(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(plan.old_name))
             self.table.setItem(row, 1, QTableWidgetItem(plan.new_name))
 
-            # 👇 核心状态显示逻辑
+            # 核心状态显示逻辑
             if plan.needs_rename:
                 status_item = QTableWidgetItem("待重命名")
                 status_item.setForeground(Qt.blue)  # 蓝色表示需要操作
@@ -115,7 +122,7 @@ class VidNormApp(QWidget):
             "扫描完成",
             f"共识别到 {len(self.pending_renames)} 个视频，其中有待重命名视频。" if has_files_to_rename else f"共识别到 {len(self.pending_renames)} 个视频，全部符合规范！",
         )
-        
+
     def execute_rename(self):
         results = self.api.execute_renames(self.pending_renames)
         success = 0

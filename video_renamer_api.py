@@ -78,11 +78,12 @@ def clean_video_title(code, author, raw_name):
 
 
 def extract_code_from_filename(filename):
-    match = re.search(r'([a-zA-Z]+-\d+)', filename)
+    match = re.search(r'([a-zA-Z]+)[-_ ]?(\d+)', filename)
     if match:
-        return match.group(1).upper()
+        letters = match.group(1).upper()
+        numbers = match.group(2)
+        return f"{letters}-{numbers}"
     return None
-
 
 def load_video_database(csv_path):
     csv_path = Path(csv_path)
@@ -140,13 +141,26 @@ class VideoRenamerAPI:
         for file_path in folder_path.rglob('*'):
             if not file_path.is_file() or file_path.suffix.lower() not in self.video_exts:
                 continue
+
+            print(f"正在扫描: {file_path.name}")  # --- 探头1：发现视频 ---
+
             code = extract_code_from_filename(file_path.stem)
-            if not code or code not in self.video_db:
+            print(f"  -> 提取编号: {code}")  # --- 探头2：看正则有没有抓到 ---
+
+            if not code:
+                print("  -> ❌ 被踢出: 没提取出编号")
                 continue
+
+            if code not in self.video_db:
+                print(f"  -> ❌ 被踢出: CSV 数据库里没有 {code} 这个编号的数据！")
+                continue
+
+            print("  -> ✅ 成功: 已加入列表")  # --- 探头3：成功匹配 ---
             metadata = self.video_db[code]
             new_name = build_normalized_filename(metadata, file_path.suffix)
             new_path = file_path.parent / new_name
             plans.append(RenamePlan(file_path, new_path, metadata))
+
         return plans
 
     def execute_renames(self, plans):
