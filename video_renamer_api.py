@@ -4,9 +4,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# 引入我们刚才新建的数据存储层
-from database import VideoDatabase
-
 DEFAULT_VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.wmv', '.mov')
 TITLE_EDGE_CHARS = r'\s\-_【】\[\]{}()（）《》<>""''“”‘’.,。，！？!?~、；;：:'
 VIDEO_SUFFIX_RE = re.compile(r'\.(mp4|mkv|avi|wmv|mov)\s*$', re.I)
@@ -34,9 +31,11 @@ class RenamePlan:
     @property
     def new_name(self):
         return self.new_path.name
+
     @property
     def needs_rename(self):
         return self.old_name != self.new_name
+
 
 @dataclass(frozen=True)
 class RenameResult:
@@ -78,12 +77,14 @@ def clean_video_title(code, author, raw_name):
 
 
 def extract_code_from_filename(filename):
+    # 增强版正则：支持 CMV-001, CMV_001, CMV 001, CMV001 等各种格式
     match = re.search(r'([a-zA-Z]+)[-_ ]?(\d+)', filename)
     if match:
         letters = match.group(1).upper()
         numbers = match.group(2)
         return f"{letters}-{numbers}"
     return None
+
 
 def load_video_database(csv_path):
     csv_path = Path(csv_path)
@@ -116,17 +117,19 @@ def load_video_database(csv_path):
 
 
 def build_normalized_filename(metadata, extension):
-    return f"【{metadata.code}】-{metadata.title}-{{{metadata.author}}}{extension}"
+    # 修复空括号问题：如果没有作者，则不拼接 -{}
+    if metadata.author:
+        return f"【{metadata.code}】-{metadata.title}-{{{metadata.author}}}{extension}"
+    else:
+        return f"【{metadata.code}】-{metadata.title}{extension}"
 
 
 class VideoRenamerAPI:
-    def __init__(self, csv_path, video_exts=DEFAULT_VIDEO_EXTS, db_path='video_database.db'):
+    def __init__(self, csv_path, video_exts=DEFAULT_VIDEO_EXTS):
         self.csv_path = Path(csv_path)
         self.video_exts = tuple(ext.lower() for ext in video_exts)
         self.video_db = {}
-
-        # 实例化数据存储层 (依赖注入)
-        self.db = VideoDatabase(db_path)
+        # 这里不再初始化数据库！
 
     def load_database(self):
         self.video_db = load_video_database(self.csv_path)
@@ -142,20 +145,16 @@ class VideoRenamerAPI:
             if not file_path.is_file() or file_path.suffix.lower() not in self.video_exts:
                 continue
 
-            print(f"正在扫描: {file_path.name}")  # --- 探头1：发现视频 ---
-
+            # 保留了打印监控，方便你排查问题
+            print(f"正在扫描: {file_path.name}")
             code = extract_code_from_filename(file_path.stem)
-            print(f"  -> 提取编号: {code}")  # --- 探头2：看正则有没有抓到 ---
 
             if not code:
-                print("  -> ❌ 被踢出: 没提取出编号")
                 continue
-
             if code not in self.video_db:
                 print(f"  -> ❌ 被踢出: CSV 数据库里没有 {code} 这个编号的数据！")
                 continue
 
-            print("  -> ✅ 成功: 已加入列表")  # --- 探头3：成功匹配 ---
             metadata = self.video_db[code]
             new_name = build_normalized_filename(metadata, file_path.suffix)
             new_path = file_path.parent / new_name
@@ -165,28 +164,20 @@ class VideoRenamerAPI:
 
     def execute_renames(self, plans):
         results = []
-
         for plan in plans:
             try:
+                # 如果不需要改名，直接跳过并标记成功
                 if not plan.needs_rename:
                     results.append(RenameResult(plan, True, '已规范，无需修改'))
                     continue
+
+                # 如果目标文件已存在，标记报错
                 if plan.new_path.exists():
                     results.append(RenameResult(plan, False, '目标已存在'))
                     continue
 
-                # 1. 物理重命名文件
+                # 仅仅执行物理重命名操作
                 plan.old_path.rename(plan.new_path)
-
-                # 2. 调用存储层写入数据 (API 不再关心 SQL 语句怎么写)
-                self.db.save_processed_video(
-                    code=plan.metadata.code,
-                    title=plan.metadata.title,
-                    author=plan.metadata.author,
-                    duration=plan.metadata.duration,
-                    size=plan.metadata.size
-                )
-
                 results.append(RenameResult(plan, True, '完成'))
             except Exception as exc:
                 results.append(RenameResult(plan, False, '错误', str(exc)))

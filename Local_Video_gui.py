@@ -62,11 +62,19 @@ class VidNormApp(QWidget):
         bottom_layout = QHBoxLayout()
         self.btn_scan = QPushButton('🔍 扫描并匹配 CSV')
         self.btn_scan.clicked.connect(self.scan_files)
+
+        # ================= 新增：写入数据库按钮 =================
+        self.btn_write_db = QPushButton('💾 写入数据库')
+        self.btn_write_db.clicked.connect(self.write_to_db)
+        self.btn_write_db.setEnabled(False)  # 初始不可用
+
         self.btn_execute = QPushButton('🚀 执行重命名')
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
+
         bottom_layout.addStretch()
         bottom_layout.addWidget(self.btn_scan)
+        bottom_layout.addWidget(self.btn_write_db)  # 将按钮加入布局
         bottom_layout.addWidget(self.btn_execute)
 
         main_layout.addLayout(top_layout)
@@ -81,6 +89,7 @@ class VidNormApp(QWidget):
             self.table.setRowCount(0)
             self.pending_renames.clear()
             self.btn_execute.setEnabled(False)
+            self.btn_write_db.setEnabled(False)  # 切换文件夹时置灰
 
     def scan_files(self):
         folder_path = self.path_input.text()
@@ -89,39 +98,54 @@ class VidNormApp(QWidget):
             return
 
         try:
-            # 👇 这句话是软件的“发动机”，绝对不能被注释掉！
             self.pending_renames = self.api.scan_folder(folder_path)
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
             return
 
         self.table.setRowCount(0)
-        has_files_to_rename = False  # 记录是否真的有需要改名的文件
+        has_files_to_rename = False
 
         for row, plan in enumerate(self.pending_renames):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(plan.old_name))
             self.table.setItem(row, 1, QTableWidgetItem(plan.new_name))
 
-            # 核心状态显示逻辑
             if plan.needs_rename:
                 status_item = QTableWidgetItem("待重命名")
-                status_item.setForeground(Qt.blue)  # 蓝色表示需要操作
+                status_item.setForeground(Qt.blue)
                 has_files_to_rename = True
             else:
                 status_item = QTableWidgetItem("已规范")
-                status_item.setForeground(Qt.darkGreen)  # 绿色表示完美状态
+                status_item.setForeground(Qt.darkGreen)
 
             self.table.setItem(row, 2, status_item)
 
-        # 只有在扫描结果不为空，且至少有一个文件需要改名时，才启用“执行重命名”按钮
+        # 控制按钮状态
         self.btn_execute.setEnabled(has_files_to_rename)
+        # 只要扫描出了视频，不管需不需要改名，都可以执行“写入数据库”
+        self.btn_write_db.setEnabled(len(self.pending_renames) > 0)
 
         QMessageBox.information(
             self,
             "扫描完成",
             f"共识别到 {len(self.pending_renames)} 个视频，其中有待重命名视频。" if has_files_to_rename else f"共识别到 {len(self.pending_renames)} 个视频，全部符合规范！",
         )
+
+    # ================= 新增：写入数据库的执行动作 =================
+    def write_to_db(self):
+        if not self.pending_renames:
+            return
+
+        try:
+            self.api.save_plans_to_db(self.pending_renames)
+            QMessageBox.information(
+                self,
+                "写入成功",
+                f"成功将当前列表中的 {len(self.pending_renames)} 个视频数据写入/更新至数据库！\n(已根据视频编号自动覆盖去重)"
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "错误", f"写入数据库失败：\n{str(exc)}")
 
     def execute_rename(self):
         results = self.api.execute_renames(self.pending_renames)
@@ -136,7 +160,6 @@ class VidNormApp(QWidget):
                 status_item.setText(f"❌ {result.message}")
 
         QMessageBox.information(self, "结果", f"成功重命名 {success} 个文件。")
-        self.pending_renames.clear()
         self.btn_execute.setEnabled(False)
 
 
