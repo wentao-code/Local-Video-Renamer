@@ -23,8 +23,17 @@ class BackendClient:
     def save_plans(self, plans):
         return self._post('/database/save', {'plans': plans})
 
-    def enrich_videos(self, limit):
-        return self._post('/database/enrich', {'limit': limit})
+    def enrich_videos(self, limit, show_browser=False):
+        # Playwright needs time to open the site, search, and parse each movie page.
+        timeout = max(self.timeout, int(limit or 1) * 90 + 60)
+        return self._post(
+            '/database/enrich',
+            {
+                'limit': limit,
+                'show_browser': show_browser,
+            },
+            timeout=timeout,
+        )
 
     def list_videos(self, search_text=''):
         query = ''
@@ -50,12 +59,12 @@ class BackendClient:
     def delete_path(self, path_id):
         return self._post('/paths/delete', {'path_id': path_id}).get('deleted_count', 0)
 
-    def _get(self, path):
-        response = requests.get(self.base_url + path, timeout=self.timeout)
+    def _get(self, path, timeout=None):
+        response = requests.get(self.base_url + path, timeout=timeout or self.timeout)
         return self._parse_response(response)
 
-    def _post(self, path, payload=None):
-        response = requests.post(self.base_url + path, json=payload or {}, timeout=self.timeout)
+    def _post(self, path, payload=None, timeout=None):
+        response = requests.post(self.base_url + path, json=payload or {}, timeout=timeout or self.timeout)
         return self._parse_response(response)
 
     def _parse_response(self, response):

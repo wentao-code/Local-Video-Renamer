@@ -66,7 +66,10 @@ def make_handler(service):
             if method == 'POST' and path == '/paths/delete':
                 return service.delete_path(body.get('path_id'))
             if method == 'POST' and path == '/database/enrich':
-                return service.enrich_videos(body.get('limit', 1))
+                return service.enrich_videos(
+                    body.get('limit', 1),
+                    show_browser=bool(body.get('show_browser')),
+                )
 
             raise ValueError(f'未知接口: {method} {path}')
 

@@ -13,7 +13,6 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QInputDialog,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -23,6 +22,7 @@ from PyQt5.QtWidgets import (
 from backend_client import BackendClient
 from actor_viewer import ActorViewerWindow
 from db_viewer import DatabaseViewerWindow
+from enrichment_dialog import EnrichmentDialog
 from path_library_viewer import PathLibraryWindow
 
 
@@ -224,21 +224,17 @@ class VidNormApp(QWidget):
         self.btn_execute.setEnabled(False)
 
     def enrich_video_info(self):
-        limit, ok = QInputDialog.getInt(
-            self,
-            "补全信息",
-            "本次补全多少个未补全视频？",
-            5,
-            1,
-            100,
-            1,
-        )
-        if not ok:
+        dialog = EnrichmentDialog(self)
+        if not dialog.exec_():
             return
+
+        values = dialog.values()
+        limit = values['limit']
+        show_browser = values['show_browser']
 
         self.btn_enrich.setEnabled(False)
         try:
-            result = self.backend_client.enrich_videos(limit)
+            result = self.backend_client.enrich_videos(limit, show_browser=show_browser)
             QMessageBox.information(
                 self,
                 "补全完成",

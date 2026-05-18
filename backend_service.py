@@ -107,6 +107,6 @@ class BackendService:
 
         return {'deleted_count': self.db.delete_path(path_id)}
 
-    def enrich_videos(self, limit):
-        enrichment_service = VideoEnrichmentService(self.db)
+    def enrich_videos(self, limit, show_browser=False):
+        enrichment_service = VideoEnrichmentService(self.db, show_browser=show_browser)
         return enrichment_service.enrich_next_videos(limit)

@@ -73,6 +73,15 @@ PyQt 主界面入口。
 - 演员统计 CSV 读取逻辑。
 - SQLite 连接逻辑。
 
+### `enrichment_dialog.py`
+
+补全信息设置对话框。
+
+职责：
+- 让用户输入本次补全的视频数量。
+- 提供“显示浏览器窗口”复选框，用于调试 Playwright 抓取流程。
+- 将设置返回给 `Local_Video_gui.py`，再由 GUI 发送给后端。
+
 ### `path_library_viewer.py`
 
 路径库查看与选择窗口。
@@ -233,6 +242,7 @@ AVFan 网页抓取模块。
 
 职责：
 - 使用 Playwright 打开 AVFan 首页。
+- 根据补全设置决定是否显示浏览器窗口；默认后台运行，勾选后使用可见浏览器运行。
 - 处理成年确认弹窗。
 - 在首页搜索框输入视频编号并点击搜索。
 - 打开搜索结果详情页。
@@ -249,6 +259,7 @@ AVFan 网页抓取模块。
 
 职责：
 - 从数据库读取指定数量的未补全视频。
+- 根据 `show_browser` 创建 `AvfanScraper(headless=not show_browser)`。
 - 逐个调用 `AvfanScraper` 根据视频编号补全信息。
 - 将成功结果写回数据库并标记为 `已补全`。
 - 将失败结果标记为 `补全失败`，保留错误信息。
@@ -422,11 +433,12 @@ Local_Video_gui.py
 
 ```text
 用户点击“补全信息”
-  -> 输入本次补全数量
-  -> BackendClient.enrich_videos(limit)
+  -> EnrichmentDialog 输入本次补全数量
+  -> 可选勾选“显示浏览器窗口”
+  -> BackendClient.enrich_videos(limit, show_browser)
   -> POST /database/enrich
-  -> BackendService.enrich_videos()
-  -> VideoEnrichmentService.enrich_next_videos()
+  -> BackendService.enrich_videos(limit, show_browser)
+  -> VideoEnrichmentService(show_browser=show_browser).enrich_next_videos()
   -> VideoDatabase.list_videos_for_enrichment(limit)
   -> AvfanScraper.fetch_by_code(code)
   -> VideoDatabase.update_video_enrichment()
@@ -540,7 +552,7 @@ path_library_viewer.py
 编译检查：
 
 ```powershell
-python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\avfan_scraper.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\filename_rules.py .\path_library.py .\path_library_viewer.py .\video_enrichment.py .\video_models.py .\video_renamer_api.py
+python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\avfan_scraper.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\enrichment_dialog.py .\filename_rules.py .\path_library.py .\path_library_viewer.py .\video_enrichment.py .\video_models.py .\video_renamer_api.py
 ```
 
 后端手动启动：
@@ -561,6 +573,7 @@ http://127.0.0.1:8765/health
 Local_Video_gui.py      GUI 主窗口
 db_viewer.py            数据库查看窗口
 actor_viewer.py         作者库查看窗口
+enrichment_dialog.py    补全信息设置对话框
 path_library_viewer.py  路径库查看与选择窗口
 backend_client.py       GUI 到后端的 HTTP 客户端
 backend_server.py       本地 HTTP 服务入口和路由

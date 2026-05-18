@@ -2,9 +2,9 @@ from avfan_scraper import AvfanScraper
 
 
 class VideoEnrichmentService:
-    def __init__(self, database, scraper=None):
+    def __init__(self, database, scraper=None, show_browser=False):
         self.database = database
-        self.scraper = scraper or AvfanScraper(headless=True)
+        self.scraper = scraper or AvfanScraper(headless=not show_browser)
 
     def enrich_next_videos(self, limit):
         limit = int(limit or 0)
