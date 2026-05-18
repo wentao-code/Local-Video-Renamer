@@ -1,0 +1,357 @@
+# Local Video Renamer 系统结构说明
+
+本文档用于帮助开发者或 AI 快速理解项目结构、模块职责和数据流。修改代码前请先阅读本文件，优先保持现有分层，不要把业务逻辑重新堆回 GUI 或 HTTP 路由文件里。
+
+## 一句话概览
+
+这是一个本地视频规范化工具：PyQt GUI 只负责界面和按钮交互，所有扫描、匹配、重命名、CSV 读取、SQLite 台账操作都通过本地 HTTP 后端完成。
+
+```text
+PyQt GUI
+  -> backend_client.py
+  -> http://127.0.0.1:8765
+  -> backend_server.py
+  -> backend_service.py
+  -> video_renamer_api.py / database_handler.py
+  -> CSV / SQLite DB / 本地文件系统
+```
+
+## 核心设计原则
+
+- GUI 不直接读取 CSV、SQLite，也不直接执行重命名业务。
+- HTTP 路由层只负责解析请求和返回 JSON，不写业务规则。
+- 业务协调层负责组织扫描、重命名、数据库保存等流程。
+- 独立规则放独立模块，例如文件名清洗、CSV 加载、数据模型。
+- `.csv` 和 `.db` 是个人本地数据，不应提交到 Git。
+
+## 模块职责
+
+### `Local_Video_gui.py`
+
+PyQt 主界面入口。
+
+职责：
+- 创建主窗口、按钮、路径输入框和扫描结果表格。
+- 启动时检查本地后端是否可用，不可用则自动拉起 `backend_server.py`。
+- 用户点击按钮后，通过 `BackendClient` 调用后端接口。
+- 将后端返回的 JSON 数据渲染到表格。
+
+不应放入：
+- CSV 解析逻辑。
+- SQLite 连接逻辑。
+- 文件名清洗规则。
+- 文件重命名规则。
+
+### `db_viewer.py`
+
+数据库查看窗口。
+
+职责：
+- 展示已写入 SQLite 台账的视频记录。
+- 搜索框变化时通过后端查询数据。
+- 渲染后端返回的数据库记录。
+
+不应放入：
+- 直接 `sqlite3.connect(...)`。
+- 数据库表结构定义。
+- 数据写入逻辑。
+
+### `backend_client.py`
+
+GUI 使用的 HTTP 客户端。
+
+职责：
+- 封装 `requests.get/post`。
+- 提供语义化方法，例如 `scan_folder()`、`execute_renames()`、`save_plans()`、`list_videos()`。
+- 将 HTTP 错误转换成 Python 异常，方便 GUI 弹窗展示。
+
+这是前端与后端之间的唯一通信入口。
+
+### `backend_server.py`
+
+本地 HTTP 服务入口。
+
+职责：
+- 创建 `ThreadingHTTPServer`。
+- 定义 JSON 请求读取和 JSON 响应输出。
+- 将 URL 路由转发给 `BackendService`。
+- 提供命令行启动入口。
+
+主要接口：
+- `GET /health`
+- `POST /database/reload`
+- `POST /scan`
+- `POST /rename`
+- `POST /database/save`
+- `GET /database/videos?q=关键词`
+
+不应放入：
+- 文件名清洗规则。
+- CSV 读取规则。
+- SQLite SQL 细节。
+- 复杂业务流程。
+
+### `backend_service.py`
+
+后端业务协调层。
+
+职责：
+- 管理 CSV 路径和 SQLite 路径。
+- 持有 `VideoRenamerAPI` 和 `VideoDatabase`。
+- 实现后端接口对应的业务动作：
+  - 加载 CSV 数据库。
+  - 扫描文件夹。
+  - 执行重命名。
+  - 保存扫描结果到 SQLite。
+  - 查询 SQLite 台账。
+- 将业务对象转换为 JSON 可返回的数据。
+
+如果要新增一个后端业务接口，通常先从这里加方法，再到 `backend_server.py` 增加路由。
+
+### `video_renamer_api.py`
+
+视频规范化业务 API。
+
+职责：
+- 加载 CSV 视频元数据。
+- 递归扫描本地文件夹。
+- 根据文件名提取编号。
+- 根据编号匹配元数据。
+- 生成 `RenamePlan`。
+- 执行物理文件重命名。
+
+注意：
+- 此模块是业务协调器，不应该继续塞入数据模型、CSV 解析细节、文件名规则。
+- 这些细节已经拆到 `video_models.py`、`csv_video_loader.py`、`filename_rules.py`。
+
+### `video_models.py`
+
+业务数据模型和 JSON 转换。
+
+职责：
+- 定义 `VideoMetadata`。
+- 定义 `RenamePlan`。
+- 定义 `RenameResult`。
+- 提供模型与 `dict` 的转换函数：
+  - `metadata_to_dict()`
+  - `metadata_from_dict()`
+  - `plan_to_dict()`
+  - `plan_from_dict()`
+  - `result_to_dict()`
+
+如果后端和 GUI 之间要传递新的字段，优先改这里。
+
+### `filename_rules.py`
+
+文件名解析、清洗和生成规则。
+
+职责：
+- 定义支持的视频后缀。
+- 清除标题首尾噪声字符。
+- 清除标题末尾混入的 `.mp4`、`。.mp4`、`mp4。` 等异常尾巴。
+- 压缩多余空白。
+- 从文件名提取编号，例如 `CMV-001`、`CMV_001`、`CMV 001`、`CMV001`。
+- 生成最终规范文件名。
+
+当前规范命名格式：
+
+```text
+【编号】-标题-{作者}.mp4
+```
+
+如果作者为空，则生成：
+
+```text
+【编号】-标题.mp4
+```
+
+### `csv_video_loader.py`
+
+CSV 元数据加载模块。
+
+职责：
+- 读取个人 CSV 数据文件。
+- 从 CSV 行中提取：
+  - `系列名称`
+  - `名称`
+  - `演员`
+  - `时长(可读)`
+  - `大小(GB)`
+- 调用 `filename_rules.clean_video_title()` 清洗标题。
+- 返回以视频编号为 key 的元数据字典。
+
+CSV 是个人数据，不应提交到 Git。
+
+### `database_handler.py`
+
+SQLite 台账访问模块。
+
+职责：
+- 初始化 `processed_videos` 表。
+- 批量保存扫描结果。
+- 查询已保存的视频台账。
+
+这是系统唯一的数据库模块。不要恢复或新增功能重复的 `database.py`。
+
+## 数据流
+
+### 启动流程
+
+```text
+Local_Video_gui.py
+  -> BackendClient.health()
+  -> 如果后端未启动，则 subprocess 启动 backend_server.py
+  -> BackendClient.reload_database()
+  -> backend_service.load_database()
+  -> csv_video_loader.load_video_database()
+```
+
+### 扫描流程
+
+```text
+用户选择文件夹
+  -> 点击“扫描并匹配 CSV”
+  -> Local_Video_gui.scan_files()
+  -> BackendClient.scan_folder(folder_path)
+  -> POST /scan
+  -> BackendService.scan()
+  -> VideoRenamerAPI.scan_folder()
+  -> 返回 plans JSON
+  -> GUI 渲染表格
+```
+
+### 写入数据库流程
+
+```text
+用户点击“写入数据库”
+  -> BackendClient.save_plans(plans)
+  -> POST /database/save
+  -> BackendService.save_plans()
+  -> VideoDatabase.save_plans()
+  -> SQLite REPLACE INTO processed_videos
+```
+
+### 重命名流程
+
+```text
+用户点击“执行重命名”
+  -> BackendClient.execute_renames(plans)
+  -> POST /rename
+  -> BackendService.rename()
+  -> VideoRenamerAPI.execute_renames()
+  -> 本地文件系统 rename
+  -> 返回 results JSON
+  -> GUI 更新状态列
+```
+
+### 查看数据库流程
+
+```text
+用户点击“查看数据库”
+  -> DatabaseViewerWindow
+  -> BackendClient.list_videos(search_text)
+  -> GET /database/videos
+  -> BackendService.list_videos()
+  -> VideoDatabase.list_videos()
+  -> GUI 表格渲染记录
+```
+
+## 本地个人数据
+
+以下文件类型属于个人本地数据，已经在 `.gitignore` 中忽略：
+
+```gitignore
+*.csv
+*.db
+```
+
+注意：
+- `.gitignore` 只阻止未来未跟踪文件进入 Git。
+- 如果某个 `.csv` 或 `.db` 曾经已经被 Git 跟踪，需要使用 `git rm --cached` 从索引移除。
+- 如果个人数据已经推送到远程历史，普通删除只能移除最新版本，历史记录仍可能保留，需要单独做历史清理。
+
+## 推荐修改位置
+
+新增或修改文件名规则：
+
+```text
+filename_rules.py
+```
+
+新增 CSV 字段映射：
+
+```text
+csv_video_loader.py
+video_models.py
+```
+
+新增后端接口：
+
+```text
+backend_service.py
+backend_server.py
+backend_client.py
+```
+
+新增 GUI 按钮或界面交互：
+
+```text
+Local_Video_gui.py
+```
+
+新增数据库字段或查询：
+
+```text
+database_handler.py
+video_models.py
+```
+
+修改数据库查看窗口：
+
+```text
+db_viewer.py
+```
+
+## 不建议的改法
+
+- 不要在 GUI 里直接 `sqlite3.connect()`。
+- 不要在 GUI 里直接读取 CSV。
+- 不要在 `backend_server.py` 里写复杂业务逻辑。
+- 不要重新创建 `database.py`，数据库功能统一放在 `database_handler.py`。
+- 不要提交 `.csv` 或 `.db` 文件。
+- 不要在多个模块里复制文件名清洗正则，统一使用 `filename_rules.py`。
+
+## 快速验证命令
+
+编译检查：
+
+```powershell
+python -m py_compile .\Local_Video_gui.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\filename_rules.py .\video_models.py .\video_renamer_api.py
+```
+
+后端手动启动：
+
+```powershell
+python .\backend_server.py
+```
+
+启动后可访问：
+
+```text
+http://127.0.0.1:8765/health
+```
+
+## 当前模块清单
+
+```text
+Local_Video_gui.py      GUI 主窗口
+db_viewer.py            数据库查看窗口
+backend_client.py       GUI 到后端的 HTTP 客户端
+backend_server.py       本地 HTTP 服务入口和路由
+backend_service.py      后端业务协调层
+video_renamer_api.py    视频扫描与重命名业务 API
+video_models.py         业务数据模型与 JSON 转换
+filename_rules.py       文件名规则与标题清洗
+csv_video_loader.py     CSV 元数据加载
+database_handler.py     SQLite 台账访问
+```
