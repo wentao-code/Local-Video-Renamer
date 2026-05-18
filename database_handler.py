@@ -20,6 +20,14 @@ class VideoDatabase:
                     size TEXT
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS actors (
+                    name TEXT PRIMARY KEY,
+                    birthday TEXT,
+                    age TEXT,
+                    matched INTEGER DEFAULT 0
+                )
+            ''')
             conn.commit()
 
     def save_plans(self, plans):
@@ -45,6 +53,64 @@ class VideoDatabase:
             conn.commit()
 
         return success_count
+
+    def save_actors(self, actors):
+        """将识别出的演员单独写入演员表。"""
+        if not actors:
+            return 0
+
+        success_count = 0
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            for actor in actors:
+                name = actor.get('name', '').strip()
+                if not name:
+                    continue
+
+                cursor.execute('''
+                    REPLACE INTO actors (name, birthday, age, matched)
+                    VALUES (?, ?, ?, ?)
+                ''', (
+                    name,
+                    actor.get('birthday', ''),
+                    actor.get('age', ''),
+                    1 if actor.get('matched') else 0,
+                ))
+                success_count += 1
+            conn.commit()
+
+        return success_count
+
+    def list_actors(self, search_text=''):
+        """读取演员库，必要时按主角/生日/年龄筛选。"""
+        search_text = (search_text or '').strip()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if search_text:
+                like_value = f'%{search_text}%'
+                cursor.execute('''
+                    SELECT name, birthday, age, matched
+                    FROM actors
+                    WHERE name LIKE ? OR birthday LIKE ? OR age LIKE ?
+                    ORDER BY name
+                ''', (like_value, like_value, like_value))
+            else:
+                cursor.execute('''
+                    SELECT name, birthday, age, matched
+                    FROM actors
+                    ORDER BY name
+                ''')
+
+            return [
+                {
+                    'name': row[0] or '',
+                    'birthday': row[1] or '',
+                    'age': row[2] or '',
+                    'matched': bool(row[3]),
+                }
+                for row in cursor.fetchall()
+            ]
 
     def list_videos(self, search_text=''):
         """读取数据库台账，必要时按编号/标题/演员筛选。"""

@@ -53,6 +53,9 @@ def make_handler(service):
             if method == 'GET' and path == '/database/videos':
                 search_text = query.get('q', [''])[0]
                 return service.list_videos(search_text)
+            if method == 'GET' and path == '/database/actors':
+                search_text = query.get('q', [''])[0]
+                return service.list_actors(search_text)
 
             raise ValueError(f'未知接口: {method} {path}')
 

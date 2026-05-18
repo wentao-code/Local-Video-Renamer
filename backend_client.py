@@ -29,6 +29,12 @@ class BackendClient:
             query = '?' + urlencode({'q': search_text})
         return self._get('/database/videos' + query).get('videos', [])
 
+    def list_actors(self, search_text=''):
+        query = ''
+        if search_text:
+            query = '?' + urlencode({'q': search_text})
+        return self._get('/database/actors' + query).get('actors', [])
+
     def _get(self, path):
         response = requests.get(self.base_url + path, timeout=self.timeout)
         return self._parse_response(response)

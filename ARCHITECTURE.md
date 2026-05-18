@@ -12,7 +12,7 @@ PyQt GUI
   -> http://127.0.0.1:8765
   -> backend_server.py
   -> backend_service.py
-  -> video_renamer_api.py / database_handler.py
+  -> video_renamer_api.py / actor_identifier.py / database_handler.py
   -> CSV / SQLite DB / 本地文件系统
 ```
 
@@ -22,6 +22,7 @@ PyQt GUI
 - HTTP 路由层只负责解析请求和返回 JSON，不写业务规则。
 - 业务协调层负责组织扫描、重命名、数据库保存等流程。
 - 独立规则放独立模块，例如文件名清洗、CSV 加载、数据模型。
+- 演员识别独立放在 `actor_identifier.py`，不要混进 GUI 或数据库查询页面。
 - `.csv` 和 `.db` 是个人本地数据，不应提交到 Git。
 
 ## 模块职责
@@ -56,6 +57,20 @@ PyQt 主界面入口。
 - 数据库表结构定义。
 - 数据写入逻辑。
 
+### `actor_viewer.py`
+
+作者库查看窗口。
+
+职责：
+- 展示已经识别并写入 `actors` 表的作者记录。
+- 展示作者的主角、生日、年龄和匹配状态。
+- 搜索框变化时通过后端查询作者库。
+
+不应放入：
+- 演员拆分规则。
+- 演员统计 CSV 读取逻辑。
+- SQLite 连接逻辑。
+
 ### `backend_client.py`
 
 GUI 使用的 HTTP 客户端。
@@ -84,6 +99,7 @@ GUI 使用的 HTTP 客户端。
 - `POST /rename`
 - `POST /database/save`
 - `GET /database/videos?q=关键词`
+- `GET /database/actors?q=关键词`
 
 不应放入：
 - 文件名清洗规则。
@@ -102,8 +118,10 @@ GUI 使用的 HTTP 客户端。
   - 加载 CSV 数据库。
   - 扫描文件夹。
   - 执行重命名。
-  - 保存扫描结果到 SQLite。
-  - 查询 SQLite 台账。
+- 保存扫描结果到 SQLite。
+- 查询 SQLite 台账。
+- 识别扫描结果中的单个作者并写入作者表。
+- 查询作者库。
 - 将业务对象转换为 JSON 可返回的数据。
 
 如果要新增一个后端业务接口，通常先从这里加方法，再到 `backend_server.py` 增加路由。
@@ -140,6 +158,30 @@ GUI 使用的 HTTP 客户端。
   - `result_to_dict()`
 
 如果后端和 GUI 之间要传递新的字段，优先改这里。
+
+### `actor_identifier.py`
+
+作者识别与演员统计 CSV 关联模块。
+
+职责：
+- 从视频作者字符串中拆分单个作者。
+- 支持空格、逗号、顿号、斜杠等常见分隔符。
+- 加载 `目录统计 - 演员统计.csv`。
+- 用 CSV 中的 `主角` 字段建立作者索引。
+- 将识别出的作者与 `生日`、`年龄` 信息关联。
+
+示例：
+
+```text
+浅井心晴 新村あかり
+```
+
+会被识别为：
+
+```text
+浅井心晴
+新村あかり
+```
 
 ### `filename_rules.py`
 
@@ -188,8 +230,11 @@ SQLite 台账访问模块。
 
 职责：
 - 初始化 `processed_videos` 表。
+- 初始化 `actors` 表。
 - 批量保存扫描结果。
+- 批量保存识别出的作者。
 - 查询已保存的视频台账。
+- 查询已保存的作者库。
 
 这是系统唯一的数据库模块。不要恢复或新增功能重复的 `database.py`。
 
@@ -228,7 +273,10 @@ Local_Video_gui.py
   -> POST /database/save
   -> BackendService.save_plans()
   -> VideoDatabase.save_plans()
+  -> ActorIdentifier.identify_from_plans()
+  -> VideoDatabase.save_actors()
   -> SQLite REPLACE INTO processed_videos
+  -> SQLite REPLACE INTO actors
 ```
 
 ### 重命名流程
@@ -254,6 +302,18 @@ Local_Video_gui.py
   -> BackendService.list_videos()
   -> VideoDatabase.list_videos()
   -> GUI 表格渲染记录
+```
+
+### 查看作者库流程
+
+```text
+用户点击“查看作者库”
+  -> ActorViewerWindow
+  -> BackendClient.list_actors(search_text)
+  -> GET /database/actors
+  -> BackendService.list_actors()
+  -> VideoDatabase.list_actors()
+  -> GUI 表格渲染作者、生日、年龄
 ```
 
 ## 本地个人数据
@@ -285,6 +345,13 @@ csv_video_loader.py
 video_models.py
 ```
 
+新增或修改作者识别规则：
+
+```text
+actor_identifier.py
+database_handler.py
+```
+
 新增后端接口：
 
 ```text
@@ -312,6 +379,12 @@ video_models.py
 db_viewer.py
 ```
 
+修改作者库查看窗口：
+
+```text
+actor_viewer.py
+```
+
 ## 不建议的改法
 
 - 不要在 GUI 里直接 `sqlite3.connect()`。
@@ -320,13 +393,14 @@ db_viewer.py
 - 不要重新创建 `database.py`，数据库功能统一放在 `database_handler.py`。
 - 不要提交 `.csv` 或 `.db` 文件。
 - 不要在多个模块里复制文件名清洗正则，统一使用 `filename_rules.py`。
+- 不要在 GUI 或作者库页面里拆分作者字符串，统一使用 `actor_identifier.py`。
 
 ## 快速验证命令
 
 编译检查：
 
 ```powershell
-python -m py_compile .\Local_Video_gui.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\filename_rules.py .\video_models.py .\video_renamer_api.py
+python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\filename_rules.py .\video_models.py .\video_renamer_api.py
 ```
 
 后端手动启动：
@@ -346,6 +420,7 @@ http://127.0.0.1:8765/health
 ```text
 Local_Video_gui.py      GUI 主窗口
 db_viewer.py            数据库查看窗口
+actor_viewer.py         作者库查看窗口
 backend_client.py       GUI 到后端的 HTTP 客户端
 backend_server.py       本地 HTTP 服务入口和路由
 backend_service.py      后端业务协调层
@@ -353,5 +428,6 @@ video_renamer_api.py    视频扫描与重命名业务 API
 video_models.py         业务数据模型与 JSON 转换
 filename_rules.py       文件名规则与标题清洗
 csv_video_loader.py     CSV 元数据加载
+actor_identifier.py     作者识别与演员统计 CSV 关联
 database_handler.py     SQLite 台账访问
 ```

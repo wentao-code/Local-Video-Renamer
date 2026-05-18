@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from actor_identifier import ActorIdentifier
 from database_handler import VideoDatabase
 from video_models import plan_from_dict, plan_to_dict, result_to_dict
 from video_renamer_api import VideoRenamerAPI
@@ -9,14 +10,24 @@ class BackendService:
     def __init__(self, base_dir=None):
         self.base_dir = Path(base_dir or Path(__file__).resolve().parent)
         self.csv_path = self.base_dir / '目录统计 - 详细介绍.csv'
+        self.actor_csv_path = self.base_dir / '目录统计 - 演员统计.csv'
         self.db = VideoDatabase(self.base_dir / 'video_database.db')
         self.renamer = VideoRenamerAPI(self.csv_path)
+        self.actor_identifier = ActorIdentifier(self.actor_csv_path)
         self.database_loaded = False
+        self.actor_profiles_loaded = False
 
     def load_database(self):
         video_db = self.renamer.load_database()
+        actor_profiles = self.actor_identifier.load_profiles()
         self.database_loaded = True
-        return {'count': len(video_db), 'csv_path': str(self.csv_path)}
+        self.actor_profiles_loaded = True
+        return {
+            'count': len(video_db),
+            'actor_count': len(actor_profiles),
+            'csv_path': str(self.csv_path),
+            'actor_csv_path': str(self.actor_csv_path),
+        }
 
     def ensure_database_loaded(self):
         if not self.database_loaded:
@@ -26,8 +37,11 @@ class BackendService:
         return {
             'ok': True,
             'database_loaded': self.database_loaded,
+            'actor_profiles_loaded': self.actor_profiles_loaded,
             'csv_exists': self.csv_path.exists(),
+            'actor_csv_exists': self.actor_csv_path.exists(),
             'csv_path': str(self.csv_path),
+            'actor_csv_path': str(self.actor_csv_path),
             'db_path': str(self.db.db_path),
         }
 
@@ -50,7 +64,16 @@ class BackendService:
 
     def save_plans(self, plans_data):
         plans = [plan_from_dict(plan) for plan in plans_data]
-        return {'success_count': self.db.save_plans(plans)}
+        video_count = self.db.save_plans(plans)
+        actors = self.actor_identifier.identify_from_plans(plans)
+        actor_count = self.db.save_actors(actors)
+        return {
+            'success_count': video_count,
+            'actor_count': actor_count,
+        }
 
     def list_videos(self, search_text=''):
         return {'videos': self.db.list_videos(search_text)}
+
+    def list_actors(self, search_text=''):
+        return {'actors': self.db.list_actors(search_text)}

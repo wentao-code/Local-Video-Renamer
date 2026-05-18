@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from backend_client import BackendClient
+from actor_viewer import ActorViewerWindow
 from db_viewer import DatabaseViewerWindow
 
 
@@ -98,6 +99,9 @@ class VidNormApp(QWidget):
         self.btn_view_db = QPushButton('📊 查看数据库')
         self.btn_view_db.clicked.connect(self.show_db_viewer)
 
+        self.btn_view_actors = QPushButton('🎭 查看作者库')
+        self.btn_view_actors.clicked.connect(self.show_actor_viewer)
+
         self.btn_scan = QPushButton('🔍 扫描并匹配 CSV')
         self.btn_scan.clicked.connect(self.scan_files)
 
@@ -110,6 +114,7 @@ class VidNormApp(QWidget):
         self.btn_execute.setEnabled(False)
 
         bottom_layout.addWidget(self.btn_view_db)
+        bottom_layout.addWidget(self.btn_view_actors)
         bottom_layout.addStretch()
         bottom_layout.addWidget(self.btn_scan)
         bottom_layout.addWidget(self.btn_write_db)
@@ -179,7 +184,9 @@ class VidNormApp(QWidget):
             QMessageBox.information(
                 self,
                 "写入成功",
-                f"成功将当前列表中的 {success_count} 个视频数据写入/更新至数据库！\n(已根据视频编号自动覆盖去重)"
+                f"成功将当前列表中的 {success_count} 个视频数据写入/更新至数据库！\n"
+                f"同时识别并写入/更新 {result.get('actor_count', 0)} 个作者。\n"
+                f"(已根据视频编号和作者名称自动覆盖去重)"
             )
         except Exception as exc:
             QMessageBox.critical(self, "错误", f"写入数据库失败：\n{str(exc)}")
@@ -208,6 +215,10 @@ class VidNormApp(QWidget):
     def show_db_viewer(self):
         viewer = DatabaseViewerWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()  # 弹出对话框
+
+    def show_actor_viewer(self):
+        viewer = ActorViewerWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
 
     def closeEvent(self, event):
         if self.backend_process and self.backend_process.poll() is None:
