@@ -19,7 +19,7 @@ class EnrichmentDialog(QDialog):
         form_layout = QFormLayout()
 
         self.limit_input = QSpinBox()
-        self.limit_input.setRange(1, 100)
+        self.limit_input.setRange(1, 999999)
         self.limit_input.setValue(5)
         self.limit_input.setToolTip('首次建议 1-3 个，网页抓取会比较慢。')
 
