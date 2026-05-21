@@ -37,6 +37,9 @@ class BackendClient:
             timeout=timeout,
         )
 
+    def cancel_enrichment(self):
+        return self._post('/database/enrich/cancel')
+
     def reset_browser_profile(self):
         return self._post('/browser-profile/reset')
 

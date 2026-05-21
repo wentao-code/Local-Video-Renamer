@@ -2,8 +2,16 @@ from avfan_scraper import AvfanScraper
 
 
 class VideoEnrichmentService:
-    def __init__(self, database, scraper=None, show_browser=False, cooldown_before_search=False):
+    def __init__(
+        self,
+        database,
+        scraper=None,
+        show_browser=False,
+        cooldown_before_search=False,
+        should_stop=None,
+    ):
         self.database = database
+        self.should_stop = should_stop or (lambda: False)
         self.scraper = scraper or AvfanScraper(
             headless=not show_browser,
             cooldown_before_search=cooldown_before_search,
@@ -18,9 +26,14 @@ class VideoEnrichmentService:
         results = []
         success_count = 0
         failed_count = 0
+        stopped = False
 
         with self.scraper.session():
             for video in candidates:
+                if self.should_stop():
+                    stopped = True
+                    break
+
                 code = video.get('code', '')
                 try:
                     info = self.scraper.fetch_by_code(code)
@@ -56,4 +69,5 @@ class VideoEnrichmentService:
             'failed_count': failed_count,
             'remaining_count': self.database.count_videos_by_enrichment_status('未补全'),
             'results': results,
+            'stopped': stopped,
         }

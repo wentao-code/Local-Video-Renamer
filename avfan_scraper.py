@@ -83,10 +83,12 @@ class AvfanScraper:
             self._context = None
             self._page = None
             self.cooldown_used = False
-            if self._playwright_manager is not None:
-                self._playwright_manager.stop()
-            self._playwright_manager = None
-            self._playwright = None
+            try:
+                if self._playwright is not None:
+                    self._playwright.stop()
+            finally:
+                self._playwright = None
+                self._playwright_manager = None
 
     def fetch_by_code(self, code):
         code = normalize_code(code)

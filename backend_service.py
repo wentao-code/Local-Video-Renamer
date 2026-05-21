@@ -1,4 +1,5 @@
 from pathlib import Path
+from threading import Event, Lock
 
 from actor_identifier import ActorIdentifier
 from avfan_scraper import reset_avfan_browser_profile
@@ -20,6 +21,9 @@ class BackendService:
         self.path_library = PathLibrary()
         self.database_loaded = False
         self.actor_profiles_loaded = False
+        self.enrichment_cancel_event = Event()
+        self.enrichment_lock = Lock()
+        self.enrichment_running = False
 
     def load_database(self):
         video_db = self.renamer.load_database()
@@ -47,6 +51,7 @@ class BackendService:
             'csv_path': str(self.csv_path),
             'actor_csv_path': str(self.actor_csv_path),
             'db_path': str(self.db.db_path),
+            'enrichment_running': self.enrichment_running,
         }
 
     def scan(self, folder_path):
@@ -105,16 +110,38 @@ class BackendService:
     def delete_path(self, path_id):
         if path_id is None:
             raise ValueError('缺少 path_id')
-
         return {'deleted_count': self.db.delete_path(path_id)}
 
     def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False):
-        enrichment_service = VideoEnrichmentService(
-            self.db,
-            show_browser=show_browser,
-            cooldown_before_search=cooldown_before_search,
-        )
-        return enrichment_service.enrich_next_videos(limit)
+        with self.enrichment_lock:
+            if self.enrichment_running:
+                raise RuntimeError('已有补全任务正在运行，请稍后再试。')
+            self.enrichment_running = True
+            self.enrichment_cancel_event.clear()
+
+        try:
+            enrichment_service = VideoEnrichmentService(
+                self.db,
+                show_browser=show_browser,
+                cooldown_before_search=cooldown_before_search,
+                should_stop=self.enrichment_cancel_event.is_set,
+            )
+            return enrichment_service.enrich_next_videos(limit)
+        finally:
+            self.enrichment_running = False
+            self.enrichment_cancel_event.clear()
+
+    def cancel_enrichment(self):
+        if not self.enrichment_running:
+            return {
+                'cancel_requested': False,
+                'message': '当前没有正在运行的补全任务。',
+            }
+        self.enrichment_cancel_event.set()
+        return {
+            'cancel_requested': True,
+            'message': '已请求停止补全，当前视频处理完后会停止。',
+        }
 
     def reset_browser_profile(self):
         return reset_avfan_browser_profile()

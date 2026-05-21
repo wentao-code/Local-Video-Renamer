@@ -71,6 +71,8 @@ def make_handler(service):
                     show_browser=bool(body.get('show_browser')),
                     cooldown_before_search=bool(body.get('cooldown_before_search')),
                 )
+            if method == 'POST' and path == '/database/enrich/cancel':
+                return service.cancel_enrichment()
             if method == 'POST' and path == '/browser-profile/reset':
                 return service.reset_browser_profile()
 
