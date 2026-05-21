@@ -53,11 +53,20 @@ class BackendClient:
             query = '?' + urlencode({'q': search_text})
         return self._get('/database/videos' + query).get('videos', [])
 
+    def get_video_enrichment_summary(self):
+        return self._get('/database/videos/summary').get('summary', {})
+
     def list_actors(self, search_text=''):
         query = ''
         if search_text:
             query = '?' + urlencode({'q': search_text})
         return self._get('/database/actors' + query).get('actors', [])
+
+    def list_code_prefixes(self, search_text=''):
+        query = ''
+        if search_text:
+            query = '?' + urlencode({'q': search_text})
+        return self._get('/database/code-prefixes' + query).get('prefixes', [])
 
     def get_path_library(self):
         return self._get('/paths')

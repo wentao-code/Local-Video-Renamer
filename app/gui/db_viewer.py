@@ -1,15 +1,18 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
-    QVBoxLayout,
     QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QHeaderView,
-    QLineEdit,
-    QLabel,
-    QPushButton,
+    QVBoxLayout,
 )
+
+
+ENRICHED_STATUS = '已补全'
 
 
 class DatabaseViewerWindow(QDialog):
@@ -17,23 +20,20 @@ class DatabaseViewerWindow(QDialog):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
+        self.all_rows = []
         self.init_ui()
         self.load_data()
 
     def init_ui(self):
         self.setWindowTitle('📊 已存档视频数据库台账')
         self.resize(900, 550)
-
-        # 设置窗口模态（打开它时，主窗体会被锁定，防止数据冲突）
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
-        # --- 顶部工具栏：搜索框和刷新按钮 ---
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText('🔍 输入视频编号、标题、演员或存放位置，即可实时快速筛选...')
-        # 绑定文字变化事件，实现边打字边过滤的秒出效果
         self.search_input.textChanged.connect(self.filter_data)
 
         btn_refresh = QPushButton('🔄 刷新数据')
@@ -43,7 +43,9 @@ class DatabaseViewerWindow(QDialog):
         top_layout.addWidget(self.search_input)
         top_layout.addWidget(btn_refresh)
 
-        # --- 数据库表格主体 ---
+        self.summary_label = QLabel('已补全数: 0 | 未补全数: 0 | 视频总数: 0')
+        self.summary_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
         self.table = QTableWidget()
         self.table.setColumnCount(11)
         self.table.setHorizontalHeaderLabels([
@@ -60,7 +62,6 @@ class DatabaseViewerWindow(QDialog):
             '补全状态',
         ])
 
-        # 宽度自适应优化：标题列拉伸占满，其他列自适应文字宽度
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -72,23 +73,55 @@ class DatabaseViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)
-
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)  # 禁止在此处直接修改表格
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)  # 点击时选中整行
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
         layout.addLayout(top_layout)
+        layout.addWidget(self.summary_label)
         layout.addWidget(self.table)
         self.setLayout(layout)
 
     def load_data(self):
-        """从后端读取数据库台账并渲染到表格。"""
         self.table.setRowCount(0)
 
         try:
-            self.rows = self.backend_client.list_videos()
+            self.all_rows = self.backend_client.list_videos()
+            self.rows = list(self.all_rows)
             self.render_rows(self.rows)
-        except Exception as e:
-            print(f"读取数据库失败: {e}")
+            self.refresh_summary()
+        except Exception as exc:
+            print(f'读取数据库失败: {exc}')
+
+    def refresh_summary(self):
+        try:
+            summary = self.backend_client.get_video_enrichment_summary()
+            if not summary:
+                summary = self._build_summary_from_rows(self.all_rows)
+        except Exception as exc:
+            print(f'读取补全统计失败: {exc}')
+            summary = self._build_summary_from_rows(self.all_rows)
+
+        self.summary_label.setText(
+            '已补全数: {enriched_count} | 未补全数: {unenriched_count} | 视频总数: {total_count}'.format(
+                enriched_count=summary.get('enriched_count', 0),
+                unenriched_count=summary.get('unenriched_count', 0),
+                total_count=summary.get('total_count', 0),
+            )
+        )
+
+    def _build_summary_from_rows(self, rows):
+        total_count = len(rows)
+        enriched_count = sum(
+            1
+            for row in rows
+            if str(row.get('enrichment_status', '')).strip() == ENRICHED_STATUS
+        )
+        unenriched_count = max(total_count - enriched_count, 0)
+        return {
+            'enriched_count': enriched_count,
+            'unenriched_count': unenriched_count,
+            'total_count': total_count,
+        }
 
     def render_rows(self, rows):
         self.table.setRowCount(0)
@@ -110,17 +143,21 @@ class DatabaseViewerWindow(QDialog):
             self.table.insertRow(row_idx)
             for col_idx, field in enumerate(fields):
                 item = QTableWidgetItem(str(row_data.get(field, '')))
-
-                # 让编号、作者、时长等列居中显示，更美观
                 if col_idx in (0, 2, 3, 4, 5, 6, 7, 8, 9, 10):
                     item.setTextAlignment(Qt.AlignCenter)
-
                 self.table.setItem(row_idx, col_idx, item)
 
     def filter_data(self, text):
-        """通过后端执行实时搜索。"""
-        try:
-            self.rows = self.backend_client.list_videos(text)
+        search_text = (text or '').strip()
+        if not search_text:
+            self.rows = list(self.all_rows)
             self.render_rows(self.rows)
-        except Exception as e:
-            print(f"筛选数据库失败: {e}")
+            self.refresh_summary()
+            return
+
+        try:
+            self.rows = self.backend_client.list_videos(search_text)
+            self.render_rows(self.rows)
+            self.refresh_summary()
+        except Exception as exc:
+            print(f'筛选数据库失败: {exc}')

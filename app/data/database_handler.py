@@ -295,6 +295,31 @@ class VideoDatabase:
             ''', (status,))
             return int(cursor.fetchone()[0] or 0)
 
+    def get_video_enrichment_summary(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT
+                    COUNT(*) AS total_count,
+                    SUM(
+                        CASE
+                            WHEN COALESCE(enrichment_status, '鏈ˉ鍏?) = '宸茶ˉ鍏? THEN 1
+                            ELSE 0
+                        END
+                    ) AS enriched_count
+                FROM processed_videos
+            ''')
+            row = cursor.fetchone() or (0, 0)
+
+        total_count = int(row[0] or 0)
+        enriched_count = int(row[1] or 0)
+        unenriched_count = max(total_count - enriched_count, 0)
+        return {
+            'enriched_count': enriched_count,
+            'unenriched_count': unenriched_count,
+            'total_count': total_count,
+        }
+
     def add_path(self, folder_path):
         """写入一个路径库记录，已存在时保持一条记录。"""
         with sqlite3.connect(self.db_path) as conn:

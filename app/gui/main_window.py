@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 from app.backend.client import BackendClient
 from app.core.project_paths import PROJECT_ROOT
 from app.gui.actor_viewer import ActorViewerWindow
+from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.path_library_viewer import PathLibraryWindow
@@ -82,6 +83,10 @@ class VidNormApp(QWidget):
         self.batch_timer = QTimer(self)
         self.batch_timer.setSingleShot(True)
         self.batch_timer.timeout.connect(self.run_next_batch_enrichment)
+        self.batch_countdown_timer = QTimer(self)
+        self.batch_countdown_timer.setInterval(1000)
+        self.batch_countdown_timer.timeout.connect(self.update_batch_countdown)
+        self.batch_next_run_at = None
         self.login_thread = None
         self.login_worker = None
 
@@ -154,13 +159,19 @@ class VidNormApp(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
 
         self.status_label = QLabel('')
+        self.batch_countdown_label = QLabel('')
 
-        bottom_layout = QHBoxLayout()
+        button_layout = QVBoxLayout()
+        top_button_row = QHBoxLayout()
+        bottom_button_row = QHBoxLayout()
         self.btn_view_db = QPushButton('查看数据库')
         self.btn_view_db.clicked.connect(self.show_db_viewer)
 
         self.btn_view_actors = QPushButton('查看作者库')
         self.btn_view_actors.clicked.connect(self.show_actor_viewer)
+
+        self.btn_view_code_prefixes = QPushButton('查看番号库')
+        self.btn_view_code_prefixes.clicked.connect(self.show_code_prefix_viewer)
 
         self.btn_scan = QPushButton('扫描并匹配 CSV')
         self.btn_scan.clicked.connect(self.scan_files)
@@ -186,21 +197,28 @@ class VidNormApp(QWidget):
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
 
-        bottom_layout.addWidget(self.btn_view_db)
-        bottom_layout.addWidget(self.btn_view_actors)
-        bottom_layout.addStretch()
-        bottom_layout.addWidget(self.btn_scan)
-        bottom_layout.addWidget(self.btn_write_db)
-        bottom_layout.addWidget(self.btn_auto_login)
-        bottom_layout.addWidget(self.btn_enrich)
-        bottom_layout.addWidget(self.btn_stop_enrich)
-        bottom_layout.addWidget(self.btn_reset_browser_profile)
-        bottom_layout.addWidget(self.btn_execute)
+        top_button_row.addWidget(self.btn_view_db)
+        top_button_row.addWidget(self.btn_view_actors)
+        top_button_row.addWidget(self.btn_view_code_prefixes)
+        top_button_row.addStretch()
+
+        bottom_button_row.addWidget(self.btn_scan)
+        bottom_button_row.addWidget(self.btn_write_db)
+        bottom_button_row.addWidget(self.btn_auto_login)
+        bottom_button_row.addWidget(self.btn_enrich)
+        bottom_button_row.addWidget(self.btn_stop_enrich)
+        bottom_button_row.addWidget(self.btn_reset_browser_profile)
+        bottom_button_row.addWidget(self.btn_execute)
+        bottom_button_row.addStretch()
+
+        button_layout.addLayout(top_button_row)
+        button_layout.addLayout(bottom_button_row)
 
         main_layout.addLayout(top_layout)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.status_label)
-        main_layout.addLayout(bottom_layout)
+        main_layout.addWidget(self.batch_countdown_label)
+        main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
 
     def browse_folder(self):
@@ -380,6 +398,11 @@ class VidNormApp(QWidget):
         if self.enrichment_thread is not None:
             return
 
+        self.batch_timer.stop()
+        self.batch_countdown_timer.stop()
+        self.batch_next_run_at = None
+        self.batch_countdown_label.setText('')
+
         self.start_enrichment(
             self.batch_enrichment_config['limit'],
             self.batch_enrichment_config['show_browser'],
@@ -392,18 +415,45 @@ class VidNormApp(QWidget):
             return
 
         interval_minutes = max(1, int(self.batch_enrichment_config['interval_minutes']))
-        self.batch_timer.start(interval_minutes * 60 * 1000)
+        interval_seconds = interval_minutes * 60
+        self.batch_next_run_at = time.time() + interval_seconds
+        self.batch_timer.start(interval_seconds * 1000)
+        self.batch_countdown_timer.start()
         self.status_label.setText(
             f'分批补全第 {self.batch_enrichment_round} 批已完成，将在 {interval_minutes} 分钟后开始下一批。'
         )
+        self.update_batch_countdown()
         self.update_enrichment_controls()
 
     def stop_batch_enrichment(self, message='已停止分批补全计划。'):
         self.batch_timer.stop()
+        self.batch_countdown_timer.stop()
+        self.batch_next_run_at = None
         self.batch_enrichment_active = False
         self.batch_enrichment_config = None
         self.update_enrichment_controls()
         self.status_label.setText(message)
+        self.batch_countdown_label.setText('')
+
+    def update_batch_countdown(self):
+        if self.batch_next_run_at is None:
+            self.batch_countdown_label.setText('')
+            return
+
+        remaining_seconds = max(0, int(round(self.batch_next_run_at - time.time())))
+        minutes, seconds = divmod(remaining_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+
+        if remaining_seconds <= 0:
+            self.batch_countdown_timer.stop()
+            self.batch_countdown_label.setText('下一批补全即将开始...')
+            return
+
+        if hours > 0:
+            countdown_text = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+        else:
+            countdown_text = f'{minutes:02d}:{seconds:02d}'
+        self.batch_countdown_label.setText(f'分批补全倒计时：{countdown_text}')
 
     def update_enrichment_controls(self):
         enrichment_running = self.enrichment_thread is not None
@@ -419,6 +469,9 @@ class VidNormApp(QWidget):
         self.btn_stop_enrich.setEnabled(False)
         if self.batch_enrichment_active:
             self.batch_timer.stop()
+            self.batch_countdown_timer.stop()
+            self.batch_next_run_at = None
+            self.batch_countdown_label.setText('')
             self.batch_enrichment_active = False
             self.batch_enrichment_config = None
         self.status_label.setText('已请求停止补全，当前视频处理完后会停止。')
@@ -477,6 +530,42 @@ class VidNormApp(QWidget):
         self.status_label.setText('')
         QMessageBox.critical(self, '补全失败', error_message)
 
+    def on_enrichment_finished(self, result):
+        mode = self.enrichment_mode
+        summary = (
+            f"本次处理 {result.get('processed_count', 0)} 个视频。\n"
+            f"成功: {result.get('success_count', 0)} 个\n"
+            f"失败: {result.get('failed_count', 0)} 个\n"
+            f"剩余未补全: {result.get('remaining_count', 0)} 个"
+        )
+
+        if result.get('requires_manual_verification'):
+            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
+            if mode == 'batch':
+                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
+            else:
+                self.status_label.setText('')
+            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
+            return
+
+        if mode == 'batch':
+            if not self.batch_enrichment_active:
+                self.status_label.setText('已停止分批补全计划。')
+                QMessageBox.information(self, '分批补全已停止', summary)
+                return
+
+            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
+                self.stop_batch_enrichment('分批补全已完成，当前没有待补全视频。')
+                QMessageBox.information(self, '分批补全完成', summary)
+                return
+
+            self.schedule_next_batch_enrichment()
+            return
+
+        title = '补全已停止' if result.get('stopped') else '补全完成'
+        QMessageBox.information(self, title, summary)
+        self.status_label.setText('')
+
     def cleanup_auto_login_thread(self):
         self.btn_auto_login.setEnabled(True)
         self.status_label.setText('')
@@ -530,6 +619,10 @@ class VidNormApp(QWidget):
 
     def show_actor_viewer(self):
         viewer = ActorViewerWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
+    def show_code_prefix_viewer(self):
+        viewer = CodePrefixViewerWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
     def show_path_library(self):

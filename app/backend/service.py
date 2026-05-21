@@ -8,6 +8,7 @@ from app.data.database_handler import VideoDatabase
 from app.scraper.avfan_scraper import reset_avfan_browser_profile
 from app.services.actor_identifier import ActorIdentifier
 from app.services.auto_login_service import AutoLoginService
+from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.path_library import PathLibrary, summarize_paths
 from app.services.video_enrichment import VideoEnrichmentService
 
@@ -20,6 +21,7 @@ class BackendService:
         self.db = VideoDatabase(DATABASE_FILE)
         self.renamer = VideoRenamerAPI(self.csv_path)
         self.actor_identifier = ActorIdentifier(self.actor_csv_path)
+        self.code_prefix_library = CodePrefixLibrary(self.db)
         self.path_library = PathLibrary()
         self.database_loaded = False
         self.actor_profiles_loaded = False
@@ -86,8 +88,14 @@ class BackendService:
     def list_videos(self, search_text=''):
         return {'videos': self.db.list_videos(search_text)}
 
+    def get_video_enrichment_summary(self):
+        return {'summary': self.db.get_video_enrichment_summary()}
+
     def list_actors(self, search_text=''):
         return {'actors': self.db.list_actors(search_text)}
+
+    def list_code_prefixes(self, search_text=''):
+        return {'prefixes': self.code_prefix_library.list_prefixes(search_text)}
 
     def list_paths(self):
         paths = []

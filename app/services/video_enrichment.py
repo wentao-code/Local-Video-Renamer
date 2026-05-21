@@ -1,4 +1,10 @@
 from app.scraper.avfan_scraper import AvfanScraper
+from app.scraper.exceptions import HumanVerificationRequiredError
+
+
+ENRICHED_STATUS = '已补全'
+UNENRICHED_STATUS = '未补全'
+FAILED_STATUS = '补全失败'
 
 
 class VideoEnrichmentService:
@@ -38,27 +44,47 @@ class VideoEnrichmentService:
                 try:
                     info = self.scraper.fetch_by_code(code)
                     if info.get('found'):
-                        self.database.update_video_enrichment(code, info, '已补全')
+                        self.database.update_video_enrichment(code, info, ENRICHED_STATUS)
                         success_count += 1
                         results.append({
                             'code': code,
-                            'status': '已补全',
+                            'status': ENRICHED_STATUS,
                             'info': info,
                         })
                     else:
-                        self.database.update_video_enrichment(code, info, '补全失败')
+                        self.database.update_video_enrichment(code, info, FAILED_STATUS)
                         failed_count += 1
                         results.append({
                             'code': code,
-                            'status': '补全失败',
+                            'status': FAILED_STATUS,
                             'error': info.get('error', '未搜索到匹配影片'),
                         })
+                except HumanVerificationRequiredError as exc:
+                    error_message = str(exc)
+                    self.database.mark_video_enrichment_failed(code, error_message)
+                    failed_count += 1
+                    results.append({
+                        'code': code,
+                        'status': FAILED_STATUS,
+                        'error': error_message,
+                    })
+                    return {
+                        'requested': limit,
+                        'processed_count': len(results),
+                        'success_count': success_count,
+                        'failed_count': failed_count,
+                        'remaining_count': self.database.count_videos_by_enrichment_status(UNENRICHED_STATUS),
+                        'results': results,
+                        'stopped': True,
+                        'requires_manual_verification': True,
+                        'message': error_message,
+                    }
                 except Exception as exc:
                     self.database.mark_video_enrichment_failed(code, str(exc))
                     failed_count += 1
                     results.append({
                         'code': code,
-                        'status': '补全失败',
+                        'status': FAILED_STATUS,
                         'error': str(exc),
                     })
 
@@ -67,7 +93,7 @@ class VideoEnrichmentService:
             'processed_count': len(results),
             'success_count': success_count,
             'failed_count': failed_count,
-            'remaining_count': self.database.count_videos_by_enrichment_status('未补全'),
+            'remaining_count': self.database.count_videos_by_enrichment_status(UNENRICHED_STATUS),
             'results': results,
             'stopped': stopped,
         }

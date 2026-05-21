@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.core.app_config import get_setting
 from app.core.project_paths import AVFAN_PROFILE_DIR, BROWSER_PROFILES_DIR
-from app.scraper.login_status_service import ensure_logged_in_on_home
+from app.scraper.exceptions import HumanVerificationRequiredError
 
 
 AVFAN_MOVIE_RE = re.compile(r'/movies/([^/?#]+)')
@@ -194,8 +194,6 @@ class AvfanScraper:
         wait_for_security_verification_if_needed(page, self.headless)
         wait_for_manual_login_if_needed(page, self.headless)
         wait_for_page_ready(page)
-        if same_home_page(page.url, self.home_url):
-            ensure_logged_in_on_home(page, self.headless)
         self.wait_before_first_search(page)
         fill_search_box(page, code)
         click_search_button(page)
@@ -621,7 +619,11 @@ def normalize_code(value):
     return re.sub(r'[^A-Z0-9]', '', str(value or '').upper())
 
 
-def same_home_page(current_url, home_url):
-    current = str(current_url or '').rstrip('/')
-    target = str(home_url or '').rstrip('/')
-    return bool(current and target and current == target)
+def wait_for_security_verification_if_needed(page, headless):
+    if not is_security_verification_page(page):
+        return
+
+    raise HumanVerificationRequiredError(
+        '检测到 AVFan 人机验证，已停止当前补全任务和后续任务。'
+        '请先手动完成验证，再重新点击“补全信息”继续。'
+    )

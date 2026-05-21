@@ -53,9 +53,14 @@ def make_handler(service):
             if method == 'GET' and path == '/database/videos':
                 search_text = query.get('q', [''])[0]
                 return service.list_videos(search_text)
+            if method == 'GET' and path == '/database/videos/summary':
+                return service.get_video_enrichment_summary()
             if method == 'GET' and path == '/database/actors':
                 search_text = query.get('q', [''])[0]
                 return service.list_actors(search_text)
+            if method == 'GET' and path == '/database/code-prefixes':
+                search_text = query.get('q', [''])[0]
+                return service.list_code_prefixes(search_text)
             if method == 'GET' and path == '/paths':
                 return service.list_paths()
             if method == 'POST' and path == '/paths/add':
