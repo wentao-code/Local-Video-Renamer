@@ -140,6 +140,80 @@ GUI 使用的 HTTP 客户端。
 
 主要接口：
 - `GET /health`
+
+## 2026-05 当前目录结构
+
+重构后，项目代码统一收拢到 `app/` 目录下，根目录只保留启动入口、文档、配置模板和本地数据：
+
+```text
+Local-Video-Renamer/
+├─ Local_Video_gui.py          # GUI 启动入口包装器
+├─ backend_server.py           # 后端启动入口包装器
+├─ ARCHITECTURE.md
+├─ .env.example
+├─ app/
+│  ├─ api/
+│  │  └─ video_renamer_api.py
+│  ├─ backend/
+│  │  ├─ client.py
+│  │  ├─ server.py
+│  │  └─ service.py
+│  ├─ core/
+│  │  ├─ app_config.py
+│  │  ├─ filename_rules.py
+│  │  ├─ project_paths.py
+│  │  └─ video_models.py
+│  ├─ data/
+│  │  ├─ csv_video_loader.py
+│  │  └─ database_handler.py
+│  ├─ gui/
+│  │  ├─ main_window.py
+│  │  ├─ db_viewer.py
+│  │  ├─ actor_viewer.py
+│  │  ├─ path_library_viewer.py
+│  │  └─ enrichment_dialog.py
+│  ├─ scraper/
+│  │  ├─ avfan_scraper.py
+│  │  └─ login_status_service.py
+│  └─ services/
+│     ├─ actor_identifier.py
+│     ├─ auto_login_service.py
+│     ├─ path_library.py
+│     └─ video_enrichment.py
+├─ browser_profiles/           # 本地网页登录状态，不提交
+├─ video_database.db           # 本地数据库，不提交
+├─ 目录统计 - 详细介绍.csv       # 本地 CSV，不提交
+└─ 目录统计 - 演员统计.csv       # 本地 CSV，不提交
+```
+
+目录分工：
+
+- `app/core`：基础配置、公共路径、规则、数据模型
+- `app/data`：CSV 和 SQLite 的底层读写
+- `app/services`：作者识别、路径库、补全等业务服务
+- `app/scraper`：AVFan 页面抓取与登录状态检测
+- `app/backend`：本地 HTTP 后端
+- `app/gui`：PyQt 界面层
+- `app/api`：视频扫描、命名、重命名的聚合业务接口
+
+## 2026-05 一键启动
+
+为了不依赖 PyCharm 手动运行脚本，项目根目录新增了两个启动入口：
+
+- `启动系统.bat`
+  - 可直接双击启动系统
+  - 内部会调用 `start_vidnorm.ps1`
+  - 会优先读取本地 `.env` 中的 `APP_PYTHON_EXE`
+  - 若未配置，则自动尝试 `.venv`、`venv`、`pyw.exe`、`py.exe`、`pythonw.exe`、`python.exe`
+- `启动系统_静默.vbs`
+  - 静默调用 `启动系统.bat`
+  - 适合像普通桌面程序一样点击启动
+
+相关文件：
+
+- [启动系统.bat](D:/pycharm_pro/Local-Video-Renamer/启动系统.bat)
+- [启动系统_静默.vbs](D:/pycharm_pro/Local-Video-Renamer/启动系统_静默.vbs)
+- [start_vidnorm.ps1](D:/pycharm_pro/Local-Video-Renamer/start_vidnorm.ps1)
 - `POST /database/reload`
 - `POST /scan`
 - `POST /rename`

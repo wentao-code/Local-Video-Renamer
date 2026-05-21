@@ -2,7 +2,7 @@ import csv
 import re
 from pathlib import Path
 
-from filename_rules import normalize_text_spacing
+from app.core.filename_rules import normalize_text_spacing
 
 
 IGNORED_ACTOR_NAMES = {'无', '暂无', '未知', '无记录', 'none', 'null', 'n/a', 'na', '-'}

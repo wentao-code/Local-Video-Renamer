@@ -1,22 +1,23 @@
 from pathlib import Path
 from threading import Event, Lock
 
-from actor_identifier import ActorIdentifier
-from auto_login_service import AutoLoginService
-from avfan_scraper import reset_avfan_browser_profile
-from database_handler import VideoDatabase
-from path_library import PathLibrary, summarize_paths
-from video_enrichment import VideoEnrichmentService
-from video_models import plan_from_dict, plan_to_dict, result_to_dict
-from video_renamer_api import VideoRenamerAPI
+from app.api.video_renamer_api import VideoRenamerAPI
+from app.core.project_paths import ACTOR_CSV_FILE, DATABASE_FILE, PROJECT_ROOT, VIDEO_CSV_FILE
+from app.core.video_models import plan_from_dict, plan_to_dict, result_to_dict
+from app.data.database_handler import VideoDatabase
+from app.scraper.avfan_scraper import reset_avfan_browser_profile
+from app.services.actor_identifier import ActorIdentifier
+from app.services.auto_login_service import AutoLoginService
+from app.services.path_library import PathLibrary, summarize_paths
+from app.services.video_enrichment import VideoEnrichmentService
 
 
 class BackendService:
     def __init__(self, base_dir=None):
-        self.base_dir = Path(base_dir or Path(__file__).resolve().parent)
-        self.csv_path = self.base_dir / '目录统计 - 详细介绍.csv'
-        self.actor_csv_path = self.base_dir / '目录统计 - 演员统计.csv'
-        self.db = VideoDatabase(self.base_dir / 'video_database.db')
+        self.base_dir = Path(base_dir or PROJECT_ROOT)
+        self.csv_path = VIDEO_CSV_FILE
+        self.actor_csv_path = ACTOR_CSV_FILE
+        self.db = VideoDatabase(DATABASE_FILE)
         self.renamer = VideoRenamerAPI(self.csv_path)
         self.actor_identifier = ActorIdentifier(self.actor_csv_path)
         self.path_library = PathLibrary()
@@ -141,12 +142,11 @@ class BackendService:
         self.enrichment_cancel_event.set()
         return {
             'cancel_requested': True,
-            'message': '已请求停止补全，当前视频处理完后会停止。',
+            'message': '已请求停止补全，当前视频处理完成后会停止。',
         }
 
     def auto_login(self):
-        service = AutoLoginService()
-        return service.run()
+        return AutoLoginService().run()
 
     def reset_browser_profile(self):
         return reset_avfan_browser_profile()

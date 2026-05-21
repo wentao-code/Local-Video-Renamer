@@ -3,12 +3,13 @@ import shutil
 from contextlib import contextmanager
 from pathlib import Path
 
-from app_config import get_setting
-from login_status_service import ensure_logged_in_on_home
+from app.core.app_config import get_setting
+from app.core.project_paths import AVFAN_PROFILE_DIR, BROWSER_PROFILES_DIR
+from app.scraper.login_status_service import ensure_logged_in_on_home
 
 
 AVFAN_MOVIE_RE = re.compile(r'/movies/([^/?#]+)')
-DEFAULT_PROFILE_DIR = Path(__file__).resolve().parent / 'browser_profiles' / 'avfan'
+DEFAULT_PROFILE_DIR = AVFAN_PROFILE_DIR
 SEARCH_COOLDOWN_MS = 180000
 MANUAL_CHECK_TIMEOUT_MS = 600000
 
@@ -16,7 +17,7 @@ MANUAL_CHECK_TIMEOUT_MS = 600000
 def reset_avfan_browser_profile(profile_dir=None):
     target = Path(profile_dir) if profile_dir else DEFAULT_PROFILE_DIR
     target = target.resolve()
-    profile_root = (Path(__file__).resolve().parent / 'browser_profiles').resolve()
+    profile_root = BROWSER_PROFILES_DIR.resolve()
 
     if target != profile_root / 'avfan':
         raise ValueError('拒绝清理非 AVFan 专用浏览器档案目录')

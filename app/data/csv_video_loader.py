@@ -1,8 +1,8 @@
 import csv
 from pathlib import Path
 
-from filename_rules import clean_video_title, normalize_text_spacing
-from video_models import VideoMetadata
+from app.core.filename_rules import clean_video_title, normalize_text_spacing
+from app.core.video_models import VideoMetadata
 
 
 def load_video_database(csv_path):

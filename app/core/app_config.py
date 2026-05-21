@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 
+from app.core.project_paths import ENV_FILE
 
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_ENV_PATH = BASE_DIR / '.env'
+DEFAULT_ENV_PATH = ENV_FILE
 
 
 def load_env_file(env_path=None):

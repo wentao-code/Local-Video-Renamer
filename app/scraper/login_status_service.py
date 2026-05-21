@@ -1,4 +1,4 @@
-from app_config import get_setting
+from app.core.app_config import get_setting
 
 
 MANUAL_CHECK_TIMEOUT_MS = 600000

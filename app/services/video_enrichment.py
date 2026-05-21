@@ -1,4 +1,4 @@
-from avfan_scraper import AvfanScraper
+from app.scraper.avfan_scraper import AvfanScraper
 
 
 class VideoEnrichmentService:

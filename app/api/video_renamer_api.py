@@ -1,7 +1,6 @@
 from pathlib import Path
 
-from csv_video_loader import load_video_database
-from filename_rules import (
+from app.core.filename_rules import (
     DEFAULT_VIDEO_EXTS,
     build_normalized_filename,
     clean_video_title,
@@ -9,8 +8,7 @@ from filename_rules import (
     normalize_text_spacing,
     strip_title_suffix_noise,
 )
-from path_library import get_storage_location_name
-from video_models import (
+from app.core.video_models import (
     RenamePlan,
     RenameResult,
     VideoMetadata,
@@ -20,6 +18,8 @@ from video_models import (
     plan_to_dict,
     result_to_dict,
 )
+from app.data.csv_video_loader import load_video_database
+from app.services.path_library import get_storage_location_name
 
 
 class VideoRenamerAPI:

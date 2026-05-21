@@ -1,5 +1,5 @@
-from avfan_scraper import AvfanScraper
-from login_status_service import ensure_logged_in_on_home
+from app.scraper.avfan_scraper import AvfanScraper
+from app.scraper.login_status_service import ensure_logged_in_on_home
 
 
 class AutoLoginService:

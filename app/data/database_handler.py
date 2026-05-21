@@ -1,7 +1,8 @@
 import sqlite3
 from pathlib import Path
 
-from actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
+from app.core.project_paths import DATABASE_FILE
+from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
 
 
 def join_values(value):
@@ -11,8 +12,8 @@ def join_values(value):
 
 
 class VideoDatabase:
-    def __init__(self, db_path='video_database.db'):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path=None):
+        self.db_path = Path(db_path) if db_path else DATABASE_FILE
         self._init_db()
 
     def _init_db(self):
