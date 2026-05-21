@@ -73,6 +73,8 @@ def make_handler(service):
                 )
             if method == 'POST' and path == '/database/enrich/cancel':
                 return service.cancel_enrichment()
+            if method == 'POST' and path == '/login/auto':
+                return service.auto_login()
             if method == 'POST' and path == '/browser-profile/reset':
                 return service.reset_browser_profile()
 

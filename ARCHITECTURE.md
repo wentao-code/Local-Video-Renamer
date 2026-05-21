@@ -40,6 +40,7 @@ PyQt 主界面入口。
 - 启动时检查本地后端是否可用，不可用则自动拉起 `backend_server.py`。
 - 用户点击按钮后，通过 `BackendClient` 调用后端接口。
 - 提供“重置网页登录”按钮，用于清理 AVFan 专用浏览器登录档案。
+- 提供“自动登录”按钮，用于打开登录页并自动填入本地 `.env` 中保存的账号密码。
 - 补全信息通过后台线程执行，避免 PyQt 主线程阻塞导致窗口“未响应”。
 - 提供“停止补全”按钮，通过后端取消标记在当前视频处理完后中止后续补全。
 - 将后端返回的 JSON 数据渲染到表格。
@@ -140,6 +141,7 @@ GUI 使用的 HTTP 客户端。
 - `POST /paths/delete`
 - `POST /database/enrich`
 - `POST /browser-profile/reset`
+- `POST /login/auto`
 
 不应放入：
 - 文件名清洗规则。
@@ -163,10 +165,22 @@ GUI 使用的 HTTP 客户端。
 - 识别扫描结果中的单个作者并写入作者表。
   - 查询作者库。
   - 添加、删除和查询路径库。
+  - 打开网页登录页并自动填入本地账号密码。
   - 批量补全未补全视频的 AVFan 详情信息。
 - 将业务对象转换为 JSON 可返回的数据。
 
 如果要新增一个后端业务接口，通常先从这里加方法，再到 `backend_server.py` 增加路由。
+
+### `auto_login_service.py`
+
+网页登录辅助模块。
+
+职责：
+- 从 `.env` 读取登录链接、账号和密码。
+- 使用 Playwright 打开登录页。
+- 自动填入账号密码。
+- 等待用户手动完成图片验证码并点击登录。
+- 登录成功后复用同一套 `browser_profiles/avfan` 登录状态。
 
 ### `app_config.py`
 
@@ -482,6 +496,20 @@ Local_Video_gui.py
   -> 删除 browser_profiles/avfan
 ```
 
+### 自动登录流程
+
+```text
+用户点击“自动登录”
+  -> GUI 后台线程启动 AutoLoginWorker
+  -> BackendClient.auto_login()
+  -> POST /login/auto
+  -> BackendService.auto_login()
+  -> AutoLoginService.run()
+  -> 打开登录链接并自动填入账号密码
+  -> 用户手动输入图片验证码并点击登录
+  -> 登录成功后复用 browser_profiles/avfan
+```
+
 ## 本地个人数据
 
 以下文件类型属于个人本地数据，已经在 `.gitignore` 中忽略：
@@ -595,7 +623,7 @@ path_library_viewer.py
 编译检查：
 
 ```powershell
-python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\app_config.py .\avfan_scraper.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\enrichment_dialog.py .\filename_rules.py .\path_library.py .\path_library_viewer.py .\video_enrichment.py .\video_models.py .\video_renamer_api.py
+python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\app_config.py .\auto_login_service.py .\avfan_scraper.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\enrichment_dialog.py .\filename_rules.py .\path_library.py .\path_library_viewer.py .\video_enrichment.py .\video_models.py .\video_renamer_api.py
 ```
 
 后端手动启动：

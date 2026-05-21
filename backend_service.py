@@ -2,6 +2,7 @@ from pathlib import Path
 from threading import Event, Lock
 
 from actor_identifier import ActorIdentifier
+from auto_login_service import AutoLoginService
 from avfan_scraper import reset_avfan_browser_profile
 from database_handler import VideoDatabase
 from path_library import PathLibrary, summarize_paths
@@ -142,6 +143,10 @@ class BackendService:
             'cancel_requested': True,
             'message': '已请求停止补全，当前视频处理完后会停止。',
         }
+
+    def auto_login(self):
+        service = AutoLoginService()
+        return service.run()
 
     def reset_browser_profile(self):
         return reset_avfan_browser_profile()

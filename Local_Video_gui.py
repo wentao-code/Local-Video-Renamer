@@ -50,6 +50,23 @@ class EnrichmentWorker(QObject):
         self.finished.emit(result)
 
 
+class AutoLoginWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, backend_client):
+        super().__init__()
+        self.backend_client = backend_client
+
+    def run(self):
+        try:
+            result = self.backend_client.auto_login()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(result)
+
+
 class VidNormApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -58,6 +75,8 @@ class VidNormApp(QWidget):
         self.backend_client = BackendClient()
         self.enrichment_thread = None
         self.enrichment_worker = None
+        self.login_thread = None
+        self.login_worker = None
 
         self.ensure_backend_running()
         self.load_csv_data()
@@ -142,6 +161,9 @@ class VidNormApp(QWidget):
         self.btn_write_db.clicked.connect(self.write_to_db)
         self.btn_write_db.setEnabled(False)
 
+        self.btn_auto_login = QPushButton('🔐 自动登录')
+        self.btn_auto_login.clicked.connect(self.auto_login)
+
         self.btn_enrich = QPushButton('🌐 补全信息')
         self.btn_enrich.clicked.connect(self.enrich_video_info)
 
@@ -161,6 +183,7 @@ class VidNormApp(QWidget):
         bottom_layout.addStretch()
         bottom_layout.addWidget(self.btn_scan)
         bottom_layout.addWidget(self.btn_write_db)
+        bottom_layout.addWidget(self.btn_auto_login)
         bottom_layout.addWidget(self.btn_enrich)
         bottom_layout.addWidget(self.btn_stop_enrich)
         bottom_layout.addWidget(self.btn_reset_browser_profile)
@@ -261,6 +284,27 @@ class VidNormApp(QWidget):
         QMessageBox.information(self, "结果", f"成功重命名 {success} 个文件。")
         self.btn_execute.setEnabled(False)
 
+    def auto_login(self):
+        if self.login_thread is not None:
+            QMessageBox.information(self, "登录进行中", "当前自动登录还没有结束。")
+            return
+        self.start_auto_login()
+
+    def start_auto_login(self):
+        self.btn_auto_login.setEnabled(False)
+        self.status_label.setText('正在打开登录页并自动填入账号密码，请手动输入图片验证码后点击登录。')
+
+        self.login_thread = QThread(self)
+        self.login_worker = AutoLoginWorker(self.backend_client)
+        self.login_worker.moveToThread(self.login_thread)
+        self.login_thread.started.connect(self.login_worker.run)
+        self.login_worker.finished.connect(self.on_auto_login_finished)
+        self.login_worker.failed.connect(self.on_auto_login_failed)
+        self.login_worker.finished.connect(self.login_thread.quit)
+        self.login_worker.failed.connect(self.login_thread.quit)
+        self.login_thread.finished.connect(self.cleanup_auto_login_thread)
+        self.login_thread.start()
+
     def enrich_video_info(self):
         if self.enrichment_thread is not None:
             QMessageBox.information(self, "补全进行中", "当前补全任务还没有结束。")
@@ -301,6 +345,7 @@ class VidNormApp(QWidget):
     def stop_enrichment(self):
         if self.enrichment_thread is None:
             return
+
         self.btn_stop_enrich.setEnabled(False)
         self.status_label.setText('已请求停止补全，当前视频处理完后会停止。')
         try:
@@ -310,6 +355,16 @@ class VidNormApp(QWidget):
             self.btn_stop_enrich.setEnabled(True)
             self.status_label.setText('停止补全请求失败。')
             QMessageBox.critical(self, "停止失败", str(exc))
+
+    def on_auto_login_finished(self, result):
+        QMessageBox.information(
+            self,
+            "自动登录完成",
+            result.get('message', '已完成自动登录。'),
+        )
+
+    def on_auto_login_failed(self, error_message):
+        QMessageBox.critical(self, "自动登录失败", error_message)
 
     def on_enrichment_finished(self, result):
         title = "补全已停止" if result.get('stopped') else "补全完成"
@@ -324,6 +379,16 @@ class VidNormApp(QWidget):
 
     def on_enrichment_failed(self, error_message):
         QMessageBox.critical(self, "补全失败", error_message)
+
+    def cleanup_auto_login_thread(self):
+        self.btn_auto_login.setEnabled(True)
+        self.status_label.setText('')
+        if self.login_worker is not None:
+            self.login_worker.deleteLater()
+        if self.login_thread is not None:
+            self.login_thread.deleteLater()
+        self.login_worker = None
+        self.login_thread = None
 
     def cleanup_enrichment_thread(self):
         self.btn_enrich.setEnabled(True)
@@ -379,6 +444,10 @@ class VidNormApp(QWidget):
     def closeEvent(self, event):
         if self.enrichment_thread and self.enrichment_thread.isRunning():
             QMessageBox.information(self, "补全进行中", "请等待补全任务结束后再关闭窗口。")
+            event.ignore()
+            return
+        if self.login_thread and self.login_thread.isRunning():
+            QMessageBox.information(self, "登录进行中", "请等待自动登录结束后再关闭窗口。")
             event.ignore()
             return
         if self.backend_process and self.backend_process.poll() is None:
