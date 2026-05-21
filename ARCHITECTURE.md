@@ -16,6 +16,16 @@ PyQt GUI
   -> CSV / SQLite DB / 本地文件系统
 ```
 
+## 2026-05 登录态检测补充
+
+- 新增 `login_status_service.py`，专门负责：
+  - 进入主页后点击右上角用户图标
+  - 判断当前是“已登录”还是“未登录”
+  - 未登录时自动跳转登录页并填充本地 `.env` 中的账号密码
+  - 等待用户手动完成图片验证码和最终登录
+- `auto_login_service.py` 现在只负责调度，不再直接写页面细节。
+- `avfan_scraper.py` 在进入主页准备搜索前，会先调用登录态检测；检测到已登录则继续搜索，检测到未登录则触发登录流程。
+
 ## 核心设计原则
 
 - GUI 不直接读取 CSV、SQLite，也不直接执行重命名业务。
@@ -623,7 +633,7 @@ path_library_viewer.py
 编译检查：
 
 ```powershell
-python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\app_config.py .\auto_login_service.py .\avfan_scraper.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\enrichment_dialog.py .\filename_rules.py .\path_library.py .\path_library_viewer.py .\video_enrichment.py .\video_models.py .\video_renamer_api.py
+python -m py_compile .\Local_Video_gui.py .\actor_identifier.py .\actor_viewer.py .\app_config.py .\auto_login_service.py .\avfan_scraper.py .\backend_client.py .\backend_server.py .\backend_service.py .\csv_video_loader.py .\database_handler.py .\db_viewer.py .\enrichment_dialog.py .\filename_rules.py .\login_status_service.py .\path_library.py .\path_library_viewer.py .\video_enrichment.py .\video_models.py .\video_renamer_api.py
 ```
 
 后端手动启动：

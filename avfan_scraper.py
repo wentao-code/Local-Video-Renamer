@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app_config import get_setting
+from login_status_service import ensure_logged_in_on_home
 
 
 AVFAN_MOVIE_RE = re.compile(r'/movies/([^/?#]+)')
@@ -148,7 +149,7 @@ class AvfanScraper:
         return context.new_page()
 
     def search_movie_url(self, page, code):
-        if not can_search_from_current_page(page):
+        if is_login_page(page) or is_security_verification_page(page) or not can_search_from_current_page(page):
             page.goto(self.home_url, wait_until='domcontentloaded', timeout=60000)
 
         wait_for_security_verification_if_needed(page, self.headless)
@@ -156,6 +157,8 @@ class AvfanScraper:
         wait_for_security_verification_if_needed(page, self.headless)
         wait_for_manual_login_if_needed(page, self.headless)
         wait_for_page_ready(page)
+        if same_home_page(page.url, self.home_url):
+            ensure_logged_in_on_home(page, self.headless)
         self.wait_before_first_search(page)
         fill_search_box(page, code)
         click_search_button(page)
@@ -579,3 +582,9 @@ def extract_movie_id(url):
 
 def normalize_code(value):
     return re.sub(r'[^A-Z0-9]', '', str(value or '').upper())
+
+
+def same_home_page(current_url, home_url):
+    current = str(current_url or '').rstrip('/')
+    target = str(home_url or '').rstrip('/')
+    return bool(current and target and current == target)
