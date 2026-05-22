@@ -57,6 +57,16 @@ class AvfanActorScraper:
         return urlunparse(parsed._replace(query=urlencode(query)))
 
     @staticmethod
+    def extract_actor_id(url):
+        parsed = urlparse(str(url or '').strip())
+        parts = [part for part in parsed.path.split('/') if part]
+        if len(parts) >= 2 and parts[-2] == 'casts':
+            return parts[-1]
+        if parts and parts[-1] == 'casts':
+            return ''
+        return parts[-1] if parts else ''
+
+    @staticmethod
     def detect_total_pages(page):
         total_pages = page.evaluate(
             """

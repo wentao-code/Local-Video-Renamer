@@ -33,6 +33,7 @@ class ActorDetailViewerWindow(QDialog):
         self.basic_grid = DetailSummaryGrid(columns=2)
         self.basic_grid.set_items([
             ('name', '姓名：', ''),
+            ('actor_id', '作者ID：', ''),
             ('age', '年龄：', ''),
             ('birthday', '出生日期：', ''),
             ('local_total', '本地视频总数：', ''),
@@ -77,6 +78,7 @@ class ActorDetailViewerWindow(QDialog):
             return
 
         self.basic_grid.set_value('name', self.detail.get('name', ''))
+        self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or '暂无')
         self.basic_grid.set_value('age', self.detail.get('age', '') or '暂无')
         self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or '暂无')
         self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))

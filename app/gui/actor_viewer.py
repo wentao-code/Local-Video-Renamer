@@ -27,14 +27,14 @@ class ActorViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle('演员库')
-        self.resize(980, 540)
+        self.resize(1080, 540)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入演员、生日、年龄或补全状态实时筛选...')
+        self.search_input.setPlaceholderText('输入演员、作者ID、生日、年龄或补全状态实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
         btn_reset = QPushButton('选中重置')
@@ -49,14 +49,15 @@ class ActorViewerWindow(QDialog):
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(['演员', '生日', '年龄', '匹配状态', '补全状态', '详情'])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(['演员', '作者ID', '生日', '年龄', '匹配状态', '补全状态', '详情'])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -79,6 +80,7 @@ class ActorViewerWindow(QDialog):
             self.table.insertRow(row_idx)
             values = (
                 row_data.get('name', ''),
+                row_data.get('actor_id', ''),
                 row_data.get('birthday', ''),
                 row_data.get('age', ''),
                 '已匹配' if row_data.get('matched') else '未匹配',
@@ -87,11 +89,11 @@ class ActorViewerWindow(QDialog):
 
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if col_idx in (1, 2, 3, 4):
+                if col_idx in (1, 2, 3, 4, 5):
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 
-            self.table.setCellWidget(row_idx, 5, self.build_detail_button(row_data.get('name', '')))
+            self.table.setCellWidget(row_idx, 6, self.build_detail_button(row_data.get('name', '')))
 
     def build_detail_button(self, actor_name):
         button = QPushButton('查看详情')

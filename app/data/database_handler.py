@@ -102,6 +102,7 @@ class VideoDatabase:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS actor_enrichments (
                     actor_name TEXT PRIMARY KEY,
+                    actor_id TEXT DEFAULT '',
                     enrichment_status TEXT DEFAULT '',
                     avfan_total_pages INTEGER DEFAULT 0,
                     avfan_total_videos INTEGER DEFAULT 0,
@@ -137,6 +138,7 @@ class VideoDatabase:
             self._ensure_column(cursor, 'code_prefix_movies', 'release_date', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'avfan_url', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'page_number', 'INTEGER DEFAULT 1')
+            self._ensure_column(cursor, 'actor_enrichments', 'actor_id', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_enrichments', 'enrichment_status', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_enrichments', 'avfan_total_pages', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'actor_enrichments', 'avfan_total_videos', 'INTEGER DEFAULT 0')
@@ -230,14 +232,17 @@ class VideoDatabase:
                 like_value = f'%{search_text}%'
                 cursor.execute('''
                     SELECT a.name, a.birthday, a.age, a.matched,
+                           COALESCE(e.actor_id, '') AS actor_id,
                            COALESCE(e.enrichment_status, ?) AS enrichment_status
                     FROM actors a
                     LEFT JOIN actor_enrichments e ON e.actor_name = a.name
                     WHERE a.name LIKE ? OR a.birthday LIKE ? OR a.age LIKE ?
+                       OR COALESCE(e.actor_id, '') LIKE ?
                        OR COALESCE(e.enrichment_status, ?) LIKE ?
                     ORDER BY a.name
                 ''', (
                     UNENRICHED_STATUS,
+                    like_value,
                     like_value,
                     like_value,
                     like_value,
@@ -247,6 +252,7 @@ class VideoDatabase:
             else:
                 cursor.execute('''
                     SELECT a.name, a.birthday, a.age, a.matched,
+                           COALESCE(e.actor_id, '') AS actor_id,
                            COALESCE(e.enrichment_status, ?) AS enrichment_status
                     FROM actors a
                     LEFT JOIN actor_enrichments e ON e.actor_name = a.name
@@ -259,7 +265,8 @@ class VideoDatabase:
                     'birthday': row[1] or '',
                     'age': row[2] or '',
                     'matched': bool(row[3]),
-                    'enrichment_status': row[4] or UNENRICHED_STATUS,
+                    'actor_id': row[4] or '',
+                    'enrichment_status': row[5] or UNENRICHED_STATUS,
                 }
                 for row in cursor.fetchall()
                 if not is_ignored_actor_name(row[0] or '')
@@ -668,7 +675,7 @@ class VideoDatabase:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT actor_name, enrichment_status, avfan_total_pages, avfan_total_videos,
+                SELECT actor_name, actor_id, enrichment_status, avfan_total_pages, avfan_total_videos,
                        last_error, last_enriched_at
                 FROM actor_enrichments
             ''')
@@ -676,26 +683,28 @@ class VideoDatabase:
             return {
                 (row[0] or ''): {
                     'actor_name': row[0] or '',
-                    'enrichment_status': row[1] or '',
-                    'avfan_total_pages': int(row[2] or 0),
-                    'avfan_total_videos': int(row[3] or 0),
-                    'last_error': row[4] or '',
-                    'last_enriched_at': row[5] or '',
+                    'actor_id': row[1] or '',
+                    'enrichment_status': row[2] or '',
+                    'avfan_total_pages': int(row[3] or 0),
+                    'avfan_total_videos': int(row[4] or 0),
+                    'last_error': row[5] or '',
+                    'last_enriched_at': row[6] or '',
                 }
                 for row in cursor.fetchall()
                 if row[0]
             }
 
-    def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error=''):
+    def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error='', actor_id=''):
         normalized_name = str(actor_name or '').strip()
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO actor_enrichments (
-                    actor_name, enrichment_status, avfan_total_pages, avfan_total_videos, last_error, last_enriched_at
+                    actor_name, actor_id, enrichment_status, avfan_total_pages, avfan_total_videos, last_error, last_enriched_at
                 )
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(actor_name) DO UPDATE SET
+                    actor_id = excluded.actor_id,
                     enrichment_status = excluded.enrichment_status,
                     avfan_total_pages = excluded.avfan_total_pages,
                     avfan_total_videos = excluded.avfan_total_videos,
@@ -703,6 +712,7 @@ class VideoDatabase:
                     last_enriched_at = CURRENT_TIMESTAMP
             ''', (
                 normalized_name,
+                str(actor_id or '').strip(),
                 status,
                 int(total_pages or 0),
                 int(total_videos or 0),
@@ -741,6 +751,7 @@ class VideoDatabase:
         records = self.list_actor_enrichment_records()
         return records.get(normalized_name, {
             'actor_name': normalized_name,
+            'actor_id': '',
             'enrichment_status': '',
             'avfan_total_pages': 0,
             'avfan_total_videos': 0,

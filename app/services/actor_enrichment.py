@@ -50,6 +50,7 @@ class ActorEnrichmentService:
                         total_pages=0,
                         total_videos=0,
                         error=error_message,
+                        actor_id='',
                     )
                     results.append({
                         'actor_name': actor_name,
@@ -78,6 +79,7 @@ class ActorEnrichmentService:
                         total_pages=0,
                         total_videos=0,
                         error=error_message,
+                        actor_id='',
                     )
                     results.append({
                         'actor_name': actor_name,
@@ -126,7 +128,8 @@ class ActorEnrichmentService:
 
     def _enrich_single_actor(self, page, actor_name):
         parsed_entries = []
-        self.scraper.open_listing_page(page, actor_name, 1)
+        actor_page_url = self.scraper.open_listing_page(page, actor_name, 1)
+        actor_id = self.scraper.extract_actor_id(actor_page_url)
         total_pages = self.scraper.detect_total_pages(page)
         stopped_early = False
 
@@ -157,6 +160,7 @@ class ActorEnrichmentService:
                 total_pages=total_pages,
                 total_videos=len(unique_entries),
                 error='',
+                actor_id=actor_id,
             )
             return {
                 'actor_name': actor_name,
@@ -172,6 +176,7 @@ class ActorEnrichmentService:
             total_pages=total_pages,
             total_videos=0,
             error='未搜索到演员作品页面内容',
+            actor_id=actor_id,
         )
         return {
             'actor_name': actor_name,

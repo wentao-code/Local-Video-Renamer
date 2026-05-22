@@ -27,6 +27,7 @@ class ActorDetailLibrary:
             'birthday': actor_row.get('birthday', ''),
             'age': actor_row.get('age', ''),
             'matched': bool(actor_row.get('matched')),
+            'actor_id': actor_row.get('actor_id', '') or web_record.get('actor_id', ''),
             'local_video_count': len(local_videos),
             'local_prefix_distribution': self._build_prefix_distribution(local_videos),
             'local_year_distribution': self._build_year_distribution(local_videos),
