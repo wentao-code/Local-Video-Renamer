@@ -76,6 +76,10 @@ class BackendClient:
             query = '?' + urlencode({'q': search_text})
         return self._get('/database/code-prefixes' + query).get('prefixes', [])
 
+    def get_code_prefix_detail(self, prefix):
+        query = '?' + urlencode({'prefix': prefix})
+        return self._get('/database/code-prefixes/detail' + query).get('prefix_detail', {})
+
     def get_path_library(self):
         return self._get('/paths')
 

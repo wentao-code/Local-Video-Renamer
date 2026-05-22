@@ -9,6 +9,7 @@ from app.scraper.avfan_scraper import reset_avfan_browser_profile
 from app.services.actor_detail_library import ActorDetailLibrary
 from app.services.actor_identifier import ActorIdentifier
 from app.services.auto_login_service import AutoLoginService
+from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
 from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.library_enrichment_service import LibraryEnrichmentService
 from app.services.path_library import PathLibrary, summarize_paths
@@ -23,6 +24,7 @@ class BackendService:
         self.renamer = VideoRenamerAPI(self.csv_path)
         self.actor_identifier = ActorIdentifier(self.actor_csv_path)
         self.actor_detail_library = ActorDetailLibrary(self.db)
+        self.code_prefix_detail_library = CodePrefixDetailLibrary(self.db)
         self.code_prefix_library = CodePrefixLibrary(self.db)
         self.path_library = PathLibrary()
         self.database_loaded = False
@@ -101,6 +103,9 @@ class BackendService:
 
     def list_code_prefixes(self, search_text=''):
         return {'prefixes': self.code_prefix_library.list_prefixes(search_text)}
+
+    def get_code_prefix_detail(self, prefix):
+        return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(prefix)}
 
     def list_paths(self):
         paths = []

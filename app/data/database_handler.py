@@ -583,6 +583,42 @@ class VideoDatabase:
                 ])
             conn.commit()
 
+    def get_code_prefix_enrichment_record(self, prefix):
+        prefix = str(prefix or '').strip().upper()
+        records = self.list_code_prefix_enrichment_records()
+        return records.get(prefix, {
+            'prefix': prefix,
+            'enrichment_status': '',
+            'avfan_total_pages': 0,
+            'avfan_total_videos': 0,
+            'last_error': '',
+            'last_enriched_at': '',
+        })
+
+    def list_code_prefix_movies(self, prefix):
+        prefix = str(prefix or '').strip().upper()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT prefix, code, title, author, release_date, avfan_url, page_number
+                FROM code_prefix_movies
+                WHERE prefix = ?
+                ORDER BY release_date DESC, code DESC
+            ''', (prefix,))
+
+            return [
+                {
+                    'prefix': row[0] or '',
+                    'code': row[1] or '',
+                    'title': row[2] or '',
+                    'author': row[3] or '',
+                    'release_date': row[4] or '',
+                    'avfan_url': row[5] or '',
+                    'page_number': int(row[6] or 1),
+                }
+                for row in cursor.fetchall()
+            ]
+
     def get_path_by_value(self, folder_path):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()

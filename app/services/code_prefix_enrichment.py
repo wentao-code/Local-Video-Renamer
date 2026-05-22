@@ -1,5 +1,3 @@
-import re
-
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
@@ -8,11 +6,8 @@ from app.core.enrichment_status import (
 )
 from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
+from app.services.code_prefix_entry_parser import parse_code_prefix_card
 from app.services.code_prefix_library import CodePrefixLibrary, extract_code_prefix
-
-
-CODE_RE = re.compile(r'[A-Z0-9]+-\d+', re.IGNORECASE)
-DATE_RE = re.compile(r'\d{4}-\d{2}-\d{2}')
 
 
 class CodePrefixEnrichmentService:
@@ -128,7 +123,7 @@ class CodePrefixEnrichmentService:
         return remaining
 
     def _enrich_single_prefix(self, page, prefix):
-        entries = []
+        parsed_entries = []
         self.scraper.open_listing_page(page, prefix, 1)
         total_pages = self.scraper.detect_total_pages(page)
         stopped_early = False
@@ -139,7 +134,9 @@ class CodePrefixEnrichmentService:
                 break
             if page_number > 1:
                 self.scraper.open_listing_page(page, prefix, page_number)
-            entries.extend(self._parse_entries(prefix, self.scraper.collect_page_entries(page), page_number))
+            parsed_entries.extend(
+                self._parse_entries(prefix, self.scraper.collect_page_entries(page), page_number)
+            )
 
         if stopped_early:
             return {
@@ -149,7 +146,7 @@ class CodePrefixEnrichmentService:
                 'stopped': True,
             }
 
-        unique_entries = self._dedupe_entries(entries)
+        unique_entries = self._dedupe_entries(parsed_entries)
         if unique_entries:
             self.database.replace_code_prefix_movies(prefix, unique_entries)
             self.database.save_code_prefix_enrichment(
@@ -183,31 +180,21 @@ class CodePrefixEnrichmentService:
         }
 
     def _parse_entries(self, prefix, rows, page_number):
-        parsed = []
         prefix_upper = str(prefix or '').strip().upper()
+        parsed = []
         for row in rows:
-            text = str(row.get('text', '')).strip()
-            code = self._extract_code(text)
-            if not code:
-                code = self._extract_code(str(row.get('href', '')))
+            card = parse_code_prefix_card(
+                text=row.get('text', ''),
+                href=row.get('href', ''),
+                prefix=prefix_upper,
+                page_number=page_number,
+            )
+            code = card.get('code', '')
             if not code:
                 continue
             if extract_code_prefix(code) != prefix_upper:
                 continue
-
-            lines = [line.strip() for line in text.splitlines() if line.strip()]
-            title = self._extract_title(lines, code)
-            author = self._extract_author(lines, code, title)
-            release_date = self._extract_release_date(text)
-            parsed.append({
-                'prefix': prefix_upper,
-                'code': code,
-                'title': title,
-                'author': author,
-                'release_date': release_date,
-                'avfan_url': row.get('href', ''),
-                'page_number': page_number,
-            })
+            parsed.append(card)
         return parsed
 
     @staticmethod
@@ -219,41 +206,3 @@ class CodePrefixEnrichmentService:
                 continue
             deduped[code] = entry
         return [deduped[key] for key in sorted(deduped)]
-
-    @staticmethod
-    def _extract_code(text):
-        match = CODE_RE.search(str(text or '').upper())
-        return match.group(0).upper() if match else ''
-
-    @staticmethod
-    def _extract_release_date(text):
-        match = DATE_RE.search(str(text or ''))
-        return match.group(0) if match else ''
-
-    def _extract_title(self, lines, code):
-        upper_code = code.upper()
-        for line in lines:
-            line_upper = line.upper()
-            if upper_code in line_upper:
-                cleaned = line.replace(code, '').strip(' -_:')
-                if cleaned:
-                    return cleaned
-        if len(lines) >= 2:
-            return lines[1]
-        return lines[0] if lines else ''
-
-    def _extract_author(self, lines, code, title):
-        for line in lines:
-            normalized = line.strip()
-            if not normalized:
-                continue
-            if normalized == code or normalized == title:
-                continue
-            if DATE_RE.search(normalized):
-                continue
-            if '分' in normalized or '有字幕' in normalized or '有磁链' in normalized:
-                continue
-            if CODE_RE.search(normalized):
-                continue
-            return normalized
-        return ''

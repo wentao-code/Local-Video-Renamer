@@ -9,7 +9,10 @@ from PyQt5.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
+
+from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 
 
 class CodePrefixViewerWindow(QDialog):
@@ -22,25 +25,25 @@ class CodePrefixViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle('番号库')
-        self.resize(860, 520)
+        self.resize(980, 560)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入番号前缀实时筛选...')
+        self.search_input.setPlaceholderText('输入番号前缀实时筛选，例如 ALDN、IPX...')
         self.search_input.textChanged.connect(self.filter_data)
 
         btn_refresh = QPushButton('刷新数据')
         btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('实时筛选:'))
+        top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
             '番号',
             '本地视频数',
@@ -49,6 +52,7 @@ class CodePrefixViewerWindow(QDialog):
             'AVFan作品数',
             '最早更新时间',
             '最近补全时间',
+            '详情',
         ])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -57,6 +61,7 @@ class CodePrefixViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -90,10 +95,32 @@ class CodePrefixViewerWindow(QDialog):
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 
+            self.table.setCellWidget(row_idx, 7, self.build_detail_button(row_data.get('prefix', '')))
+
+    def build_detail_button(self, prefix):
+        button = QPushButton('查看详情')
+        button.clicked.connect(lambda _checked=False, value=prefix: self.show_prefix_detail(value))
+
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.addWidget(button)
+        layout.setAlignment(Qt.AlignCenter)
+        return container
+
+    def show_prefix_detail(self, prefix):
+        if not prefix:
+            return
+        viewer = CodePrefixDetailViewerWindow(
+            backend_client=self.backend_client,
+            prefix=prefix,
+            parent=self,
+        )
+        viewer.exec_()
+
     def filter_data(self, text):
         try:
             self.rows = self.backend_client.list_code_prefixes(text)
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选番号库失败: {exc}')
-

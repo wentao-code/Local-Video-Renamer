@@ -64,6 +64,9 @@ def make_handler(service):
             if method == 'GET' and path == '/database/code-prefixes':
                 search_text = query.get('q', [''])[0]
                 return service.list_code_prefixes(search_text)
+            if method == 'GET' and path == '/database/code-prefixes/detail':
+                prefix = query.get('prefix', [''])[0]
+                return service.get_code_prefix_detail(prefix)
             if method == 'GET' and path == '/paths':
                 return service.list_paths()
             if method == 'POST' and path == '/paths/add':
