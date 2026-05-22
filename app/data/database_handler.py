@@ -99,6 +99,28 @@ class VideoDatabase:
                     PRIMARY KEY (prefix, code)
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS actor_enrichments (
+                    actor_name TEXT PRIMARY KEY,
+                    enrichment_status TEXT DEFAULT '',
+                    avfan_total_pages INTEGER DEFAULT 0,
+                    avfan_total_videos INTEGER DEFAULT 0,
+                    last_error TEXT DEFAULT '',
+                    last_enriched_at TEXT
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS actor_movies (
+                    actor_name TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    title TEXT,
+                    author TEXT,
+                    release_date TEXT,
+                    avfan_url TEXT,
+                    page_number INTEGER DEFAULT 1,
+                    PRIMARY KEY (actor_name, code)
+                )
+            ''')
             self._ensure_column(cursor, 'path_library', 'last_total_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_used_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_free_bytes', 'INTEGER DEFAULT 0')
@@ -115,6 +137,16 @@ class VideoDatabase:
             self._ensure_column(cursor, 'code_prefix_movies', 'release_date', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'avfan_url', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'page_number', 'INTEGER DEFAULT 1')
+            self._ensure_column(cursor, 'actor_enrichments', 'enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'avfan_total_pages', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'actor_enrichments', 'avfan_total_videos', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'actor_enrichments', 'last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'actor_movies', 'title', 'TEXT')
+            self._ensure_column(cursor, 'actor_movies', 'author', 'TEXT')
+            self._ensure_column(cursor, 'actor_movies', 'release_date', 'TEXT')
+            self._ensure_column(cursor, 'actor_movies', 'avfan_url', 'TEXT')
+            self._ensure_column(cursor, 'actor_movies', 'page_number', 'INTEGER DEFAULT 1')
             cursor.executemany(
                 'DELETE FROM actors WHERE lower(name) = ?',
                 [(name,) for name in IGNORED_ACTOR_NAMES],
@@ -609,6 +641,114 @@ class VideoDatabase:
             return [
                 {
                     'prefix': row[0] or '',
+                    'code': row[1] or '',
+                    'title': row[2] or '',
+                    'author': row[3] or '',
+                    'release_date': row[4] or '',
+                    'avfan_url': row[5] or '',
+                    'page_number': int(row[6] or 1),
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def list_actor_enrichment_records(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT actor_name, enrichment_status, avfan_total_pages, avfan_total_videos,
+                       last_error, last_enriched_at
+                FROM actor_enrichments
+            ''')
+
+            return {
+                (row[0] or ''): {
+                    'actor_name': row[0] or '',
+                    'enrichment_status': row[1] or '',
+                    'avfan_total_pages': int(row[2] or 0),
+                    'avfan_total_videos': int(row[3] or 0),
+                    'last_error': row[4] or '',
+                    'last_enriched_at': row[5] or '',
+                }
+                for row in cursor.fetchall()
+                if row[0]
+            }
+
+    def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error=''):
+        normalized_name = str(actor_name or '').strip()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO actor_enrichments (
+                    actor_name, enrichment_status, avfan_total_pages, avfan_total_videos, last_error, last_enriched_at
+                )
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(actor_name) DO UPDATE SET
+                    enrichment_status = excluded.enrichment_status,
+                    avfan_total_pages = excluded.avfan_total_pages,
+                    avfan_total_videos = excluded.avfan_total_videos,
+                    last_error = excluded.last_error,
+                    last_enriched_at = CURRENT_TIMESTAMP
+            ''', (
+                normalized_name,
+                status,
+                int(total_pages or 0),
+                int(total_videos or 0),
+                str(error or ''),
+            ))
+            conn.commit()
+
+    def replace_actor_movies(self, actor_name, movies):
+        normalized_name = str(actor_name or '').strip()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
+            if movies:
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO actor_movies (
+                        actor_name, code, title, author, release_date, avfan_url, page_number
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', [
+                    (
+                        normalized_name,
+                        str(movie.get('code', '')).strip().upper(),
+                        movie.get('title', ''),
+                        movie.get('author', ''),
+                        movie.get('release_date', ''),
+                        movie.get('avfan_url', ''),
+                        int(movie.get('page_number', 1) or 1),
+                    )
+                    for movie in movies
+                    if movie.get('code')
+                ])
+            conn.commit()
+
+    def get_actor_enrichment_record(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        records = self.list_actor_enrichment_records()
+        return records.get(normalized_name, {
+            'actor_name': normalized_name,
+            'enrichment_status': '',
+            'avfan_total_pages': 0,
+            'avfan_total_videos': 0,
+            'last_error': '',
+            'last_enriched_at': '',
+        })
+
+    def list_actor_movies(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT actor_name, code, title, author, release_date, avfan_url, page_number
+                FROM actor_movies
+                WHERE actor_name = ?
+                ORDER BY release_date DESC, code DESC
+            ''', (normalized_name,))
+
+            return [
+                {
+                    'actor_name': row[0] or '',
                     'code': row[1] or '',
                     'title': row[2] or '',
                     'author': row[3] or '',

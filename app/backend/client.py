@@ -26,7 +26,7 @@ class BackendClient:
     def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None):
         # Playwright needs time to open the site, search, and parse each movie page.
         cooldown_seconds = 180 if cooldown_before_search else 0
-        if target_type == 'code_prefix_library':
+        if target_type in ('code_prefix_library', 'actor_library'):
             timeout = max(self.timeout, int(limit or 1) * 240 + 60 + cooldown_seconds)
         else:
             timeout = max(self.timeout, int(limit or 1) * 90 + 60 + cooldown_seconds)

@@ -24,21 +24,21 @@ class ActorViewerWindow(QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('🎭 演员库')
-        self.resize(860, 520)
+        self.setWindowTitle('演员库')
+        self.resize(920, 540)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('🔍 输入演员、生日或年龄筛选...')
+        self.search_input.setPlaceholderText('输入演员、生日或年龄实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
-        btn_refresh = QPushButton('🔄 刷新数据')
+        btn_refresh = QPushButton('刷新数据')
         btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('实时筛选:'))
+        top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
         top_layout.addWidget(btn_refresh)
 
@@ -59,7 +59,6 @@ class ActorViewerWindow(QDialog):
 
     def load_data(self):
         self.table.setRowCount(0)
-
         try:
             self.rows = self.backend_client.list_actors()
             self.render_rows(self.rows)
@@ -68,7 +67,6 @@ class ActorViewerWindow(QDialog):
 
     def render_rows(self, rows):
         self.table.setRowCount(0)
-
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
             values = (
@@ -113,4 +111,3 @@ class ActorViewerWindow(QDialog):
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选演员库失败: {exc}')
-

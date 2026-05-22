@@ -3,6 +3,7 @@ from app.core.enrichment_targets import (
     CODE_PREFIX_LIBRARY_TARGET,
     VIDEO_LIBRARY_TARGET,
 )
+from app.services.actor_enrichment import ActorEnrichmentService
 from app.services.code_prefix_enrichment import CodePrefixEnrichmentService
 from app.services.video_enrichment import VideoEnrichmentService
 
@@ -45,6 +46,11 @@ class LibraryEnrichmentService:
             return service.enrich_next_prefixes(limit)
 
         if target_type == ACTOR_LIBRARY_TARGET:
-            raise RuntimeError('演员库补全暂未实现，请先使用“视频库”或“番号库”。')
+            service = ActorEnrichmentService(
+                self.database,
+                show_browser=self.show_browser,
+                should_stop=self.should_stop,
+            )
+            return service.enrich_next_actors(limit)
 
         raise ValueError(f'未知补全目标: {target_type}')
