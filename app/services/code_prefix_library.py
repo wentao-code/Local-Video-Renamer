@@ -55,16 +55,31 @@ class CodePrefixLibrary:
         for prefix in sorted(grouped):
             if search and search not in prefix:
                 continue
+
             enrichment = enrichment_records.get(prefix, {})
+            movies = self.database.list_code_prefix_movies(prefix)
+            earliest_release_date, latest_release_date = self._collect_date_range(movies)
+
             results.append({
                 'prefix': prefix,
                 'video_count': grouped[prefix],
-                'first_updated_at': '',
-                'last_updated_at': '',
                 'enrichment_status': enrichment.get('enrichment_status', ''),
                 'avfan_total_pages': enrichment.get('avfan_total_pages', 0),
                 'avfan_total_videos': enrichment.get('avfan_total_videos', 0),
+                'earliest_release_date': earliest_release_date,
+                'latest_release_date': latest_release_date,
                 'last_enriched_at': enrichment.get('last_enriched_at', ''),
             })
 
         return results
+
+    @staticmethod
+    def _collect_date_range(movies):
+        dates = sorted(
+            str(movie.get('release_date', '')).strip()
+            for movie in movies
+            if str(movie.get('release_date', '')).strip()
+        )
+        if not dates:
+            return '', ''
+        return dates[0], dates[-1]

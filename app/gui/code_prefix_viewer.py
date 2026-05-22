@@ -32,7 +32,7 @@ class CodePrefixViewerWindow(QDialog):
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入番号前缀实时筛选，例如 ALDN、IPX...')
+        self.search_input.setPlaceholderText('输入番号前缀实时筛选，例如 AARM、IPX...')
         self.search_input.textChanged.connect(self.filter_data)
 
         btn_refresh = QPushButton('刷新数据')
@@ -43,15 +43,14 @@ class CodePrefixViewerWindow(QDialog):
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels([
             '番号',
             '本地视频数',
             '补全状态',
-            'AVFan页数',
             'AVFan作品数',
-            '最早更新时间',
-            '最近补全时间',
+            '最早发布时间',
+            '最新发布时间',
             '详情',
         ])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -61,7 +60,6 @@ class CodePrefixViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -85,17 +83,16 @@ class CodePrefixViewerWindow(QDialog):
                 row_data.get('prefix', ''),
                 row_data.get('video_count', 0),
                 row_data.get('enrichment_status', ''),
-                row_data.get('avfan_total_pages', 0),
                 row_data.get('avfan_total_videos', 0),
-                row_data.get('first_updated_at', ''),
-                row_data.get('last_enriched_at', ''),
+                row_data.get('earliest_release_date', ''),
+                row_data.get('latest_release_date', ''),
             )
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 
-            self.table.setCellWidget(row_idx, 7, self.build_detail_button(row_data.get('prefix', '')))
+            self.table.setCellWidget(row_idx, 6, self.build_detail_button(row_data.get('prefix', '')))
 
     def build_detail_button(self, prefix):
         button = QPushButton('查看详情')

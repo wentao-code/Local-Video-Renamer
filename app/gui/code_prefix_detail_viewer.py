@@ -1,15 +1,6 @@
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
-    QDialog,
-    QFormLayout,
-    QGroupBox,
-    QHeaderView,
-    QLabel,
-    QMessageBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-)
+from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
+
+from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 
 
 class CodePrefixDetailViewerWindow(QDialog):
@@ -23,86 +14,46 @@ class CodePrefixDetailViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle(f'番号详情 - {self.prefix}')
-        self.resize(1000, 780)
-        self.setWindowModality(Qt.WindowModal)
+        self.resize(980, 720)
 
-        layout = QVBoxLayout()
+        root_layout = QVBoxLayout(self)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        root_layout.addWidget(scroll_area)
+
+        content = QGroupBox()
+        content.setStyleSheet('QGroupBox { border: 0; margin-top: 0; }')
+        scroll_area.setWidget(content)
+
+        layout = QVBoxLayout(content)
 
         summary_group = QGroupBox('基础信息')
-        summary_form = QFormLayout()
-        self.prefix_label = QLabel('')
-        self.video_count_label = QLabel('')
-        self.total_pages_label = QLabel('')
-        self.total_videos_label = QLabel('')
-        self.earliest_date_label = QLabel('')
-        self.latest_date_label = QLabel('')
-        self.last_enriched_label = QLabel('')
-        for label in (
-            self.prefix_label,
-            self.video_count_label,
-            self.total_pages_label,
-            self.total_videos_label,
-            self.earliest_date_label,
-            self.latest_date_label,
-            self.last_enriched_label,
-        ):
-            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        summary_layout = QVBoxLayout(summary_group)
+        self.summary_grid = DetailSummaryGrid(columns=2)
+        self.summary_grid.set_items([
+            ('prefix', '番号：', ''),
+            ('video_count', '该番号视频数：', ''),
+            ('total_pages', 'AVFan总页数：', ''),
+            ('total_videos', 'AVFan作品数：', ''),
+            ('earliest_date', '最早发布时间：', ''),
+            ('latest_date', '最新发布时间：', ''),
+            ('last_enriched', '最近补全时间：', ''),
+        ])
+        summary_layout.addWidget(self.summary_grid)
 
-        summary_form.addRow('番号：', self.prefix_label)
-        summary_form.addRow('该番号视频数：', self.video_count_label)
-        summary_form.addRow('AVFan总页数：', self.total_pages_label)
-        summary_form.addRow('AVFan作品数：', self.total_videos_label)
-        summary_form.addRow('最早发布时间：', self.earliest_date_label)
-        summary_form.addRow('最新发布时间：', self.latest_date_label)
-        summary_form.addRow('最近补全时间：', self.last_enriched_label)
-        summary_group.setLayout(summary_form)
-
-        self.year_table = QTableWidget()
-        self.year_table.setColumnCount(2)
-        self.year_table.setHorizontalHeaderLabels(['发布年份', '视频数量'])
-        self.year_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.year_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.year_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.year_table.setSelectionBehavior(QTableWidget.SelectRows)
-
-        self.actor_table = QTableWidget()
-        self.actor_table.setColumnCount(2)
-        self.actor_table.setHorizontalHeaderLabels(['主演演员', '视频数量'])
-        self.actor_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.actor_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.actor_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.actor_table.setSelectionBehavior(QTableWidget.SelectRows)
-
-        self.movie_table = QTableWidget()
-        self.movie_table.setColumnCount(4)
-        self.movie_table.setHorizontalHeaderLabels(['编号', '标题', '演员名', '日期'])
-        self.movie_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.movie_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.movie_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.movie_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.movie_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.movie_table.setSelectionBehavior(QTableWidget.SelectRows)
-
-        year_group = QGroupBox('发布年份构成')
-        year_layout = QVBoxLayout()
-        year_layout.addWidget(self.year_table)
-        year_group.setLayout(year_layout)
-
-        actor_group = QGroupBox('主演演员前十名')
-        actor_layout = QVBoxLayout()
-        actor_layout.addWidget(self.actor_table)
-        actor_group.setLayout(actor_layout)
-
-        movie_group = QGroupBox('作品明细')
-        movie_layout = QVBoxLayout()
-        movie_layout.addWidget(self.movie_table)
-        movie_group.setLayout(movie_layout)
+        stats_group = QGroupBox('摘要统计')
+        stats_layout = QVBoxLayout(stats_group)
+        self.stats_grid = DetailSummaryGrid(columns=1)
+        self.stats_grid.set_items([
+            ('year_distribution', '发布年份构成：', ''),
+            ('top_actors', '主演演员前十名：', ''),
+        ])
+        stats_layout.addWidget(self.stats_grid)
 
         layout.addWidget(summary_group)
-        layout.addWidget(year_group)
-        layout.addWidget(actor_group)
-        layout.addWidget(movie_group)
-        self.setLayout(layout)
+        layout.addWidget(stats_group)
+        layout.addStretch()
 
     def load_data(self):
         try:
@@ -112,24 +63,27 @@ class CodePrefixDetailViewerWindow(QDialog):
             self.reject()
             return
 
-        self.prefix_label.setText(self.detail.get('prefix', ''))
-        self.video_count_label.setText(str(self.detail.get('video_count', 0)))
-        self.total_pages_label.setText(str(self.detail.get('avfan_total_pages', 0)))
-        self.total_videos_label.setText(str(self.detail.get('avfan_total_videos', 0)))
-        self.earliest_date_label.setText(self.detail.get('earliest_release_date', '') or '暂无')
-        self.latest_date_label.setText(self.detail.get('latest_release_date', '') or '暂无')
-        self.last_enriched_label.setText(self.detail.get('last_enriched_at', '') or '暂无')
+        self.summary_grid.set_value('prefix', self.detail.get('prefix', ''))
+        self.summary_grid.set_value('video_count', str(self.detail.get('video_count', 0)))
+        self.summary_grid.set_value('total_pages', str(self.detail.get('avfan_total_pages', 0)))
+        self.summary_grid.set_value('total_videos', str(self.detail.get('avfan_total_videos', 0)))
+        self.summary_grid.set_value('earliest_date', self.detail.get('earliest_release_date', '') or '暂无')
+        self.summary_grid.set_value('latest_date', self.detail.get('latest_release_date', '') or '暂无')
+        self.summary_grid.set_value('last_enriched', self.detail.get('last_enriched_at', '') or '暂无')
 
-        self.render_rows(self.year_table, self.detail.get('year_distribution', []), ('year', 'video_count'))
-        self.render_rows(self.actor_table, self.detail.get('top_actors', []), ('name', 'video_count'))
-        self.render_rows(self.movie_table, self.detail.get('movies', []), ('code', 'title', 'author', 'release_date'))
-
-    def render_rows(self, table, rows, fields):
-        table.setRowCount(0)
-        for row_idx, row_data in enumerate(rows):
-            table.insertRow(row_idx)
-            for col_idx, field in enumerate(fields):
-                item = QTableWidgetItem(str(row_data.get(field, '')))
-                if field != 'title':
-                    item.setTextAlignment(Qt.AlignCenter)
-                table.setItem(row_idx, col_idx, item)
+        self.stats_grid.set_value(
+            'year_distribution',
+            format_distribution_summary(
+                self.detail.get('year_distribution', []),
+                'year',
+                items_per_line=3,
+            ),
+        )
+        self.stats_grid.set_value(
+            'top_actors',
+            format_distribution_summary(
+                self.detail.get('top_actors', []),
+                'name',
+                items_per_line=2,
+            ),
+        )
