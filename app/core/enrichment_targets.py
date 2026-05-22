@@ -1,0 +1,11 @@
+VIDEO_LIBRARY_TARGET = 'video_library'
+CODE_PREFIX_LIBRARY_TARGET = 'code_prefix_library'
+ACTOR_LIBRARY_TARGET = 'actor_library'
+
+
+ENRICHMENT_TARGET_LABELS = {
+    VIDEO_LIBRARY_TARGET: '视频库',
+    CODE_PREFIX_LIBRARY_TARGET: '番号库',
+    ACTOR_LIBRARY_TARGET: '演员库',
+}
+

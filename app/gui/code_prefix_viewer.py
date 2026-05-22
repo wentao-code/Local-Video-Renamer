@@ -22,7 +22,7 @@ class CodePrefixViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle('番号库')
-        self.resize(640, 480)
+        self.resize(860, 520)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
@@ -40,12 +40,23 @@ class CodePrefixViewerWindow(QDialog):
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(['番号', '视频数量', '最早更新时间', '最近更新时间'])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels([
+            '番号',
+            '本地视频数',
+            '补全状态',
+            'AVFan页数',
+            'AVFan作品数',
+            '最早更新时间',
+            '最近补全时间',
+        ])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -68,8 +79,11 @@ class CodePrefixViewerWindow(QDialog):
             values = (
                 row_data.get('prefix', ''),
                 row_data.get('video_count', 0),
+                row_data.get('enrichment_status', ''),
+                row_data.get('avfan_total_pages', 0),
+                row_data.get('avfan_total_videos', 0),
                 row_data.get('first_updated_at', ''),
-                row_data.get('last_updated_at', ''),
+                row_data.get('last_enriched_at', ''),
             )
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
@@ -82,3 +96,4 @@ class CodePrefixViewerWindow(QDialog):
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选番号库失败: {exc}')
+

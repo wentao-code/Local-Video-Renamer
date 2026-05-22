@@ -31,12 +31,13 @@ class EnrichmentWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, backend_client, limit, show_browser, cooldown_before_search):
+    def __init__(self, backend_client, limit, show_browser, cooldown_before_search, target_type):
         super().__init__()
         self.backend_client = backend_client
         self.limit = limit
         self.show_browser = show_browser
         self.cooldown_before_search = cooldown_before_search
+        self.target_type = target_type
 
     def run(self):
         try:
@@ -44,6 +45,7 @@ class EnrichmentWorker(QObject):
                 self.limit,
                 show_browser=self.show_browser,
                 cooldown_before_search=self.cooldown_before_search,
+                target_type=self.target_type,
             )
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -349,10 +351,11 @@ class VidNormApp(QWidget):
             values['limit'],
             values['show_browser'],
             values['cooldown_before_search'],
+            values['target_type'],
             mode='single',
         )
 
-    def start_enrichment(self, limit, show_browser, cooldown_before_search, mode='single'):
+    def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, mode='single'):
         self.enrichment_mode = mode
         if mode == 'batch':
             self.batch_enrichment_round += 1
@@ -367,6 +370,7 @@ class VidNormApp(QWidget):
             limit,
             show_browser,
             cooldown_before_search,
+            target_type,
         )
         self.enrichment_worker.moveToThread(self.enrichment_thread)
         self.enrichment_thread.started.connect(self.enrichment_worker.run)
@@ -384,6 +388,7 @@ class VidNormApp(QWidget):
             'interval_minutes': values['batch_interval_minutes'],
             'show_browser': values['show_browser'],
             'cooldown_before_search': values['cooldown_before_search'],
+            'target_type': values['target_type'],
         }
         self.batch_enrichment_round = 0
         self.status_label.setText(
@@ -407,6 +412,7 @@ class VidNormApp(QWidget):
             self.batch_enrichment_config['limit'],
             self.batch_enrichment_config['show_browser'],
             self.batch_enrichment_config['cooldown_before_search'],
+            self.batch_enrichment_config['target_type'],
             mode='batch',
         )
 
@@ -556,6 +562,82 @@ class VidNormApp(QWidget):
 
             if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
                 self.stop_batch_enrichment('分批补全已完成，当前没有待补全视频。')
+                QMessageBox.information(self, '分批补全完成', summary)
+                return
+
+            self.schedule_next_batch_enrichment()
+            return
+
+        title = '补全已停止' if result.get('stopped') else '补全完成'
+        QMessageBox.information(self, title, summary)
+        self.status_label.setText('')
+
+    def on_enrichment_finished(self, result):
+        mode = self.enrichment_mode
+        entity_label = result.get('entity_label', '视频')
+        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
+        summary = (
+            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
+            f"成功: {result.get('success_count', 0)} 个\n"
+            f"失败: {result.get('failed_count', 0)} 个\n"
+            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
+        )
+
+        if result.get('requires_manual_verification'):
+            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
+            if mode == 'batch':
+                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
+            else:
+                self.status_label.setText('')
+            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
+            return
+
+        if mode == 'batch':
+            if not self.batch_enrichment_active:
+                self.status_label.setText('已停止分批补全计划。')
+                QMessageBox.information(self, '分批补全已停止', summary)
+                return
+
+            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
+                self.stop_batch_enrichment(f'分批补全已完成，当前没有待补全{entity_label}。')
+                QMessageBox.information(self, '分批补全完成', summary)
+                return
+
+            self.schedule_next_batch_enrichment()
+            return
+
+        title = '补全已停止' if result.get('stopped') else '补全完成'
+        QMessageBox.information(self, title, summary)
+        self.status_label.setText('')
+
+    def on_enrichment_finished(self, result):
+        mode = self.enrichment_mode
+        entity_label = result.get('entity_label', '视频')
+        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
+        summary = (
+            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
+            f"成功: {result.get('success_count', 0)} 个\n"
+            f"失败: {result.get('failed_count', 0)} 个\n"
+            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
+        )
+
+        if result.get('requires_manual_verification'):
+            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
+            if mode == 'batch':
+                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
+            else:
+                self.status_label.setText('')
+            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
+            return
+
+        if mode == 'batch':
+            if not self.batch_enrichment_active:
+                self.status_label.setText('已停止分批补全计划。')
+                QMessageBox.information(self, '分批补全已停止', summary)
+                return
+
+            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
+                self.stop_batch_enrichment(f'分批补全已完成，当前没有待补全{entity_label}。')
                 QMessageBox.information(self, '分批补全完成', summary)
                 return
 

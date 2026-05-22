@@ -77,12 +77,44 @@ class VideoDatabase:
                     last_checked_at TEXT
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS code_prefix_enrichments (
+                    prefix TEXT PRIMARY KEY,
+                    enrichment_status TEXT DEFAULT '',
+                    avfan_total_pages INTEGER DEFAULT 0,
+                    avfan_total_videos INTEGER DEFAULT 0,
+                    last_error TEXT DEFAULT '',
+                    last_enriched_at TEXT
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS code_prefix_movies (
+                    prefix TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    title TEXT,
+                    author TEXT,
+                    release_date TEXT,
+                    avfan_url TEXT,
+                    page_number INTEGER DEFAULT 1,
+                    PRIMARY KEY (prefix, code)
+                )
+            ''')
             self._ensure_column(cursor, 'path_library', 'last_total_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_used_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_free_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_usage_percent', 'REAL DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_volume_type', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'path_library', 'last_checked_at', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_total_pages', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_total_videos', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_movies', 'title', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_movies', 'author', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_movies', 'release_date', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_movies', 'avfan_url', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_movies', 'page_number', 'INTEGER DEFAULT 1')
             cursor.executemany(
                 'DELETE FROM actors WHERE lower(name) = ?',
                 [(name,) for name in IGNORED_ACTOR_NAMES],
@@ -479,6 +511,77 @@ class VideoDatabase:
             'unenriched_count': unenriched_count,
             'total_count': total_count,
         }
+
+    def list_code_prefix_enrichment_records(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT prefix, enrichment_status, avfan_total_pages, avfan_total_videos,
+                       last_error, last_enriched_at
+                FROM code_prefix_enrichments
+            ''')
+
+            return {
+                (row[0] or ''): {
+                    'prefix': row[0] or '',
+                    'enrichment_status': row[1] or '',
+                    'avfan_total_pages': int(row[2] or 0),
+                    'avfan_total_videos': int(row[3] or 0),
+                    'last_error': row[4] or '',
+                    'last_enriched_at': row[5] or '',
+                }
+                for row in cursor.fetchall()
+                if row[0]
+            }
+
+    def save_code_prefix_enrichment(self, prefix, status, total_pages=0, total_videos=0, error=''):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO code_prefix_enrichments (
+                    prefix, enrichment_status, avfan_total_pages, avfan_total_videos, last_error, last_enriched_at
+                )
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(prefix) DO UPDATE SET
+                    enrichment_status = excluded.enrichment_status,
+                    avfan_total_pages = excluded.avfan_total_pages,
+                    avfan_total_videos = excluded.avfan_total_videos,
+                    last_error = excluded.last_error,
+                    last_enriched_at = CURRENT_TIMESTAMP
+            ''', (
+                str(prefix or '').strip().upper(),
+                status,
+                int(total_pages or 0),
+                int(total_videos or 0),
+                str(error or ''),
+            ))
+            conn.commit()
+
+    def replace_code_prefix_movies(self, prefix, movies):
+        prefix = str(prefix or '').strip().upper()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (prefix,))
+            if movies:
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO code_prefix_movies (
+                        prefix, code, title, author, release_date, avfan_url, page_number
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', [
+                    (
+                        prefix,
+                        str(movie.get('code', '')).strip().upper(),
+                        movie.get('title', ''),
+                        movie.get('author', ''),
+                        movie.get('release_date', ''),
+                        movie.get('avfan_url', ''),
+                        int(movie.get('page_number', 1) or 1),
+                    )
+                    for movie in movies
+                    if movie.get('code')
+                ])
+            conn.commit()
 
     def get_path_by_value(self, folder_path):
         with sqlite3.connect(self.db_path) as conn:

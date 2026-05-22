@@ -80,6 +80,8 @@ class VideoEnrichmentService:
                         'stopped': True,
                         'requires_manual_verification': True,
                         'message': error_message,
+                        'entity_label': '视频',
+                        'remaining_label': '剩余未补全视频',
                     }
                 except Exception as exc:
                     self.database.mark_video_enrichment_failed(code, str(exc))
@@ -98,4 +100,6 @@ class VideoEnrichmentService:
             'remaining_count': self.database.count_videos_by_enrichment_status(UNENRICHED_STATUS),
             'results': results,
             'stopped': stopped,
+            'entity_label': '视频',
+            'remaining_label': '剩余未补全视频',
         }

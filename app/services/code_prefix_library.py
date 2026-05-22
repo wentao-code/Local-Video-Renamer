@@ -36,6 +36,12 @@ class CodePrefixLibrary:
 
     def list_prefixes(self, search_text=''):
         rows = self.database.list_videos()
+        enrichment_records = {}
+        if hasattr(self.database, 'list_code_prefix_enrichment_records'):
+            try:
+                enrichment_records = self.database.list_code_prefix_enrichment_records()
+            except Exception:
+                enrichment_records = {}
         grouped = {}
 
         for row in rows:
@@ -49,11 +55,16 @@ class CodePrefixLibrary:
         for prefix in sorted(grouped):
             if search and search not in prefix:
                 continue
+            enrichment = enrichment_records.get(prefix, {})
             results.append({
                 'prefix': prefix,
                 'video_count': grouped[prefix],
                 'first_updated_at': '',
                 'last_updated_at': '',
+                'enrichment_status': enrichment.get('enrichment_status', ''),
+                'avfan_total_pages': enrichment.get('avfan_total_pages', 0),
+                'avfan_total_videos': enrichment.get('avfan_total_videos', 0),
+                'last_enriched_at': enrichment.get('last_enriched_at', ''),
             })
 
         return results

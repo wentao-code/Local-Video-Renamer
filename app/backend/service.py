@@ -10,8 +10,8 @@ from app.services.actor_detail_library import ActorDetailLibrary
 from app.services.actor_identifier import ActorIdentifier
 from app.services.auto_login_service import AutoLoginService
 from app.services.code_prefix_library import CodePrefixLibrary
+from app.services.library_enrichment_service import LibraryEnrichmentService
 from app.services.path_library import PathLibrary, summarize_paths
-from app.services.video_enrichment import VideoEnrichmentService
 
 
 class BackendService:
@@ -127,7 +127,7 @@ class BackendService:
             raise ValueError('缺少 path_id')
         return {'deleted_count': self.db.delete_path(path_id)}
 
-    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False):
+    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None):
         with self.enrichment_lock:
             if self.enrichment_running:
                 raise RuntimeError('已有补全任务正在运行，请稍后再试。')
@@ -135,13 +135,13 @@ class BackendService:
             self.enrichment_cancel_event.clear()
 
         try:
-            enrichment_service = VideoEnrichmentService(
+            enrichment_service = LibraryEnrichmentService(
                 self.db,
                 show_browser=show_browser,
                 cooldown_before_search=cooldown_before_search,
                 should_stop=self.enrichment_cancel_event.is_set,
             )
-            return enrichment_service.enrich_next_videos(limit)
+            return enrichment_service.run(target_type, limit)
         finally:
             self.enrichment_running = False
             self.enrichment_cancel_event.clear()

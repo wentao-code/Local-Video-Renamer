@@ -23,16 +23,20 @@ class BackendClient:
     def save_plans(self, plans):
         return self._post('/database/save', {'plans': plans})
 
-    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False):
+    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None):
         # Playwright needs time to open the site, search, and parse each movie page.
         cooldown_seconds = 180 if cooldown_before_search else 0
-        timeout = max(self.timeout, int(limit or 1) * 90 + 60 + cooldown_seconds)
+        if target_type == 'code_prefix_library':
+            timeout = max(self.timeout, int(limit or 1) * 240 + 60 + cooldown_seconds)
+        else:
+            timeout = max(self.timeout, int(limit or 1) * 90 + 60 + cooldown_seconds)
         return self._post(
             '/database/enrich',
             {
                 'limit': limit,
                 'show_browser': show_browser,
                 'cooldown_before_search': cooldown_before_search,
+                'target_type': target_type,
             },
             timeout=timeout,
         )

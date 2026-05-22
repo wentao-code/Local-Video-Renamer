@@ -1,15 +1,24 @@
 import json
 
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
     QMessageBox,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
 )
 
+from app.core.enrichment_targets import (
+    ACTOR_LIBRARY_TARGET,
+    CODE_PREFIX_LIBRARY_TARGET,
+    VIDEO_LIBRARY_TARGET,
+)
 from app.core.project_paths import ENRICHMENT_SETTINGS_FILE
 
 
@@ -19,6 +28,7 @@ DEFAULT_SETTINGS = {
     'cooldown_before_search': False,
     'batch_limit': 5,
     'batch_interval_minutes': 30,
+    'target_type': VIDEO_LIBRARY_TARGET,
 }
 
 
@@ -55,28 +65,48 @@ class EnrichmentDialog(QDialog):
         layout = QVBoxLayout()
         form_layout = QFormLayout()
 
+        target_group = QGroupBox('抓取目标')
+        target_layout = QHBoxLayout()
+        self.target_button_group = QButtonGroup(self)
+        self.target_button_group.setExclusive(True)
+
+        self.video_target_button = QRadioButton('视频库')
+        self.code_prefix_target_button = QRadioButton('番号库')
+        self.actor_target_button = QRadioButton('演员库')
+        self.actor_target_button.setToolTip('演员库补全入口已预留，当前版本暂未实现抓取逻辑。')
+
+        self.target_button_group.addButton(self.video_target_button)
+        self.target_button_group.addButton(self.code_prefix_target_button)
+        self.target_button_group.addButton(self.actor_target_button)
+
+        target_layout.addWidget(self.video_target_button)
+        target_layout.addWidget(self.code_prefix_target_button)
+        target_layout.addWidget(self.actor_target_button)
+        target_layout.addStretch()
+        target_group.setLayout(target_layout)
+
         self.limit_input = QSpinBox()
         self.limit_input.setRange(1, 999999)
         self.limit_input.setValue(DEFAULT_SETTINGS['limit'])
-        self.limit_input.setToolTip('单次立即补全的视频数量。')
+        self.limit_input.setToolTip('单次立即补全的条目数量。')
 
         self.batch_limit_input = QSpinBox()
         self.batch_limit_input.setRange(1, 999999)
         self.batch_limit_input.setValue(DEFAULT_SETTINGS['batch_limit'])
-        self.batch_limit_input.setToolTip('每一批次补全的视频数量。')
+        self.batch_limit_input.setToolTip('每一批次补全的条目数量。')
 
         self.interval_minutes_input = QSpinBox()
         self.interval_minutes_input.setRange(1, 1440)
         self.interval_minutes_input.setValue(DEFAULT_SETTINGS['batch_interval_minutes'])
         self.interval_minutes_input.setSuffix(' 分钟')
-        self.interval_minutes_input.setToolTip('每批补全完成后，等待多久再开始下一批。')
+        self.interval_minutes_input.setToolTip('每批补全完成后等待多久再开始下一批。')
 
         self.show_browser_checkbox = QCheckBox('显示浏览器窗口')
         self.show_browser_checkbox.setChecked(DEFAULT_SETTINGS['show_browser'])
 
         self.cooldown_checkbox = QCheckBox('冷却 3 分钟后再搜索')
         self.cooldown_checkbox.setChecked(DEFAULT_SETTINGS['cooldown_before_search'])
-        self.cooldown_checkbox.setToolTip('打开 AVFan 页面后等待 3 分钟，再开始搜索第一个视频编号。')
+        self.cooldown_checkbox.setToolTip('打开 AVFan 页面后等待 3 分钟，再开始搜索第一个目标。')
 
         form_layout.addRow('本次补全数量:', self.limit_input)
         form_layout.addRow('每批补全数量:', self.batch_limit_input)
@@ -95,9 +125,17 @@ class EnrichmentDialog(QDialog):
         self.batch_button.clicked.connect(self.accept_batch)
         self.save_button.clicked.connect(self.save_settings)
 
+        layout.addWidget(target_group)
         layout.addLayout(form_layout)
         layout.addWidget(buttons)
         self.setLayout(layout)
+
+    def selected_target_type(self):
+        if self.code_prefix_target_button.isChecked():
+            return CODE_PREFIX_LIBRARY_TARGET
+        if self.actor_target_button.isChecked():
+            return ACTOR_LIBRARY_TARGET
+        return VIDEO_LIBRARY_TARGET
 
     def values(self):
         return {
@@ -106,6 +144,7 @@ class EnrichmentDialog(QDialog):
             'batch_interval_minutes': self.interval_minutes_input.value(),
             'show_browser': self.show_browser_checkbox.isChecked(),
             'cooldown_before_search': self.cooldown_checkbox.isChecked(),
+            'target_type': self.selected_target_type(),
         }
 
     def apply_settings(self, settings):
@@ -127,6 +166,7 @@ class EnrichmentDialog(QDialog):
             self.interval_minutes_input.minimum(),
             self.interval_minutes_input.maximum(),
         )
+        target_type = settings.get('target_type', VIDEO_LIBRARY_TARGET)
 
         self.limit_input.setValue(limit)
         self.batch_limit_input.setValue(batch_limit)
@@ -135,6 +175,16 @@ class EnrichmentDialog(QDialog):
         self.cooldown_checkbox.setChecked(
             bool(settings.get('cooldown_before_search', DEFAULT_SETTINGS['cooldown_before_search']))
         )
+
+        self.video_target_button.setChecked(target_type == VIDEO_LIBRARY_TARGET)
+        self.code_prefix_target_button.setChecked(target_type == CODE_PREFIX_LIBRARY_TARGET)
+        self.actor_target_button.setChecked(target_type == ACTOR_LIBRARY_TARGET)
+        if not any(button.isChecked() for button in (
+            self.video_target_button,
+            self.code_prefix_target_button,
+            self.actor_target_button,
+        )):
+            self.video_target_button.setChecked(True)
 
     def accept_single(self):
         self.action_mode = 'single'
