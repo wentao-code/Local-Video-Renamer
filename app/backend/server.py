@@ -55,18 +55,24 @@ def make_handler(service):
                 return service.list_videos(search_text)
             if method == 'GET' and path == '/database/videos/summary':
                 return service.get_video_enrichment_summary()
+            if method == 'POST' and path == '/database/videos/reset':
+                return service.reset_video_enrichments(body.get('codes', []))
             if method == 'GET' and path == '/database/actors':
                 search_text = query.get('q', [''])[0]
                 return service.list_actors(search_text)
             if method == 'GET' and path == '/database/actors/detail':
                 actor_name = query.get('name', [''])[0]
                 return service.get_actor_detail(actor_name)
+            if method == 'POST' and path == '/database/actors/reset':
+                return service.reset_actor_enrichments(body.get('actor_names', []))
             if method == 'GET' and path == '/database/code-prefixes':
                 search_text = query.get('q', [''])[0]
                 return service.list_code_prefixes(search_text)
             if method == 'GET' and path == '/database/code-prefixes/detail':
                 prefix = query.get('prefix', [''])[0]
                 return service.get_code_prefix_detail(prefix)
+            if method == 'POST' and path == '/database/code-prefixes/reset':
+                return service.reset_code_prefix_enrichments(body.get('prefixes', []))
             if method == 'GET' and path == '/paths':
                 return service.list_paths()
             if method == 'POST' and path == '/paths/add':

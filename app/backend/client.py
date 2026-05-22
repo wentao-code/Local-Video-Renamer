@@ -60,6 +60,9 @@ class BackendClient:
     def get_video_enrichment_summary(self):
         return self._get('/database/videos/summary').get('summary', {})
 
+    def reset_video_enrichments(self, codes):
+        return self._post('/database/videos/reset', {'codes': codes}).get('reset_count', 0)
+
     def list_actors(self, search_text=''):
         query = ''
         if search_text:
@@ -70,6 +73,9 @@ class BackendClient:
         query = '?' + urlencode({'name': actor_name})
         return self._get('/database/actors/detail' + query).get('actor', {})
 
+    def reset_actor_enrichments(self, actor_names):
+        return self._post('/database/actors/reset', {'actor_names': actor_names}).get('reset_count', 0)
+
     def list_code_prefixes(self, search_text=''):
         query = ''
         if search_text:
@@ -79,6 +85,9 @@ class BackendClient:
     def get_code_prefix_detail(self, prefix):
         query = '?' + urlencode({'prefix': prefix})
         return self._get('/database/code-prefixes/detail' + query).get('prefix_detail', {})
+
+    def reset_code_prefix_enrichments(self, prefixes):
+        return self._post('/database/code-prefixes/reset', {'prefixes': prefixes}).get('reset_count', 0)
 
     def get_path_library(self):
         return self._get('/paths')

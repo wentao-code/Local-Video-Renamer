@@ -95,17 +95,26 @@ class BackendService:
     def get_video_enrichment_summary(self):
         return {'summary': self.db.get_video_enrichment_summary()}
 
+    def reset_video_enrichments(self, codes):
+        return {'reset_count': self.db.reset_video_enrichments(codes)}
+
     def list_actors(self, search_text=''):
         return {'actors': self.db.list_actors(search_text)}
 
     def get_actor_detail(self, actor_name):
         return {'actor': self.actor_detail_library.get_actor_detail(actor_name)}
 
+    def reset_actor_enrichments(self, actor_names):
+        return {'reset_count': self.db.reset_actor_enrichments(actor_names)}
+
     def list_code_prefixes(self, search_text=''):
         return {'prefixes': self.code_prefix_library.list_prefixes(search_text)}
 
     def get_code_prefix_detail(self, prefix):
         return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(prefix)}
+
+    def reset_code_prefix_enrichments(self, prefixes):
+        return {'reset_count': self.db.reset_code_prefix_enrichments(prefixes)}
 
     def list_paths(self):
         paths = []

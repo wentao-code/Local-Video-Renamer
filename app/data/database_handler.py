@@ -759,6 +759,78 @@ class VideoDatabase:
                 for row in cursor.fetchall()
             ]
 
+    def reset_video_enrichments(self, codes):
+        normalized_codes = [
+            str(code or '').strip().upper()
+            for code in (codes or [])
+            if str(code or '').strip()
+        ]
+        if not normalized_codes:
+            return 0
+
+        placeholders = ','.join('?' for _ in normalized_codes)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                UPDATE processed_videos
+                SET avfan_movie_id = '',
+                    release_date = '',
+                    maker = '',
+                    publisher = '',
+                    enrichment_status = ?,
+                    enrichment_error = '',
+                    enriched_at = NULL
+                WHERE code IN ({placeholders})
+            ''', [UNENRICHED_STATUS, *normalized_codes])
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def reset_actor_enrichments(self, actor_names):
+        normalized_names = [
+            str(actor_name or '').strip()
+            for actor_name in (actor_names or [])
+            if str(actor_name or '').strip()
+        ]
+        if not normalized_names:
+            return 0
+
+        placeholders = ','.join('?' for _ in normalized_names)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                DELETE FROM actor_movies
+                WHERE actor_name IN ({placeholders})
+            ''', normalized_names)
+            cursor.execute(f'''
+                DELETE FROM actor_enrichments
+                WHERE actor_name IN ({placeholders})
+            ''', normalized_names)
+            conn.commit()
+            return len(normalized_names)
+
+    def reset_code_prefix_enrichments(self, prefixes):
+        normalized_prefixes = [
+            str(prefix or '').strip().upper()
+            for prefix in (prefixes or [])
+            if str(prefix or '').strip()
+        ]
+        if not normalized_prefixes:
+            return 0
+
+        placeholders = ','.join('?' for _ in normalized_prefixes)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                DELETE FROM code_prefix_movies
+                WHERE prefix IN ({placeholders})
+            ''', normalized_prefixes)
+            cursor.execute(f'''
+                DELETE FROM code_prefix_enrichments
+                WHERE prefix IN ({placeholders})
+            ''', normalized_prefixes)
+            conn.commit()
+            return len(normalized_prefixes)
+
     def get_path_by_value(self, folder_path):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()

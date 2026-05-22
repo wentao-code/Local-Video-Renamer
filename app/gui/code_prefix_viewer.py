@@ -1,10 +1,12 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -35,11 +37,15 @@ class CodePrefixViewerWindow(QDialog):
         self.search_input.setPlaceholderText('输入番号前缀实时筛选，例如 AARM、IPX...')
         self.search_input.textChanged.connect(self.filter_data)
 
+        btn_reset = QPushButton('选中重置')
+        btn_reset.clicked.connect(self.reset_selected_rows)
+
         btn_refresh = QPushButton('刷新数据')
         btn_refresh.clicked.connect(self.load_data)
 
         top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
+        top_layout.addWidget(btn_reset)
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
@@ -62,6 +68,7 @@ class CodePrefixViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         layout.addLayout(top_layout)
         layout.addWidget(self.table)
@@ -121,3 +128,35 @@ class CodePrefixViewerWindow(QDialog):
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选番号库失败: {exc}')
+
+    def reset_selected_rows(self):
+        prefixes = self.selected_prefixes()
+        if not prefixes:
+            QMessageBox.information(self, '未选择', '请先选中要重置的番号行。')
+            return
+
+        answer = QMessageBox.question(
+            self,
+            '确认重置',
+            f'确定要重置选中的 {len(prefixes)} 个番号补全状态吗？',
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            reset_count = self.backend_client.reset_code_prefix_enrichments(prefixes)
+        except Exception as exc:
+            QMessageBox.critical(self, '重置失败', f'重置番号补全状态失败：\n{exc}')
+            return
+
+        self.load_data()
+        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个番号的补全状态。')
+
+    def selected_prefixes(self):
+        selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        prefixes = []
+        for row in selected_rows:
+            item = self.table.item(row, 0)
+            if item and item.text().strip():
+                prefixes.append(item.text().strip())
+        return prefixes

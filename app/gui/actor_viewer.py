@@ -1,10 +1,12 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -35,11 +37,15 @@ class ActorViewerWindow(QDialog):
         self.search_input.setPlaceholderText('输入演员、生日或年龄实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
+        btn_reset = QPushButton('选中重置')
+        btn_reset.clicked.connect(self.reset_selected_rows)
+
         btn_refresh = QPushButton('刷新数据')
         btn_refresh.clicked.connect(self.load_data)
 
         top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
+        top_layout.addWidget(btn_reset)
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
@@ -52,6 +58,7 @@ class ActorViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         layout.addLayout(top_layout)
         layout.addWidget(self.table)
@@ -111,3 +118,35 @@ class ActorViewerWindow(QDialog):
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选演员库失败: {exc}')
+
+    def reset_selected_rows(self):
+        actor_names = self.selected_actor_names()
+        if not actor_names:
+            QMessageBox.information(self, '未选择', '请先选中要重置的演员行。')
+            return
+
+        answer = QMessageBox.question(
+            self,
+            '确认重置',
+            f'确定要重置选中的 {len(actor_names)} 个演员补全状态吗？',
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            reset_count = self.backend_client.reset_actor_enrichments(actor_names)
+        except Exception as exc:
+            QMessageBox.critical(self, '重置失败', f'重置演员补全状态失败：\n{exc}')
+            return
+
+        self.load_data()
+        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')
+
+    def selected_actor_names(self):
+        selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        actor_names = []
+        for row in selected_rows:
+            item = self.table.item(row, 0)
+            if item and item.text().strip():
+                actor_names.append(item.text().strip())
+        return actor_names

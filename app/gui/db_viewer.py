@@ -1,10 +1,12 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -25,22 +27,26 @@ class DatabaseViewerWindow(QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('📊 已存档视频数据库台账')
-        self.resize(900, 550)
+        self.setWindowTitle('已存档视频数据库台账')
+        self.resize(980, 580)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('🔍 输入视频编号、标题、演员或存放位置，即可实时快速筛选...')
+        self.search_input.setPlaceholderText('输入视频编号、标题、演员或存放位置，即可实时快速筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
-        btn_refresh = QPushButton('🔄 刷新数据')
+        btn_reset = QPushButton('选中重置')
+        btn_reset.clicked.connect(self.reset_selected_rows)
+
+        btn_refresh = QPushButton('刷新数据')
         btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('实时筛选:'))
+        top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
+        top_layout.addWidget(btn_reset)
         top_layout.addWidget(btn_refresh)
 
         self.summary_label = QLabel('已补全数: 0 | 未补全数: 0 | 视频总数: 0')
@@ -61,7 +67,6 @@ class DatabaseViewerWindow(QDialog):
             '发行商',
             '补全状态',
         ])
-
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -75,6 +80,7 @@ class DatabaseViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         layout.addLayout(top_layout)
         layout.addWidget(self.summary_label)
@@ -83,7 +89,6 @@ class DatabaseViewerWindow(QDialog):
 
     def load_data(self):
         self.table.setRowCount(0)
-
         try:
             self.all_rows = self.backend_client.list_videos()
             self.rows = list(self.all_rows)
@@ -161,3 +166,35 @@ class DatabaseViewerWindow(QDialog):
             self.refresh_summary()
         except Exception as exc:
             print(f'筛选数据库失败: {exc}')
+
+    def reset_selected_rows(self):
+        codes = self.selected_codes()
+        if not codes:
+            QMessageBox.information(self, '未选择', '请先选中要重置的视频行。')
+            return
+
+        answer = QMessageBox.question(
+            self,
+            '确认重置',
+            f'确定要重置选中的 {len(codes)} 个视频补全状态吗？',
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            reset_count = self.backend_client.reset_video_enrichments(codes)
+        except Exception as exc:
+            QMessageBox.critical(self, '重置失败', f'重置视频补全状态失败：\n{exc}')
+            return
+
+        self.load_data()
+        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个视频的补全状态。')
+
+    def selected_codes(self):
+        selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        codes = []
+        for row in selected_rows:
+            item = self.table.item(row, 0)
+            if item and item.text().strip():
+                codes.append(item.text().strip())
+        return codes
