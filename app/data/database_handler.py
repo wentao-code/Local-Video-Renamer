@@ -221,7 +221,7 @@ class VideoDatabase:
         return success_count
 
     def list_actors(self, search_text=''):
-        """读取演员库，必要时按主角/生日/年龄筛选。"""
+        """读取演员库，必要时按演员/生日/年龄/补全状态筛选。"""
         search_text = (search_text or '').strip()
 
         with sqlite3.connect(self.db_path) as conn:
@@ -229,17 +229,29 @@ class VideoDatabase:
             if search_text:
                 like_value = f'%{search_text}%'
                 cursor.execute('''
-                    SELECT name, birthday, age, matched
-                    FROM actors
-                    WHERE name LIKE ? OR birthday LIKE ? OR age LIKE ?
-                    ORDER BY name
-                ''', (like_value, like_value, like_value))
+                    SELECT a.name, a.birthday, a.age, a.matched,
+                           COALESCE(e.enrichment_status, ?) AS enrichment_status
+                    FROM actors a
+                    LEFT JOIN actor_enrichments e ON e.actor_name = a.name
+                    WHERE a.name LIKE ? OR a.birthday LIKE ? OR a.age LIKE ?
+                       OR COALESCE(e.enrichment_status, ?) LIKE ?
+                    ORDER BY a.name
+                ''', (
+                    UNENRICHED_STATUS,
+                    like_value,
+                    like_value,
+                    like_value,
+                    UNENRICHED_STATUS,
+                    like_value,
+                ))
             else:
                 cursor.execute('''
-                    SELECT name, birthday, age, matched
-                    FROM actors
-                    ORDER BY name
-                ''')
+                    SELECT a.name, a.birthday, a.age, a.matched,
+                           COALESCE(e.enrichment_status, ?) AS enrichment_status
+                    FROM actors a
+                    LEFT JOIN actor_enrichments e ON e.actor_name = a.name
+                    ORDER BY a.name
+                ''', (UNENRICHED_STATUS,))
 
             return [
                 {
@@ -247,6 +259,7 @@ class VideoDatabase:
                     'birthday': row[1] or '',
                     'age': row[2] or '',
                     'matched': bool(row[3]),
+                    'enrichment_status': row[4] or UNENRICHED_STATUS,
                 }
                 for row in cursor.fetchall()
                 if not is_ignored_actor_name(row[0] or '')
