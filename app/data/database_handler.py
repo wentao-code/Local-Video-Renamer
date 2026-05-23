@@ -153,6 +153,11 @@ class VideoDatabase:
                     prefix TEXT PRIMARY KEY
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS hidden_actors (
+                    name TEXT PRIMARY KEY
+                )
+            ''')
             self._ensure_column(cursor, 'path_library', 'last_total_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_used_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_free_bytes', 'INTEGER DEFAULT 0')
@@ -938,6 +943,10 @@ class VideoDatabase:
             cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM actor_enrichments WHERE actor_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM actors WHERE name = ?', (normalized_name,))
+            cursor.execute(
+                'INSERT OR IGNORE INTO hidden_actors (name) VALUES (?)',
+                (normalized_name,),
+            )
             conn.commit()
             return int(cursor.rowcount or 0)
 
@@ -1512,3 +1521,59 @@ class VideoDatabase:
             conn.commit()
 
         return len(new_records)
+
+    def list_hidden_actors(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT name FROM hidden_actors')
+            return {
+                str(row[0] or '').strip()
+                for row in cursor.fetchall()
+                if str(row[0] or '').strip()
+            }
+
+    def insert_missing_actors(self, actors):
+        hidden_actors = self.list_hidden_actors()
+        normalized_actors = []
+        seen = set()
+        for actor in actors or []:
+            name = str((actor or {}).get('name', '')).strip()
+            if (
+                not name
+                or is_ignored_actor_name(name)
+                or name in seen
+                or name in hidden_actors
+            ):
+                continue
+            seen.add(name)
+            normalized_actors.append(
+                {
+                    'name': name,
+                    'birthday': str((actor or {}).get('birthday', '') or '').strip(),
+                    'age': str((actor or {}).get('age', '') or '').strip(),
+                    'matched': 1 if bool((actor or {}).get('matched')) else 0,
+                }
+            )
+
+        if not normalized_actors:
+            return 0
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                '''
+                INSERT OR IGNORE INTO actors (name, birthday, age, matched)
+                VALUES (?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        actor['name'],
+                        actor['birthday'],
+                        actor['age'],
+                        actor['matched'],
+                    )
+                    for actor in normalized_actors
+                ],
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)

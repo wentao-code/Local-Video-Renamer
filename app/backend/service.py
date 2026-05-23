@@ -1,10 +1,12 @@
 from pathlib import Path
 from threading import Event, Lock
 
+from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.data.database_handler import VideoDatabase
 from app.scraper.avfan_scraper import reset_avfan_browser_profile
 from app.services.actor_detail_library import ActorDetailLibrary
+from app.services.actor_library_sync_service import ActorLibrarySyncService
 from app.services.auto_login_service import AutoLoginService
 from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
 from app.services.code_prefix_library import CodePrefixLibrary
@@ -20,6 +22,7 @@ class BackendService:
         self.db = VideoDatabase(DATABASE_FILE)
         self.local_video_library = LocalVideoLibraryService(self.db)
         self.actor_detail_library = ActorDetailLibrary(self.db)
+        self.actor_library_sync_service = ActorLibrarySyncService(self.db)
         self.code_prefix_detail_library = CodePrefixDetailLibrary(self.db)
         self.code_prefix_library = CodePrefixLibrary(self.db)
         self.library_admin_service = LibraryAdminService(self.db)
@@ -30,6 +33,7 @@ class BackendService:
         self.enrichment_running = False
 
     def load_database(self):
+        self.actor_library_sync_service.sync_from_video_library()
         self.database_loaded = True
         return {
             'count': self.db.get_video_count(),
@@ -70,6 +74,7 @@ class BackendService:
         return {'reset_count': self.db.reset_video_enrichments(codes)}
 
     def list_actors(self, search_text=''):
+        self.ensure_database_loaded()
         return {'actors': self.db.list_actors(search_text)}
 
     def get_actor_detail(self, actor_name):
@@ -138,7 +143,15 @@ class BackendService:
                 cooldown_before_search=cooldown_before_search,
                 should_stop=self.enrichment_cancel_event.is_set,
             )
-            return enrichment_service.run(target_type, limit, source_key=source_key)
+            if target_type == ACTOR_LIBRARY_TARGET:
+                self.actor_library_sync_service.sync_from_video_library()
+
+            result = enrichment_service.run(target_type, limit, source_key=source_key)
+
+            if (not target_type or target_type == VIDEO_LIBRARY_TARGET) and result.get('processed_count', 0) > 0:
+                self.actor_library_sync_service.sync_from_video_library()
+
+            return result
         finally:
             self.enrichment_running = False
             self.enrichment_cancel_event.clear()
