@@ -11,10 +11,11 @@ from app.services.code_prefix_library import CodePrefixLibrary, extract_code_pre
 
 
 class CodePrefixEnrichmentService:
-    def __init__(self, database, scraper=None, show_browser=False, should_stop=None):
+    def __init__(self, database, scraper=None, show_browser=False, should_stop=None, progress_tracker=None):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
         self.should_stop = should_stop or (lambda: False)
+        self.progress_tracker = progress_tracker
         self.scraper = scraper or AvfanCodePrefixScraper(headless=not show_browser)
 
     def enrich_next_prefixes(self, limit):
@@ -28,6 +29,9 @@ class CodePrefixEnrichmentService:
         failed_count = 0
         stopped = False
 
+        if self.progress_tracker is not None:
+            self.progress_tracker.start('番号库', len(candidates), source_label='天陨阁')
+
         with self.scraper.session() as page:
             for prefix in candidates:
                 if self.should_stop():
@@ -39,6 +43,7 @@ class CodePrefixEnrichmentService:
                     results.append(result)
                     if result.get('stopped'):
                         stopped = True
+                        self._update_progress(len(results), success_count, failed_count + 1, prefix)
                         break
                     if result.get('status') == ENRICHED_STATUS:
                         success_count += 1
@@ -59,7 +64,8 @@ class CodePrefixEnrichmentService:
                         'error': error_message,
                     })
                     failed_count += 1
-                    return {
+                    self._update_progress(len(results), success_count, failed_count, prefix)
+                    result = {
                         'requested': limit,
                         'processed_count': len(results),
                         'success_count': success_count,
@@ -72,6 +78,8 @@ class CodePrefixEnrichmentService:
                         'entity_label': '番号',
                         'remaining_label': '剩余未补全番号',
                     }
+                    self._finish_progress(error_message, stopped=True)
+                    return result
                 except Exception as exc:
                     error_message = str(exc)
                     self.database.save_code_prefix_enrichment(
@@ -88,7 +96,9 @@ class CodePrefixEnrichmentService:
                     })
                     failed_count += 1
 
-        return {
+                self._update_progress(len(results), success_count, failed_count, prefix)
+
+        result = {
             'requested': limit,
             'processed_count': len(results),
             'success_count': success_count,
@@ -99,6 +109,21 @@ class CodePrefixEnrichmentService:
             'entity_label': '番号',
             'remaining_label': '剩余未补全番号',
         }
+        self._finish_progress('番号补全已完成。' if not stopped else '番号补全已停止。', stopped=stopped)
+        return result
+
+    def _update_progress(self, processed_count, success_count, failed_count, current_item):
+        if self.progress_tracker is not None:
+            self.progress_tracker.update(
+                processed_count=processed_count,
+                success_count=success_count,
+                failed_count=failed_count,
+                current_item=current_item,
+            )
+
+    def _finish_progress(self, message, stopped=False):
+        if self.progress_tracker is not None:
+            self.progress_tracker.finish(message=message, stopped=stopped)
 
     def _candidate_prefixes(self, limit):
         records = self.database.list_code_prefix_enrichment_records()

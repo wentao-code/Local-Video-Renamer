@@ -16,11 +16,13 @@ class LibraryEnrichmentService:
         show_browser=False,
         cooldown_before_search=False,
         should_stop=None,
+        progress_tracker=None,
     ):
         self.database = database
         self.show_browser = show_browser
         self.cooldown_before_search = cooldown_before_search
         self.should_stop = should_stop
+        self.progress_tracker = progress_tracker
 
     def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
         if not target_type:
@@ -33,6 +35,7 @@ class LibraryEnrichmentService:
                 show_browser=self.show_browser,
                 cooldown_before_search=self.cooldown_before_search,
                 should_stop=self.should_stop,
+                progress_tracker=self.progress_tracker,
             )
             result = service.enrich_next_videos(limit)
             result.setdefault('entity_label', '视频')
@@ -45,6 +48,7 @@ class LibraryEnrichmentService:
                 self.database,
                 show_browser=self.show_browser,
                 should_stop=self.should_stop,
+                progress_tracker=self.progress_tracker,
             )
             result = service.enrich_next_prefixes(limit)
             result.setdefault('source_key', fixed_source)
@@ -55,6 +59,7 @@ class LibraryEnrichmentService:
                 self.database,
                 show_browser=self.show_browser,
                 should_stop=self.should_stop,
+                progress_tracker=self.progress_tracker,
             )
             result = service.enrich_next_actors(limit)
             result.setdefault('source_key', fixed_source)

@@ -20,10 +20,12 @@ class VideoSourceEnrichmentService:
         show_browser=False,
         cooldown_before_search=False,
         should_stop=None,
+        progress_tracker=None,
     ):
         self.database = database
         self.source_key = normalize_video_enrichment_source(source_key)
         self.should_stop = should_stop or (lambda: False)
+        self.progress_tracker = progress_tracker
         self.scraper = scraper or self._build_scraper(show_browser, cooldown_before_search)
 
     def _build_scraper(self, show_browser, cooldown_before_search):
@@ -45,6 +47,9 @@ class VideoSourceEnrichmentService:
         failed_count = 0
         stopped = False
         source_label = get_video_enrichment_source_label(self.source_key)
+
+        if self.progress_tracker is not None:
+            self.progress_tracker.start('视频库', len(candidates), source_label=source_label)
 
         with self.scraper.session():
             for video in candidates:
@@ -94,7 +99,8 @@ class VideoSourceEnrichmentService:
                         'status': FAILED_STATUS,
                         'error': error_message,
                     })
-                    return self._build_result(
+                    self._update_progress(len(results), success_count, failed_count, code)
+                    result = self._build_result(
                         limit,
                         results,
                         success_count,
@@ -104,6 +110,8 @@ class VideoSourceEnrichmentService:
                         requires_manual_verification=True,
                         message=error_message,
                     )
+                    self._finish_progress(error_message, stopped=True)
+                    return result
                 except Exception as exc:
                     error_message = str(exc)
                     self.database.mark_video_enrichment_failed(
@@ -118,7 +126,24 @@ class VideoSourceEnrichmentService:
                         'error': error_message,
                     })
 
-        return self._build_result(limit, results, success_count, failed_count, stopped, source_label)
+                self._update_progress(len(results), success_count, failed_count, code)
+
+        result = self._build_result(limit, results, success_count, failed_count, stopped, source_label)
+        self._finish_progress('视频补全已完成。' if not stopped else '视频补全已停止。', stopped=stopped)
+        return result
+
+    def _update_progress(self, processed_count, success_count, failed_count, current_item):
+        if self.progress_tracker is not None:
+            self.progress_tracker.update(
+                processed_count=processed_count,
+                success_count=success_count,
+                failed_count=failed_count,
+                current_item=current_item,
+            )
+
+    def _finish_progress(self, message, stopped=False):
+        if self.progress_tracker is not None:
+            self.progress_tracker.finish(message=message, stopped=stopped)
 
     def _build_result(
         self,

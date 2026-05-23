@@ -67,6 +67,9 @@ class BackendClient:
     def get_data_center_summary(self):
         return self._get('/data-center/summary').get('summary', {})
 
+    def get_enrichment_progress(self):
+        return self._get('/database/enrich/progress').get('progress', {})
+
     def reset_video_enrichments(self, codes):
         return self._post('/database/videos/reset', {'codes': codes}).get('reset_count', 0)
 

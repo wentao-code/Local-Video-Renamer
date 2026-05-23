@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,6 +30,7 @@ from app.core.project_paths import PROJECT_ROOT
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
+from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.path_library_viewer import PathLibraryWindow
 
@@ -97,12 +99,16 @@ class VidNormApp(QWidget):
         self.batch_countdown_timer.setInterval(1000)
         self.batch_countdown_timer.timeout.connect(self.update_batch_countdown)
         self.batch_next_run_at = None
+        self.enrichment_progress_timer = QTimer(self)
+        self.enrichment_progress_timer.setInterval(1000)
+        self.enrichment_progress_timer.timeout.connect(self.refresh_enrichment_progress)
         self.login_thread = None
         self.login_worker = None
 
         self.ensure_backend_running()
         self.init_ui()
         self.update_enrichment_controls()
+        self.reset_progress_widgets()
 
     def ensure_backend_running(self):
         if self.is_backend_alive():
@@ -135,7 +141,7 @@ class VidNormApp(QWidget):
 
     def init_ui(self):
         self.setWindowTitle('VidNorm - 本地视频整理工具')
-        self.resize(1000, 650)
+        self.resize(1000, 700)
         main_layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
@@ -161,14 +167,21 @@ class VidNormApp(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
 
         self.status_label = QLabel('')
+        self.progress_label = QLabel('')
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setTextVisible(True)
         self.batch_countdown_label = QLabel('')
 
         button_layout = QVBoxLayout()
         top_button_row = QHBoxLayout()
         bottom_button_row = QHBoxLayout()
 
-        self.btn_data_center = QPushButton('数据中心')
-        self.btn_data_center.clicked.connect(self.show_data_center)
+        self.btn_video_library = QPushButton('视频库')
+        self.btn_video_library.clicked.connect(self.show_video_library)
+
+        self.btn_database = QPushButton('数据库')
+        self.btn_database.clicked.connect(self.show_data_center)
 
         self.btn_view_actors = QPushButton('查看作者库')
         self.btn_view_actors.clicked.connect(self.show_actor_viewer)
@@ -200,7 +213,8 @@ class VidNormApp(QWidget):
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
 
-        top_button_row.addWidget(self.btn_data_center)
+        top_button_row.addWidget(self.btn_video_library)
+        top_button_row.addWidget(self.btn_database)
         top_button_row.addWidget(self.btn_view_actors)
         top_button_row.addWidget(self.btn_view_code_prefixes)
         top_button_row.addStretch()
@@ -220,6 +234,8 @@ class VidNormApp(QWidget):
         main_layout.addLayout(top_layout)
         main_layout.addWidget(self.table)
         main_layout.addWidget(self.status_label)
+        main_layout.addWidget(self.progress_label)
+        main_layout.addWidget(self.progress_bar)
         main_layout.addWidget(self.batch_countdown_label)
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
@@ -378,6 +394,9 @@ class VidNormApp(QWidget):
         else:
             self.status_label.setText('补全任务进行中，界面可继续操作。')
         self.update_enrichment_controls()
+        self.reset_progress_widgets(keep_visible=True)
+        self.enrichment_progress_timer.start()
+        self.refresh_enrichment_progress()
 
         self.enrichment_thread = QThread(self)
         self.enrichment_worker = EnrichmentWorker(
@@ -448,6 +467,7 @@ class VidNormApp(QWidget):
         )
         self.update_batch_countdown()
         self.update_enrichment_controls()
+        self.reset_progress_widgets()
 
     def stop_batch_enrichment(self, message='已停止分批补全计划。'):
         self.batch_timer.stop()
@@ -458,6 +478,7 @@ class VidNormApp(QWidget):
         self.update_enrichment_controls()
         self.status_label.setText(message)
         self.batch_countdown_label.setText('')
+        self.reset_progress_widgets()
 
     def update_batch_countdown(self):
         if self.batch_next_run_at is None:
@@ -483,6 +504,57 @@ class VidNormApp(QWidget):
         enrichment_running = self.enrichment_thread is not None
         self.btn_enrich.setEnabled(not enrichment_running and not self.batch_enrichment_active)
         self.btn_stop_enrich.setEnabled(enrichment_running or self.batch_enrichment_active)
+
+    def refresh_enrichment_progress(self):
+        try:
+            progress = self.backend_client.get_enrichment_progress()
+        except Exception:
+            return
+
+        total_count = int(progress.get('total_count', 0) or 0)
+        processed_count = int(progress.get('processed_count', 0) or 0)
+        success_count = int(progress.get('success_count', 0) or 0)
+        failed_count = int(progress.get('failed_count', 0) or 0)
+        progress_percent = float(progress.get('progress_percent', 0) or 0)
+        target_label = str(progress.get('target_label', '') or '')
+        source_label = str(progress.get('source_label', '') or '')
+        current_item = str(progress.get('current_item', '') or '')
+        message = str(progress.get('message', '') or '')
+        is_running = bool(progress.get('is_running'))
+
+        if not is_running and total_count <= 0 and not message:
+            return
+
+        label_text = target_label or '补全任务'
+        if source_label:
+            label_text = f'{label_text} / {source_label}'
+        if current_item:
+            label_text = f'{label_text} | 当前: {current_item}'
+        elif message:
+            label_text = f'{label_text} | {message}'
+
+        self.progress_label.setText(label_text)
+        self.progress_bar.show()
+        self.progress_label.show()
+        self.progress_bar.setValue(int(progress_percent * 10))
+        if total_count > 0:
+            self.progress_bar.setFormat(
+                f'{processed_count}/{total_count} | 成功 {success_count} | 失败 {failed_count} | {progress_percent:.1f}%'
+            )
+        else:
+            self.progress_bar.setFormat(message or '准备中...')
+
+    def reset_progress_widgets(self, keep_visible=False):
+        self.enrichment_progress_timer.stop()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat('0/0 | 0.0%')
+        self.progress_label.setText('')
+        if keep_visible:
+            self.progress_bar.show()
+            self.progress_label.show()
+            return
+        self.progress_bar.hide()
+        self.progress_label.hide()
 
     def stop_enrichment(self):
         if self.enrichment_thread is None:
@@ -584,6 +656,8 @@ class VidNormApp(QWidget):
         self.enrichment_thread = None
         self.enrichment_mode = None
         self.update_enrichment_controls()
+        if not self.batch_enrichment_active:
+            self.reset_progress_widgets()
 
     def reset_browser_profile(self):
         answer = QMessageBox.question(
@@ -613,6 +687,10 @@ class VidNormApp(QWidget):
 
     def show_data_center(self):
         viewer = DataCenterWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
+    def show_video_library(self):
+        viewer = DatabaseViewerWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
     def show_actor_viewer(self):

@@ -10,9 +10,10 @@ from app.services.actor_search_entry_parser import parse_actor_search_card
 
 
 class ActorEnrichmentService:
-    def __init__(self, database, scraper=None, show_browser=False, should_stop=None):
+    def __init__(self, database, scraper=None, show_browser=False, should_stop=None, progress_tracker=None):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
+        self.progress_tracker = progress_tracker
         self.scraper = scraper or AvfanActorScraper(headless=not show_browser)
 
     def enrich_next_actors(self, limit):
@@ -26,6 +27,9 @@ class ActorEnrichmentService:
         failed_count = 0
         stopped = False
 
+        if self.progress_tracker is not None:
+            self.progress_tracker.start('作者库', len(candidates), source_label='天陨阁')
+
         with self.scraper.session() as page:
             for actor_name in candidates:
                 if self.should_stop():
@@ -37,6 +41,7 @@ class ActorEnrichmentService:
                     results.append(result)
                     if result.get('stopped'):
                         stopped = True
+                        self._update_progress(len(results), success_count, failed_count + 1, actor_name)
                         break
                     if result.get('status') == ENRICHED_STATUS:
                         success_count += 1
@@ -58,7 +63,8 @@ class ActorEnrichmentService:
                         'error': error_message,
                     })
                     failed_count += 1
-                    return {
+                    self._update_progress(len(results), success_count, failed_count, actor_name)
+                    result = {
                         'requested': limit,
                         'processed_count': len(results),
                         'success_count': success_count,
@@ -71,6 +77,8 @@ class ActorEnrichmentService:
                         'entity_label': '演员',
                         'remaining_label': '剩余未补全演员',
                     }
+                    self._finish_progress(error_message, stopped=True)
+                    return result
                 except Exception as exc:
                     error_message = str(exc)
                     self.database.save_actor_enrichment(
@@ -88,7 +96,9 @@ class ActorEnrichmentService:
                     })
                     failed_count += 1
 
-        return {
+                self._update_progress(len(results), success_count, failed_count, actor_name)
+
+        result = {
             'requested': limit,
             'processed_count': len(results),
             'success_count': success_count,
@@ -99,6 +109,21 @@ class ActorEnrichmentService:
             'entity_label': '演员',
             'remaining_label': '剩余未补全演员',
         }
+        self._finish_progress('作者库补全已完成。' if not stopped else '作者库补全已停止。', stopped=stopped)
+        return result
+
+    def _update_progress(self, processed_count, success_count, failed_count, current_item):
+        if self.progress_tracker is not None:
+            self.progress_tracker.update(
+                processed_count=processed_count,
+                success_count=success_count,
+                failed_count=failed_count,
+                current_item=current_item,
+            )
+
+    def _finish_progress(self, message, stopped=False):
+        if self.progress_tracker is not None:
+            self.progress_tracker.finish(message=message, stopped=stopped)
 
     def _candidate_actors(self, limit):
         records = self.database.list_actor_enrichment_records()

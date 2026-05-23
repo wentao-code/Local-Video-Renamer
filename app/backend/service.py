@@ -11,6 +11,7 @@ from app.services.auto_login_service import AutoLoginService
 from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
 from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.data_center_service import DataCenterService
+from app.services.enrichment_progress_service import EnrichmentProgressService
 from app.services.library_admin_service import LibraryAdminService
 from app.services.library_enrichment_service import LibraryEnrichmentService
 from app.services.local_video_library_service import LocalVideoLibraryService
@@ -29,6 +30,7 @@ class BackendService:
         self.data_center_service = DataCenterService(self.db)
         self.library_admin_service = LibraryAdminService(self.db)
         self.path_library = PathLibrary()
+        self.enrichment_progress = EnrichmentProgressService()
         self.database_loaded = False
         self.enrichment_cancel_event = Event()
         self.enrichment_lock = Lock()
@@ -75,6 +77,9 @@ class BackendService:
     def get_data_center_summary(self):
         self.ensure_database_loaded()
         return {'summary': self.data_center_service.get_summary()}
+
+    def get_enrichment_progress(self):
+        return {'progress': self.enrichment_progress.snapshot()}
 
     def reset_video_enrichments(self, codes):
         return {'reset_count': self.db.reset_video_enrichments(codes)}
@@ -141,6 +146,7 @@ class BackendService:
                 raise RuntimeError('已有补全任务正在运行，请稍后再试。')
             self.enrichment_running = True
             self.enrichment_cancel_event.clear()
+            self.enrichment_progress.reset()
 
         try:
             enrichment_service = LibraryEnrichmentService(
@@ -148,6 +154,7 @@ class BackendService:
                 show_browser=show_browser,
                 cooldown_before_search=cooldown_before_search,
                 should_stop=self.enrichment_cancel_event.is_set,
+                progress_tracker=self.enrichment_progress,
             )
             if target_type == ACTOR_LIBRARY_TARGET:
                 self.actor_library_sync_service.sync_from_video_library()
@@ -158,6 +165,9 @@ class BackendService:
                 self.actor_library_sync_service.sync_from_video_library()
 
             return result
+        except Exception:
+            self.enrichment_progress.finish(message='补全任务异常结束。', stopped=True)
+            raise
         finally:
             self.enrichment_running = False
             self.enrichment_cancel_event.clear()
@@ -169,6 +179,7 @@ class BackendService:
                 'message': '当前没有正在运行的补全任务。',
             }
         self.enrichment_cancel_event.set()
+        self.enrichment_progress.set_message('已请求停止补全，等待当前条目完成。')
         return {
             'cancel_requested': True,
             'message': '已请求停止补全，当前条目处理完成后会停止。',

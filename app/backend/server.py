@@ -100,6 +100,8 @@ def make_handler(service):
                     target_type=body.get('target_type'),
                     source_key=body.get('source_key'),
                 )
+            if method == 'GET' and path == '/database/enrich/progress':
+                return service.get_enrichment_progress()
             if method == 'POST' and path == '/database/enrich/cancel':
                 return service.cancel_enrichment()
             if method == 'POST' and path == '/login/auto':
