@@ -76,6 +76,15 @@ class BackendClient:
     def reset_actor_enrichments(self, actor_names):
         return self._post('/database/actors/reset', {'actor_names': actor_names}).get('reset_count', 0)
 
+    def rename_actor(self, old_name, new_name):
+        return self._post(
+            '/database/actors/rename',
+            {'old_name': old_name, 'new_name': new_name},
+        ).get('updated_count', 0)
+
+    def delete_actor(self, actor_name):
+        return self._post('/database/actors/delete', {'actor_name': actor_name}).get('deleted_count', 0)
+
     def list_code_prefixes(self, search_text=''):
         query = ''
         if search_text:
@@ -88,6 +97,15 @@ class BackendClient:
 
     def reset_code_prefix_enrichments(self, prefixes):
         return self._post('/database/code-prefixes/reset', {'prefixes': prefixes}).get('reset_count', 0)
+
+    def rename_code_prefix(self, old_prefix, new_prefix):
+        return self._post(
+            '/database/code-prefixes/rename',
+            {'old_prefix': old_prefix, 'new_prefix': new_prefix},
+        ).get('updated_count', 0)
+
+    def delete_code_prefix(self, prefix):
+        return self._post('/database/code-prefixes/delete', {'prefix': prefix}).get('deleted_count', 0)
 
     def get_path_library(self):
         return self._get('/paths')

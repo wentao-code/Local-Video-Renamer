@@ -22,12 +22,15 @@ class CodePrefixViewerWindow(QDialog):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
+        self.editing_prefix = None
+        self.editing_row = None
+        self.action_buttons = {}
         self.init_ui()
         self.load_data()
 
     def init_ui(self):
         self.setWindowTitle('番号库')
-        self.resize(980, 560)
+        self.resize(1160, 560)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
@@ -49,15 +52,16 @@ class CodePrefixViewerWindow(QDialog):
         top_layout.addWidget(btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels([
             '番号',
             '本地视频数',
             '补全状态',
             'AVFan作品数',
-            '最早发布时间',
-            '最新发布时间',
+            '最早发布日期',
+            '最晚发布日期',
             '详情',
+            '操作',
         ])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -66,6 +70,7 @@ class CodePrefixViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -75,6 +80,7 @@ class CodePrefixViewerWindow(QDialog):
         self.setLayout(layout)
 
     def load_data(self):
+        self.clear_edit_state()
         self.table.setRowCount(0)
         try:
             self.rows = self.backend_client.list_code_prefixes()
@@ -83,6 +89,7 @@ class CodePrefixViewerWindow(QDialog):
             print(f'读取番号库失败: {exc}')
 
     def render_rows(self, rows):
+        self.action_buttons = {}
         self.table.setRowCount(0)
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
@@ -97,9 +104,12 @@ class CodePrefixViewerWindow(QDialog):
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setTextAlignment(Qt.AlignCenter)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_idx, col_idx, item)
 
-            self.table.setCellWidget(row_idx, 6, self.build_detail_button(row_data.get('prefix', '')))
+            prefix = row_data.get('prefix', '')
+            self.table.setCellWidget(row_idx, 6, self.build_detail_button(prefix))
+            self.table.setCellWidget(row_idx, 7, self.build_action_buttons(prefix))
 
     def build_detail_button(self, prefix):
         button = QPushButton('查看详情')
@@ -109,6 +119,27 @@ class CodePrefixViewerWindow(QDialog):
         layout = QHBoxLayout(container)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.addWidget(button)
+        layout.setAlignment(Qt.AlignCenter)
+        return container
+
+    def build_action_buttons(self, prefix):
+        edit_button = QPushButton('修改')
+        edit_button.clicked.connect(lambda _checked=False, value=prefix: self.handle_edit_button(value))
+
+        delete_button = QPushButton('删除')
+        delete_button.clicked.connect(lambda _checked=False, value=prefix: self.delete_prefix(value))
+
+        self.action_buttons[prefix] = {
+            'edit': edit_button,
+            'delete': delete_button,
+        }
+
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(6)
+        layout.addWidget(edit_button)
+        layout.addWidget(delete_button)
         layout.setAlignment(Qt.AlignCenter)
         return container
 
@@ -123,11 +154,135 @@ class CodePrefixViewerWindow(QDialog):
         viewer.exec_()
 
     def filter_data(self, text):
+        self.clear_edit_state()
         try:
             self.rows = self.backend_client.list_code_prefixes(text)
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选番号库失败: {exc}')
+
+    def clear_edit_state(self):
+        self.editing_prefix = None
+        self.editing_row = None
+
+    def refresh_current_view(self):
+        search_text = self.search_input.text().strip()
+        if search_text:
+            self.filter_data(search_text)
+            return
+        self.load_data()
+
+    def handle_edit_button(self, prefix):
+        if self.editing_prefix is None:
+            self.start_prefix_edit(prefix)
+            return
+
+        if self.editing_prefix != prefix:
+            QMessageBox.information(self, '正在编辑', '请先确认当前正在修改的番号行。')
+            return
+
+        self.confirm_prefix_edit()
+
+    def start_prefix_edit(self, prefix):
+        row = self.find_row_by_prefix(prefix)
+        if row < 0:
+            QMessageBox.warning(self, '提示', f'未找到番号前缀：{prefix}')
+            return
+
+        self.editing_prefix = prefix
+        self.editing_row = row
+        self.set_prefix_cell_editable(row, True)
+
+        button = self.action_buttons.get(prefix, {}).get('edit')
+        if button is not None:
+            button.setText('确认')
+
+        item = self.table.item(row, 0)
+        if item is not None:
+            self.table.setCurrentCell(row, 0)
+            self.table.editItem(item)
+
+    def confirm_prefix_edit(self):
+        if self.editing_prefix is None or self.editing_row is None:
+            return
+
+        item = self.table.item(self.editing_row, 0)
+        old_prefix = self.editing_prefix
+        if item is None:
+            self.clear_edit_state()
+            return
+
+        new_prefix = item.text().strip().upper()
+        self.set_prefix_cell_editable(self.editing_row, False)
+
+        if not new_prefix:
+            item.setText(old_prefix)
+            self.reset_row_button_text(old_prefix)
+            self.clear_edit_state()
+            QMessageBox.warning(self, '提示', '番号前缀不能为空')
+            return
+
+        try:
+            self.backend_client.rename_code_prefix(old_prefix, new_prefix)
+        except Exception as exc:
+            item.setText(old_prefix)
+            self.reset_row_button_text(old_prefix)
+            self.clear_edit_state()
+            QMessageBox.critical(self, '修改失败', f'修改番号前缀失败：\n{exc}')
+            return
+
+        self.clear_edit_state()
+        self.refresh_current_view()
+        QMessageBox.information(self, '修改完成', f'已将番号前缀 {old_prefix} 修改为 {new_prefix}。')
+
+    def reset_row_button_text(self, prefix):
+        button = self.action_buttons.get(prefix, {}).get('edit')
+        if button is not None:
+            button.setText('修改')
+
+    def set_prefix_cell_editable(self, row, editable):
+        item = self.table.item(row, 0)
+        if item is None:
+            return
+        flags = item.flags()
+        if editable:
+            item.setFlags(flags | Qt.ItemIsEditable)
+            return
+        item.setFlags(flags & ~Qt.ItemIsEditable)
+
+    def find_row_by_prefix(self, prefix):
+        target = str(prefix or '').strip().upper()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and item.text().strip().upper() == target:
+                return row
+        return -1
+
+    def delete_prefix(self, prefix):
+        if self.editing_prefix is not None:
+            QMessageBox.information(self, '正在编辑', '请先确认当前正在修改的番号行。')
+            return
+
+        answer = QMessageBox.question(
+            self,
+            '确认删除',
+            (
+                f'确定删除番号前缀 {prefix} 吗？\n'
+                '这会从番号库隐藏该前缀，并清除对应的网页补全数据，'
+                '不会删除本地视频记录。'
+            ),
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        try:
+            self.backend_client.delete_code_prefix(prefix)
+        except Exception as exc:
+            QMessageBox.critical(self, '删除失败', f'删除番号前缀失败：\n{exc}')
+            return
+
+        self.refresh_current_view()
+        QMessageBox.information(self, '删除完成', f'已删除番号前缀 {prefix}。')
 
     def reset_selected_rows(self):
         prefixes = self.selected_prefixes()

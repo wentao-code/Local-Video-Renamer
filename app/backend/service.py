@@ -12,6 +12,7 @@ from app.services.auto_login_service import AutoLoginService
 from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
 from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.library_enrichment_service import LibraryEnrichmentService
+from app.services.library_admin_service import LibraryAdminService
 from app.services.path_library import PathLibrary, summarize_paths
 
 
@@ -26,6 +27,7 @@ class BackendService:
         self.actor_detail_library = ActorDetailLibrary(self.db)
         self.code_prefix_detail_library = CodePrefixDetailLibrary(self.db)
         self.code_prefix_library = CodePrefixLibrary(self.db)
+        self.library_admin_service = LibraryAdminService(self.db)
         self.path_library = PathLibrary()
         self.database_loaded = False
         self.actor_profiles_loaded = False
@@ -107,6 +109,12 @@ class BackendService:
     def reset_actor_enrichments(self, actor_names):
         return {'reset_count': self.db.reset_actor_enrichments(actor_names)}
 
+    def rename_actor(self, old_name, new_name):
+        return {'updated_count': self.library_admin_service.rename_actor(old_name, new_name)}
+
+    def delete_actor(self, actor_name):
+        return {'deleted_count': self.library_admin_service.delete_actor(actor_name)}
+
     def list_code_prefixes(self, search_text=''):
         return {'prefixes': self.code_prefix_library.list_prefixes(search_text)}
 
@@ -115,6 +123,12 @@ class BackendService:
 
     def reset_code_prefix_enrichments(self, prefixes):
         return {'reset_count': self.db.reset_code_prefix_enrichments(prefixes)}
+
+    def rename_code_prefix(self, old_prefix, new_prefix):
+        return {'updated_count': self.library_admin_service.rename_code_prefix(old_prefix, new_prefix)}
+
+    def delete_code_prefix(self, prefix):
+        return {'deleted_count': self.library_admin_service.delete_code_prefix(prefix)}
 
     def list_paths(self):
         paths = []

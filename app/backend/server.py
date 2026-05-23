@@ -65,6 +65,10 @@ def make_handler(service):
                 return service.get_actor_detail(actor_name)
             if method == 'POST' and path == '/database/actors/reset':
                 return service.reset_actor_enrichments(body.get('actor_names', []))
+            if method == 'POST' and path == '/database/actors/rename':
+                return service.rename_actor(body.get('old_name'), body.get('new_name'))
+            if method == 'POST' and path == '/database/actors/delete':
+                return service.delete_actor(body.get('actor_name'))
             if method == 'GET' and path == '/database/code-prefixes':
                 search_text = query.get('q', [''])[0]
                 return service.list_code_prefixes(search_text)
@@ -73,6 +77,10 @@ def make_handler(service):
                 return service.get_code_prefix_detail(prefix)
             if method == 'POST' and path == '/database/code-prefixes/reset':
                 return service.reset_code_prefix_enrichments(body.get('prefixes', []))
+            if method == 'POST' and path == '/database/code-prefixes/rename':
+                return service.rename_code_prefix(body.get('old_prefix'), body.get('new_prefix'))
+            if method == 'POST' and path == '/database/code-prefixes/delete':
+                return service.delete_code_prefix(body.get('prefix'))
             if method == 'GET' and path == '/paths':
                 return service.list_paths()
             if method == 'POST' and path == '/paths/add':

@@ -37,16 +37,22 @@ class CodePrefixLibrary:
     def list_prefixes(self, search_text=''):
         rows = self.database.list_videos()
         enrichment_records = {}
+        hidden_prefixes = set()
         if hasattr(self.database, 'list_code_prefix_enrichment_records'):
             try:
                 enrichment_records = self.database.list_code_prefix_enrichment_records()
             except Exception:
                 enrichment_records = {}
+        if hasattr(self.database, 'list_hidden_code_prefixes'):
+            try:
+                hidden_prefixes = self.database.list_hidden_code_prefixes()
+            except Exception:
+                hidden_prefixes = set()
         grouped = {}
 
         for row in rows:
             prefix = extract_code_prefix(row.get('code', ''))
-            if not prefix:
+            if not prefix or prefix in hidden_prefixes:
                 continue
             grouped[prefix] = grouped.get(prefix, 0) + 1
 

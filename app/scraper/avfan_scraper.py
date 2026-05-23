@@ -75,6 +75,7 @@ class AvfanScraper:
         self._playwright = self._playwright_manager.start()
         self._context = self.open_context(self._playwright)
         self._page = self.get_page(self._context)
+        self.minimize_browser_window_if_needed(self._page)
         return self._page
 
     def use_fresh_page(self, close_existing=False):
@@ -184,6 +185,28 @@ class AvfanScraper:
             except Exception:
                 continue
         return fresh_page
+
+    def minimize_browser_window_if_needed(self, page):
+        if self.headless or page is None:
+            return
+
+        try:
+            cdp_session = page.context.new_cdp_session(page)
+            window_info = cdp_session.send('Browser.getWindowForTarget')
+            window_id = window_info.get('windowId')
+            if not window_id:
+                return
+            cdp_session.send(
+                'Browser.setWindowBounds',
+                {
+                    'windowId': window_id,
+                    'bounds': {'windowState': 'minimized'},
+                },
+            )
+        except Exception:
+            # Best effort only. If the browser/channel does not expose window
+            # controls through CDP, scraping should continue normally.
+            return
 
     def search_movie_url(self, page, code):
         if is_login_page(page) or is_security_verification_page(page) or not can_search_from_current_page(page):

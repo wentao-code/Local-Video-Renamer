@@ -122,6 +122,11 @@ class VideoDatabase:
                     PRIMARY KEY (actor_name, code)
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS hidden_code_prefixes (
+                    prefix TEXT PRIMARY KEY
+                )
+            ''')
             self._ensure_column(cursor, 'path_library', 'last_total_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_used_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_free_bytes', 'INTEGER DEFAULT 0')
@@ -586,6 +591,16 @@ class VideoDatabase:
                 if row[0]
             }
 
+    def list_hidden_code_prefixes(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT prefix FROM hidden_code_prefixes ORDER BY prefix')
+            return {
+                str(row[0] or '').strip().upper()
+                for row in cursor.fetchall()
+                if str(row[0] or '').strip()
+            }
+
     def save_code_prefix_enrichment(self, prefix, status, total_pages=0, total_videos=0, error=''):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -832,6 +847,68 @@ class VideoDatabase:
             conn.commit()
             return len(normalized_names)
 
+    def rename_actor(self, old_name, new_name, author_updates=None):
+        normalized_old_name = str(old_name or '').strip()
+        normalized_new_name = str(new_name or '').strip()
+        updates = list(author_updates or [])
+        if not normalized_old_name or not normalized_new_name:
+            raise ValueError('演员名称不能为空')
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM actors WHERE name = ?', (normalized_new_name,))
+            if normalized_old_name != normalized_new_name and cursor.fetchone():
+                raise ValueError(f'演员 {normalized_new_name} 已存在')
+
+            cursor.execute('SELECT 1 FROM actor_enrichments WHERE actor_name = ?', (normalized_new_name,))
+            if normalized_old_name != normalized_new_name and cursor.fetchone():
+                raise ValueError(f'演员 {normalized_new_name} 的补全记录已存在')
+
+            cursor.execute('SELECT 1 FROM actor_movies WHERE actor_name = ?', (normalized_new_name,))
+            if normalized_old_name != normalized_new_name and cursor.fetchone():
+                raise ValueError(f'演员 {normalized_new_name} 的作品记录已存在')
+
+            cursor.execute(
+                'UPDATE actors SET name = ? WHERE name = ?',
+                (normalized_new_name, normalized_old_name),
+            )
+            updated_actor_count = int(cursor.rowcount or 0)
+
+            cursor.execute(
+                'UPDATE actor_enrichments SET actor_name = ? WHERE actor_name = ?',
+                (normalized_new_name, normalized_old_name),
+            )
+            cursor.execute(
+                'UPDATE actor_movies SET actor_name = ? WHERE actor_name = ?',
+                (normalized_new_name, normalized_old_name),
+            )
+
+            for update in updates:
+                code = str(update.get('code', '')).strip().upper()
+                author = str(update.get('author', '')).strip()
+                if not code:
+                    continue
+                cursor.execute(
+                    'UPDATE processed_videos SET author = ? WHERE code = ?',
+                    (author, code),
+                )
+
+            conn.commit()
+            return updated_actor_count
+
+    def delete_actor(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            raise ValueError('演员名称不能为空')
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
+            cursor.execute('DELETE FROM actor_enrichments WHERE actor_name = ?', (normalized_name,))
+            cursor.execute('DELETE FROM actors WHERE name = ?', (normalized_name,))
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def reset_code_prefix_enrichments(self, prefixes):
         normalized_prefixes = [
             str(prefix or '').strip().upper()
@@ -854,6 +931,115 @@ class VideoDatabase:
             ''', normalized_prefixes)
             conn.commit()
             return len(normalized_prefixes)
+
+    def rename_code_prefix(self, old_prefix, new_prefix, code_updates=None, web_movie_updates=None):
+        normalized_old_prefix = str(old_prefix or '').strip().upper()
+        normalized_new_prefix = str(new_prefix or '').strip().upper()
+        normalized_code_updates = [
+            (
+                str(old_code or '').strip().upper(),
+                str(new_code or '').strip().upper(),
+            )
+            for old_code, new_code in (code_updates or [])
+            if str(old_code or '').strip() and str(new_code or '').strip()
+        ]
+        normalized_web_movie_updates = [
+            (
+                str(old_code or '').strip().upper(),
+                str(new_code or '').strip().upper(),
+            )
+            for old_code, new_code in (web_movie_updates or [])
+            if str(old_code or '').strip() and str(new_code or '').strip()
+        ]
+
+        if not normalized_old_prefix or not normalized_new_prefix:
+            raise ValueError('番号前缀不能为空')
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            if normalized_old_prefix != normalized_new_prefix:
+                cursor.execute('SELECT 1 FROM code_prefix_enrichments WHERE prefix = ?', (normalized_new_prefix,))
+                if cursor.fetchone():
+                    raise ValueError(f'番号前缀 {normalized_new_prefix} 已存在补全记录')
+
+                cursor.execute('SELECT 1 FROM code_prefix_movies WHERE prefix = ?', (normalized_new_prefix,))
+                if cursor.fetchone():
+                    raise ValueError(f'番号前缀 {normalized_new_prefix} 已存在网页作品记录')
+
+                cursor.execute('SELECT 1 FROM hidden_code_prefixes WHERE prefix = ?', (normalized_new_prefix,))
+                if cursor.fetchone():
+                    raise ValueError(f'番号前缀 {normalized_new_prefix} 已被删除，请换一个前缀名称')
+
+            if normalized_code_updates:
+                old_codes = [item[0] for item in normalized_code_updates]
+                new_codes = [item[1] for item in normalized_code_updates]
+                if len(set(new_codes)) != len(new_codes):
+                    raise ValueError('新番号中存在重复值，无法修改前缀')
+
+                new_placeholders = ','.join('?' for _ in new_codes)
+                old_placeholders = ','.join('?' for _ in old_codes)
+                cursor.execute(
+                    f'''
+                    SELECT code
+                    FROM processed_videos
+                    WHERE code IN ({new_placeholders})
+                      AND code NOT IN ({old_placeholders})
+                    ''',
+                    [*new_codes, *old_codes],
+                )
+                collision_rows = [row[0] for row in cursor.fetchall() if row[0]]
+                if collision_rows:
+                    raise ValueError(f'目标番号已存在：{collision_rows[0]}')
+
+            for old_code, new_code in normalized_code_updates:
+                cursor.execute(
+                    'UPDATE processed_videos SET code = ? WHERE code = ?',
+                    (new_code, old_code),
+                )
+
+            for old_code, new_code in normalized_web_movie_updates:
+                cursor.execute(
+                    '''
+                    UPDATE code_prefix_movies
+                    SET prefix = ?, code = ?
+                    WHERE prefix = ? AND code = ?
+                    ''',
+                    (normalized_new_prefix, new_code, normalized_old_prefix, old_code),
+                )
+
+            if not normalized_web_movie_updates:
+                cursor.execute(
+                    'UPDATE code_prefix_movies SET prefix = ? WHERE prefix = ?',
+                    (normalized_new_prefix, normalized_old_prefix),
+                )
+
+            cursor.execute(
+                'UPDATE code_prefix_enrichments SET prefix = ? WHERE prefix = ?',
+                (normalized_new_prefix, normalized_old_prefix),
+            )
+            cursor.execute(
+                'UPDATE hidden_code_prefixes SET prefix = ? WHERE prefix = ?',
+                (normalized_new_prefix, normalized_old_prefix),
+            )
+            conn.commit()
+            return len(normalized_code_updates)
+
+    def delete_code_prefix(self, prefix):
+        normalized_prefix = str(prefix or '').strip().upper()
+        if not normalized_prefix:
+            raise ValueError('番号前缀不能为空')
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT OR IGNORE INTO hidden_code_prefixes (prefix) VALUES (?)',
+                (normalized_prefix,),
+            )
+            cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (normalized_prefix,))
+            cursor.execute('DELETE FROM code_prefix_enrichments WHERE prefix = ?', (normalized_prefix,))
+            conn.commit()
+            return 1
 
     def get_path_by_value(self, folder_path):
         with sqlite3.connect(self.db_path) as conn:
