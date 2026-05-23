@@ -48,8 +48,8 @@ def make_handler(service):
                 return service.scan(folder_path)
             if method == 'POST' and path == '/rename':
                 return service.rename(body.get('plans', []))
-            if method == 'POST' and path == '/database/save':
-                return service.save_plans(body.get('plans', []))
+            if method == 'POST' and path == '/database/videos/import':
+                return service.import_videos(body.get('plans', []))
             if method == 'GET' and path == '/database/videos':
                 search_text = query.get('q', [''])[0]
                 return service.list_videos(search_text)

@@ -1386,3 +1386,129 @@ class VideoDatabase:
             )
             conn.commit()
             return int(cursor.rowcount or 0)
+
+    def get_video_count(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM processed_videos')
+            return int(cursor.fetchone()[0] or 0)
+
+    def get_actor_count(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM actors')
+            return int(cursor.fetchone()[0] or 0)
+
+    def get_videos_by_codes(self, codes):
+        normalized_codes = []
+        seen = set()
+        for code in codes or []:
+            normalized_code = str(code or '').strip().upper()
+            if not normalized_code or normalized_code in seen:
+                continue
+            seen.add(normalized_code)
+            normalized_codes.append(normalized_code)
+
+        if not normalized_codes:
+            return {}
+
+        placeholders = ','.join('?' for _ in normalized_codes)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT code, title, author, duration, size, storage_location
+                FROM processed_videos
+                WHERE code IN ({placeholders})
+                ''',
+                normalized_codes,
+            )
+            rows = cursor.fetchall()
+
+        return {
+            (row[0] or ''): {
+                'code': row[0] or '',
+                'title': row[1] or '',
+                'author': row[2] or '',
+                'duration': row[3] or '',
+                'size': row[4] or '',
+                'storage_location': row[5] or '',
+            }
+            for row in rows
+        }
+
+    def import_local_videos(self, records):
+        normalized_records = {}
+        for record in records or []:
+            code = str((record or {}).get('code', '')).strip().upper()
+            if not code:
+                continue
+            normalized_records[code] = {
+                'code': code,
+                'storage_location': str((record or {}).get('storage_location', '') or '').strip(),
+                'size': str((record or {}).get('size', '') or '').strip(),
+            }
+
+        if not normalized_records:
+            return 0
+
+        codes = list(normalized_records.keys())
+        existing_records = self.get_videos_by_codes(codes)
+        new_records = [normalized_records[code] for code in codes if code not in existing_records]
+        existing_updates = [normalized_records[code] for code in codes if code in existing_records]
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            if new_records:
+                cursor.executemany(
+                    '''
+                    INSERT INTO processed_videos (
+                        code,
+                        title,
+                        author,
+                        duration,
+                        size,
+                        storage_location,
+                        enrichment_status,
+                        avfan_enrichment_status,
+                        javtxt_enrichment_status
+                    )
+                    VALUES (?, '', '', '', ?, ?, ?, ?, ?)
+                    ''',
+                    [
+                        (
+                            record['code'],
+                            record['size'],
+                            record['storage_location'],
+                            build_video_enrichment_status_text(UNENRICHED_STATUS, UNENRICHED_STATUS),
+                            UNENRICHED_STATUS,
+                            UNENRICHED_STATUS,
+                        )
+                        for record in new_records
+                    ],
+                )
+
+            if existing_updates:
+                cursor.executemany(
+                    '''
+                    UPDATE processed_videos
+                    SET size = CASE WHEN ? <> '' THEN ? ELSE size END,
+                        storage_location = CASE WHEN ? <> '' THEN ? ELSE storage_location END
+                    WHERE code = ?
+                    ''',
+                    [
+                        (
+                            record['size'],
+                            record['size'],
+                            record['storage_location'],
+                            record['storage_location'],
+                            record['code'],
+                        )
+                        for record in existing_updates
+                    ],
+                )
+
+            conn.commit()
+
+        return len(new_records)

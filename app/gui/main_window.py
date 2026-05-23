@@ -19,6 +19,12 @@ from PyQt5.QtWidgets import (
 )
 
 from app.backend.client import BackendClient
+from app.core.local_video_labels import (
+    ENRICHMENT_REQUIRED_STATUS,
+    IMPORT_REQUIRED_STATUS,
+    NORMALIZED_STATUS,
+    RENAME_REQUIRED_STATUS,
+)
 from app.core.project_paths import PROJECT_ROOT
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
@@ -95,7 +101,6 @@ class VidNormApp(QWidget):
         self.login_worker = None
 
         self.ensure_backend_running()
-        self.load_csv_data()
         self.init_ui()
         self.update_enrichment_controls()
 
@@ -128,15 +133,8 @@ class VidNormApp(QWidget):
         except Exception:
             return False
 
-    def load_csv_data(self):
-        try:
-            result = self.backend_client.reload_database()
-            print(f"成功加载 {result['count']} 条视频元数据")
-        except Exception as exc:
-            QMessageBox.critical(self, 'CSV 加载失败', f'无法读取数据库文件：\n{str(exc)}')
-
     def init_ui(self):
-        self.setWindowTitle('VidNorm - 基于 CSV 数据库的视频规范化工具')
+        self.setWindowTitle('VidNorm - 本地视频整理工具')
         self.resize(1000, 650)
         main_layout = QVBoxLayout()
 
@@ -157,7 +155,7 @@ class VidNormApp(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(['原文件名', 'CSV 匹配结果(规范化)', '匹配状态'])
+        self.table.setHorizontalHeaderLabels(['原文件名', '数据库重命名预览', '状态'])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -168,7 +166,8 @@ class VidNormApp(QWidget):
         button_layout = QVBoxLayout()
         top_button_row = QHBoxLayout()
         bottom_button_row = QHBoxLayout()
-        self.btn_view_db = QPushButton('查看数据库')
+
+        self.btn_view_db = QPushButton('查看视频库')
         self.btn_view_db.clicked.connect(self.show_db_viewer)
 
         self.btn_view_actors = QPushButton('查看作者库')
@@ -177,12 +176,12 @@ class VidNormApp(QWidget):
         self.btn_view_code_prefixes = QPushButton('查看番号库')
         self.btn_view_code_prefixes.clicked.connect(self.show_code_prefix_viewer)
 
-        self.btn_scan = QPushButton('扫描并匹配 CSV')
+        self.btn_scan = QPushButton('扫描本地视频')
         self.btn_scan.clicked.connect(self.scan_files)
 
-        self.btn_write_db = QPushButton('写入数据库')
-        self.btn_write_db.clicked.connect(self.write_to_db)
-        self.btn_write_db.setEnabled(False)
+        self.btn_import_db = QPushButton('导入视频库')
+        self.btn_import_db.clicked.connect(self.import_to_database)
+        self.btn_import_db.setEnabled(False)
 
         self.btn_auto_login = QPushButton('自动登录')
         self.btn_auto_login.clicked.connect(self.auto_login)
@@ -207,7 +206,7 @@ class VidNormApp(QWidget):
         top_button_row.addStretch()
 
         bottom_button_row.addWidget(self.btn_scan)
-        bottom_button_row.addWidget(self.btn_write_db)
+        bottom_button_row.addWidget(self.btn_import_db)
         bottom_button_row.addWidget(self.btn_auto_login)
         bottom_button_row.addWidget(self.btn_enrich)
         bottom_button_row.addWidget(self.btn_stop_enrich)
@@ -235,84 +234,98 @@ class VidNormApp(QWidget):
         self.table.setRowCount(0)
         self.pending_renames.clear()
         self.btn_execute.setEnabled(False)
-        self.btn_write_db.setEnabled(False)
+        self.btn_import_db.setEnabled(False)
 
     def scan_files(self):
+        self.refresh_scan_results(show_message=True)
+
+    def refresh_scan_results(self, show_message=False):
         folder_path = self.path_input.text()
         if not folder_path:
             QMessageBox.warning(self, '错误', '请先选择文件夹')
-            return
+            return False
 
         try:
             result = self.backend_client.scan_folder(folder_path)
-            self.pending_renames = result.get('plans', [])
         except Exception as exc:
             QMessageBox.warning(self, '错误', str(exc))
-            return
+            return False
 
+        self.pending_renames = result.get('plans', [])
         self.table.setRowCount(0)
+
         has_files_to_rename = False
+        has_files_to_import = False
 
         for row, plan in enumerate(self.pending_renames):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(plan.get('old_name', '')))
-            self.table.setItem(row, 1, QTableWidgetItem(plan.get('new_name', '')))
+            self.table.setItem(row, 1, QTableWidgetItem(plan.get('preview_name', '')))
 
-            if plan.get('needs_rename'):
-                status_item = QTableWidgetItem('待重命名')
-                status_item.setForeground(Qt.blue)
-                has_files_to_rename = True
-            else:
-                status_item = QTableWidgetItem('已规范')
-                status_item.setForeground(Qt.darkGreen)
-
+            row_status = plan.get('row_status', '')
+            status_item = QTableWidgetItem(row_status)
+            status_item.setForeground(self._status_color(row_status))
             self.table.setItem(row, 2, status_item)
 
+            has_files_to_rename = has_files_to_rename or bool(plan.get('can_rename') and plan.get('needs_rename'))
+            has_files_to_import = has_files_to_import or bool(plan.get('import_required'))
+
         self.btn_execute.setEnabled(has_files_to_rename)
-        self.btn_write_db.setEnabled(len(self.pending_renames) > 0)
+        self.btn_import_db.setEnabled(has_files_to_import)
 
-        if has_files_to_rename:
-            message = f'共识别到 {len(self.pending_renames)} 个视频，其中有待重命名视频。'
-        else:
-            message = f'共识别到 {len(self.pending_renames)} 个视频，全部符合规范。'
-        QMessageBox.information(self, '扫描完成', message)
+        if show_message:
+            QMessageBox.information(
+                self,
+                '扫描完成',
+                (
+                    f"共识别到 {result.get('count', 0)} 个视频。\n"
+                    f"待导入: {result.get('import_count', 0)} 个\n"
+                    f"待重命名: {result.get('rename_count', 0)} 个"
+                ),
+            )
+        return True
 
-    def write_to_db(self):
+    def import_to_database(self):
         if not self.pending_renames:
             return
 
         try:
-            result = self.backend_client.save_plans(self.pending_renames)
-            success_count = result.get('success_count', 0)
-            QMessageBox.information(
-                self,
-                '写入成功',
-                f'成功将当前列表中的 {success_count} 个视频数据写入或更新至数据库。\n'
-                f'同时识别并写入或更新 {result.get("actor_count", 0)} 个作者。\n'
-                f'(已根据视频编号和作者名称自动覆盖去重)',
-            )
+            result = self.backend_client.import_videos(self.pending_renames)
         except Exception as exc:
-            QMessageBox.critical(self, '错误', f'写入数据库失败：\n{str(exc)}')
+            QMessageBox.critical(self, '错误', f'导入视频库失败：\n{str(exc)}')
+            return
+
+        success_count = result.get('success_count', 0)
+        self.refresh_scan_results(show_message=False)
+        QMessageBox.information(
+            self,
+            '导入完成',
+            f'成功将 {success_count} 个缺失番号写入视频库，可用于后续补全。',
+        )
 
     def execute_rename(self):
+        if not self.pending_renames:
+            return
+
+        renamable_plans = [
+            plan
+            for plan in self.pending_renames
+            if bool(plan.get('can_rename')) and bool(plan.get('needs_rename'))
+        ]
+        if not renamable_plans:
+            QMessageBox.information(self, '提示', '当前没有可重命名的视频。')
+            return
+
         try:
-            response = self.backend_client.execute_renames(self.pending_renames)
+            response = self.backend_client.execute_renames(renamable_plans)
         except Exception as exc:
             QMessageBox.critical(self, '错误', f'执行重命名失败：\n{str(exc)}')
             return
 
-        results = response.get('results', [])
         success = response.get('success_count', 0)
 
-        for row, result in enumerate(results):
-            status_item = self.table.item(row, 2)
-            if result.get('success'):
-                status_item.setText(f"OK {result.get('message', '完成')}")
-            else:
-                status_item.setText(f"错误 {result.get('message', '失败')}")
-
+        self.refresh_scan_results(show_message=False)
         QMessageBox.information(self, '结果', f'成功重命名 {success} 个文件。')
-        self.btn_execute.setEnabled(False)
 
     def auto_login(self):
         if self.login_thread is not None:
@@ -397,7 +410,7 @@ class VidNormApp(QWidget):
         }
         self.batch_enrichment_round = 0
         self.status_label.setText(
-            f"分批补全已启动：每 {values['batch_interval_minutes']} 分钟补全 {values['batch_limit']} 个视频。"
+            f"分批补全已启动：每 {values['batch_interval_minutes']} 分钟补全 {values['batch_limit']} 个条目。"
         )
         self.update_enrichment_controls()
         self.run_next_batch_enrichment()
@@ -486,7 +499,7 @@ class VidNormApp(QWidget):
             self.batch_countdown_label.setText('')
             self.batch_enrichment_active = False
             self.batch_enrichment_config = None
-        self.status_label.setText('已请求停止补全，当前视频处理完后会停止。')
+        self.status_label.setText('已请求停止补全，当前条目处理完成后会停止。')
         try:
             result = self.backend_client.cancel_enrichment()
             self.status_label.setText(result.get('message', '已请求停止补全。'))
@@ -507,12 +520,23 @@ class VidNormApp(QWidget):
 
     def on_enrichment_finished(self, result):
         mode = self.enrichment_mode
+        entity_label = result.get('entity_label', '视频')
+        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
         summary = (
-            f"本次处理 {result.get('processed_count', 0)} 个视频。\n"
+            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
             f"成功: {result.get('success_count', 0)} 个\n"
             f"失败: {result.get('failed_count', 0)} 个\n"
-            f"剩余未补全: {result.get('remaining_count', 0)} 个"
+            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
         )
+
+        if result.get('requires_manual_verification'):
+            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
+            if mode == 'batch':
+                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
+            else:
+                self.status_label.setText('')
+            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
+            return
 
         if mode == 'batch':
             if not self.batch_enrichment_active:
@@ -521,7 +545,7 @@ class VidNormApp(QWidget):
                 return
 
             if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
-                self.stop_batch_enrichment('分批补全已完成，当前没有待补全视频。')
+                self.stop_batch_enrichment(f'分批补全已完成，当前没有待补全{entity_label}。')
                 QMessageBox.information(self, '分批补全完成', summary)
                 return
 
@@ -541,118 +565,6 @@ class VidNormApp(QWidget):
 
         self.status_label.setText('')
         QMessageBox.critical(self, '补全失败', error_message)
-
-    def on_enrichment_finished(self, result):
-        mode = self.enrichment_mode
-        summary = (
-            f"本次处理 {result.get('processed_count', 0)} 个视频。\n"
-            f"成功: {result.get('success_count', 0)} 个\n"
-            f"失败: {result.get('failed_count', 0)} 个\n"
-            f"剩余未补全: {result.get('remaining_count', 0)} 个"
-        )
-
-        if result.get('requires_manual_verification'):
-            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
-            if mode == 'batch':
-                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
-            else:
-                self.status_label.setText('')
-            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
-            return
-
-        if mode == 'batch':
-            if not self.batch_enrichment_active:
-                self.status_label.setText('已停止分批补全计划。')
-                QMessageBox.information(self, '分批补全已停止', summary)
-                return
-
-            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
-                self.stop_batch_enrichment('分批补全已完成，当前没有待补全视频。')
-                QMessageBox.information(self, '分批补全完成', summary)
-                return
-
-            self.schedule_next_batch_enrichment()
-            return
-
-        title = '补全已停止' if result.get('stopped') else '补全完成'
-        QMessageBox.information(self, title, summary)
-        self.status_label.setText('')
-
-    def on_enrichment_finished(self, result):
-        mode = self.enrichment_mode
-        entity_label = result.get('entity_label', '视频')
-        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
-        summary = (
-            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
-            f"成功: {result.get('success_count', 0)} 个\n"
-            f"失败: {result.get('failed_count', 0)} 个\n"
-            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
-        )
-
-        if result.get('requires_manual_verification'):
-            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
-            if mode == 'batch':
-                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
-            else:
-                self.status_label.setText('')
-            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
-            return
-
-        if mode == 'batch':
-            if not self.batch_enrichment_active:
-                self.status_label.setText('已停止分批补全计划。')
-                QMessageBox.information(self, '分批补全已停止', summary)
-                return
-
-            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
-                self.stop_batch_enrichment(f'分批补全已完成，当前没有待补全{entity_label}。')
-                QMessageBox.information(self, '分批补全完成', summary)
-                return
-
-            self.schedule_next_batch_enrichment()
-            return
-
-        title = '补全已停止' if result.get('stopped') else '补全完成'
-        QMessageBox.information(self, title, summary)
-        self.status_label.setText('')
-
-    def on_enrichment_finished(self, result):
-        mode = self.enrichment_mode
-        entity_label = result.get('entity_label', '视频')
-        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
-        summary = (
-            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
-            f"成功: {result.get('success_count', 0)} 个\n"
-            f"失败: {result.get('failed_count', 0)} 个\n"
-            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
-        )
-
-        if result.get('requires_manual_verification'):
-            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
-            if mode == 'batch':
-                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
-            else:
-                self.status_label.setText('')
-            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
-            return
-
-        if mode == 'batch':
-            if not self.batch_enrichment_active:
-                self.status_label.setText('已停止分批补全计划。')
-                QMessageBox.information(self, '分批补全已停止', summary)
-                return
-
-            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
-                self.stop_batch_enrichment(f'分批补全已完成，当前没有待补全{entity_label}。')
-                QMessageBox.information(self, '分批补全完成', summary)
-                return
-
-            self.schedule_next_batch_enrichment()
-            return
-
-        title = '补全已停止' if result.get('stopped') else '补全完成'
-        QMessageBox.information(self, title, summary)
-        self.status_label.setText('')
 
     def cleanup_auto_login_thread(self):
         self.btn_auto_login.setEnabled(True)
@@ -679,7 +591,7 @@ class VidNormApp(QWidget):
             self,
             '重置网页登录状态',
             '这会清除补全信息使用的专用浏览器登录状态、Cookie 和验证记录。\n'
-            '不会影响视频数据库，也不会影响你的日常 Chrome。\n\n'
+            '不会影响视频数据库，也不会影响你日常使用的 Chrome。\n\n'
             '请先关闭补全时弹出的浏览器窗口，然后继续。是否重置？',
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -693,8 +605,7 @@ class VidNormApp(QWidget):
             QMessageBox.information(
                 self,
                 '重置完成',
-                f"{result.get('message', '已重置网页登录状态。')}\n\n"
-                f"目录: {result.get('profile_dir', '')}",
+                f"{result.get('message', '已重置网页登录状态。')}\n\n目录: {result.get('profile_dir', '')}",
             )
         except Exception as exc:
             QMessageBox.critical(self, '重置失败', str(exc))
@@ -734,6 +645,18 @@ class VidNormApp(QWidget):
         if self.backend_process and self.backend_process.poll() is None:
             self.backend_process.terminate()
         super().closeEvent(event)
+
+    @staticmethod
+    def _status_color(row_status):
+        if row_status == IMPORT_REQUIRED_STATUS:
+            return Qt.darkYellow
+        if row_status == ENRICHMENT_REQUIRED_STATUS:
+            return Qt.darkYellow
+        if row_status == RENAME_REQUIRED_STATUS:
+            return Qt.blue
+        if row_status == NORMALIZED_STATUS:
+            return Qt.darkGreen
+        return Qt.black
 
 
 def main():

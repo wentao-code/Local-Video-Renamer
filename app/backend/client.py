@@ -11,17 +11,14 @@ class BackendClient:
     def health(self):
         return self._get('/health')
 
-    def reload_database(self):
-        return self._post('/database/reload')
-
     def scan_folder(self, folder_path):
         return self._post('/scan', {'folder_path': folder_path})
 
+    def import_videos(self, plans):
+        return self._post('/database/videos/import', {'plans': plans})
+
     def execute_renames(self, plans):
         return self._post('/rename', {'plans': plans})
-
-    def save_plans(self, plans):
-        return self._post('/database/save', {'plans': plans})
 
     def enrich_videos(
         self,
@@ -31,7 +28,6 @@ class BackendClient:
         target_type=None,
         source_key=None,
     ):
-        # Playwright needs time to open the site, search, and parse each movie page.
         cooldown_seconds = 180 if cooldown_before_search else 0
         if target_type in ('code_prefix_library', 'actor_library'):
             timeout = max(self.timeout, int(limit or 1) * 240 + 60 + cooldown_seconds)
