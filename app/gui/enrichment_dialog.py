@@ -14,6 +14,11 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+)
 from app.core.enrichment_targets import (
     ACTOR_LIBRARY_TARGET,
     CODE_PREFIX_LIBRARY_TARGET,
@@ -29,6 +34,7 @@ DEFAULT_SETTINGS = {
     'batch_limit': 5,
     'batch_interval_minutes': 30,
     'target_type': VIDEO_LIBRARY_TARGET,
+    'source_key': DEFAULT_VIDEO_ENRICHMENT_SOURCE,
 }
 
 
@@ -73,7 +79,6 @@ class EnrichmentDialog(QDialog):
         self.video_target_button = QRadioButton('视频库')
         self.code_prefix_target_button = QRadioButton('番号库')
         self.actor_target_button = QRadioButton('演员库')
-        self.actor_target_button.setToolTip('演员库补全入口已预留，当前版本暂未实现抓取逻辑。')
 
         self.target_button_group.addButton(self.video_target_button)
         self.target_button_group.addButton(self.code_prefix_target_button)
@@ -85,28 +90,43 @@ class EnrichmentDialog(QDialog):
         target_layout.addStretch()
         target_group.setLayout(target_layout)
 
+        source_group = QGroupBox('视频库补全来源')
+        source_layout = QHBoxLayout()
+        self.source_button_group = QButtonGroup(self)
+        self.source_button_group.setExclusive(True)
+        self.avfan_source_button = QRadioButton('天陨阁')
+        self.javtxt_source_button = QRadioButton('辛聚谷')
+        self.javtxt_source_button.setToolTip('辛聚谷用于补全视频标题、演员与第二套视频 ID。')
+        self.source_button_group.addButton(self.avfan_source_button)
+        self.source_button_group.addButton(self.javtxt_source_button)
+        source_layout.addWidget(self.avfan_source_button)
+        source_layout.addWidget(self.javtxt_source_button)
+        source_layout.addStretch()
+        source_group.setLayout(source_layout)
+        self.source_group = source_group
+
+        self.video_target_button.toggled.connect(self.update_source_controls)
+        self.code_prefix_target_button.toggled.connect(self.update_source_controls)
+        self.actor_target_button.toggled.connect(self.update_source_controls)
+
         self.limit_input = QSpinBox()
         self.limit_input.setRange(1, 999999)
         self.limit_input.setValue(DEFAULT_SETTINGS['limit'])
-        self.limit_input.setToolTip('单次立即补全的条目数量。')
 
         self.batch_limit_input = QSpinBox()
         self.batch_limit_input.setRange(1, 999999)
         self.batch_limit_input.setValue(DEFAULT_SETTINGS['batch_limit'])
-        self.batch_limit_input.setToolTip('每一批次补全的条目数量。')
 
         self.interval_minutes_input = QSpinBox()
         self.interval_minutes_input.setRange(1, 1440)
         self.interval_minutes_input.setValue(DEFAULT_SETTINGS['batch_interval_minutes'])
         self.interval_minutes_input.setSuffix(' 分钟')
-        self.interval_minutes_input.setToolTip('每批补全完成后等待多久再开始下一批。')
 
         self.show_browser_checkbox = QCheckBox('显示浏览器窗口')
         self.show_browser_checkbox.setChecked(DEFAULT_SETTINGS['show_browser'])
 
         self.cooldown_checkbox = QCheckBox('冷却 3 分钟后再搜索')
         self.cooldown_checkbox.setChecked(DEFAULT_SETTINGS['cooldown_before_search'])
-        self.cooldown_checkbox.setToolTip('打开 AVFan 页面后等待 3 分钟，再开始搜索第一个目标。')
 
         form_layout.addRow('本次补全数量:', self.limit_input)
         form_layout.addRow('每批补全数量:', self.batch_limit_input)
@@ -126,6 +146,7 @@ class EnrichmentDialog(QDialog):
         self.save_button.clicked.connect(self.save_settings)
 
         layout.addWidget(target_group)
+        layout.addWidget(source_group)
         layout.addLayout(form_layout)
         layout.addWidget(buttons)
         self.setLayout(layout)
@@ -137,6 +158,13 @@ class EnrichmentDialog(QDialog):
             return ACTOR_LIBRARY_TARGET
         return VIDEO_LIBRARY_TARGET
 
+    def selected_source_key(self):
+        if self.selected_target_type() != VIDEO_LIBRARY_TARGET:
+            return AVFAN_VIDEO_SOURCE
+        if self.javtxt_source_button.isChecked():
+            return JAVTXT_VIDEO_SOURCE
+        return AVFAN_VIDEO_SOURCE
+
     def values(self):
         return {
             'limit': self.limit_input.value(),
@@ -145,6 +173,7 @@ class EnrichmentDialog(QDialog):
             'show_browser': self.show_browser_checkbox.isChecked(),
             'cooldown_before_search': self.cooldown_checkbox.isChecked(),
             'target_type': self.selected_target_type(),
+            'source_key': self.selected_source_key(),
         }
 
     def apply_settings(self, settings):
@@ -167,6 +196,7 @@ class EnrichmentDialog(QDialog):
             self.interval_minutes_input.maximum(),
         )
         target_type = settings.get('target_type', VIDEO_LIBRARY_TARGET)
+        source_key = settings.get('source_key', DEFAULT_VIDEO_ENRICHMENT_SOURCE)
 
         self.limit_input.setValue(limit)
         self.batch_limit_input.setValue(batch_limit)
@@ -185,6 +215,16 @@ class EnrichmentDialog(QDialog):
             self.actor_target_button,
         )):
             self.video_target_button.setChecked(True)
+
+        self.avfan_source_button.setChecked(source_key != JAVTXT_VIDEO_SOURCE)
+        self.javtxt_source_button.setChecked(source_key == JAVTXT_VIDEO_SOURCE)
+        self.update_source_controls()
+
+    def update_source_controls(self):
+        is_video_target = self.selected_target_type() == VIDEO_LIBRARY_TARGET
+        self.source_group.setEnabled(is_video_target)
+        if not is_video_target:
+            self.avfan_source_button.setChecked(True)
 
     def accept_single(self):
         self.action_mode = 'single'

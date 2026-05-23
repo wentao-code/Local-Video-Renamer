@@ -27,15 +27,15 @@ class DatabaseViewerWindow(QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('已存档视频数据库台账')
-        self.resize(980, 580)
+        self.setWindowTitle('已存档视频数据库')
+        self.resize(1160, 580)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入视频编号、标题、演员或存放位置，即可实时快速筛选...')
+        self.search_input.setPlaceholderText('输入视频编号、标题、演员、来源 ID 或存放位置，实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
         btn_reset = QPushButton('选中重置')
@@ -53,7 +53,7 @@ class DatabaseViewerWindow(QDialog):
         self.summary_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(11)
+        self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels([
             '视频编号',
             '视频标题',
@@ -61,7 +61,8 @@ class DatabaseViewerWindow(QDialog):
             '时长',
             '大小(GB)',
             '存放位置',
-            '视频ID',
+            '天陨阁 ID',
+            '辛聚谷 ID',
             '发行日期',
             '制作商',
             '发行商',
@@ -78,8 +79,9 @@ class DatabaseViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         layout.addLayout(top_layout)
@@ -119,7 +121,7 @@ class DatabaseViewerWindow(QDialog):
         enriched_count = sum(
             1
             for row in rows
-            if str(row.get('enrichment_status', '')).strip() == ENRICHED_STATUS
+            if str(row.get('avfan_enrichment_status', '')).strip() == ENRICHED_STATUS
         )
         unenriched_count = max(total_count - enriched_count, 0)
         return {
@@ -138,17 +140,19 @@ class DatabaseViewerWindow(QDialog):
             'size',
             'storage_location',
             'avfan_movie_id',
+            'javtxt_movie_id',
             'release_date',
             'maker',
             'publisher',
             'enrichment_status',
         )
 
+        centered_columns = {0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
             for col_idx, field in enumerate(fields):
                 item = QTableWidgetItem(str(row_data.get(field, '')))
-                if col_idx in (0, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+                if col_idx in centered_columns:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 

@@ -96,6 +96,7 @@ def make_handler(service):
                     show_browser=bool(body.get('show_browser')),
                     cooldown_before_search=bool(body.get('cooldown_before_search')),
                     target_type=body.get('target_type'),
+                    source_key=body.get('source_key'),
                 )
             if method == 'POST' and path == '/database/enrich/cancel':
                 return service.cancel_enrichment()

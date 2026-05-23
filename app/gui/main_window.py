@@ -31,13 +31,14 @@ class EnrichmentWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, backend_client, limit, show_browser, cooldown_before_search, target_type):
+    def __init__(self, backend_client, limit, show_browser, cooldown_before_search, target_type, source_key):
         super().__init__()
         self.backend_client = backend_client
         self.limit = limit
         self.show_browser = show_browser
         self.cooldown_before_search = cooldown_before_search
         self.target_type = target_type
+        self.source_key = source_key
 
     def run(self):
         try:
@@ -46,6 +47,7 @@ class EnrichmentWorker(QObject):
                 show_browser=self.show_browser,
                 cooldown_before_search=self.cooldown_before_search,
                 target_type=self.target_type,
+                source_key=self.source_key,
             )
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -352,10 +354,11 @@ class VidNormApp(QWidget):
             values['show_browser'],
             values['cooldown_before_search'],
             values['target_type'],
+            values['source_key'],
             mode='single',
         )
 
-    def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, mode='single'):
+    def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, source_key, mode='single'):
         self.enrichment_mode = mode
         if mode == 'batch':
             self.batch_enrichment_round += 1
@@ -371,6 +374,7 @@ class VidNormApp(QWidget):
             show_browser,
             cooldown_before_search,
             target_type,
+            source_key,
         )
         self.enrichment_worker.moveToThread(self.enrichment_thread)
         self.enrichment_thread.started.connect(self.enrichment_worker.run)
@@ -389,6 +393,7 @@ class VidNormApp(QWidget):
             'show_browser': values['show_browser'],
             'cooldown_before_search': values['cooldown_before_search'],
             'target_type': values['target_type'],
+            'source_key': values['source_key'],
         }
         self.batch_enrichment_round = 0
         self.status_label.setText(
@@ -413,6 +418,7 @@ class VidNormApp(QWidget):
             self.batch_enrichment_config['show_browser'],
             self.batch_enrichment_config['cooldown_before_search'],
             self.batch_enrichment_config['target_type'],
+            self.batch_enrichment_config['source_key'],
             mode='batch',
         )
 

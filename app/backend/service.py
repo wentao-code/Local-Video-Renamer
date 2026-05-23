@@ -155,7 +155,7 @@ class BackendService:
             raise ValueError('缺少 path_id')
         return {'deleted_count': self.db.delete_path(path_id)}
 
-    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None):
+    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None, source_key=None):
         with self.enrichment_lock:
             if self.enrichment_running:
                 raise RuntimeError('已有补全任务正在运行，请稍后再试。')
@@ -169,7 +169,7 @@ class BackendService:
                 cooldown_before_search=cooldown_before_search,
                 should_stop=self.enrichment_cancel_event.is_set,
             )
-            return enrichment_service.run(target_type, limit)
+            return enrichment_service.run(target_type, limit, source_key=source_key)
         finally:
             self.enrichment_running = False
             self.enrichment_cancel_event.clear()

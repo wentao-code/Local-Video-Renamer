@@ -4,7 +4,7 @@ from app.tools.avfan_page_probe import probe_url
 
 
 # 直接在这里填写你要测试的 AVFan 链接。
-TARGET_URL = 'https://avfan.com/zh-CN/number_letters/ALDN?page=1'
+TARGET_URL = 'https://javtxt.top/v/545177'
 
 # 是否显示浏览器窗口。
 SHOW_BROWSER = True
