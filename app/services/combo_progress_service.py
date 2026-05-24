@@ -68,7 +68,7 @@ class ComboProgressService:
                 },
             }
 
-    def update_subtask_start(self, task_key, total_count, source_label='', message=''):
+    def update_subtask_start(self, task_key, total_count, source_label='', message='', count_unit='项'):
         with self._lock:
             subtask = self._state.get('subtasks', {}).get(task_key)
             if subtask is None:
@@ -79,6 +79,7 @@ class ComboProgressService:
                     'source_label': str(source_label or ''),
                     'total_count': max(0, int(total_count or 0)),
                     'message': str(message or ''),
+                    'count_unit': str(count_unit or subtask.get('count_unit', '项') or '项'),
                 }
             )
             self._recalculate_totals_locked()
@@ -216,12 +217,13 @@ class ComboSubtaskProgressTracker:
         self.task_definition = dict(task_definition)
         self.logger = logger
 
-    def start(self, target_label, total_count, source_label='', message=''):
+    def start(self, target_label, total_count, source_label='', message='', count_unit='项'):
         self.combo_progress_service.update_subtask_start(
             self.task_definition['task_key'],
             total_count,
             source_label=source_label,
             message=message,
+            count_unit=count_unit,
         )
         self.logger.log(
             'INFO',
@@ -230,6 +232,7 @@ class ComboSubtaskProgressTracker:
             task_label=self.task_definition['task_label'],
             total_count=max(0, int(total_count or 0)),
             source_label=str(source_label or ''),
+            count_unit=str(count_unit or '项'),
         )
 
     def update(self, processed_count, success_count, failed_count, current_item=''):
