@@ -7,6 +7,7 @@ from app.core.runtime_config import (
     get_scraper_browser_channel,
     get_scraper_locale,
 )
+from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
 from app.scraper.browser_window import minimize_browser_window_if_needed
@@ -130,7 +131,7 @@ class JavtxtScraper:
         final_url = page.url or ''
         movie_id = extract_javtxt_movie_id(final_url)
         title = extract_title(page, lines, requested_code)
-        actors_text = extract_actor_text(lines)
+        actors_text = normalize_second_source_actor_text(extract_actor_text(lines))
         release_date = extract_detail_value(lines, ('📅 发行时间', '发行时间', '發行時間'))
         maker = extract_detail_value(lines, ('🎥 片商', '片商'))
         publisher = extract_detail_value(lines, ('🔖 厂牌', '厂牌', '廠牌'))
@@ -244,7 +245,8 @@ def is_next_section_label(text):
 
 
 def normalize_actor_line(text):
-    return ' '.join(part for part in re.split(r'\s{2,}', str(text or '').strip()) if part)
+    joined = ' '.join(part for part in re.split(r'\s{2,}', str(text or '').strip()) if part)
+    return normalize_second_source_actor_text(joined)
 
 
 def normalize_code(value):

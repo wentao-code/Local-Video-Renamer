@@ -1,6 +1,7 @@
 import re
 from datetime import date, datetime
 
+from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.scraper.javtxt_scraper import JavtxtScraper
 
 
@@ -48,7 +49,7 @@ class MovieAuthorResolver:
         if code in self._author_cache:
             return self._author_cache[code]
 
-        cached_author = str((cached_row or {}).get('javtxt_actors', '') or '').strip()
+        cached_author = normalize_second_source_actor_text((cached_row or {}).get('javtxt_actors', ''))
         if cached_author:
             self._author_cache[code] = cached_author
             return cached_author
@@ -57,7 +58,7 @@ class MovieAuthorResolver:
         try:
             info = self.scraper.fetch_by_code(code)
             if info.get('found'):
-                author = str(info.get('author', '') or '').strip()
+                author = normalize_second_source_actor_text(info.get('author', ''))
                 self._save_video_cache(code, info)
         except Exception:
             author = ''

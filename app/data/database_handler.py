@@ -16,6 +16,7 @@ from app.core.enrichment_sources import (
     is_effective_video_pending_status,
     normalize_video_enrichment_source,
 )
+from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
 from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
 
@@ -24,6 +25,10 @@ def join_values(value):
     if isinstance(value, (list, tuple)):
         return ' '.join(str(item) for item in value if str(item).strip())
     return str(value or '')
+
+
+def sanitize_actor_text(value):
+    return normalize_second_source_actor_text(value)
 
 
 class VideoDatabase:
@@ -826,7 +831,7 @@ class VideoDatabase:
                         prefix,
                         str(movie.get('code', '')).strip().upper(),
                         movie.get('title', ''),
-                        movie.get('author', ''),
+                        sanitize_actor_text(movie.get('author', '')),
                         movie.get('release_date', ''),
                         movie.get('avfan_url', ''),
                         int(movie.get('page_number', 1) or 1),
@@ -871,7 +876,7 @@ class VideoDatabase:
                     'prefix': row[0] or '',
                     'code': row[1] or '',
                     'title': row[2] or '',
-                    'author': row[3] or '',
+                    'author': sanitize_actor_text(row[3] or ''),
                     'release_date': row[4] or '',
                     'avfan_url': row[5] or '',
                     'page_number': int(row[6] or 1),
@@ -981,7 +986,7 @@ class VideoDatabase:
                         normalized_name,
                         str(movie.get('code', '')).strip().upper(),
                         movie.get('title', ''),
-                        movie.get('author', ''),
+                        sanitize_actor_text(movie.get('author', '')),
                         movie.get('release_date', ''),
                         movie.get('avfan_url', ''),
                         int(movie.get('page_number', 1) or 1),
@@ -1027,7 +1032,7 @@ class VideoDatabase:
                     'actor_name': row[0] or '',
                     'code': row[1] or '',
                     'title': row[2] or '',
-                    'author': row[3] or '',
+                    'author': sanitize_actor_text(row[3] or ''),
                     'release_date': row[4] or '',
                     'avfan_url': row[5] or '',
                     'page_number': int(row[6] or 1),
@@ -1353,7 +1358,7 @@ class VideoDatabase:
             {
                 'code': row[0] or '',
                 'title': row[1] or '',
-                'author': row[2] or '',
+                'author': sanitize_actor_text(row[2] or ''),
                 'duration': row[3] or '',
                 'size': row[4] or '',
                 'storage_location': row[5] or '',
@@ -1361,7 +1366,7 @@ class VideoDatabase:
                 'javtxt_movie_id': row[7] or '',
                 'javtxt_url': row[8] or '',
                 'javtxt_title': row[9] or '',
-                'javtxt_actors': row[10] or '',
+                'javtxt_actors': sanitize_actor_text(row[10] or ''),
                 'release_date': row[11] or '',
                 'maker': row[12] or '',
                 'publisher': row[13] or '',
@@ -1403,6 +1408,8 @@ class VideoDatabase:
     def update_video_enrichment(self, code, info, status=ENRICHED_STATUS, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, error_column, at_column = self._video_source_columns(normalized_source)
+        sanitized_author = sanitize_actor_text(info.get('author', ''))
+        sanitized_javtxt_actors = sanitize_actor_text(info.get('javtxt_actors', ''))
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             if normalized_source == JAVTXT_VIDEO_SOURCE:
@@ -1414,7 +1421,7 @@ class VideoDatabase:
                         javtxt_title = ?,
                         javtxt_actors = ?,
                         title = COALESCE(NULLIF(?, ''), title),
-                        author = COALESCE(NULLIF(?, ''), author),
+                        author = ?,
                         release_date = COALESCE(NULLIF(?, ''), release_date),
                         maker = COALESCE(NULLIF(?, ''), maker),
                         publisher = COALESCE(NULLIF(?, ''), publisher),
@@ -1427,9 +1434,9 @@ class VideoDatabase:
                         info.get('javtxt_movie_id', ''),
                         info.get('javtxt_url', ''),
                         info.get('javtxt_title', ''),
-                        info.get('javtxt_actors', ''),
+                        sanitized_javtxt_actors,
                         info.get('title', ''),
-                        info.get('author', ''),
+                        sanitized_author,
                         info.get('release_date', ''),
                         join_values(info.get('maker')),
                         join_values(info.get('publisher')),
@@ -1638,7 +1645,7 @@ class VideoDatabase:
             (row[0] or ''): {
                 'code': row[0] or '',
                 'title': row[1] or '',
-                'author': row[2] or '',
+                'author': sanitize_actor_text(row[2] or ''),
                 'duration': row[3] or '',
                 'size': row[4] or '',
                 'storage_location': row[5] or '',
@@ -1675,7 +1682,7 @@ class VideoDatabase:
         return {
             (row[0] or ''): {
                 'code': row[0] or '',
-                'javtxt_actors': row[1] or '',
+                'javtxt_actors': sanitize_actor_text(row[1] or ''),
                 'javtxt_movie_id': row[2] or '',
                 'javtxt_url': row[3] or '',
                 'javtxt_enrichment_status': row[4] or UNENRICHED_STATUS,
@@ -1696,7 +1703,7 @@ class VideoDatabase:
                 SET javtxt_movie_id = COALESCE(NULLIF(?, ''), javtxt_movie_id),
                     javtxt_url = COALESCE(NULLIF(?, ''), javtxt_url),
                     javtxt_title = COALESCE(NULLIF(?, ''), javtxt_title),
-                    javtxt_actors = COALESCE(NULLIF(?, ''), javtxt_actors),
+                    javtxt_actors = ?,
                     javtxt_enriched_at = CURRENT_TIMESTAMP
                 WHERE code = ?
                 ''',
@@ -1704,7 +1711,7 @@ class VideoDatabase:
                     str((info or {}).get('javtxt_movie_id', '') or '').strip(),
                     str((info or {}).get('javtxt_url', '') or '').strip(),
                     str((info or {}).get('javtxt_title', '') or '').strip(),
-                    str((info or {}).get('javtxt_actors', '') or '').strip(),
+                    sanitize_actor_text((info or {}).get('javtxt_actors', '')),
                     normalized_code,
                 ),
             )
