@@ -39,6 +39,14 @@ class ComboTaskLogger:
             with self.log_path.open('a', encoding='utf-8') as handle:
                 handle.write(line)
 
+    def log_emphasis_block(self, title, lines=None, level='NOTICE'):
+        border = '=' * 18
+        text_lines = [str(line).strip() for line in (lines or []) if str(line).strip()]
+        self.log(level, f'{border} {title} {border}')
+        for text_line in text_lines:
+            self.log(level, text_line)
+        self.log(level, '=' * (len(title) + 38))
+
     def _cleanup_old_logs(self):
         log_files = sorted(
             self.log_dir.glob('*.log'),

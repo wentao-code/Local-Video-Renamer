@@ -6,6 +6,7 @@ from app.core.combo_enrichment import get_combo_label, get_combo_tasks, normaliz
 from app.core.project_paths import COMBO_BROWSER_PROFILES_DIR
 from app.scraper.avfan_actor_scraper import AvfanActorScraper
 from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
+from app.scraper.avfan_scraper import ensure_avfan_profile_seeded
 from app.services.actor_enrichment import ActorEnrichmentService
 from app.services.actor_javtxt_enrichment import ActorJavtxtEnrichmentService
 from app.services.code_prefix_enrichment import CodePrefixEnrichmentService
@@ -213,8 +214,43 @@ class ComboEnrichmentService:
 
     def _build_avfan_profile_dir(self, task_key):
         profile_dir = COMBO_BROWSER_PROFILES_DIR / task_key
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        seed_result = ensure_avfan_profile_seeded(profile_dir)
+        self.logger.log(
+            'INFO',
+            'AVFan 组合任务浏览器配置已准备',
+            task_key=task_key,
+            profile_dir=seed_result.get('profile_dir', str(profile_dir)),
+            source_profile_dir=seed_result.get('source_profile_dir', ''),
+            seeded=seed_result.get('seeded', False),
+            reason=seed_result.get('reason', ''),
+        )
+        self._log_avfan_profile_seed_status(task_key, seed_result)
         return profile_dir
+
+    def _log_avfan_profile_seed_status(self, task_key, seed_result):
+        inherited = bool(seed_result.get('seeded', False))
+        source_profile_dir = seed_result.get('source_profile_dir', '') or '未提供'
+        target_profile_dir = seed_result.get('profile_dir', '') or str(COMBO_BROWSER_PROFILES_DIR / task_key)
+        reason = str(seed_result.get('reason', '') or '').strip()
+        reason_text_map = {
+            'copied': '本次已从主 AVFan profile 复制登录态到组合任务 profile。',
+            'target_has_login_state': '组合任务 profile 已经带有登录态，因此本次没有再次继承。',
+            'source_missing_or_empty': '主 AVFan profile 不存在或没有可继承的登录态。',
+            'same_profile': '当前直接使用主 AVFan profile，本次不需要额外继承。',
+        }
+        reason_text = reason_text_map.get(reason, reason or '未提供')
+        status_text = '已继承' if inherited else '未继承'
+        self.logger.log_emphasis_block(
+            'AVFan 登录态继承摘要',
+            level='NOTICE' if inherited else 'WARNING',
+            lines=[
+                f'子任务: {task_key}',
+                f'本次是否继承登录态: {status_text}',
+                f'继承来源 profile: {source_profile_dir}',
+                f'当前使用 profile: {target_profile_dir}',
+                f'说明: {reason_text}',
+            ],
+        )
 
     def _should_stop(self):
         return self.internal_stop_event.is_set() or bool(self.external_should_stop())

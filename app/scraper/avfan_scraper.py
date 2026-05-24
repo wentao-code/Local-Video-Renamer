@@ -20,6 +20,96 @@ SEARCH_COOLDOWN_MS = 180000
 MANUAL_CHECK_TIMEOUT_MS = 600000
 
 
+def ensure_avfan_profile_seeded(profile_dir, source_profile_dir=None):
+    target = Path(profile_dir or DEFAULT_PROFILE_DIR).resolve()
+    source = Path(source_profile_dir or DEFAULT_PROFILE_DIR).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+
+    if target == source:
+        return {
+            'seeded': False,
+            'profile_dir': str(target),
+            'source_profile_dir': str(source),
+            'reason': 'same_profile',
+        }
+
+    if profile_has_login_state(target):
+        return {
+            'seeded': False,
+            'profile_dir': str(target),
+            'source_profile_dir': str(source),
+            'reason': 'target_has_login_state',
+        }
+
+    if not source.exists() or not profile_has_data(source):
+        return {
+            'seeded': False,
+            'profile_dir': str(target),
+            'source_profile_dir': str(source),
+            'reason': 'source_missing_or_empty',
+        }
+
+    try:
+        shutil.copytree(
+            source,
+            target,
+            dirs_exist_ok=True,
+            ignore=_ignore_profile_copy_entries,
+        )
+    except PermissionError as exc:
+        raise RuntimeError(
+            '无法复制 AVFan 登录态到组合任务浏览器配置。请先关闭所有补全过程中打开的浏览器窗口后再重试。'
+        ) from exc
+
+    return {
+        'seeded': True,
+        'profile_dir': str(target),
+        'source_profile_dir': str(source),
+        'reason': 'copied',
+    }
+
+
+def profile_has_data(profile_dir):
+    path = Path(profile_dir)
+    if not path.exists():
+        return False
+    for child in path.iterdir():
+        if child.name.startswith('Singleton'):
+            continue
+        return True
+    return False
+
+
+def profile_has_login_state(profile_dir):
+    path = Path(profile_dir)
+    if not path.exists():
+        return False
+
+    candidate_paths = (
+        path / 'Cookies',
+        path / 'Network' / 'Cookies',
+        path / 'Default' / 'Cookies',
+        path / 'Default' / 'Network' / 'Cookies',
+        path / 'Default' / 'Preferences',
+    )
+    return any(candidate.exists() for candidate in candidate_paths)
+
+
+def _ignore_profile_copy_entries(_directory, entry_names):
+    ignored_names = []
+    for entry_name in entry_names:
+        lowered = str(entry_name or '').lower()
+        if lowered.startswith('singleton'):
+            ignored_names.append(entry_name)
+            continue
+        if lowered in {'lock', 'lockfile'}:
+            ignored_names.append(entry_name)
+            continue
+        if lowered == 'crashpad':
+            ignored_names.append(entry_name)
+    return ignored_names
+
+
 def reset_avfan_browser_profile(profile_dir=None):
     target = Path(profile_dir) if profile_dir else DEFAULT_PROFILE_DIR
     target = target.resolve()

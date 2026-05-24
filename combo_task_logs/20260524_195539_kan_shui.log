@@ -1,0 +1,17 @@
+[2026-05-24 19:55:39] [INFO] 组合任务日志已创建：坎水 | combo_key=kan_shui | log_path=D:\pycharm_pro\Local-Video-Renamer\combo_task_logs\20260524_195539_kan_shui.log | run_id=20260524_195539_kan_shui
+[2026-05-24 19:55:39] [INFO] 组合任务开始执行 | combo_key=kan_shui | combo_label=坎水 | cooldown_before_search=False | limit=6 | show_browser=True
+[2026-05-24 19:55:39] [INFO] 子任务准备启动 | limit=6 | task_key=code_prefix_avfan | task_label=番号库 / 天限阁
+[2026-05-24 19:55:39] [INFO] 子任务准备启动 | limit=6 | task_key=actor_javtxt | task_label=演员库 / 辛聚谷
+[2026-05-24 19:55:39] [INFO] AVFan 组合任务浏览器配置已准备 | profile_dir=D:\pycharm_pro\Local-Video-Renamer\browser_profiles\combo\code_prefix_avfan | reason=target_has_login_state | seeded=False | source_profile_dir=D:\pycharm_pro\Local-Video-Renamer\browser_profiles\avfan | task_key=code_prefix_avfan
+[2026-05-24 19:55:39] [WARNING] ================== AVFan 登录态继承摘要 ==================
+[2026-05-24 19:55:39] [WARNING] 子任务: code_prefix_avfan
+[2026-05-24 19:55:39] [WARNING] 本次是否继承登录态: 未继承
+[2026-05-24 19:55:39] [WARNING] 继承来源 profile: D:\pycharm_pro\Local-Video-Renamer\browser_profiles\avfan
+[2026-05-24 19:55:39] [WARNING] 当前使用 profile: D:\pycharm_pro\Local-Video-Renamer\browser_profiles\combo\code_prefix_avfan
+[2026-05-24 19:55:39] [WARNING] 说明: 组合任务 profile 已经带有登录态，因此本次没有再次继承。
+[2026-05-24 19:55:39] [WARNING] ===================================================
+[2026-05-24 19:55:39] [INFO] 子任务开始处理候选项 | source_label=辛聚谷 | task_key=actor_javtxt | task_label=演员库 / 辛聚谷 | total_count=0
+[2026-05-24 19:55:39] [ERROR] 子任务执行异常 | error=ComboTaskLogger.log() got multiple values for argument 'message' | task_key=actor_javtxt | task_label=演员库 / 辛聚谷
+[2026-05-24 19:55:40] [INFO] 子任务开始处理候选项 | source_label=天陨阁 | task_key=code_prefix_avfan | task_label=番号库 / 天限阁 | total_count=6
+[2026-05-24 19:55:40] [ERROR] 子任务执行异常 | error=ComboTaskLogger.log() got multiple values for argument 'message' | task_key=code_prefix_avfan | task_label=番号库 / 天限阁
+[2026-05-24 19:55:40] [INFO] 组合任务执行结束 | combo_key=kan_shui | failed_count=0 | processed_count=0 | remaining_count=0 | requires_manual_verification=False | stopped=False | success_count=0
