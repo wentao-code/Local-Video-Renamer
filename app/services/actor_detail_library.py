@@ -1,7 +1,10 @@
 import re
+from datetime import datetime
 
+from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
 from app.services.actor_identifier import split_actor_names
 from app.services.code_prefix_library import extract_code_prefix
+from app.services.movie_author_resolver import JAVTXT_AUTHOR_MIN_RELEASE_DATE
 
 
 YEAR_RE = re.compile(r'(19|20)\d{2}')
@@ -19,6 +22,8 @@ class ActorDetailLibrary:
         actor_row = self._find_actor(actor_name)
         local_videos = self._find_local_actor_videos(actor_name)
         web_movies = self.database.list_actor_movies(actor_name)
+        eligible_web_movies = self._filter_eligible_movies(web_movies)
+        enriched_eligible_count = self._count_enriched_eligible_movies(eligible_web_movies)
         web_record = self.database.get_actor_enrichment_record(actor_name)
         web_earliest, web_latest = self._collect_date_range(web_movies)
 
@@ -34,12 +39,15 @@ class ActorDetailLibrary:
             'web_enrichment_status': web_record.get('enrichment_status', ''),
             'web_total_pages': web_record.get('avfan_total_pages', 0),
             'web_total_videos': web_record.get('avfan_total_videos', 0),
+            'eligible_video_count': len(eligible_web_movies),
+            'eligible_enriched_video_count': enriched_eligible_count,
             'web_last_enriched_at': web_record.get('last_enriched_at', ''),
             'web_earliest_release_date': web_earliest,
             'web_latest_release_date': web_latest,
-            'web_prefix_distribution': self._build_prefix_distribution(web_movies),
-            'web_year_distribution': self._build_year_distribution(web_movies),
+            'web_prefix_distribution': self._build_prefix_distribution(eligible_web_movies),
+            'web_year_distribution': self._build_year_distribution(eligible_web_movies),
             'web_movies': web_movies,
+            'eligible_web_movies': eligible_web_movies,
         }
 
     def _find_actor(self, actor_name):
@@ -61,6 +69,21 @@ class ActorDetailLibrary:
                 matched.append(row)
         return matched
 
+    def _filter_eligible_movies(self, rows):
+        return [row for row in (rows or []) if self._is_eligible_movie(row)]
+
+    def _count_enriched_eligible_movies(self, movies):
+        cached_rows = self.database.get_javtxt_actor_cache_by_codes(
+            [movie.get('code', '') for movie in (movies or [])]
+        )
+        enriched_count = 0
+        for movie in movies or []:
+            code = str(movie.get('code', '') or '').strip().upper()
+            status = str((cached_rows.get(code, {}) or {}).get('javtxt_enrichment_status', '') or '').strip()
+            if (status or UNENRICHED_STATUS) == ENRICHED_STATUS:
+                enriched_count += 1
+        return enriched_count
+
     def _build_prefix_distribution(self, rows):
         grouped = {}
         for row in rows:
@@ -78,11 +101,10 @@ class ActorDetailLibrary:
             year = self._extract_year(row.get('release_date', ''))
             grouped[year] = grouped.get(year, 0) + 1
 
-        ordered = sorted(
-            grouped.items(),
-            key=lambda item: ('0000' if item[0] == '未知' else item[0], item[1]),
-            reverse=True,
-        )
+        known_items = [(year, count) for year, count in grouped.items() if year != '未知']
+        unknown_items = [(year, count) for year, count in grouped.items() if year == '未知']
+        known_items.sort(key=lambda item: (-int(item[0]), -item[1], item[0]))
+        ordered = known_items + unknown_items
         return [{'year': year, 'video_count': count} for year, count in ordered]
 
     def _collect_date_range(self, rows):
@@ -102,3 +124,14 @@ class ActorDetailLibrary:
         if not match:
             return '未知'
         return match.group(0)
+
+    @staticmethod
+    def _is_eligible_movie(movie):
+        release_date_text = str((movie or {}).get('release_date', '') or '').strip()
+        if not release_date_text:
+            return False
+        try:
+            release_date = datetime.strptime(release_date_text, '%Y-%m-%d').date()
+        except ValueError:
+            return False
+        return release_date >= JAVTXT_AUTHOR_MIN_RELEASE_DATE

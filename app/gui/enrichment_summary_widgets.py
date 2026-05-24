@@ -31,14 +31,16 @@ class SummaryCard(QFrame):
         failed_count = int(summary.get('failed_count', 0) or 0)
         no_search_count = int(summary.get('no_search_count', 0) or 0)
         progress_percent = float(summary.get('progress_percent', 0) or 0)
+        count_label = str(summary.get('count_label', '') or '已补全')
+        pending_label = str(summary.get('pending_label', '') or '待补全')
 
         self.title_label.setText(str(summary.get('label', '')))
-        self.count_label.setText(f'已补全 {enriched_count} / {total_count}')
+        self.count_label.setText(f'{count_label} {enriched_count} / {total_count}')
         if show_terminal_details:
             self.detail_label.setText(
-                f'待补全 {pending_count} | 失败 {failed_count} | 无结果 {no_search_count}'
+                f'{pending_label} {pending_count} | 失败 {failed_count} | 无结果 {no_search_count}'
             )
         else:
-            self.detail_label.setText(f'待补全 {pending_count}')
+            self.detail_label.setText(f'{pending_label} {pending_count}')
         self.progress_bar.setFormat(f'{progress_percent:.1f}%')
         self.progress_bar.setValue(int(progress_percent * 10))

@@ -36,6 +36,8 @@ class CodePrefixDetailViewerWindow(QDialog):
             ('video_count', '该番号视频数：', ''),
             ('total_pages', 'AVFan总页数：', ''),
             ('total_videos', 'AVFan作品数：', ''),
+            ('eligible_video_count', '满足要求视频数量：', ''),
+            ('eligible_enriched_video_count', '补全满足要求视频数量：', ''),
             ('earliest_date', '最早发布时间：', ''),
             ('latest_date', '最新发布时间：', ''),
             ('last_enriched', '最近补全时间：', ''),
@@ -46,8 +48,8 @@ class CodePrefixDetailViewerWindow(QDialog):
         stats_layout = QVBoxLayout(stats_group)
         self.stats_grid = DetailSummaryGrid(columns=1)
         self.stats_grid.set_items([
-            ('year_distribution', '发布年份构成：', ''),
-            ('top_actors', '主演演员前十名：', ''),
+            ('year_distribution', '发布年份构成（2020-01-01及以后）：', ''),
+            ('top_actors', '主演演员前十名（2020-01-01及以后）：', ''),
         ])
         stats_layout.addWidget(self.stats_grid)
 
@@ -67,6 +69,11 @@ class CodePrefixDetailViewerWindow(QDialog):
         self.summary_grid.set_value('video_count', str(self.detail.get('video_count', 0)))
         self.summary_grid.set_value('total_pages', str(self.detail.get('avfan_total_pages', 0)))
         self.summary_grid.set_value('total_videos', str(self.detail.get('avfan_total_videos', 0)))
+        self.summary_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
+        self.summary_grid.set_value(
+            'eligible_enriched_video_count',
+            str(self.detail.get('eligible_enriched_video_count', 0)),
+        )
         self.summary_grid.set_value('earliest_date', self.detail.get('earliest_release_date', '') or '暂无')
         self.summary_grid.set_value('latest_date', self.detail.get('latest_release_date', '') or '暂无')
         self.summary_grid.set_value('last_enriched', self.detail.get('last_enriched_at', '') or '暂无')

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
@@ -6,6 +8,7 @@ from app.core.enrichment_status import (
     UNENRICHED_STATUS,
 )
 from app.services.code_prefix_library import CodePrefixLibrary
+from app.services.movie_author_resolver import JAVTXT_AUTHOR_MIN_RELEASE_DATE
 
 
 class DataCenterService:
@@ -52,6 +55,18 @@ class DataCenterService:
         }
 
     def _build_code_prefix_source_summary(self, source_key):
+        if source_key == JAVTXT_VIDEO_SOURCE:
+            movies = []
+            for row in self.code_prefix_library.list_prefixes():
+                prefix = str(row.get('prefix', '')).strip().upper()
+                if not prefix:
+                    continue
+                movies.extend(self.database.list_code_prefix_movies(prefix))
+            return self._build_javtxt_movie_summary(
+                f'鐣彿搴?{get_video_enrichment_source_label(source_key)}',
+                movies,
+            )
+
         records = self.database.list_code_prefix_enrichment_records()
         statuses = [
             self._get_source_status(records.get(row.get('prefix', ''), {}), source_key)
@@ -64,6 +79,18 @@ class DataCenterService:
         )
 
     def _build_actor_source_summary(self, source_key):
+        if source_key == JAVTXT_VIDEO_SOURCE:
+            movies = []
+            for row in self.database.list_actors():
+                actor_name = str(row.get('name', '')).strip()
+                if not actor_name:
+                    continue
+                movies.extend(self.database.list_actor_movies(actor_name))
+            return self._build_javtxt_movie_summary(
+                f'婕斿憳搴?{get_video_enrichment_source_label(source_key)}',
+                movies,
+            )
+
         records = self.database.list_actor_enrichment_records()
         statuses = [
             self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key)
@@ -80,7 +107,7 @@ class DataCenterService:
         enriched_count = sum(1 for status in statuses if status == ENRICHED_STATUS)
         failed_count = sum(1 for status in statuses if status == FAILED_STATUS)
         no_search_count = sum(1 for status in statuses if status == NO_SEARCH_RESULTS_STATUS)
-        pending_count = max(total_count - enriched_count, 0)
+        pending_count = max(total_count - enriched_count - failed_count - no_search_count, 0)
         return {
             'label': label,
             'total_count': total_count,
@@ -91,10 +118,59 @@ class DataCenterService:
             'progress_percent': _build_progress_percent(enriched_count, total_count),
         }
 
+    def _build_javtxt_movie_summary(self, label, movies):
+        eligible_movies = [movie for movie in movies if self._is_javtxt_eligible_movie(movie)]
+        cached_rows = self.database.get_javtxt_actor_cache_by_codes(
+            [movie.get('code', '') for movie in eligible_movies]
+        )
+
+        total_count = len(eligible_movies)
+        enriched_count = 0
+        failed_count = 0
+        no_search_count = 0
+
+        for movie in eligible_movies:
+            code = str(movie.get('code', '')).strip().upper()
+            status = str((cached_rows.get(code, {}) or {}).get('javtxt_enrichment_status', '') or '').strip()
+            status = status or UNENRICHED_STATUS
+            if status == ENRICHED_STATUS:
+                enriched_count += 1
+            elif status == FAILED_STATUS:
+                failed_count += 1
+            elif status == NO_SEARCH_RESULTS_STATUS:
+                no_search_count += 1
+
+        pending_count = max(total_count - enriched_count - failed_count - no_search_count, 0)
+        return {
+            'label': label,
+            'total_count': total_count,
+            'enriched_count': enriched_count,
+            'pending_count': pending_count,
+            'failed_count': failed_count,
+            'no_search_count': no_search_count,
+            'progress_percent': _build_progress_percent(enriched_count, total_count),
+            'count_label': '已补全视频',
+            'pending_label': '待补全视频',
+        }
+
     @staticmethod
     def _get_source_status(record, source_key):
         key = 'javtxt_enrichment_status' if source_key == JAVTXT_VIDEO_SOURCE else 'avfan_enrichment_status'
         return str((record or {}).get(key, '') or '').strip() or UNENRICHED_STATUS
+
+    @staticmethod
+    def _is_javtxt_eligible_movie(movie):
+        code = str((movie or {}).get('code', '') or '').strip().upper()
+        if not code:
+            return False
+        release_date_text = str((movie or {}).get('release_date', '') or '').strip()
+        if not release_date_text:
+            return False
+        try:
+            release_date = datetime.strptime(release_date_text, '%Y-%m-%d').date()
+        except ValueError:
+            return False
+        return release_date >= JAVTXT_AUTHOR_MIN_RELEASE_DATE
 
 
 def _build_progress_percent(enriched_count, total_count):

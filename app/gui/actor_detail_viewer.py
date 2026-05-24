@@ -56,11 +56,13 @@ class ActorDetailViewerWindow(QDialog):
             ('web_status', '补全状态：', ''),
             ('web_total', '网页作品总数：', ''),
             ('web_pages', '网页总页数：', ''),
+            ('eligible_video_count', '满足要求视频数量：', ''),
             ('web_earliest', '最早发布时间：', ''),
             ('web_latest', '最新发布时间：', ''),
+            ('eligible_enriched_video_count', '补全满足要求视频数量：', ''),
             ('web_last_enriched', '最近补全时间：', ''),
-            ('web_prefix', '网页番号分布：', ''),
-            ('web_year', '网页年份构成：', ''),
+            ('web_prefix', '网页番号分布（2020-01-01及以后）：', ''),
+            ('web_year', '网页年份构成（2020-01-01及以后）：', ''),
         ])
         web_layout.addWidget(self.web_grid)
 
@@ -103,8 +105,13 @@ class ActorDetailViewerWindow(QDialog):
         self.web_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or '未补全')
         self.web_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
         self.web_grid.set_value('web_pages', str(self.detail.get('web_total_pages', 0)))
+        self.web_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
         self.web_grid.set_value('web_earliest', self.detail.get('web_earliest_release_date', '') or '暂无')
         self.web_grid.set_value('web_latest', self.detail.get('web_latest_release_date', '') or '暂无')
+        self.web_grid.set_value(
+            'eligible_enriched_video_count',
+            str(self.detail.get('eligible_enriched_video_count', 0)),
+        )
         self.web_grid.set_value('web_last_enriched', self.detail.get('web_last_enriched_at', '') or '暂无')
         self.web_grid.set_value(
             'web_prefix',

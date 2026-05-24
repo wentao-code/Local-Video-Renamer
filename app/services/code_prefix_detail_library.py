@@ -1,4 +1,8 @@
+from datetime import datetime
+
+from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
 from app.services.actor_identifier import split_actor_names
+from app.services.movie_author_resolver import JAVTXT_AUTHOR_MIN_RELEASE_DATE
 
 
 class CodePrefixDetailLibrary:
@@ -12,21 +16,41 @@ class CodePrefixDetailLibrary:
 
         enrichment = self.database.get_code_prefix_enrichment_record(prefix)
         movies = self.database.list_code_prefix_movies(prefix)
+        eligible_movies = self._filter_eligible_movies(movies)
+        enriched_eligible_count = self._count_enriched_eligible_movies(eligible_movies)
         earliest_release_date, latest_release_date = self._collect_date_range(movies)
 
         return {
             'prefix': prefix,
             'video_count': len(movies),
+            'eligible_video_count': len(eligible_movies),
+            'eligible_enriched_video_count': enriched_eligible_count,
             'enrichment_status': enrichment.get('enrichment_status', ''),
             'avfan_total_pages': enrichment.get('avfan_total_pages', 0),
             'avfan_total_videos': enrichment.get('avfan_total_videos', 0),
             'last_enriched_at': enrichment.get('last_enriched_at', ''),
             'earliest_release_date': earliest_release_date,
             'latest_release_date': latest_release_date,
-            'year_distribution': self._build_year_distribution(movies),
-            'top_actors': self._build_top_actors(movies),
+            'year_distribution': self._build_year_distribution(eligible_movies),
+            'top_actors': self._build_top_actors(eligible_movies),
             'movies': movies,
+            'eligible_movies': eligible_movies,
         }
+
+    def _filter_eligible_movies(self, movies):
+        return [movie for movie in (movies or []) if self._is_eligible_movie(movie)]
+
+    def _count_enriched_eligible_movies(self, movies):
+        cached_rows = self.database.get_javtxt_actor_cache_by_codes(
+            [movie.get('code', '') for movie in (movies or [])]
+        )
+        enriched_count = 0
+        for movie in movies or []:
+            code = str(movie.get('code', '') or '').strip().upper()
+            status = str((cached_rows.get(code, {}) or {}).get('javtxt_enrichment_status', '') or '').strip()
+            if (status or UNENRICHED_STATUS) == ENRICHED_STATUS:
+                enriched_count += 1
+        return enriched_count
 
     def _collect_date_range(self, movies):
         dates = sorted(
@@ -45,11 +69,7 @@ class CodePrefixDetailLibrary:
             year = release_date[:4] if len(release_date) >= 4 and release_date[:4].isdigit() else '未知'
             grouped[year] = grouped.get(year, 0) + 1
 
-        ordered = sorted(
-            grouped.items(),
-            key=lambda item: ('0000' if item[0] == '未知' else item[0], item[1]),
-            reverse=True,
-        )
+        ordered = sorted(grouped.items(), key=lambda item: (-int(item[0]), -item[1], item[0]))
         return [{'year': year, 'video_count': count} for year, count in ordered]
 
     def _build_top_actors(self, movies):
@@ -67,3 +87,14 @@ class CodePrefixDetailLibrary:
 
         ordered = sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
         return [{'name': name, 'video_count': count} for name, count in ordered[:10]]
+
+    @staticmethod
+    def _is_eligible_movie(movie):
+        release_date_text = str((movie or {}).get('release_date', '') or '').strip()
+        if not release_date_text:
+            return False
+        try:
+            release_date = datetime.strptime(release_date_text, '%Y-%m-%d').date()
+        except ValueError:
+            return False
+        return release_date >= JAVTXT_AUTHOR_MIN_RELEASE_DATE
