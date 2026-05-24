@@ -1,6 +1,7 @@
 from pathlib import Path
 from threading import Event, Lock
 
+from app.core.combo_enrichment import get_combo_label, normalize_combo_key
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.data.database_handler import VideoDatabase
@@ -8,6 +9,9 @@ from app.scraper.avfan_scraper import reset_avfan_browser_profile
 from app.services.actor_detail_library import ActorDetailLibrary
 from app.services.actor_library_sync_service import ActorLibrarySyncService
 from app.services.auto_login_service import AutoLoginService
+from app.services.combo_enrichment_service import ComboEnrichmentService
+from app.services.combo_progress_service import ComboProgressService
+from app.services.combo_task_logger import ComboTaskLogger
 from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
 from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.data_center_service import DataCenterService
@@ -31,10 +35,12 @@ class BackendService:
         self.library_admin_service = LibraryAdminService(self.db)
         self.path_library = PathLibrary()
         self.enrichment_progress = EnrichmentProgressService()
+        self.combo_progress = ComboProgressService()
         self.database_loaded = False
         self.enrichment_cancel_event = Event()
         self.enrichment_lock = Lock()
         self.enrichment_running = False
+        self.active_task_kind = ''
 
     def load_database(self):
         self.actor_library_sync_service.sync_from_video_library()
@@ -55,6 +61,7 @@ class BackendService:
             'database_loaded': self.database_loaded,
             'db_path': str(self.db.db_path),
             'enrichment_running': self.enrichment_running,
+            'active_task_kind': self.active_task_kind,
         }
 
     def scan(self, folder_path):
@@ -79,6 +86,18 @@ class BackendService:
         return {'summary': self.data_center_service.get_summary()}
 
     def get_enrichment_progress(self):
+        if self.active_task_kind == 'combo':
+            return {'progress': self.combo_progress.snapshot()}
+        combo_snapshot = self.combo_progress.snapshot()
+        if (
+            combo_snapshot.get('task_kind') == 'combo'
+            and (
+                combo_snapshot.get('is_running')
+                or combo_snapshot.get('total_count', 0)
+                or combo_snapshot.get('message')
+            )
+        ):
+            return {'progress': combo_snapshot}
         return {'progress': self.enrichment_progress.snapshot()}
 
     def reset_video_enrichments(self, codes):
@@ -141,13 +160,7 @@ class BackendService:
         return {'deleted_count': self.db.delete_path(path_id)}
 
     def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None, source_key=None):
-        with self.enrichment_lock:
-            if self.enrichment_running:
-                raise RuntimeError('已有补全任务正在运行，请稍后再试。')
-            self.enrichment_running = True
-            self.enrichment_cancel_event.clear()
-            self.enrichment_progress.reset()
-
+        self._begin_enrichment_task('single')
         try:
             enrichment_service = LibraryEnrichmentService(
                 self.db,
@@ -169,8 +182,33 @@ class BackendService:
             self.enrichment_progress.finish(message='补全任务异常结束。', stopped=True)
             raise
         finally:
-            self.enrichment_running = False
-            self.enrichment_cancel_event.clear()
+            self._end_enrichment_task()
+
+    def enrich_combo(self, combo_key, limit, show_browser=False, cooldown_before_search=False):
+        normalized_combo_key = normalize_combo_key(combo_key)
+        combo_label = get_combo_label(normalized_combo_key)
+        self._begin_enrichment_task('combo')
+        logger = ComboTaskLogger(normalized_combo_key, combo_label)
+        try:
+            combo_service = ComboEnrichmentService(
+                self.db,
+                self.combo_progress,
+                logger,
+                should_stop=self.enrichment_cancel_event.is_set,
+            )
+            result = combo_service.run(
+                normalized_combo_key,
+                limit,
+                show_browser=show_browser,
+                cooldown_before_search=cooldown_before_search,
+            )
+            result['log_path'] = str(logger.log_path)
+            return result
+        except Exception:
+            self.combo_progress.finish(message='组合任务异常结束。', stopped=True)
+            raise
+        finally:
+            self._end_enrichment_task()
 
     def cancel_enrichment(self):
         if not self.enrichment_running:
@@ -179,10 +217,13 @@ class BackendService:
                 'message': '当前没有正在运行的补全任务。',
             }
         self.enrichment_cancel_event.set()
-        self.enrichment_progress.set_message('已请求停止补全，等待当前条目完成。')
+        if self.active_task_kind == 'combo':
+            self.combo_progress.set_message('已请求停止组合任务，等待当前条目处理完成。')
+        else:
+            self.enrichment_progress.set_message('已请求停止补全任务，等待当前条目处理完成。')
         return {
             'cancel_requested': True,
-            'message': '已请求停止补全，当前条目处理完成后会停止。',
+            'message': '已请求停止补全任务，当前条目处理完成后会停止。',
         }
 
     def auto_login(self):
@@ -190,3 +231,18 @@ class BackendService:
 
     def reset_browser_profile(self):
         return reset_avfan_browser_profile()
+
+    def _begin_enrichment_task(self, task_kind):
+        with self.enrichment_lock:
+            if self.enrichment_running:
+                raise RuntimeError('当前已有补全任务正在运行，请稍后再试。')
+            self.enrichment_running = True
+            self.active_task_kind = str(task_kind or '').strip()
+            self.enrichment_cancel_event.clear()
+            self.enrichment_progress.reset()
+            self.combo_progress.reset()
+
+    def _end_enrichment_task(self):
+        self.enrichment_running = False
+        self.active_task_kind = ''
+        self.enrichment_cancel_event.clear()

@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from app.core.combo_enrichment import DEFAULT_COMBO_KEY, FU_SHUI_COMBO, KAN_SHUI_COMBO, normalize_combo_key
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
     DEFAULT_VIDEO_ENRICHMENT_SOURCE,
@@ -70,6 +71,7 @@ DEFAULT_TARGET_SETTINGS = {
 DEFAULT_SETTINGS_PAYLOAD = {
     'target_type': VIDEO_LIBRARY_TARGET,
     'selected_source_by_target': dict(DEFAULT_SOURCE_BY_TARGET),
+    'selected_combo_key': DEFAULT_COMBO_KEY,
     'target_settings': DEFAULT_TARGET_SETTINGS,
 }
 
@@ -167,6 +169,7 @@ def load_saved_settings():
     payload = {
         'target_type': DEFAULT_SETTINGS_PAYLOAD['target_type'],
         'selected_source_by_target': clone_default_selected_sources(),
+        'selected_combo_key': DEFAULT_SETTINGS_PAYLOAD['selected_combo_key'],
         'target_settings': clone_default_target_settings(),
     }
     if ENRICHMENT_SETTINGS_FILE.exists():
@@ -175,18 +178,22 @@ def load_saved_settings():
             if isinstance(loaded, dict):
                 payload['target_type'] = loaded.get('target_type', payload['target_type'])
                 payload['selected_source_by_target'] = normalize_selected_sources(loaded)
+                payload['selected_combo_key'] = normalize_combo_key(
+                    loaded.get('selected_combo_key', payload['selected_combo_key'])
+                )
                 payload['target_settings'] = normalize_target_settings(loaded)
         except Exception:
             pass
     return payload
 
 
-def save_saved_settings(target_type, selected_source_by_target, target_settings):
+def save_saved_settings(target_type, selected_source_by_target, target_settings, selected_combo_key):
     payload = {
         'target_type': target_type,
         'selected_source_by_target': normalize_selected_sources(
             {'selected_source_by_target': selected_source_by_target}
         ),
+        'selected_combo_key': normalize_combo_key(selected_combo_key),
         'target_settings': normalize_target_settings({'target_settings': target_settings}),
     }
     ENRICHMENT_SETTINGS_FILE.write_text(
@@ -201,6 +208,7 @@ class EnrichmentDialog(QDialog):
         self.action_mode = 'single'
         self.current_target_type = VIDEO_LIBRARY_TARGET
         self.current_source_key = DEFAULT_SOURCE_BY_TARGET[VIDEO_LIBRARY_TARGET]
+        self.current_combo_key = DEFAULT_COMBO_KEY
         self.selected_source_by_target = clone_default_selected_sources()
         self.target_settings = clone_default_target_settings()
         self.setWindowTitle('补全信息')
@@ -244,11 +252,30 @@ class EnrichmentDialog(QDialog):
         source_layout.addStretch()
         source_group.setLayout(source_layout)
 
+        combo_group = QGroupBox('组合任务')
+        combo_layout = QHBoxLayout()
+        self.combo_button_group = QButtonGroup(self)
+        self.combo_button_group.setExclusive(True)
+        self.kan_shui_button = QRadioButton('坎水')
+        self.fu_shui_button = QRadioButton('府水')
+        self.combo_button_group.addButton(self.kan_shui_button)
+        self.combo_button_group.addButton(self.fu_shui_button)
+        combo_layout.addWidget(self.kan_shui_button)
+        combo_layout.addWidget(self.fu_shui_button)
+        combo_layout.addStretch()
+        combo_group.setLayout(combo_layout)
+
         self.avfan_source_button.toggled.connect(
             lambda checked: self.on_source_button_toggled(AVFAN_VIDEO_SOURCE, checked)
         )
         self.javtxt_source_button.toggled.connect(
             lambda checked: self.on_source_button_toggled(JAVTXT_VIDEO_SOURCE, checked)
+        )
+        self.kan_shui_button.toggled.connect(
+            lambda checked: self.on_combo_button_toggled(KAN_SHUI_COMBO, checked)
+        )
+        self.fu_shui_button.toggled.connect(
+            lambda checked: self.on_combo_button_toggled(FU_SHUI_COMBO, checked)
         )
 
         self.video_target_button.toggled.connect(
@@ -282,6 +309,8 @@ class EnrichmentDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.batch_button = buttons.addButton('分批补全', QDialogButtonBox.ActionRole)
+        self.combo_single_button = buttons.addButton('单次组合任务下发', QDialogButtonBox.ActionRole)
+        self.combo_batch_button = buttons.addButton('批次组合任务下发', QDialogButtonBox.ActionRole)
         self.save_button = buttons.addButton('保存配置', QDialogButtonBox.ActionRole)
         ok_button = buttons.button(QDialogButtonBox.Ok)
         ok_button.setText('开始补全')
@@ -289,10 +318,13 @@ class EnrichmentDialog(QDialog):
         buttons.accepted.connect(self.accept_single)
         buttons.rejected.connect(self.reject)
         self.batch_button.clicked.connect(self.accept_batch)
+        self.combo_single_button.clicked.connect(self.accept_combo_single)
+        self.combo_batch_button.clicked.connect(self.accept_combo_batch)
         self.save_button.clicked.connect(self.save_settings)
 
         layout.addWidget(target_group)
         layout.addWidget(source_group)
+        layout.addWidget(combo_group)
         layout.addLayout(form_layout)
         layout.addWidget(buttons)
         self.setLayout(layout)
@@ -300,6 +332,7 @@ class EnrichmentDialog(QDialog):
     def apply_saved_settings(self, payload):
         self.target_settings = normalize_target_settings(payload)
         self.selected_source_by_target = normalize_selected_sources(payload)
+        self.current_combo_key = normalize_combo_key(payload.get('selected_combo_key', DEFAULT_COMBO_KEY))
 
         target_type = payload.get('target_type', VIDEO_LIBRARY_TARGET)
         if target_type not in self.target_settings:
@@ -316,6 +349,10 @@ class EnrichmentDialog(QDialog):
             self.code_prefix_target_button.setChecked(target_type == CODE_PREFIX_LIBRARY_TARGET)
             self.actor_target_button.setChecked(target_type == ACTOR_LIBRARY_TARGET)
 
+        with QSignalBlocker(self.kan_shui_button), QSignalBlocker(self.fu_shui_button):
+            self.kan_shui_button.setChecked(self.current_combo_key == KAN_SHUI_COMBO)
+            self.fu_shui_button.setChecked(self.current_combo_key == FU_SHUI_COMBO)
+
         if not any(button.isChecked() for button in (
             self.video_target_button,
             self.code_prefix_target_button,
@@ -327,6 +364,10 @@ class EnrichmentDialog(QDialog):
                 VIDEO_LIBRARY_TARGET,
                 DEFAULT_SOURCE_BY_TARGET[VIDEO_LIBRARY_TARGET],
             )
+
+        if not any(button.isChecked() for button in (self.kan_shui_button, self.fu_shui_button)):
+            self.kan_shui_button.setChecked(True)
+            self.current_combo_key = KAN_SHUI_COMBO
 
         self.apply_combination_settings(self.current_target_type, self.current_source_key)
 
@@ -348,6 +389,11 @@ class EnrichmentDialog(QDialog):
         self.current_source_key = source_key
         self.selected_source_by_target[self.current_target_type] = source_key
         self.apply_combination_settings(self.current_target_type, source_key)
+
+    def on_combo_button_toggled(self, combo_key, checked):
+        if not checked:
+            return
+        self.current_combo_key = normalize_combo_key(combo_key)
 
     def apply_combination_settings(self, target_type, source_key):
         settings = dict(
@@ -412,6 +458,9 @@ class EnrichmentDialog(QDialog):
     def selected_source_key(self):
         return self.current_source_key
 
+    def selected_combo_key(self):
+        return normalize_combo_key(self.current_combo_key)
+
     def values(self):
         self.store_current_target_settings()
         current_settings = dict(
@@ -419,6 +468,7 @@ class EnrichmentDialog(QDialog):
         )
         current_settings['target_type'] = self.selected_target_type()
         current_settings['source_key'] = self.selected_source_key()
+        current_settings['combo_key'] = self.selected_combo_key()
         return current_settings
 
     def update_source_controls(self):
@@ -437,6 +487,16 @@ class EnrichmentDialog(QDialog):
         self.action_mode = 'batch'
         self.accept()
 
+    def accept_combo_single(self):
+        self.store_current_target_settings()
+        self.action_mode = 'combo_single'
+        self.accept()
+
+    def accept_combo_batch(self):
+        self.store_current_target_settings()
+        self.action_mode = 'combo_batch'
+        self.accept()
+
     def save_settings(self):
         self.store_current_target_settings()
         try:
@@ -444,6 +504,7 @@ class EnrichmentDialog(QDialog):
                 self.selected_target_type(),
                 self.selected_source_by_target,
                 self.target_settings,
+                self.selected_combo_key(),
             )
         except Exception as exc:
             QMessageBox.critical(self, '保存失败', f'无法保存补全配置：\n{exc}')
@@ -452,7 +513,7 @@ class EnrichmentDialog(QDialog):
         QMessageBox.information(
             self,
             '保存成功',
-            f'已保存当前库和来源的补全配置到：\n{ENRICHMENT_SETTINGS_FILE}',
+            f'已保存当前库/来源配置和组合策略到：\n{ENRICHMENT_SETTINGS_FILE}',
         )
 
     @staticmethod

@@ -36,6 +36,11 @@ class VideoDatabase:
         self.db_path = Path(db_path) if db_path else DATABASE_FILE
         self._init_db()
 
+    def _connect(self):
+        conn = sqlite3.connect(self.db_path, timeout=60)
+        conn.execute('PRAGMA busy_timeout = 60000')
+        return conn
+
     def _init_db(self):
         """初始化表结构（以 code 为主键实现绝对去重）"""
         with sqlite3.connect(self.db_path) as conn:
@@ -409,7 +414,7 @@ class VideoDatabase:
 
     def list_videos_for_enrichment(self, limit):
         """读取需要补全的未补全视频。"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT code, title, author
@@ -430,8 +435,10 @@ class VideoDatabase:
 
     def update_video_enrichment(self, code, info, status='已补全'):
         """写入网页补全信息。"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
+            cursor.execute('PRAGMA journal_mode=WAL')
+            cursor.execute('PRAGMA synchronous=NORMAL')
             cursor.execute('''
                 UPDATE processed_videos
                 SET avfan_movie_id = ?,
@@ -723,7 +730,7 @@ class VideoDatabase:
         }
 
     def list_code_prefix_enrichment_records(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT prefix, enrichment_status, avfan_total_pages, avfan_total_videos,
@@ -754,7 +761,7 @@ class VideoDatabase:
             }
 
     def list_hidden_code_prefixes(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT prefix FROM hidden_code_prefixes ORDER BY prefix')
             return {
@@ -767,7 +774,7 @@ class VideoDatabase:
         normalized_prefix = str(prefix or '').strip().upper()
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, error_column, at_column = self._library_source_columns(normalized_source)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -817,7 +824,7 @@ class VideoDatabase:
 
     def replace_code_prefix_movies(self, prefix, movies):
         prefix = str(prefix or '').strip().upper()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (prefix,))
             if movies:
@@ -862,7 +869,7 @@ class VideoDatabase:
 
     def list_code_prefix_movies(self, prefix):
         prefix = str(prefix or '').strip().upper()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT prefix, code, title, author, release_date, avfan_url, page_number
@@ -885,7 +892,7 @@ class VideoDatabase:
             ]
 
     def list_actor_enrichment_records(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT actor_name, actor_id, enrichment_status, avfan_total_pages, avfan_total_videos,
@@ -920,7 +927,7 @@ class VideoDatabase:
         normalized_name = str(actor_name or '').strip()
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, error_column, at_column = self._library_source_columns(normalized_source)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -972,7 +979,7 @@ class VideoDatabase:
 
     def replace_actor_movies(self, actor_name, movies):
         normalized_name = str(actor_name or '').strip()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
             if movies:
@@ -1018,7 +1025,7 @@ class VideoDatabase:
 
     def list_actor_movies(self, actor_name):
         normalized_name = str(actor_name or '').strip()
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT actor_name, code, title, author, release_date, avfan_url, page_number
@@ -1276,7 +1283,7 @@ class VideoDatabase:
         if not normalized_prefix:
             raise ValueError('番号前缀不能为空')
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 'INSERT OR IGNORE INTO hidden_code_prefixes (prefix) VALUES (?)',
@@ -1379,7 +1386,7 @@ class VideoDatabase:
 
     def list_videos_for_enrichment(self, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
         status_column, _, _ = self._video_source_columns(source_key)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
@@ -1795,7 +1802,7 @@ class VideoDatabase:
         return len(new_records)
 
     def list_hidden_actors(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT name FROM hidden_actors')
             return {
@@ -1830,7 +1837,7 @@ class VideoDatabase:
         if not normalized_actors:
             return 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.executemany(
                 '''

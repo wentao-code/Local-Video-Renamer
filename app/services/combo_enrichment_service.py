@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+from threading import Event, Lock, Thread
+
+from app.core.combo_enrichment import get_combo_label, get_combo_tasks, normalize_combo_key
+from app.core.project_paths import COMBO_BROWSER_PROFILES_DIR
+from app.scraper.avfan_actor_scraper import AvfanActorScraper
+from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
+from app.services.actor_enrichment import ActorEnrichmentService
+from app.services.actor_javtxt_enrichment import ActorJavtxtEnrichmentService
+from app.services.code_prefix_enrichment import CodePrefixEnrichmentService
+from app.services.code_prefix_javtxt_enrichment import CodePrefixJavtxtEnrichmentService
+
+
+class ComboEnrichmentService:
+    def __init__(self, database, combo_progress_service, logger, should_stop=None):
+        self.database = database
+        self.combo_progress_service = combo_progress_service
+        self.logger = logger
+        self.external_should_stop = should_stop or (lambda: False)
+        self.internal_stop_event = Event()
+        self._result_lock = Lock()
+
+    def run(self, combo_key, limit, show_browser=False, cooldown_before_search=False):
+        normalized_combo_key = normalize_combo_key(combo_key)
+        combo_label = get_combo_label(normalized_combo_key)
+        task_definitions = get_combo_tasks(normalized_combo_key)
+        limit = int(limit or 0)
+        if limit <= 0:
+            raise ValueError('组合任务数量必须大于 0')
+
+        self.combo_progress_service.start(
+            normalized_combo_key,
+            limit,
+            log_path=str(self.logger.log_path),
+        )
+        self.logger.log(
+            'INFO',
+            '组合任务开始执行',
+            combo_key=normalized_combo_key,
+            combo_label=combo_label,
+            limit=limit,
+            show_browser=bool(show_browser),
+            cooldown_before_search=bool(cooldown_before_search),
+        )
+
+        results_by_task = {}
+        worker_threads = []
+
+        for task_definition in task_definitions:
+            worker_thread = Thread(
+                target=self._run_subtask,
+                args=(
+                    task_definition,
+                    limit,
+                    show_browser,
+                    cooldown_before_search,
+                    results_by_task,
+                ),
+                daemon=True,
+            )
+            worker_threads.append(worker_thread)
+            worker_thread.start()
+
+        for worker_thread in worker_threads:
+            worker_thread.join()
+
+        result = self._build_result(
+            normalized_combo_key,
+            combo_label,
+            results_by_task,
+        )
+        finish_message = result.get('message', '') or '组合任务已完成。'
+        self.combo_progress_service.finish(
+            message=finish_message,
+            stopped=result.get('stopped', False),
+        )
+        self.logger.log(
+            'INFO',
+            '组合任务执行结束',
+            combo_key=normalized_combo_key,
+            processed_count=result['processed_count'],
+            success_count=result['success_count'],
+            failed_count=result['failed_count'],
+            remaining_count=result['remaining_count'],
+            stopped=result['stopped'],
+            requires_manual_verification=result['requires_manual_verification'],
+        )
+        return result
+
+    def request_stop(self):
+        self.internal_stop_event.set()
+
+    def _run_subtask(self, task_definition, limit, show_browser, cooldown_before_search, results_by_task):
+        task_key = task_definition['task_key']
+        task_label = task_definition['task_label']
+        tracker = self.combo_progress_service.build_subtask_tracker(task_definition, self.logger)
+        self.logger.log(
+            'INFO',
+            '子任务准备启动',
+            task_key=task_key,
+            task_label=task_label,
+            limit=limit,
+        )
+
+        try:
+            service, run_method = self._build_task_runner(
+                task_definition,
+                show_browser=show_browser,
+                cooldown_before_search=cooldown_before_search,
+                progress_tracker=tracker,
+            )
+            result = run_method(service, limit)
+        except Exception as exc:
+            error_message = str(exc)
+            self.logger.log(
+                'ERROR',
+                '子任务执行异常',
+                task_key=task_key,
+                task_label=task_label,
+                error=error_message,
+            )
+            result = {
+                'processed_count': 0,
+                'success_count': 0,
+                'failed_count': 1,
+                'remaining_count': 0,
+                'stopped': True,
+                'requires_manual_verification': False,
+                'message': error_message,
+                'entity_label': task_label,
+                'results': [],
+            }
+            self.internal_stop_event.set()
+
+        result.setdefault('task_label', task_label)
+        self.combo_progress_service.update_subtask_finish(
+            task_key,
+            message=result.get('message', ''),
+            stopped=result.get('stopped', False),
+            result=result,
+        )
+        self.logger.log(
+            'INFO',
+            '子任务执行完成',
+            task_key=task_key,
+            task_label=task_label,
+            processed_count=result.get('processed_count', 0),
+            success_count=result.get('success_count', 0),
+            failed_count=result.get('failed_count', 0),
+            remaining_count=result.get('remaining_count', 0),
+            stopped=result.get('stopped', False),
+            requires_manual_verification=result.get('requires_manual_verification', False),
+            message=result.get('message', ''),
+        )
+        if result.get('requires_manual_verification'):
+            self.internal_stop_event.set()
+
+        with self._result_lock:
+            results_by_task[task_key] = dict(result)
+
+    def _build_task_runner(self, task_definition, show_browser, cooldown_before_search, progress_tracker):
+        task_key = task_definition['task_key']
+        should_stop = self._should_stop
+
+        if task_key == 'code_prefix_avfan':
+            scraper = AvfanCodePrefixScraper(
+                headless=not show_browser,
+                profile_dir=self._build_avfan_profile_dir(task_key),
+            )
+            service = CodePrefixEnrichmentService(
+                self.database,
+                scraper=scraper,
+                show_browser=show_browser,
+                should_stop=should_stop,
+                progress_tracker=progress_tracker,
+            )
+            return service, lambda current_service, limit: current_service.enrich_next_prefixes(limit)
+
+        if task_key == 'actor_avfan':
+            scraper = AvfanActorScraper(
+                headless=not show_browser,
+                profile_dir=self._build_avfan_profile_dir(task_key),
+            )
+            service = ActorEnrichmentService(
+                self.database,
+                scraper=scraper,
+                show_browser=show_browser,
+                should_stop=should_stop,
+                progress_tracker=progress_tracker,
+            )
+            return service, lambda current_service, limit: current_service.enrich_next_actors(limit)
+
+        if task_key == 'code_prefix_javtxt':
+            service = CodePrefixJavtxtEnrichmentService(
+                self.database,
+                show_browser=show_browser,
+                should_stop=should_stop,
+                progress_tracker=progress_tracker,
+            )
+            return service, lambda current_service, limit: current_service.enrich_next_prefixes(limit)
+
+        if task_key == 'actor_javtxt':
+            service = ActorJavtxtEnrichmentService(
+                self.database,
+                show_browser=show_browser,
+                should_stop=should_stop,
+                progress_tracker=progress_tracker,
+            )
+            return service, lambda current_service, limit: current_service.enrich_next_actors(limit)
+
+        raise ValueError(f'不支持的组合子任务: {task_key}')
+
+    def _build_avfan_profile_dir(self, task_key):
+        profile_dir = COMBO_BROWSER_PROFILES_DIR / task_key
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        return profile_dir
+
+    def _should_stop(self):
+        return self.internal_stop_event.is_set() or bool(self.external_should_stop())
+
+    @staticmethod
+    def _build_result(combo_key, combo_label, results_by_task):
+        ordered_results = {
+            task_definition['task_key']: dict(results_by_task.get(task_definition['task_key'], {}))
+            for task_definition in get_combo_tasks(combo_key)
+        }
+        processed_count = sum(int(result.get('processed_count', 0) or 0) for result in ordered_results.values())
+        success_count = sum(int(result.get('success_count', 0) or 0) for result in ordered_results.values())
+        failed_count = sum(int(result.get('failed_count', 0) or 0) for result in ordered_results.values())
+        remaining_count = sum(int(result.get('remaining_count', 0) or 0) for result in ordered_results.values())
+        requires_manual_verification = any(
+            bool(result.get('requires_manual_verification'))
+            for result in ordered_results.values()
+        )
+        stopped = any(bool(result.get('stopped')) for result in ordered_results.values())
+        message_segments = [
+            str(result.get('message', '') or '').strip()
+            for result in ordered_results.values()
+            if str(result.get('message', '') or '').strip()
+        ]
+        message = ' | '.join(message_segments)
+        if requires_manual_verification and not message:
+            message = '组合任务中检测到 AVFan 人机验证。'
+        return {
+            'task_kind': 'combo',
+            'combo_key': combo_key,
+            'combo_label': combo_label,
+            'entity_label': f'组合任务 / {combo_label}',
+            'requested': 0,
+            'processed_count': processed_count,
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'remaining_count': remaining_count,
+            'stopped': stopped,
+            'requires_manual_verification': requires_manual_verification,
+            'message': message,
+            'subtask_results': ordered_results,
+            'results': [],
+        }

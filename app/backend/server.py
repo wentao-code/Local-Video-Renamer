@@ -101,6 +101,13 @@ def make_handler(service):
                     target_type=body.get('target_type'),
                     source_key=body.get('source_key'),
                 )
+            if method == 'POST' and path == '/database/enrich/combo':
+                return service.enrich_combo(
+                    body.get('combo_key'),
+                    body.get('limit', 1),
+                    show_browser=bool(body.get('show_browser')),
+                    cooldown_before_search=bool(body.get('cooldown_before_search')),
+                )
             if method == 'GET' and path == '/database/enrich/progress':
                 return service.get_enrichment_progress()
             if method == 'POST' and path == '/database/enrich/cancel':

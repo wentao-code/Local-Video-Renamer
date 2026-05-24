@@ -63,6 +63,32 @@ class EnrichmentWorker(QObject):
         self.finished.emit(result)
 
 
+class ComboEnrichmentWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, backend_client, combo_key, limit, show_browser, cooldown_before_search):
+        super().__init__()
+        self.backend_client = backend_client
+        self.combo_key = combo_key
+        self.limit = limit
+        self.show_browser = show_browser
+        self.cooldown_before_search = cooldown_before_search
+
+    def run(self):
+        try:
+            result = self.backend_client.enrich_combo(
+                self.combo_key,
+                self.limit,
+                show_browser=self.show_browser,
+                cooldown_before_search=self.cooldown_before_search,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(result)
+
+
 class AutoLoginWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -88,6 +114,7 @@ class VidNormApp(QWidget):
         self.backend_client = BackendClient()
         self.enrichment_thread = None
         self.enrichment_worker = None
+        self.current_enrichment_kind = 'single'
         self.enrichment_mode = None
         self.batch_enrichment_active = False
         self.batch_enrichment_config = None
@@ -183,7 +210,7 @@ class VidNormApp(QWidget):
         self.btn_database = QPushButton('数据中心')
         self.btn_database.clicked.connect(self.show_data_center)
 
-        self.btn_view_actors = QPushButton('作者库')
+        self.btn_view_actors = QPushButton('演员库')
         self.btn_view_actors.clicked.connect(self.show_actor_viewer)
 
         self.btn_view_code_prefixes = QPushButton('番号库')
@@ -308,7 +335,7 @@ class VidNormApp(QWidget):
         try:
             result = self.backend_client.import_videos(self.pending_renames)
         except Exception as exc:
-            QMessageBox.critical(self, '错误', f'导入视频库失败：\n{str(exc)}')
+            QMessageBox.critical(self, '错误', f'导入视频库失败：\n{exc}')
             return
 
         success_count = result.get('success_count', 0)
@@ -335,7 +362,7 @@ class VidNormApp(QWidget):
         try:
             response = self.backend_client.execute_renames(renamable_plans)
         except Exception as exc:
-            QMessageBox.critical(self, '错误', f'执行重命名失败：\n{str(exc)}')
+            QMessageBox.critical(self, '错误', f'执行重命名失败：\n{exc}')
             return
 
         success = response.get('success_count', 0)
@@ -350,7 +377,7 @@ class VidNormApp(QWidget):
 
     def start_auto_login(self):
         self.btn_auto_login.setEnabled(False)
-        self.status_label.setText('正在打开登录页面并自动填入账号密码，请手动输入图片验证码后点击登录。')
+        self.status_label.setText('正在打开登录页面并自动填充账号密码，请手动输入图片验证码后点击登录。')
 
         self.login_thread = QThread(self)
         self.login_worker = AutoLoginWorker(self.backend_client)
@@ -376,6 +403,18 @@ class VidNormApp(QWidget):
         if dialog.action_mode == 'batch':
             self.start_batch_enrichment(values)
             return
+        if dialog.action_mode == 'combo_single':
+            self.start_combo_enrichment(
+                values['combo_key'],
+                values['limit'],
+                values['show_browser'],
+                values['cooldown_before_search'],
+                mode='combo_single',
+            )
+            return
+        if dialog.action_mode == 'combo_batch':
+            self.start_batch_combo_enrichment(values)
+            return
 
         self.start_enrichment(
             values['limit'],
@@ -387,6 +426,7 @@ class VidNormApp(QWidget):
         )
 
     def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, source_key, mode='single'):
+        self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
         if mode == 'batch':
             self.batch_enrichment_round += 1
@@ -416,9 +456,40 @@ class VidNormApp(QWidget):
         self.enrichment_thread.finished.connect(self.cleanup_enrichment_thread)
         self.enrichment_thread.start()
 
+    def start_combo_enrichment(self, combo_key, limit, show_browser, cooldown_before_search, mode='combo_single'):
+        self.current_enrichment_kind = 'combo'
+        self.enrichment_mode = mode
+        if mode == 'combo_batch':
+            self.batch_enrichment_round += 1
+            self.status_label.setText(f'组合任务第 {self.batch_enrichment_round} 批正在进行中，界面可继续操作。')
+        else:
+            self.status_label.setText('组合任务进行中，界面可继续操作。')
+        self.update_enrichment_controls()
+        self.reset_progress_widgets(keep_visible=True)
+        self.enrichment_progress_timer.start()
+        self.refresh_enrichment_progress()
+
+        self.enrichment_thread = QThread(self)
+        self.enrichment_worker = ComboEnrichmentWorker(
+            self.backend_client,
+            combo_key,
+            limit,
+            show_browser,
+            cooldown_before_search,
+        )
+        self.enrichment_worker.moveToThread(self.enrichment_thread)
+        self.enrichment_thread.started.connect(self.enrichment_worker.run)
+        self.enrichment_worker.finished.connect(self.on_enrichment_finished)
+        self.enrichment_worker.failed.connect(self.on_enrichment_failed)
+        self.enrichment_worker.finished.connect(self.enrichment_thread.quit)
+        self.enrichment_worker.failed.connect(self.enrichment_thread.quit)
+        self.enrichment_thread.finished.connect(self.cleanup_enrichment_thread)
+        self.enrichment_thread.start()
+
     def start_batch_enrichment(self, values):
         self.batch_enrichment_active = True
         self.batch_enrichment_config = {
+            'task_kind': 'single',
             'limit': values['batch_limit'],
             'interval_minutes': values['batch_interval_minutes'],
             'show_browser': values['show_browser'],
@@ -433,6 +504,23 @@ class VidNormApp(QWidget):
         self.update_enrichment_controls()
         self.run_next_batch_enrichment()
 
+    def start_batch_combo_enrichment(self, values):
+        self.batch_enrichment_active = True
+        self.batch_enrichment_config = {
+            'task_kind': 'combo',
+            'combo_key': values['combo_key'],
+            'limit': values['batch_limit'],
+            'interval_minutes': values['batch_interval_minutes'],
+            'show_browser': values['show_browser'],
+            'cooldown_before_search': values['cooldown_before_search'],
+        }
+        self.batch_enrichment_round = 0
+        self.status_label.setText(
+            f"组合批次任务已启动：每 {values['batch_interval_minutes']} 分钟双库并发补全 {values['batch_limit']} 个条目。"
+        )
+        self.update_enrichment_controls()
+        self.run_next_batch_enrichment()
+
     def run_next_batch_enrichment(self):
         if not self.batch_enrichment_active or self.batch_enrichment_config is None:
             return
@@ -443,6 +531,16 @@ class VidNormApp(QWidget):
         self.batch_countdown_timer.stop()
         self.batch_next_run_at = None
         self.batch_countdown_label.setText('')
+
+        if self.batch_enrichment_config.get('task_kind') == 'combo':
+            self.start_combo_enrichment(
+                self.batch_enrichment_config['combo_key'],
+                self.batch_enrichment_config['limit'],
+                self.batch_enrichment_config['show_browser'],
+                self.batch_enrichment_config['cooldown_before_search'],
+                mode='combo_batch',
+            )
+            return
 
         self.start_enrichment(
             self.batch_enrichment_config['limit'],
@@ -521,6 +619,7 @@ class VidNormApp(QWidget):
         current_item = str(progress.get('current_item', '') or '')
         message = str(progress.get('message', '') or '')
         is_running = bool(progress.get('is_running'))
+        log_path = str(progress.get('log_path', '') or '')
 
         if not is_running and total_count <= 0 and not message:
             return
@@ -532,6 +631,8 @@ class VidNormApp(QWidget):
             label_text = f'{label_text} | 当前: {current_item}'
         elif message:
             label_text = f'{label_text} | {message}'
+        if log_path and progress.get('task_kind') == 'combo' and not is_running:
+            label_text = f'{label_text} | 日志: {log_path}'
 
         self.progress_label.setText(label_text)
         self.progress_bar.show()
@@ -591,25 +692,20 @@ class VidNormApp(QWidget):
 
     def on_enrichment_finished(self, result):
         mode = self.enrichment_mode
+        is_batch_mode = mode in ('batch', 'combo_batch')
         entity_label = result.get('entity_label', '视频')
-        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
-        summary = (
-            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
-            f"成功: {result.get('success_count', 0)} 个\n"
-            f"失败: {result.get('failed_count', 0)} 个\n"
-            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
-        )
+        summary = self.build_enrichment_summary(result)
 
         if result.get('requires_manual_verification'):
             message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
-            if mode == 'batch':
+            if is_batch_mode:
                 self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
             else:
                 self.status_label.setText('')
             QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
             return
 
-        if mode == 'batch':
+        if is_batch_mode:
             if not self.batch_enrichment_active:
                 self.status_label.setText('已停止分批补全计划。')
                 QMessageBox.information(self, '分批补全已停止', summary)
@@ -629,13 +725,42 @@ class VidNormApp(QWidget):
 
     def on_enrichment_failed(self, error_message):
         mode = self.enrichment_mode
-        if mode == 'batch':
+        if mode in ('batch', 'combo_batch'):
             self.stop_batch_enrichment('分批补全失败，计划已停止。')
             QMessageBox.critical(self, '分批补全失败', error_message)
             return
 
         self.status_label.setText('')
         QMessageBox.critical(self, '补全失败', error_message)
+
+    def build_enrichment_summary(self, result):
+        if result.get('task_kind') == 'combo':
+            lines = [
+                f"组合任务：{result.get('combo_label', '')}",
+                f"总处理: {result.get('processed_count', 0)}",
+                f"总成功: {result.get('success_count', 0)}",
+                f"总失败: {result.get('failed_count', 0)}",
+                f"总剩余: {result.get('remaining_count', 0)}",
+            ]
+            for task_key, task_result in (result.get('subtask_results', {}) or {}).items():
+                task_label = task_result.get('task_label') or task_result.get('entity_label') or task_key
+                lines.append(
+                    f"{task_label}: 处理 {task_result.get('processed_count', 0)} / 成功 {task_result.get('success_count', 0)} / 失败 {task_result.get('failed_count', 0)} / 剩余 {task_result.get('remaining_count', 0)}"
+                )
+            if result.get('message'):
+                lines.append(f"消息: {result.get('message')}")
+            if result.get('log_path'):
+                lines.append(f"日志: {result.get('log_path')}")
+            return '\n'.join(lines)
+
+        entity_label = result.get('entity_label', '视频')
+        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
+        return (
+            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
+            f"成功: {result.get('success_count', 0)} 个\n"
+            f"失败: {result.get('failed_count', 0)} 个\n"
+            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
+        )
 
     def cleanup_auto_login_thread(self):
         self.btn_auto_login.setEnabled(True)
@@ -654,6 +779,7 @@ class VidNormApp(QWidget):
             self.enrichment_thread.deleteLater()
         self.enrichment_worker = None
         self.enrichment_thread = None
+        self.current_enrichment_kind = 'single'
         self.enrichment_mode = None
         self.update_enrichment_controls()
         if not self.batch_enrichment_active:
@@ -665,7 +791,7 @@ class VidNormApp(QWidget):
             '重置网页登录状态',
             '这会清除补全信息使用的专用浏览器登录状态、Cookie 和验证记录。\n'
             '不会影响视频数据库，也不会影响你日常使用的 Chrome。\n\n'
-            '请先关闭补全时弹出的浏览器窗口，然后继续。是否重置？',
+            '请先关闭补全过程中弹出的浏览器窗口，然后继续。是否重置？',
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )

@@ -48,6 +48,27 @@ class BackendClient:
             timeout=timeout,
         )
 
+    def enrich_combo(
+        self,
+        combo_key,
+        limit,
+        show_browser=False,
+        cooldown_before_search=False,
+    ):
+        timeout = max(self.timeout, int(limit or 1) * 300 + 120)
+        if cooldown_before_search:
+            timeout += 180
+        return self._post(
+            '/database/enrich/combo',
+            {
+                'combo_key': combo_key,
+                'limit': limit,
+                'show_browser': show_browser,
+                'cooldown_before_search': cooldown_before_search,
+            },
+            timeout=timeout,
+        )
+
     def cancel_enrichment(self):
         return self._post('/database/enrich/cancel')
 
