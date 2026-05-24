@@ -7,3 +7,5 @@ __pycache__/
 .env
 .enrichment_settings.json
 browser_profiles/
+combo_task_logs/
+*.log
