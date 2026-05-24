@@ -20,6 +20,7 @@ class ActorJavtxtEnrichmentService:
             raise ValueError('补全数量必须大于 0')
 
         candidates = self._candidate_actors(limit)
+        blocked_count = self._blocked_actor_count()
         results = []
         success_count = 0
         failed_count = 0
@@ -61,6 +62,10 @@ class ActorJavtxtEnrichmentService:
 
             self._update_progress(len(results), success_count, failed_count, actor_name)
 
+        message = ''
+        if not candidates and blocked_count > 0:
+            message = f'有 {blocked_count} 个演员尚未完成天阙阁补全，暂不能使用辛聚谷继续补全。'
+
         result = {
             'requested': limit,
             'processed_count': len(results),
@@ -73,8 +78,11 @@ class ActorJavtxtEnrichmentService:
             'source_key': JAVTXT_VIDEO_SOURCE,
             'source_label': source_label,
             'remaining_label': '剩余未用辛聚谷补全演员',
+            'message': message,
+            'blocked_count': blocked_count,
         }
-        self._finish_progress('演员库主演补全已完成。' if not stopped else '演员库主演补全已停止。', stopped=stopped)
+        finish_message = message or ('演员库主演补全已完成。' if not stopped else '演员库主演补全已停止。')
+        self._finish_progress(finish_message, stopped=stopped)
         return result
 
     def _candidate_actors(self, limit):
@@ -86,7 +94,7 @@ class ActorJavtxtEnrichmentService:
                 continue
             record = records.get(actor_name, {})
             status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS) and int(record.get('avfan_total_videos', 0) or 0) > 0:
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) and self._is_ready_for_javtxt(record):
                 actors.append(actor_name)
             if len(actors) >= limit:
                 break
@@ -101,14 +109,33 @@ class ActorJavtxtEnrichmentService:
                 continue
             record = records.get(actor_name, {})
             status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS) and int(record.get('avfan_total_videos', 0) or 0) > 0:
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) and self._is_ready_for_javtxt(record):
                 remaining += 1
         return remaining
+
+    def _blocked_actor_count(self):
+        records = self.database.list_actor_enrichment_records()
+        blocked = 0
+        for row in self.database.list_actors():
+            actor_name = str(row.get('name', '')).strip()
+            if not actor_name:
+                continue
+            record = records.get(actor_name, {})
+            status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) and not self._is_ready_for_javtxt(record):
+                blocked += 1
+        return blocked
+
+    @staticmethod
+    def _is_ready_for_javtxt(record):
+        avfan_status = str((record or {}).get('avfan_enrichment_status', '') or '').strip()
+        avfan_total_videos = int((record or {}).get('avfan_total_videos', 0) or 0)
+        return avfan_status == ENRICHED_STATUS and avfan_total_videos > 0
 
     def _enrich_single_actor(self, actor_name):
         movies = self.database.list_actor_movies(actor_name)
         if not movies:
-            raise RuntimeError('请先使用天陨阁补全演员库作品列表。')
+            raise RuntimeError('请先使用天阙阁补全演员库作品列表。')
 
         with self.author_resolver.session():
             enriched_movies = self.author_resolver.enrich_entries(movies)

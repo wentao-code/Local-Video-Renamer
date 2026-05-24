@@ -4,13 +4,18 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.core.app_config import get_setting
-from app.core.project_paths import AVFAN_PROFILE_DIR, BROWSER_PROFILES_DIR
+from app.core.runtime_config import (
+    get_avfan_profile_dir,
+    get_browser_profiles_dir,
+    get_scraper_browser_channel,
+    get_scraper_locale,
+)
 from app.scraper.browser_window import minimize_browser_window_if_needed
 from app.scraper.exceptions import HumanVerificationRequiredError
 
 
 AVFAN_MOVIE_RE = re.compile(r'/movies/([^/?#]+)')
-DEFAULT_PROFILE_DIR = AVFAN_PROFILE_DIR
+DEFAULT_PROFILE_DIR = get_avfan_profile_dir()
 SEARCH_COOLDOWN_MS = 180000
 MANUAL_CHECK_TIMEOUT_MS = 600000
 
@@ -18,9 +23,10 @@ MANUAL_CHECK_TIMEOUT_MS = 600000
 def reset_avfan_browser_profile(profile_dir=None):
     target = Path(profile_dir) if profile_dir else DEFAULT_PROFILE_DIR
     target = target.resolve()
-    profile_root = BROWSER_PROFILES_DIR.resolve()
+    profile_root = get_browser_profiles_dir().resolve()
+    configured_profile_dir = get_avfan_profile_dir().resolve()
 
-    if target != profile_root / 'avfan':
+    if target != configured_profile_dir:
         raise ValueError('拒绝清理非 AVFan 专用浏览器档案目录')
 
     if not target.exists():
@@ -43,10 +49,10 @@ def reset_avfan_browser_profile(profile_dir=None):
 
 
 class AvfanScraper:
-    def __init__(self, headless=True, locale='zh-CN', profile_dir=None, cooldown_before_search=False):
+    def __init__(self, headless=True, locale=None, profile_dir=None, cooldown_before_search=False):
         self.headless = headless
-        self.locale = locale
-        self.profile_dir = Path(profile_dir) if profile_dir else DEFAULT_PROFILE_DIR
+        self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
+        self.profile_dir = Path(profile_dir) if profile_dir else get_avfan_profile_dir()
         self.cooldown_before_search = cooldown_before_search
         self.cooldown_used = False
         self.home_url = get_setting('SCRAPER_HOME_URL', required=True)
@@ -168,8 +174,11 @@ class AvfanScraper:
             viewport={'width': 1440, 'height': 1200},
             locale=self.locale,
         )
+        browser_channel = get_scraper_browser_channel()
         try:
-            return playwright.chromium.launch_persistent_context(channel='chrome', **launch_options)
+            if browser_channel:
+                return playwright.chromium.launch_persistent_context(channel=browser_channel, **launch_options)
+            return playwright.chromium.launch_persistent_context(**launch_options)
         except Exception:
             return playwright.chromium.launch_persistent_context(**launch_options)
 

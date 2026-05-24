@@ -2,11 +2,14 @@ from urllib.parse import urlencode
 
 import requests
 
+from app.core.runtime_config import get_backend_base_url, get_backend_timeout_seconds
+
 
 class BackendClient:
-    def __init__(self, base_url='http://127.0.0.1:8765', timeout=30):
-        self.base_url = base_url.rstrip('/')
-        self.timeout = timeout
+    def __init__(self, base_url=None, timeout=None):
+        resolved_base_url = str(base_url or get_backend_base_url()).strip()
+        self.base_url = resolved_base_url.rstrip('/')
+        self.timeout = int(timeout or get_backend_timeout_seconds())
 
     def health(self):
         return self._get('/health')

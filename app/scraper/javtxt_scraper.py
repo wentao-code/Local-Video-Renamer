@@ -1,6 +1,12 @@
 import re
 from contextlib import contextmanager
 
+from app.core.runtime_config import (
+    get_javtxt_base_url,
+    get_javtxt_search_url,
+    get_scraper_browser_channel,
+    get_scraper_locale,
+)
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
 from app.scraper.browser_window import minimize_browser_window_if_needed
@@ -11,10 +17,10 @@ SECTION_ICON_RE = re.compile(r'^[🆔🗂️📅🎥🔖🏷️🧲📙🔍🔥�
 
 
 class JavtxtScraper:
-    def __init__(self, headless=True, locale='zh-CN'):
+    def __init__(self, headless=True, locale=None):
         self.headless = headless
-        self.locale = locale
-        self.base_url = 'https://javtxt.top'
+        self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
+        self.base_url = get_javtxt_base_url()
         self._playwright_manager = None
         self._playwright = None
         self._browser = None
@@ -40,7 +46,15 @@ class JavtxtScraper:
         sync_playwright = import_sync_playwright()
         self._playwright_manager = sync_playwright()
         self._playwright = self._playwright_manager.start()
-        self._browser = self._playwright.chromium.launch(headless=self.headless)
+        browser_channel = get_scraper_browser_channel()
+        launch_options = {'headless': self.headless}
+        if browser_channel:
+            launch_options['channel'] = browser_channel
+        try:
+            self._browser = self._playwright.chromium.launch(**launch_options)
+        except Exception:
+            launch_options.pop('channel', None)
+            self._browser = self._playwright.chromium.launch(**launch_options)
         self._context = self._browser.new_context(locale=self.locale, viewport={'width': 1440, 'height': 1200})
         self._page = self._context.new_page()
         minimize_browser_window_if_needed(self._page, self.headless)
@@ -93,7 +107,7 @@ class JavtxtScraper:
 
     def build_search_url(self, normalized_code):
         search_code = re.sub(r'[^A-Z0-9]', '', str(normalized_code or '').upper())
-        return f'{self.base_url}/search?type=id&q={search_code}'
+        return get_javtxt_search_url(search_code)
 
     def find_first_detail_url(self, page):
         links = page.evaluate(

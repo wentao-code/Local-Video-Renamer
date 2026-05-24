@@ -1,5 +1,6 @@
-from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from app.core.runtime_config import get_avfan_actor_search_url
 from app.scraper.avfan_scraper import (
     AvfanScraper,
     accept_age_gate_if_needed,
@@ -10,7 +11,7 @@ from app.scraper.avfan_scraper import (
 
 
 class AvfanActorScraper:
-    def __init__(self, headless=True, locale='zh-CN', profile_dir=None):
+    def __init__(self, headless=True, locale=None, profile_dir=None):
         self.browser = AvfanScraper(
             headless=headless,
             locale=locale,
@@ -44,8 +45,7 @@ class AvfanActorScraper:
 
     @staticmethod
     def build_search_url(actor_name):
-        safe_actor_name = quote(str(actor_name or '').strip())
-        return f'https://avfan.com/search?q={safe_actor_name}&st=cast'
+        return get_avfan_actor_search_url(actor_name)
 
     @staticmethod
     def build_actor_page_url(base_url, page_number):

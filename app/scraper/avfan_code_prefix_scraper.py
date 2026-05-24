@@ -1,5 +1,4 @@
-from urllib.parse import quote
-
+from app.core.runtime_config import get_avfan_code_prefix_url
 from app.scraper.avfan_scraper import (
     AvfanScraper,
     accept_age_gate_if_needed,
@@ -10,7 +9,7 @@ from app.scraper.avfan_scraper import (
 
 
 class AvfanCodePrefixScraper:
-    def __init__(self, headless=True, locale='zh-CN', profile_dir=None):
+    def __init__(self, headless=True, locale=None, profile_dir=None):
         self.browser = AvfanScraper(
             headless=headless,
             locale=locale,
@@ -32,8 +31,7 @@ class AvfanCodePrefixScraper:
 
     @staticmethod
     def build_listing_url(prefix, page_number):
-        safe_prefix = quote(str(prefix or '').strip().upper())
-        return f'https://avfan.com/zh-CN/number_letters/{safe_prefix}?page={int(page_number)}'
+        return get_avfan_code_prefix_url(prefix, page_number)
 
     @staticmethod
     def detect_total_pages(page):
@@ -94,4 +92,3 @@ class AvfanCodePrefixScraper:
             }
             """
         )
-

@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from app.backend.service import BackendService
+from app.core.runtime_config import get_backend_host, get_backend_port
 
 
 def make_handler(service):
@@ -133,7 +134,9 @@ def make_handler(service):
     return VideoBackendHandler
 
 
-def run_server(host='127.0.0.1', port=8765):
+def run_server(host=None, port=None):
+    host = str(host or get_backend_host()).strip() or get_backend_host()
+    port = int(port or get_backend_port())
     service = BackendService()
     server = ThreadingHTTPServer((host, port), make_handler(service))
     print(f'Local Video Renamer backend listening on http://{host}:{port}')
@@ -142,8 +145,8 @@ def run_server(host='127.0.0.1', port=8765):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--host', default=get_backend_host())
+    parser.add_argument('--port', type=int, default=get_backend_port())
     args = parser.parse_args()
     run_server(args.host, args.port)
 
