@@ -13,3 +13,12 @@
 [2026-05-24 19:56:21] [NOTICE] ===================================================
 [2026-05-24 19:56:21] [INFO] 子任务开始处理候选项 | source_label=天陨阁 | task_key=actor_avfan | task_label=演员库 / 天限阁 | total_count=6
 [2026-05-24 19:57:28] [INFO] 子任务进度更新 | current_item=MARIA | failed_count=0 | processed_count=1 | success_count=1 | task_key=actor_avfan
+[2026-05-24 20:01:23] [INFO] 子任务进度更新 | current_item=あおいれな | failed_count=0 | processed_count=2 | success_count=2 | task_key=actor_avfan
+[2026-05-24 20:02:40] [INFO] 子任务进度更新 | current_item=あやみ旬果 | failed_count=0 | processed_count=3 | success_count=3 | task_key=actor_avfan
+[2026-05-24 20:04:57] [INFO] 子任务进度更新 | current_item=かなで自由 | failed_count=0 | processed_count=4 | success_count=4 | task_key=actor_avfan
+[2026-05-24 20:07:06] [INFO] 子任务进度更新 | current_item=きみと歩実 | failed_count=0 | processed_count=5 | success_count=5 | task_key=actor_avfan
+[2026-05-24 20:07:54] [INFO] 子任务进度更新 | current_item=しおかわ雲丹 | failed_count=0 | processed_count=6 | success_count=6 | task_key=actor_avfan
+[2026-05-24 20:07:54] [ERROR] 子任务执行异常 | error=ComboTaskLogger.log() got multiple values for argument 'message' | task_key=actor_avfan | task_label=演员库 / 天限阁
+[2026-05-24 20:08:00] [INFO] 子任务进度更新 | current_item=ABW | failed_count=0 | processed_count=1 | success_count=1 | task_key=code_prefix_javtxt
+[2026-05-24 20:08:00] [ERROR] 子任务执行异常 | error=ComboTaskLogger.log() got multiple values for argument 'message' | task_key=code_prefix_javtxt | task_label=番号库 / 辛聚谷
+[2026-05-24 20:08:00] [INFO] 组合任务执行结束 | combo_key=fu_shui | failed_count=0 | processed_count=0 | remaining_count=0 | requires_manual_verification=False | stopped=False | success_count=0

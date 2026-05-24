@@ -1697,12 +1697,12 @@ class VideoDatabase:
             for row in rows
         }
 
-    def save_javtxt_cache_for_video(self, code, info):
+    def save_javtxt_cache_for_video(self, code, info, status=ENRICHED_STATUS, error=''):
         normalized_code = str(code or '').strip().upper()
         if not normalized_code:
             return 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
@@ -1711,6 +1711,8 @@ class VideoDatabase:
                     javtxt_url = COALESCE(NULLIF(?, ''), javtxt_url),
                     javtxt_title = COALESCE(NULLIF(?, ''), javtxt_title),
                     javtxt_actors = ?,
+                    javtxt_enrichment_status = ?,
+                    javtxt_enrichment_error = ?,
                     javtxt_enriched_at = CURRENT_TIMESTAMP
                 WHERE code = ?
                 ''',
@@ -1719,9 +1721,12 @@ class VideoDatabase:
                     str((info or {}).get('javtxt_url', '') or '').strip(),
                     str((info or {}).get('javtxt_title', '') or '').strip(),
                     sanitize_actor_text((info or {}).get('javtxt_actors', '')),
+                    str(status or ENRICHED_STATUS),
+                    str(error or ''),
                     normalized_code,
                 ),
             )
+            self._refresh_combined_video_status(cursor, normalized_code, str(error or ''))
             conn.commit()
             return int(cursor.rowcount or 0)
 

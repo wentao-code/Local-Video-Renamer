@@ -21,29 +21,39 @@ class CodePrefixJavtxtEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        candidates = self._candidate_prefixes(limit)
+        ready_prefixes = self._ready_prefixes()
         blocked_count = self._blocked_prefix_count()
+        remaining_video_count_before = self._remaining_prefix_video_count(ready_prefixes)
+        target_video_count = min(limit, remaining_video_count_before)
         results = []
-        success_count = 0
-        failed_count = 0
+        processed_video_count = 0
+        success_video_count = 0
+        failed_video_count = 0
         stopped = False
         source_label = get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('番号库', len(candidates), source_label=source_label)
+            self.progress_tracker.start(
+                '番号库',
+                target_video_count,
+                source_label=source_label,
+                count_unit='视频',
+            )
 
-        for prefix in candidates:
+        for prefix in ready_prefixes:
             if self.should_stop():
                 stopped = True
                 break
+            remaining_slots = limit - processed_video_count
+            if remaining_slots <= 0:
+                break
 
             try:
-                result = self._enrich_single_prefix(prefix)
+                result = self._enrich_single_prefix(prefix, remaining_slots)
                 results.append(result)
-                if result.get('status') == ENRICHED_STATUS:
-                    success_count += 1
-                else:
-                    failed_count += 1
+                processed_video_count += int(result.get('processed_video_count', 0) or 0)
+                success_video_count += int(result.get('success_video_count', 0) or 0)
+                failed_video_count += int(result.get('failed_video_count', 0) or 0)
             except Exception as exc:
                 error_message = str(exc)
                 self.database.save_code_prefix_enrichment(
@@ -58,35 +68,46 @@ class CodePrefixJavtxtEnrichmentService:
                     'prefix': prefix,
                     'status': FAILED_STATUS,
                     'error': error_message,
+                    'processed_video_count': 0,
+                    'success_video_count': 0,
+                    'failed_video_count': 1,
+                    'remaining_video_count': self._pending_prefix_video_count(prefix),
+                    'count_unit': '视频',
                 })
-                failed_count += 1
+                failed_video_count += 1
 
-            self._update_progress(len(results), success_count, failed_count, prefix)
+            self._update_progress(
+                processed_video_count,
+                success_video_count,
+                failed_video_count,
+                prefix,
+            )
 
         message = ''
-        if not candidates and blocked_count > 0:
-            message = f'有 {blocked_count} 个番号尚未完成天阙阁补全，暂不能使用辛聚谷继续补全。'
+        if not ready_prefixes and blocked_count > 0:
+            message = f'当前有 {blocked_count} 个番号尚未完成天限阁补全，暂时不能使用辛聚谷继续补全。'
 
         result = {
             'requested': limit,
-            'processed_count': len(results),
-            'success_count': success_count,
-            'failed_count': failed_count,
-            'remaining_count': self._remaining_prefix_count(),
+            'processed_count': processed_video_count,
+            'success_count': success_video_count,
+            'failed_count': failed_video_count,
+            'remaining_count': self._remaining_prefix_video_count(),
             'results': results,
             'stopped': stopped,
-            'entity_label': '番号',
+            'entity_label': '番号库 / 辛聚谷',
             'source_key': JAVTXT_VIDEO_SOURCE,
             'source_label': source_label,
-            'remaining_label': '剩余未用辛聚谷补全番号',
+            'remaining_label': '剩余待补全视频',
             'message': message,
             'blocked_count': blocked_count,
+            'count_unit': '视频',
         }
-        finish_message = message or ('番号库主演补全已完成。' if not stopped else '番号库主演补全已停止。')
+        finish_message = message or ('番号库辛聚谷补全已完成。' if not stopped else '番号库辛聚谷补全已停止。')
         self._finish_progress(finish_message, stopped=stopped)
         return result
 
-    def _candidate_prefixes(self, limit):
+    def _ready_prefixes(self):
         records = self.database.list_code_prefix_enrichment_records()
         prefixes = []
         for row in self.prefix_library.list_prefixes():
@@ -95,20 +116,15 @@ class CodePrefixJavtxtEnrichmentService:
             status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS) and self._is_ready_for_javtxt(record):
                 prefixes.append(prefix)
-            if len(prefixes) >= limit:
-                break
         return prefixes
 
-    def _remaining_prefix_count(self):
-        records = self.database.list_code_prefix_enrichment_records()
-        remaining = 0
-        for row in self.prefix_library.list_prefixes():
-            prefix = row.get('prefix', '')
-            record = records.get(prefix, {})
-            status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS) and self._is_ready_for_javtxt(record):
-                remaining += 1
-        return remaining
+    def _remaining_prefix_video_count(self, prefixes=None):
+        target_prefixes = prefixes if prefixes is not None else self._ready_prefixes()
+        return sum(self._pending_prefix_video_count(prefix) for prefix in target_prefixes)
+
+    def _pending_prefix_video_count(self, prefix):
+        movies = self.database.list_code_prefix_movies(prefix)
+        return self.author_resolver.count_pending_entries(movies)
 
     def _blocked_prefix_count(self):
         records = self.database.list_code_prefix_enrichment_records()
@@ -127,18 +143,22 @@ class CodePrefixJavtxtEnrichmentService:
         avfan_total_videos = int((record or {}).get('avfan_total_videos', 0) or 0)
         return avfan_status == ENRICHED_STATUS and avfan_total_videos > 0
 
-    def _enrich_single_prefix(self, prefix):
+    def _enrich_single_prefix(self, prefix, max_video_count):
         movies = self.database.list_code_prefix_movies(prefix)
         if not movies:
-            raise RuntimeError('请先使用天阙阁补全番号库作品列表。')
+            raise RuntimeError('请先使用天限阁补全番号库作品列表。')
 
         with self.author_resolver.session():
-            enriched_movies = self.author_resolver.enrich_entries(movies)
+            resolution = self.author_resolver.enrich_entries_with_details(
+                movies,
+                max_lookup_count=max_video_count,
+            )
 
+        enriched_movies = resolution.get('entries', [])
         self.database.replace_code_prefix_movies(prefix, enriched_movies)
         self.database.save_code_prefix_enrichment(
             prefix=prefix,
-            status=ENRICHED_STATUS,
+            status=ENRICHED_STATUS if resolution.get('completed') else UNENRICHED_STATUS,
             total_pages=0,
             total_videos=len(enriched_movies),
             error='',
@@ -146,8 +166,13 @@ class CodePrefixJavtxtEnrichmentService:
         )
         return {
             'prefix': prefix,
-            'status': ENRICHED_STATUS,
+            'status': ENRICHED_STATUS if resolution.get('completed') else UNENRICHED_STATUS,
             'video_count': len(enriched_movies),
+            'processed_video_count': int(resolution.get('processed_video_count', 0) or 0),
+            'success_video_count': int(resolution.get('success_video_count', 0) or 0),
+            'failed_video_count': int(resolution.get('failed_video_count', 0) or 0),
+            'remaining_video_count': int(resolution.get('pending_video_count', 0) or 0),
+            'count_unit': '视频',
         }
 
     def _update_progress(self, processed_count, success_count, failed_count, current_item):

@@ -6,7 +6,7 @@ class EnrichmentProgressService:
         self._lock = Lock()
         self._state = self._build_default_state()
 
-    def start(self, target_label, total_count, source_label='', message=''):
+    def start(self, target_label, total_count, source_label='', message='', count_unit='项'):
         with self._lock:
             self._state = self._build_default_state()
             self._state.update(
@@ -16,6 +16,7 @@ class EnrichmentProgressService:
                     'source_label': str(source_label or ''),
                     'total_count': max(0, int(total_count or 0)),
                     'message': str(message or ''),
+                    'count_unit': str(count_unit or '项'),
                 }
             )
 
@@ -77,4 +78,5 @@ class EnrichmentProgressService:
             'progress_percent': 0.0,
             'message': '',
             'stopped': False,
+            'count_unit': '项',
         }

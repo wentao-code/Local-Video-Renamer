@@ -20,6 +20,7 @@ COMBO_TASK_DEFINITIONS = {
             'target_type': CODE_PREFIX_LIBRARY_TARGET,
             'source_key': AVFAN_VIDEO_SOURCE,
             'uses_avfan_profile': True,
+            'count_unit': '番号',
         },
         {
             'task_key': 'actor_javtxt',
@@ -27,6 +28,7 @@ COMBO_TASK_DEFINITIONS = {
             'target_type': ACTOR_LIBRARY_TARGET,
             'source_key': JAVTXT_VIDEO_SOURCE,
             'uses_avfan_profile': False,
+            'count_unit': '视频',
         },
     ),
     FU_SHUI_COMBO: (
@@ -36,6 +38,7 @@ COMBO_TASK_DEFINITIONS = {
             'target_type': CODE_PREFIX_LIBRARY_TARGET,
             'source_key': JAVTXT_VIDEO_SOURCE,
             'uses_avfan_profile': False,
+            'count_unit': '视频',
         },
         {
             'task_key': 'actor_avfan',
@@ -43,6 +46,7 @@ COMBO_TASK_DEFINITIONS = {
             'target_type': ACTOR_LIBRARY_TARGET,
             'source_key': AVFAN_VIDEO_SOURCE,
             'uses_avfan_profile': True,
+            'count_unit': '演员',
         },
     ),
 }

@@ -135,6 +135,7 @@ class ComboEnrichmentService:
             self.internal_stop_event.set()
 
         result.setdefault('task_label', task_label)
+        result.setdefault('count_unit', task_definition.get('count_unit', '项'))
         self.combo_progress_service.update_subtask_finish(
             task_key,
             message=result.get('message', ''),
@@ -152,7 +153,7 @@ class ComboEnrichmentService:
             remaining_count=result.get('remaining_count', 0),
             stopped=result.get('stopped', False),
             requires_manual_verification=result.get('requires_manual_verification', False),
-            message=result.get('message', ''),
+            result_message=result.get('message', ''),
         )
         if result.get('requires_manual_verification'):
             self.internal_stop_event.set()

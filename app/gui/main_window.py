@@ -33,6 +33,7 @@ from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.path_library_viewer import PathLibraryWindow
+from app.gui.task_progress_widget import TaskProgressWidget
 
 
 class EnrichmentWorker(QObject):
@@ -198,6 +199,7 @@ class VidNormApp(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.setTextVisible(True)
+        self.combo_subtask_widgets = [TaskProgressWidget(self), TaskProgressWidget(self)]
         self.batch_countdown_label = QLabel('')
 
         button_layout = QVBoxLayout()
@@ -263,6 +265,9 @@ class VidNormApp(QWidget):
         main_layout.addWidget(self.status_label)
         main_layout.addWidget(self.progress_label)
         main_layout.addWidget(self.progress_bar)
+        for combo_subtask_widget in self.combo_subtask_widgets:
+            combo_subtask_widget.hide()
+            main_layout.addWidget(combo_subtask_widget)
         main_layout.addWidget(self.batch_countdown_label)
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
@@ -551,7 +556,7 @@ class VidNormApp(QWidget):
             mode='batch',
         )
 
-    def schedule_next_batch_enrichment(self):
+    def schedule_next_batch_enrichment(self, last_result=None):
         if not self.batch_enrichment_active or self.batch_enrichment_config is None:
             return
 
@@ -560,9 +565,20 @@ class VidNormApp(QWidget):
         self.batch_next_run_at = time.time() + interval_seconds
         self.batch_timer.start(interval_seconds * 1000)
         self.batch_countdown_timer.start()
-        self.status_label.setText(
-            f'分批补全第 {self.batch_enrichment_round} 批已完成，将在 {interval_minutes} 分钟后开始下一批。'
-        )
+        if last_result and int(last_result.get('processed_count', 0) or 0) <= 0:
+            entity_label = str(last_result.get('entity_label', '条目') or '条目')
+            message = str(last_result.get('message', '') or '').strip()
+            status_text = (
+                f'分批补全第 {self.batch_enrichment_round} 批本轮没有可处理的{entity_label}，'
+                f'将在 {interval_minutes} 分钟后继续检查。'
+            )
+            if message:
+                status_text = f'{status_text} 当前提示：{message}'
+            self.status_label.setText(status_text)
+        else:
+            self.status_label.setText(
+                f'分批补全第 {self.batch_enrichment_round} 批已完成，将在 {interval_minutes} 分钟后开始下一批。'
+            )
         self.update_batch_countdown()
         self.update_enrichment_controls()
         self.reset_progress_widgets()
@@ -608,6 +624,10 @@ class VidNormApp(QWidget):
             progress = self.backend_client.get_enrichment_progress()
         except Exception:
             return
+        if progress.get('task_kind') == 'combo':
+            self.refresh_combo_enrichment_progress(progress)
+            return
+        self.hide_combo_subtask_progress()
 
         total_count = int(progress.get('total_count', 0) or 0)
         processed_count = int(progress.get('processed_count', 0) or 0)
@@ -619,6 +639,7 @@ class VidNormApp(QWidget):
         current_item = str(progress.get('current_item', '') or '')
         message = str(progress.get('message', '') or '')
         is_running = bool(progress.get('is_running'))
+        count_unit = str(progress.get('count_unit', '') or '项')
         log_path = str(progress.get('log_path', '') or '')
 
         if not is_running and total_count <= 0 and not message:
@@ -645,11 +666,61 @@ class VidNormApp(QWidget):
         else:
             self.progress_bar.setFormat(message or '准备中...')
 
+        if total_count > 0:
+            self.progress_bar.setFormat(
+                f'{processed_count}/{total_count} {count_unit} | 成功 {success_count} | 失败 {failed_count} | {progress_percent:.1f}%'
+            )
+
+    def refresh_combo_enrichment_progress(self, progress):
+        target_label = str(progress.get('target_label', '') or '组合任务')
+        message = str(progress.get('message', '') or '')
+        current_item = str(progress.get('current_item', '') or '')
+        is_running = bool(progress.get('is_running'))
+        log_path = str(progress.get('log_path', '') or '')
+        subtasks = list((progress.get('subtasks', {}) or {}).values())
+
+        if not is_running and not subtasks and not message:
+            return
+
+        label_text = target_label
+        if current_item:
+            label_text = f'{label_text} | 当前: {current_item}'
+        elif message:
+            label_text = f'{label_text} | {message}'
+        if log_path and not is_running:
+            label_text = f'{label_text} | 日志: {log_path}'
+
+        self.progress_label.setText(label_text)
+        self.progress_label.show()
+        self.progress_bar.hide()
+
+        for index, combo_subtask_widget in enumerate(self.combo_subtask_widgets):
+            if index >= len(subtasks):
+                combo_subtask_widget.reset(hide_widget=True)
+                continue
+            task_state = dict(subtasks[index] or {})
+            combo_subtask_widget.set_progress(
+                title=str(task_state.get('task_label', '') or task_state.get('task_key', '子任务')),
+                processed_count=int(task_state.get('processed_count', 0) or 0),
+                total_count=int(task_state.get('total_count', 0) or 0),
+                success_count=int(task_state.get('success_count', 0) or 0),
+                failed_count=int(task_state.get('failed_count', 0) or 0),
+                progress_percent=float(task_state.get('progress_percent', 0) or 0),
+                count_unit=str(task_state.get('count_unit', '') or '项'),
+                current_item=str(task_state.get('current_item', '') or ''),
+                message=str(task_state.get('message', '') or ''),
+            )
+
+    def hide_combo_subtask_progress(self):
+        for combo_subtask_widget in self.combo_subtask_widgets:
+            combo_subtask_widget.reset(hide_widget=True)
+
     def reset_progress_widgets(self, keep_visible=False):
         self.enrichment_progress_timer.stop()
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat('0/0 | 0.0%')
         self.progress_label.setText('')
+        self.hide_combo_subtask_progress()
         if keep_visible:
             self.progress_bar.show()
             self.progress_label.show()
@@ -711,12 +782,7 @@ class VidNormApp(QWidget):
                 QMessageBox.information(self, '分批补全已停止', summary)
                 return
 
-            if result.get('processed_count', 0) == 0 or result.get('remaining_count', 0) <= 0:
-                self.stop_batch_enrichment(f'分批补全已完成，当前没有待补全{entity_label}。')
-                QMessageBox.information(self, '分批补全完成', summary)
-                return
-
-            self.schedule_next_batch_enrichment()
+            self.schedule_next_batch_enrichment(last_result=result)
             return
 
         title = '补全已停止' if result.get('stopped') else '补全完成'
@@ -734,6 +800,33 @@ class VidNormApp(QWidget):
         QMessageBox.critical(self, '补全失败', error_message)
 
     def build_enrichment_summary(self, result):
+        if result.get('task_kind') == 'combo':
+            lines = [
+                f"组合任务：{result.get('combo_label', '')}",
+                '整体统计请以下方两条子任务进度为准：',
+            ]
+            for task_key, task_result in (result.get('subtask_results', {}) or {}).items():
+                task_label = task_result.get('task_label') or task_result.get('entity_label') or task_key
+                count_unit = task_result.get('count_unit') or '项'
+                lines.append(
+                    f"{task_label}: 处理 {task_result.get('processed_count', 0)} {count_unit} / "
+                    f"成功 {task_result.get('success_count', 0)} / 失败 {task_result.get('failed_count', 0)} / "
+                    f"剩余 {task_result.get('remaining_count', 0)} {count_unit}"
+                )
+            if result.get('message'):
+                lines.append(f"消息: {result.get('message')}")
+            if result.get('log_path'):
+                lines.append(f"日志: {result.get('log_path')}")
+            return '\n'.join(lines)
+
+        count_unit = result.get('count_unit') or result.get('entity_label', '项')
+        remaining_label = result.get('remaining_label', '剩余待补全')
+        return (
+            f"本次处理 {result.get('processed_count', 0)} {count_unit}。\n"
+            f"成功: {result.get('success_count', 0)}\n"
+            f"失败: {result.get('failed_count', 0)}\n"
+            f"{remaining_label}: {result.get('remaining_count', 0)} {count_unit}"
+        )
         if result.get('task_kind') == 'combo':
             lines = [
                 f"组合任务：{result.get('combo_label', '')}",

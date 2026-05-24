@@ -129,6 +129,7 @@ class ComboProgressService:
                     'message': str(message or result.get('message', '') or ''),
                     'stopped': bool(stopped or result.get('stopped')),
                     'progress_percent': progress_percent,
+                    'count_unit': str(result.get('count_unit', subtask.get('count_unit', '项')) or '项'),
                 }
             )
             self._recalculate_totals_locked()
@@ -172,6 +173,7 @@ class ComboProgressService:
             'target_type': task_definition['target_type'],
             'source_key': task_definition['source_key'],
             'source_label': '',
+            'count_unit': str(task_definition.get('count_unit', '项') or '项'),
             'is_running': False,
             'total_count': 0,
             'processed_count': 0,
@@ -254,7 +256,7 @@ class ComboSubtaskProgressTracker:
             '子任务进度结束',
             task_key=self.task_definition['task_key'],
             stopped=bool(stopped),
-            message=str(message or ''),
+            detail_message=str(message or ''),
         )
 
     def set_message(self, message):
@@ -262,7 +264,7 @@ class ComboSubtaskProgressTracker:
             'INFO',
             '子任务消息更新',
             task_key=self.task_definition['task_key'],
-            message=str(message or ''),
+            detail_message=str(message or ''),
         )
 
     def reset(self):

@@ -19,29 +19,39 @@ class ActorJavtxtEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        candidates = self._candidate_actors(limit)
+        ready_actor_names = self._ready_actor_names()
         blocked_count = self._blocked_actor_count()
+        remaining_video_count_before = self._remaining_actor_video_count(ready_actor_names)
+        target_video_count = min(limit, remaining_video_count_before)
         results = []
-        success_count = 0
-        failed_count = 0
+        processed_video_count = 0
+        success_video_count = 0
+        failed_video_count = 0
         stopped = False
         source_label = get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('演员库', len(candidates), source_label=source_label)
+            self.progress_tracker.start(
+                '演员库',
+                target_video_count,
+                source_label=source_label,
+                count_unit='视频',
+            )
 
-        for actor_name in candidates:
+        for actor_name in ready_actor_names:
             if self.should_stop():
                 stopped = True
                 break
+            remaining_slots = limit - processed_video_count
+            if remaining_slots <= 0:
+                break
 
             try:
-                result = self._enrich_single_actor(actor_name)
+                result = self._enrich_single_actor(actor_name, remaining_slots)
                 results.append(result)
-                if result.get('status') == ENRICHED_STATUS:
-                    success_count += 1
-                else:
-                    failed_count += 1
+                processed_video_count += int(result.get('processed_video_count', 0) or 0)
+                success_video_count += int(result.get('success_video_count', 0) or 0)
+                failed_video_count += int(result.get('failed_video_count', 0) or 0)
             except Exception as exc:
                 error_message = str(exc)
                 self.database.save_actor_enrichment(
@@ -57,37 +67,49 @@ class ActorJavtxtEnrichmentService:
                     'actor_name': actor_name,
                     'status': FAILED_STATUS,
                     'error': error_message,
+                    'processed_video_count': 0,
+                    'success_video_count': 0,
+                    'failed_video_count': 1,
+                    'remaining_video_count': self._pending_actor_video_count(actor_name),
+                    'count_unit': '视频',
                 })
-                failed_count += 1
+                failed_video_count += 1
 
-            self._update_progress(len(results), success_count, failed_count, actor_name)
+            current_item = actor_name
+            self._update_progress(
+                processed_video_count,
+                success_video_count,
+                failed_video_count,
+                current_item,
+            )
 
         message = ''
-        if not candidates and blocked_count > 0:
-            message = f'有 {blocked_count} 个演员尚未完成天阙阁补全，暂不能使用辛聚谷继续补全。'
+        if not ready_actor_names and blocked_count > 0:
+            message = f'当前有 {blocked_count} 个演员尚未完成天限阁补全，暂时不能使用辛聚谷继续补全。'
 
         result = {
             'requested': limit,
-            'processed_count': len(results),
-            'success_count': success_count,
-            'failed_count': failed_count,
-            'remaining_count': self._remaining_actor_count(),
+            'processed_count': processed_video_count,
+            'success_count': success_video_count,
+            'failed_count': failed_video_count,
+            'remaining_count': self._remaining_actor_video_count(),
             'results': results,
             'stopped': stopped,
-            'entity_label': '演员',
+            'entity_label': '演员库 / 辛聚谷',
             'source_key': JAVTXT_VIDEO_SOURCE,
             'source_label': source_label,
-            'remaining_label': '剩余未用辛聚谷补全演员',
+            'remaining_label': '剩余待补全视频',
             'message': message,
             'blocked_count': blocked_count,
+            'count_unit': '视频',
         }
-        finish_message = message or ('演员库主演补全已完成。' if not stopped else '演员库主演补全已停止。')
+        finish_message = message or ('演员库辛聚谷补全已完成。' if not stopped else '演员库辛聚谷补全已停止。')
         self._finish_progress(finish_message, stopped=stopped)
         return result
 
-    def _candidate_actors(self, limit):
+    def _ready_actor_names(self):
         records = self.database.list_actor_enrichment_records()
-        actors = []
+        actor_names = []
         for row in self.database.list_actors():
             actor_name = str(row.get('name', '')).strip()
             if not actor_name:
@@ -95,23 +117,16 @@ class ActorJavtxtEnrichmentService:
             record = records.get(actor_name, {})
             status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS) and self._is_ready_for_javtxt(record):
-                actors.append(actor_name)
-            if len(actors) >= limit:
-                break
-        return actors
+                actor_names.append(actor_name)
+        return actor_names
 
-    def _remaining_actor_count(self):
-        records = self.database.list_actor_enrichment_records()
-        remaining = 0
-        for row in self.database.list_actors():
-            actor_name = str(row.get('name', '')).strip()
-            if not actor_name:
-                continue
-            record = records.get(actor_name, {})
-            status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS) and self._is_ready_for_javtxt(record):
-                remaining += 1
-        return remaining
+    def _remaining_actor_video_count(self, ready_actor_names=None):
+        actor_names = ready_actor_names if ready_actor_names is not None else self._ready_actor_names()
+        return sum(self._pending_actor_video_count(actor_name) for actor_name in actor_names)
+
+    def _pending_actor_video_count(self, actor_name):
+        movies = self.database.list_actor_movies(actor_name)
+        return self.author_resolver.count_pending_entries(movies)
 
     def _blocked_actor_count(self):
         records = self.database.list_actor_enrichment_records()
@@ -132,18 +147,22 @@ class ActorJavtxtEnrichmentService:
         avfan_total_videos = int((record or {}).get('avfan_total_videos', 0) or 0)
         return avfan_status == ENRICHED_STATUS and avfan_total_videos > 0
 
-    def _enrich_single_actor(self, actor_name):
+    def _enrich_single_actor(self, actor_name, max_video_count):
         movies = self.database.list_actor_movies(actor_name)
         if not movies:
-            raise RuntimeError('请先使用天阙阁补全演员库作品列表。')
+            raise RuntimeError('请先使用天限阁补全演员库作品列表。')
 
         with self.author_resolver.session():
-            enriched_movies = self.author_resolver.enrich_entries(movies)
+            resolution = self.author_resolver.enrich_entries_with_details(
+                movies,
+                max_lookup_count=max_video_count,
+            )
 
+        enriched_movies = resolution.get('entries', [])
         self.database.replace_actor_movies(actor_name, enriched_movies)
         self.database.save_actor_enrichment(
             actor_name=actor_name,
-            status=ENRICHED_STATUS,
+            status=ENRICHED_STATUS if resolution.get('completed') else UNENRICHED_STATUS,
             total_pages=0,
             total_videos=len(enriched_movies),
             error='',
@@ -152,8 +171,13 @@ class ActorJavtxtEnrichmentService:
         )
         return {
             'actor_name': actor_name,
-            'status': ENRICHED_STATUS,
+            'status': ENRICHED_STATUS if resolution.get('completed') else UNENRICHED_STATUS,
             'video_count': len(enriched_movies),
+            'processed_video_count': int(resolution.get('processed_video_count', 0) or 0),
+            'success_video_count': int(resolution.get('success_video_count', 0) or 0),
+            'failed_video_count': int(resolution.get('failed_video_count', 0) or 0),
+            'remaining_video_count': int(resolution.get('pending_video_count', 0) or 0),
+            'count_unit': '视频',
         }
 
     def _update_progress(self, processed_count, success_count, failed_count, current_item):
