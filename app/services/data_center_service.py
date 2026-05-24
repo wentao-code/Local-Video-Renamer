@@ -47,7 +47,7 @@ class DataCenterService:
         enriched_count = int(summary.get('enriched_count', 0) or 0)
         pending_count = int(summary.get('unenriched_count', 0) or 0)
         return {
-            'label': f'视频库 {get_video_enrichment_source_label(source_key)}',
+            'label': f'视频库·{get_video_enrichment_source_label(source_key)}',
             'total_count': total_count,
             'enriched_count': enriched_count,
             'pending_count': pending_count,
@@ -63,7 +63,7 @@ class DataCenterService:
                     continue
                 movies.extend(self.database.list_code_prefix_movies(prefix))
             return self._build_javtxt_movie_summary(
-                f'鐣彿搴?{get_video_enrichment_source_label(source_key)}',
+                f'番号库·{get_video_enrichment_source_label(source_key)}',
                 movies,
             )
 
@@ -74,7 +74,7 @@ class DataCenterService:
             if row.get('prefix')
         ]
         return self._build_status_summary(
-            f'番号库 {get_video_enrichment_source_label(source_key)}',
+            f'番号库·{get_video_enrichment_source_label(source_key)}',
             statuses,
         )
 
@@ -87,7 +87,7 @@ class DataCenterService:
                     continue
                 movies.extend(self.database.list_actor_movies(actor_name))
             return self._build_javtxt_movie_summary(
-                f'婕斿憳搴?{get_video_enrichment_source_label(source_key)}',
+                f'演员库·{get_video_enrichment_source_label(source_key)}',
                 movies,
             )
 
@@ -98,7 +98,7 @@ class DataCenterService:
             if str(row.get('name', '')).strip()
         ]
         return self._build_status_summary(
-            f'演员库 {get_video_enrichment_source_label(source_key)}',
+            f'演员库·{get_video_enrichment_source_label(source_key)}',
             statuses,
         )
 

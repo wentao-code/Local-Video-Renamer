@@ -14,7 +14,7 @@ class ActorDetailViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle(f'演员详情 - {self.actor_name}')
-        self.resize(980, 760)
+        self.resize(1280, 760)
 
         root_layout = QVBoxLayout(self)
 
@@ -61,8 +61,8 @@ class ActorDetailViewerWindow(QDialog):
             ('web_latest', '最新发布时间：', ''),
             ('eligible_enriched_video_count', '补全满足要求视频数量：', ''),
             ('web_last_enriched', '最近补全时间：', ''),
-            ('web_prefix', '网页番号分布（2020-01-01及以后）：', ''),
-            ('web_year', '网页年份构成（2020-01-01及以后）：', ''),
+            ('web_prefix', '网页番号分布：', ''),
+            ('web_year', '网页年份构成：', ''),
         ])
         web_layout.addWidget(self.web_grid)
 

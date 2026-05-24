@@ -24,12 +24,12 @@ class DataCenterWindow(QDialog):
         summary_layout.setHorizontalSpacing(10)
         summary_layout.setVerticalSpacing(10)
 
-        self.video_avfan_card = SummaryCard('视频库 / 天阙阁')
-        self.video_javtxt_card = SummaryCard('视频库 / 辛聚谷')
-        self.code_prefix_avfan_card = SummaryCard('番号库 / 天阙阁')
-        self.code_prefix_javtxt_card = SummaryCard('番号库 / 辛聚谷')
-        self.actor_avfan_card = SummaryCard('演员库 / 天阙阁')
-        self.actor_javtxt_card = SummaryCard('演员库 / 辛聚谷')
+        self.video_avfan_card = SummaryCard('视频库·天限阁')
+        self.video_javtxt_card = SummaryCard('视频库·辛聚谷')
+        self.code_prefix_avfan_card = SummaryCard('番号库·天限阁')
+        self.code_prefix_javtxt_card = SummaryCard('番号库·辛聚谷')
+        self.actor_avfan_card = SummaryCard('演员库·天限阁')
+        self.actor_javtxt_card = SummaryCard('演员库·辛聚谷')
 
         summary_layout.addWidget(self.video_avfan_card, 0, 0)
         summary_layout.addWidget(self.video_javtxt_card, 0, 1)

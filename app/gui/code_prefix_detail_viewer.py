@@ -14,7 +14,7 @@ class CodePrefixDetailViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle(f'番号详情 - {self.prefix}')
-        self.resize(980, 720)
+        self.resize(1280, 760)
 
         root_layout = QVBoxLayout(self)
 
@@ -48,8 +48,8 @@ class CodePrefixDetailViewerWindow(QDialog):
         stats_layout = QVBoxLayout(stats_group)
         self.stats_grid = DetailSummaryGrid(columns=1)
         self.stats_grid.set_items([
-            ('year_distribution', '发布年份构成（2020-01-01及以后）：', ''),
-            ('top_actors', '主演演员前十名（2020-01-01及以后）：', ''),
+            ('year_distribution', '发布年份构成：', ''),
+            ('top_actors', '主演演员前十名：', ''),
         ])
         stats_layout.addWidget(self.stats_grid)
 
