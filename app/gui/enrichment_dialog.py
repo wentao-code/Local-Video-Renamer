@@ -143,7 +143,7 @@ class EnrichmentDialog(QDialog):
         target_layout.addStretch()
         target_group.setLayout(target_layout)
 
-        source_group = QGroupBox('视频库补全来源')
+        source_group = QGroupBox('补全来源')
         source_layout = QHBoxLayout()
         self.source_button_group = QButtonGroup(self)
         self.source_button_group.setExclusive(True)
@@ -157,6 +157,8 @@ class EnrichmentDialog(QDialog):
         source_layout.addStretch()
         source_group.setLayout(source_layout)
         self.source_group = source_group
+        self.avfan_source_button.toggled.connect(self.update_source_controls)
+        self.javtxt_source_button.toggled.connect(self.update_source_controls)
 
         self.video_target_button.toggled.connect(
             lambda checked: self.on_target_button_toggled(VIDEO_LIBRARY_TARGET, checked)
@@ -285,8 +287,6 @@ class EnrichmentDialog(QDialog):
         return VIDEO_LIBRARY_TARGET
 
     def selected_source_key(self):
-        if self.selected_target_type() != VIDEO_LIBRARY_TARGET:
-            return AVFAN_VIDEO_SOURCE
         if self.javtxt_source_button.isChecked():
             return JAVTXT_VIDEO_SOURCE
         return AVFAN_VIDEO_SOURCE
@@ -299,10 +299,10 @@ class EnrichmentDialog(QDialog):
         return current_settings
 
     def update_source_controls(self):
-        is_video_target = self.selected_target_type() == VIDEO_LIBRARY_TARGET
-        self.source_group.setEnabled(is_video_target)
-        if not is_video_target:
-            self.avfan_source_button.setChecked(True)
+        is_avfan_source = self.selected_source_key() == AVFAN_VIDEO_SOURCE
+        self.cooldown_checkbox.setEnabled(is_avfan_source)
+        if not is_avfan_source:
+            self.cooldown_checkbox.setChecked(False)
 
     def accept_single(self):
         self.store_current_target_settings()

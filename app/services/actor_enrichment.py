@@ -1,3 +1,4 @@
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
@@ -7,7 +8,6 @@ from app.core.enrichment_status import (
 from app.scraper.avfan_actor_scraper import AvfanActorScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.actor_search_entry_parser import parse_actor_search_card
-from app.services.movie_author_resolver import MovieAuthorResolver
 
 
 class ActorEnrichmentService:
@@ -16,11 +16,6 @@ class ActorEnrichmentService:
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.scraper = scraper or AvfanActorScraper(headless=not show_browser)
-        self.author_resolver = MovieAuthorResolver(
-            database,
-            headless=not show_browser,
-            should_stop=self.should_stop,
-        )
 
     def enrich_next_actors(self, limit):
         limit = int(limit or 0)
@@ -32,9 +27,10 @@ class ActorEnrichmentService:
         success_count = 0
         failed_count = 0
         stopped = False
+        source_label = get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('作者库', len(candidates), source_label='天陨阁')
+            self.progress_tracker.start('演员库', len(candidates), source_label=source_label)
 
         for actor_name in candidates:
             if self.should_stop():
@@ -43,8 +39,7 @@ class ActorEnrichmentService:
 
             try:
                 with self.scraper.session() as page:
-                    collected = self._collect_single_actor(page, actor_name)
-                result = self._finalize_single_actor(actor_name, collected)
+                    result = self._enrich_single_actor(page, actor_name)
                 results.append(result)
                 if result.get('stopped'):
                     stopped = True
@@ -63,6 +58,7 @@ class ActorEnrichmentService:
                     total_videos=0,
                     error=error_message,
                     actor_id='',
+                    source_key=AVFAN_VIDEO_SOURCE,
                 )
                 results.append({
                     'actor_name': actor_name,
@@ -82,6 +78,8 @@ class ActorEnrichmentService:
                     'requires_manual_verification': True,
                     'message': error_message,
                     'entity_label': '演员',
+                    'source_key': AVFAN_VIDEO_SOURCE,
+                    'source_label': source_label,
                     'remaining_label': '剩余未补全演员',
                 }
                 self._finish_progress(error_message, stopped=True)
@@ -95,6 +93,7 @@ class ActorEnrichmentService:
                     total_videos=0,
                     error=error_message,
                     actor_id='',
+                    source_key=AVFAN_VIDEO_SOURCE,
                 )
                 results.append({
                     'actor_name': actor_name,
@@ -114,9 +113,11 @@ class ActorEnrichmentService:
             'results': results,
             'stopped': stopped,
             'entity_label': '演员',
+            'source_key': AVFAN_VIDEO_SOURCE,
+            'source_label': source_label,
             'remaining_label': '剩余未补全演员',
         }
-        self._finish_progress('作者库补全已完成。' if not stopped else '作者库补全已停止。', stopped=stopped)
+        self._finish_progress('演员库补全已完成。' if not stopped else '演员库补全已停止。', stopped=stopped)
         return result
 
     def _update_progress(self, processed_count, success_count, failed_count, current_item):
@@ -139,7 +140,7 @@ class ActorEnrichmentService:
             actor_name = str(row.get('name', '')).strip()
             if not actor_name:
                 continue
-            status = records.get(actor_name, {}).get('enrichment_status', UNENRICHED_STATUS)
+            status = records.get(actor_name, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS):
                 actors.append(actor_name)
             if len(actors) >= limit:
@@ -153,12 +154,12 @@ class ActorEnrichmentService:
             actor_name = str(row.get('name', '')).strip()
             if not actor_name:
                 continue
-            status = records.get(actor_name, {}).get('enrichment_status', UNENRICHED_STATUS)
+            status = records.get(actor_name, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS):
                 remaining += 1
         return remaining
 
-    def _collect_single_actor(self, page, actor_name):
+    def _enrich_single_actor(self, page, actor_name):
         parsed_entries = []
         actor_page_url = self.scraper.open_listing_page(page, actor_name, 1)
         actor_id = self.scraper.extract_actor_id(actor_page_url)
@@ -184,22 +185,6 @@ class ActorEnrichmentService:
             }
 
         unique_entries = self._dedupe_entries(parsed_entries)
-        return {
-            'actor_name': actor_name,
-            'actor_id': actor_id,
-            'total_pages': total_pages,
-            'entries': unique_entries,
-        }
-
-    def _finalize_single_actor(self, actor_name, collected):
-        if collected.get('stopped'):
-            return collected
-
-        actor_id = str(collected.get('actor_id', '') or '').strip()
-        total_pages = int(collected.get('total_pages', 0) or 0)
-        unique_entries = list(collected.get('entries', []) or [])
-        with self.author_resolver.session():
-            unique_entries = self.author_resolver.enrich_entries(unique_entries)
         if unique_entries:
             self.database.replace_actor_movies(actor_name, unique_entries)
             self.database.save_actor_enrichment(
@@ -209,6 +194,7 @@ class ActorEnrichmentService:
                 total_videos=len(unique_entries),
                 error='',
                 actor_id=actor_id,
+                source_key=AVFAN_VIDEO_SOURCE,
             )
             return {
                 'actor_name': actor_name,
@@ -225,6 +211,7 @@ class ActorEnrichmentService:
             total_videos=0,
             error='未搜索到演员作品页面内容',
             actor_id=actor_id,
+            source_key=AVFAN_VIDEO_SOURCE,
         )
         return {
             'actor_name': actor_name,

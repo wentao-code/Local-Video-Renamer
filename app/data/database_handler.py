@@ -11,6 +11,7 @@ from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
     DEFAULT_VIDEO_ENRICHMENT_SOURCE,
     JAVTXT_VIDEO_SOURCE,
+    build_library_enrichment_status_text,
     build_video_enrichment_status_text,
     is_effective_video_pending_status,
     normalize_video_enrichment_source,
@@ -169,6 +170,13 @@ class VideoDatabase:
             self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_total_videos', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'code_prefix_enrichments', 'last_error', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'code_prefix_enrichments', 'last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'javtxt_enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'javtxt_total_videos', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'javtxt_last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'code_prefix_enrichments', 'javtxt_last_enriched_at', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'title', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'author', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'release_date', 'TEXT')
@@ -180,11 +188,40 @@ class VideoDatabase:
             self._ensure_column(cursor, 'actor_enrichments', 'avfan_total_videos', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'actor_enrichments', 'last_error', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_enrichments', 'last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'actor_enrichments', 'avfan_enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'avfan_last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'avfan_last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'actor_enrichments', 'javtxt_enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'javtxt_total_videos', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'actor_enrichments', 'javtxt_last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'javtxt_last_enriched_at', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'title', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'author', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'release_date', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'avfan_url', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'page_number', 'INTEGER DEFAULT 1')
+            cursor.execute(
+                '''
+                UPDATE code_prefix_enrichments
+                SET avfan_enrichment_status = COALESCE(NULLIF(avfan_enrichment_status, ''), COALESCE(NULLIF(enrichment_status, ''), ?)),
+                    avfan_last_error = COALESCE(NULLIF(avfan_last_error, ''), COALESCE(NULLIF(last_error, ''), '')),
+                    avfan_last_enriched_at = COALESCE(NULLIF(avfan_last_enriched_at, ''), last_enriched_at),
+                    javtxt_enrichment_status = COALESCE(NULLIF(javtxt_enrichment_status, ''), ?),
+                    javtxt_total_videos = COALESCE(javtxt_total_videos, 0)
+                ''',
+                (UNENRICHED_STATUS, UNENRICHED_STATUS),
+            )
+            cursor.execute(
+                '''
+                UPDATE actor_enrichments
+                SET avfan_enrichment_status = COALESCE(NULLIF(avfan_enrichment_status, ''), COALESCE(NULLIF(enrichment_status, ''), ?)),
+                    avfan_last_error = COALESCE(NULLIF(avfan_last_error, ''), COALESCE(NULLIF(last_error, ''), '')),
+                    avfan_last_enriched_at = COALESCE(NULLIF(avfan_last_enriched_at, ''), last_enriched_at),
+                    javtxt_enrichment_status = COALESCE(NULLIF(javtxt_enrichment_status, ''), ?),
+                    javtxt_total_videos = COALESCE(javtxt_total_videos, 0)
+                ''',
+                (UNENRICHED_STATUS, UNENRICHED_STATUS),
+            )
             cursor.executemany(
                 'DELETE FROM actors WHERE lower(name) = ?',
                 [(name,) for name in IGNORED_ACTOR_NAMES],
@@ -202,6 +239,12 @@ class VideoDatabase:
         if normalized_source == JAVTXT_VIDEO_SOURCE:
             return 'javtxt_enrichment_status', 'javtxt_enrichment_error', 'javtxt_enriched_at'
         return 'avfan_enrichment_status', 'avfan_enrichment_error', 'avfan_enriched_at'
+
+    def _library_source_columns(self, source_key):
+        normalized_source = normalize_video_enrichment_source(source_key)
+        if normalized_source == JAVTXT_VIDEO_SOURCE:
+            return 'javtxt_enrichment_status', 'javtxt_last_error', 'javtxt_last_enriched_at'
+        return 'avfan_enrichment_status', 'avfan_last_error', 'avfan_last_enriched_at'
 
     def save_plans(self, plans):
         """将扫描到的计划列表批量写入/更新到数据库"""
@@ -452,6 +495,74 @@ class VideoDatabase:
             'total_count': total_count,
         }
 
+    def _refresh_code_prefix_combined_status(self, cursor, prefix):
+        cursor.execute(
+            '''
+            SELECT avfan_enrichment_status, javtxt_enrichment_status,
+                   avfan_last_error, javtxt_last_error,
+                   avfan_last_enriched_at, javtxt_last_enriched_at
+            FROM code_prefix_enrichments
+            WHERE prefix = ?
+            ''',
+            (prefix,),
+        )
+        row = cursor.fetchone() or (
+            UNENRICHED_STATUS,
+            UNENRICHED_STATUS,
+            '',
+            '',
+            '',
+            '',
+        )
+        avfan_status, javtxt_status, avfan_error, javtxt_error, avfan_at, javtxt_at = row
+        combined_status = build_library_enrichment_status_text(avfan_status, javtxt_status)
+        latest_error = str(javtxt_error or avfan_error or '')
+        latest_at = str(javtxt_at or avfan_at or '')
+        cursor.execute(
+            '''
+            UPDATE code_prefix_enrichments
+            SET enrichment_status = ?,
+                last_error = ?,
+                last_enriched_at = ?
+            WHERE prefix = ?
+            ''',
+            (combined_status, latest_error, latest_at, prefix),
+        )
+
+    def _refresh_actor_combined_status(self, cursor, actor_name):
+        cursor.execute(
+            '''
+            SELECT avfan_enrichment_status, javtxt_enrichment_status,
+                   avfan_last_error, javtxt_last_error,
+                   avfan_last_enriched_at, javtxt_last_enriched_at
+            FROM actor_enrichments
+            WHERE actor_name = ?
+            ''',
+            (actor_name,),
+        )
+        row = cursor.fetchone() or (
+            UNENRICHED_STATUS,
+            UNENRICHED_STATUS,
+            '',
+            '',
+            '',
+            '',
+        )
+        avfan_status, javtxt_status, avfan_error, javtxt_error, avfan_at, javtxt_at = row
+        combined_status = build_library_enrichment_status_text(avfan_status, javtxt_status)
+        latest_error = str(javtxt_error or avfan_error or '')
+        latest_at = str(javtxt_at or avfan_at or '')
+        cursor.execute(
+            '''
+            UPDATE actor_enrichments
+            SET enrichment_status = ?,
+                last_error = ?,
+                last_enriched_at = ?
+            WHERE actor_name = ?
+            ''',
+            (combined_status, latest_error, latest_at, actor_name),
+        )
+
     def add_path(self, folder_path):
         """写入一个路径库记录，已存在时保持一条记录。"""
         with sqlite3.connect(self.db_path) as conn:
@@ -611,7 +722,9 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT prefix, enrichment_status, avfan_total_pages, avfan_total_videos,
-                       last_error, last_enriched_at
+                       last_error, last_enriched_at, avfan_enrichment_status, avfan_last_error,
+                       avfan_last_enriched_at, javtxt_enrichment_status, javtxt_total_videos,
+                       javtxt_last_error, javtxt_last_enriched_at
                 FROM code_prefix_enrichments
             ''')
 
@@ -623,6 +736,13 @@ class VideoDatabase:
                     'avfan_total_videos': int(row[3] or 0),
                     'last_error': row[4] or '',
                     'last_enriched_at': row[5] or '',
+                    'avfan_enrichment_status': row[6] or UNENRICHED_STATUS,
+                    'avfan_last_error': row[7] or '',
+                    'avfan_last_enriched_at': row[8] or '',
+                    'javtxt_enrichment_status': row[9] or UNENRICHED_STATUS,
+                    'javtxt_total_videos': int(row[10] or 0),
+                    'javtxt_last_error': row[11] or '',
+                    'javtxt_last_enriched_at': row[12] or '',
                 }
                 for row in cursor.fetchall()
                 if row[0]
@@ -638,27 +758,56 @@ class VideoDatabase:
                 if str(row[0] or '').strip()
             }
 
-    def save_code_prefix_enrichment(self, prefix, status, total_pages=0, total_videos=0, error=''):
+    def save_code_prefix_enrichment(self, prefix, status, total_pages=0, total_videos=0, error='', source_key=AVFAN_VIDEO_SOURCE):
+        normalized_prefix = str(prefix or '').strip().upper()
+        normalized_source = normalize_video_enrichment_source(source_key)
+        status_column, error_column, at_column = self._library_source_columns(normalized_source)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO code_prefix_enrichments (
-                    prefix, enrichment_status, avfan_total_pages, avfan_total_videos, last_error, last_enriched_at
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO code_prefix_enrichments (prefix)
+                VALUES (?)
+                ''',
+                (normalized_prefix,),
+            )
+            if normalized_source == JAVTXT_VIDEO_SOURCE:
+                cursor.execute(
+                    f'''
+                    UPDATE code_prefix_enrichments
+                    SET {status_column} = ?,
+                        javtxt_total_videos = ?,
+                        {error_column} = ?,
+                        {at_column} = CURRENT_TIMESTAMP
+                    WHERE prefix = ?
+                    ''',
+                    (
+                        status,
+                        int(total_videos or 0),
+                        str(error or ''),
+                        normalized_prefix,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(prefix) DO UPDATE SET
-                    enrichment_status = excluded.enrichment_status,
-                    avfan_total_pages = excluded.avfan_total_pages,
-                    avfan_total_videos = excluded.avfan_total_videos,
-                    last_error = excluded.last_error,
-                    last_enriched_at = CURRENT_TIMESTAMP
-            ''', (
-                str(prefix or '').strip().upper(),
-                status,
-                int(total_pages or 0),
-                int(total_videos or 0),
-                str(error or ''),
-            ))
+            else:
+                cursor.execute(
+                    f'''
+                    UPDATE code_prefix_enrichments
+                    SET {status_column} = ?,
+                        avfan_total_pages = ?,
+                        avfan_total_videos = ?,
+                        {error_column} = ?,
+                        {at_column} = CURRENT_TIMESTAMP
+                    WHERE prefix = ?
+                    ''',
+                    (
+                        status,
+                        int(total_pages or 0),
+                        int(total_videos or 0),
+                        str(error or ''),
+                        normalized_prefix,
+                    ),
+                )
+            self._refresh_code_prefix_combined_status(cursor, normalized_prefix)
             conn.commit()
 
     def replace_code_prefix_movies(self, prefix, movies):
@@ -697,6 +846,13 @@ class VideoDatabase:
             'avfan_total_videos': 0,
             'last_error': '',
             'last_enriched_at': '',
+            'avfan_enrichment_status': UNENRICHED_STATUS,
+            'avfan_last_error': '',
+            'avfan_last_enriched_at': '',
+            'javtxt_enrichment_status': UNENRICHED_STATUS,
+            'javtxt_total_videos': 0,
+            'javtxt_last_error': '',
+            'javtxt_last_enriched_at': '',
         })
 
     def list_code_prefix_movies(self, prefix):
@@ -728,7 +884,9 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT actor_name, actor_id, enrichment_status, avfan_total_pages, avfan_total_videos,
-                       last_error, last_enriched_at
+                       last_error, last_enriched_at, avfan_enrichment_status, avfan_last_error,
+                       avfan_last_enriched_at, javtxt_enrichment_status, javtxt_total_videos,
+                       javtxt_last_error, javtxt_last_enriched_at
                 FROM actor_enrichments
             ''')
 
@@ -741,35 +899,70 @@ class VideoDatabase:
                     'avfan_total_videos': int(row[4] or 0),
                     'last_error': row[5] or '',
                     'last_enriched_at': row[6] or '',
+                    'avfan_enrichment_status': row[7] or UNENRICHED_STATUS,
+                    'avfan_last_error': row[8] or '',
+                    'avfan_last_enriched_at': row[9] or '',
+                    'javtxt_enrichment_status': row[10] or UNENRICHED_STATUS,
+                    'javtxt_total_videos': int(row[11] or 0),
+                    'javtxt_last_error': row[12] or '',
+                    'javtxt_last_enriched_at': row[13] or '',
                 }
                 for row in cursor.fetchall()
                 if row[0]
             }
 
-    def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error='', actor_id=''):
+    def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error='', actor_id='', source_key=AVFAN_VIDEO_SOURCE):
         normalized_name = str(actor_name or '').strip()
+        normalized_source = normalize_video_enrichment_source(source_key)
+        status_column, error_column, at_column = self._library_source_columns(normalized_source)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO actor_enrichments (
-                    actor_name, actor_id, enrichment_status, avfan_total_pages, avfan_total_videos, last_error, last_enriched_at
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO actor_enrichments (actor_name, actor_id)
+                VALUES (?, ?)
+                ''',
+                (normalized_name, str(actor_id or '').strip()),
+            )
+            if normalized_source == JAVTXT_VIDEO_SOURCE:
+                cursor.execute(
+                    f'''
+                    UPDATE actor_enrichments
+                    SET {status_column} = ?,
+                        javtxt_total_videos = ?,
+                        {error_column} = ?,
+                        {at_column} = CURRENT_TIMESTAMP
+                    WHERE actor_name = ?
+                    ''',
+                    (
+                        status,
+                        int(total_videos or 0),
+                        str(error or ''),
+                        normalized_name,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(actor_name) DO UPDATE SET
-                    actor_id = excluded.actor_id,
-                    enrichment_status = excluded.enrichment_status,
-                    avfan_total_pages = excluded.avfan_total_pages,
-                    avfan_total_videos = excluded.avfan_total_videos,
-                    last_error = excluded.last_error,
-                    last_enriched_at = CURRENT_TIMESTAMP
-            ''', (
-                normalized_name,
-                str(actor_id or '').strip(),
-                status,
-                int(total_pages or 0),
-                int(total_videos or 0),
-                str(error or ''),
-            ))
+            else:
+                cursor.execute(
+                    f'''
+                    UPDATE actor_enrichments
+                    SET actor_id = COALESCE(NULLIF(?, ''), actor_id),
+                        {status_column} = ?,
+                        avfan_total_pages = ?,
+                        avfan_total_videos = ?,
+                        {error_column} = ?,
+                        {at_column} = CURRENT_TIMESTAMP
+                    WHERE actor_name = ?
+                    ''',
+                    (
+                        str(actor_id or '').strip(),
+                        status,
+                        int(total_pages or 0),
+                        int(total_videos or 0),
+                        str(error or ''),
+                        normalized_name,
+                    ),
+                )
+            self._refresh_actor_combined_status(cursor, normalized_name)
             conn.commit()
 
     def replace_actor_movies(self, actor_name, movies):
@@ -809,6 +1002,13 @@ class VideoDatabase:
             'avfan_total_videos': 0,
             'last_error': '',
             'last_enriched_at': '',
+            'avfan_enrichment_status': UNENRICHED_STATUS,
+            'avfan_last_error': '',
+            'avfan_last_enriched_at': '',
+            'javtxt_enrichment_status': UNENRICHED_STATUS,
+            'javtxt_total_videos': 0,
+            'javtxt_last_error': '',
+            'javtxt_last_enriched_at': '',
         })
 
     def list_actor_movies(self, actor_name):

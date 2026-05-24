@@ -1,7 +1,4 @@
-from app.core.enrichment_sources import (
-    AVFAN_VIDEO_SOURCE,
-    JAVTXT_VIDEO_SOURCE,
-)
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
@@ -25,8 +22,20 @@ class DataCenterService:
                     JAVTXT_VIDEO_SOURCE: self._build_video_source_summary(JAVTXT_VIDEO_SOURCE),
                 },
             },
-            'code_prefix_library': self._build_code_prefix_summary(),
-            'actor_library': self._build_actor_summary(),
+            'code_prefix_library': {
+                'label': '番号库',
+                'sources': {
+                    AVFAN_VIDEO_SOURCE: self._build_code_prefix_source_summary(AVFAN_VIDEO_SOURCE),
+                    JAVTXT_VIDEO_SOURCE: self._build_code_prefix_source_summary(JAVTXT_VIDEO_SOURCE),
+                },
+            },
+            'actor_library': {
+                'label': '演员库',
+                'sources': {
+                    AVFAN_VIDEO_SOURCE: self._build_actor_source_summary(AVFAN_VIDEO_SOURCE),
+                    JAVTXT_VIDEO_SOURCE: self._build_actor_source_summary(JAVTXT_VIDEO_SOURCE),
+                },
+            },
         }
 
     def _build_video_source_summary(self, source_key):
@@ -35,22 +44,36 @@ class DataCenterService:
         enriched_count = int(summary.get('enriched_count', 0) or 0)
         pending_count = int(summary.get('unenriched_count', 0) or 0)
         return {
-            'label': VIDEO_SOURCE_LABELS.get(source_key, source_key),
+            'label': f'视频库 {get_video_enrichment_source_label(source_key)}',
             'total_count': total_count,
             'enriched_count': enriched_count,
             'pending_count': pending_count,
             'progress_percent': _build_progress_percent(enriched_count, total_count),
         }
 
-    def _build_code_prefix_summary(self):
-        rows = self.code_prefix_library.list_prefixes()
-        statuses = [str(row.get('enrichment_status', '') or '').strip() or UNENRICHED_STATUS for row in rows]
-        return self._build_status_summary('番号库', statuses)
+    def _build_code_prefix_source_summary(self, source_key):
+        records = self.database.list_code_prefix_enrichment_records()
+        statuses = [
+            self._get_source_status(records.get(row.get('prefix', ''), {}), source_key)
+            for row in self.code_prefix_library.list_prefixes()
+            if row.get('prefix')
+        ]
+        return self._build_status_summary(
+            f'番号库 {get_video_enrichment_source_label(source_key)}',
+            statuses,
+        )
 
-    def _build_actor_summary(self):
-        rows = self.database.list_actors()
-        statuses = [str(row.get('enrichment_status', '') or '').strip() or UNENRICHED_STATUS for row in rows]
-        return self._build_status_summary('作者库', statuses)
+    def _build_actor_source_summary(self, source_key):
+        records = self.database.list_actor_enrichment_records()
+        statuses = [
+            self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key)
+            for row in self.database.list_actors()
+            if str(row.get('name', '')).strip()
+        ]
+        return self._build_status_summary(
+            f'演员库 {get_video_enrichment_source_label(source_key)}',
+            statuses,
+        )
 
     def _build_status_summary(self, label, statuses):
         total_count = len(statuses)
@@ -68,14 +91,13 @@ class DataCenterService:
             'progress_percent': _build_progress_percent(enriched_count, total_count),
         }
 
+    @staticmethod
+    def _get_source_status(record, source_key):
+        key = 'javtxt_enrichment_status' if source_key == JAVTXT_VIDEO_SOURCE else 'avfan_enrichment_status'
+        return str((record or {}).get(key, '') or '').strip() or UNENRICHED_STATUS
+
 
 def _build_progress_percent(enriched_count, total_count):
     if total_count <= 0:
         return 0
     return round((float(enriched_count) / float(total_count)) * 100, 1)
-
-
-VIDEO_SOURCE_LABELS = {
-    AVFAN_VIDEO_SOURCE: '天陨阁',
-    JAVTXT_VIDEO_SOURCE: '辛聚谷',
-}

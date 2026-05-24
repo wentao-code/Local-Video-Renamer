@@ -31,6 +31,15 @@ def build_video_enrichment_status_text(avfan_status, javtxt_status):
     )
 
 
+def build_library_enrichment_status_text(avfan_status, javtxt_status):
+    normalized_avfan = normalize_video_enrichment_status(avfan_status)
+    normalized_javtxt = normalize_video_enrichment_status(javtxt_status)
+    return (
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {normalized_avfan} | '
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {normalized_javtxt}'
+    )
+
+
 def normalize_video_enrichment_status(status):
     text = str(status or '').strip()
     return text or UNENRICHED_STATUS

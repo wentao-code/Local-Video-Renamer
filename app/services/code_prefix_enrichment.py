@@ -1,3 +1,4 @@
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
@@ -8,7 +9,6 @@ from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.code_prefix_entry_parser import parse_code_prefix_card
 from app.services.code_prefix_library import CodePrefixLibrary, extract_code_prefix
-from app.services.movie_author_resolver import MovieAuthorResolver
 
 
 class CodePrefixEnrichmentService:
@@ -18,11 +18,6 @@ class CodePrefixEnrichmentService:
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.scraper = scraper or AvfanCodePrefixScraper(headless=not show_browser)
-        self.author_resolver = MovieAuthorResolver(
-            database,
-            headless=not show_browser,
-            should_stop=self.should_stop,
-        )
 
     def enrich_next_prefixes(self, limit):
         limit = int(limit or 0)
@@ -34,9 +29,10 @@ class CodePrefixEnrichmentService:
         success_count = 0
         failed_count = 0
         stopped = False
+        source_label = get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('番号库', len(candidates), source_label='天陨阁')
+            self.progress_tracker.start('番号库', len(candidates), source_label=source_label)
 
         for prefix in candidates:
             if self.should_stop():
@@ -45,8 +41,7 @@ class CodePrefixEnrichmentService:
 
             try:
                 with self.scraper.session() as page:
-                    collected = self._collect_single_prefix(page, prefix)
-                result = self._finalize_single_prefix(prefix, collected)
+                    result = self._enrich_single_prefix(page, prefix)
                 results.append(result)
                 if result.get('stopped'):
                     stopped = True
@@ -64,6 +59,7 @@ class CodePrefixEnrichmentService:
                     total_pages=0,
                     total_videos=0,
                     error=error_message,
+                    source_key=AVFAN_VIDEO_SOURCE,
                 )
                 results.append({
                     'prefix': prefix,
@@ -83,6 +79,8 @@ class CodePrefixEnrichmentService:
                     'requires_manual_verification': True,
                     'message': error_message,
                     'entity_label': '番号',
+                    'source_key': AVFAN_VIDEO_SOURCE,
+                    'source_label': source_label,
                     'remaining_label': '剩余未补全番号',
                 }
                 self._finish_progress(error_message, stopped=True)
@@ -95,6 +93,7 @@ class CodePrefixEnrichmentService:
                     total_pages=0,
                     total_videos=0,
                     error=error_message,
+                    source_key=AVFAN_VIDEO_SOURCE,
                 )
                 results.append({
                     'prefix': prefix,
@@ -114,6 +113,8 @@ class CodePrefixEnrichmentService:
             'results': results,
             'stopped': stopped,
             'entity_label': '番号',
+            'source_key': AVFAN_VIDEO_SOURCE,
+            'source_label': source_label,
             'remaining_label': '剩余未补全番号',
         }
         self._finish_progress('番号补全已完成。' if not stopped else '番号补全已停止。', stopped=stopped)
@@ -137,7 +138,7 @@ class CodePrefixEnrichmentService:
         prefixes = []
         for row in self.prefix_library.list_prefixes():
             prefix = row.get('prefix', '')
-            status = records.get(prefix, {}).get('enrichment_status', UNENRICHED_STATUS)
+            status = records.get(prefix, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS):
                 prefixes.append(prefix)
             if len(prefixes) >= limit:
@@ -149,12 +150,12 @@ class CodePrefixEnrichmentService:
         remaining = 0
         for row in self.prefix_library.list_prefixes():
             prefix = row.get('prefix', '')
-            status = records.get(prefix, {}).get('enrichment_status', UNENRICHED_STATUS)
+            status = records.get(prefix, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS):
                 remaining += 1
         return remaining
 
-    def _collect_single_prefix(self, page, prefix):
+    def _enrich_single_prefix(self, page, prefix):
         parsed_entries = []
         self.scraper.open_listing_page(page, prefix, 1)
         total_pages = self.scraper.detect_total_pages(page)
@@ -179,20 +180,6 @@ class CodePrefixEnrichmentService:
             }
 
         unique_entries = self._dedupe_entries(parsed_entries)
-        return {
-            'prefix': prefix,
-            'total_pages': total_pages,
-            'entries': unique_entries,
-        }
-
-    def _finalize_single_prefix(self, prefix, collected):
-        if collected.get('stopped'):
-            return collected
-
-        total_pages = int(collected.get('total_pages', 0) or 0)
-        unique_entries = list(collected.get('entries', []) or [])
-        with self.author_resolver.session():
-            unique_entries = self.author_resolver.enrich_entries(unique_entries)
         if unique_entries:
             self.database.replace_code_prefix_movies(prefix, unique_entries)
             self.database.save_code_prefix_enrichment(
@@ -201,6 +188,7 @@ class CodePrefixEnrichmentService:
                 total_pages=total_pages,
                 total_videos=len(unique_entries),
                 error='',
+                source_key=AVFAN_VIDEO_SOURCE,
             )
             return {
                 'prefix': prefix,
@@ -216,6 +204,7 @@ class CodePrefixEnrichmentService:
             total_pages=total_pages,
             total_videos=0,
             error='未搜索到番号页面内容',
+            source_key=AVFAN_VIDEO_SOURCE,
         )
         return {
             'prefix': prefix,
