@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QObject, QThread, pyqtSignal
+from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
 
@@ -20,14 +20,28 @@ class BackendTaskWorker(QObject):
 
 
 class AsyncTaskHostMixin:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def _init_async_task_host(self):
         self._async_task_thread = None
         self._async_task_worker = None
         self._async_task_success_handler = None
         self._async_task_error_title = ''
+        self._async_busy_widgets = []
 
     def is_async_task_running(self):
         return self._async_task_thread is not None
+
+    def set_async_busy_widgets(self, widgets):
+        self._async_busy_widgets = list(widgets or [])
+
+    def reload_rows_after(self, operation, load_rows, **payload):
+        operation()
+        return {
+            'rows': load_rows(),
+            **payload,
+        }
 
     def start_async_task(self, task, success_handler, error_title='操作失败'):
         if self._async_task_thread is not None:
@@ -78,4 +92,12 @@ class AsyncTaskHostMixin:
         return False
 
     def _set_async_busy(self, busy):
-        return None
+        for widget in self._async_busy_widgets:
+            if widget is not None:
+                widget.setEnabled(not busy)
+        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
+
+    def closeEvent(self, event):
+        if self.block_close_while_async_running(event):
+            return
+        super().closeEvent(event)

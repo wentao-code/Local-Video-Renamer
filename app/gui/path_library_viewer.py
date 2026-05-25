@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 
 
-class PathLibraryWindow(QDialog, AsyncTaskHostMixin):
+class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -68,6 +68,7 @@ class PathLibraryWindow(QDialog, AsyncTaskHostMixin):
         layout.addLayout(top_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
+        self.set_async_busy_widgets([self.btn_add, self.btn_delete, self.btn_use, self.btn_refresh, self.table])
 
     def load_data(self):
         self.start_async_task(
@@ -176,21 +177,8 @@ class PathLibraryWindow(QDialog, AsyncTaskHostMixin):
             return -1
         return row
 
-    def _set_async_busy(self, busy):
-        self.btn_add.setEnabled(not busy)
-        self.btn_delete.setEnabled(not busy)
-        self.btn_use.setEnabled(not busy)
-        self.btn_refresh.setEnabled(not busy)
-        self.table.setEnabled(not busy)
-        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
-
     def _on_load_data_finished(self, result):
         result = dict(result or {})
         self.paths = list(result.get('paths', []) or [])
         self.summary = dict(result.get('summary', {}) or {})
         self.render_rows()
-
-    def closeEvent(self, event):
-        if self.block_close_while_async_running(event):
-            return
-        super().closeEvent(event)

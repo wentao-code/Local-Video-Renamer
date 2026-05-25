@@ -1,16 +1,14 @@
-from PyQt5.QtWidgets import QDialog, QGroupBox, QScrollArea, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
 
-from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 
 
-class CodePrefixDetailViewerWindow(QDialog, AsyncTaskHostMixin):
+class CodePrefixDetailViewerWindow(QDialog):
     def __init__(self, backend_client, prefix, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.prefix = str(prefix or '').strip().upper()
         self.detail = {}
-        self._init_async_task_host()
         self.init_ui()
         self.load_data()
 
@@ -62,14 +60,13 @@ class CodePrefixDetailViewerWindow(QDialog, AsyncTaskHostMixin):
         layout.addStretch()
 
     def load_data(self):
-        self.start_async_task(
-            lambda: self.backend_client.get_code_prefix_detail(self.prefix),
-            self._on_load_data_finished,
-            '读取失败',
-        )
+        try:
+            self.detail = self.backend_client.get_code_prefix_detail(self.prefix)
+        except Exception as exc:
+            QMessageBox.critical(self, '读取失败', f'读取番号详情失败：\n{exc}')
+            self.reject()
+            return
 
-    def _on_load_data_finished(self, detail):
-        self.detail = dict(detail or {})
         self.summary_grid.set_value('prefix', self.detail.get('prefix', ''))
         self.summary_grid.set_value('video_count', str(self.detail.get('video_count', 0)))
         self.summary_grid.set_value('total_pages', str(self.detail.get('avfan_total_pages', 0)))
@@ -90,8 +87,3 @@ class CodePrefixDetailViewerWindow(QDialog, AsyncTaskHostMixin):
             'top_actors',
             format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=2),
         )
-
-    def closeEvent(self, event):
-        if self.block_close_while_async_running(event, '加载进行中', '请等待当前加载完成后再关闭窗口。'):
-            return
-        super().closeEvent(event)

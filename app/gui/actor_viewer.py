@@ -18,7 +18,7 @@ from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 
 
-class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
+class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -65,6 +65,7 @@ class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
         layout.addLayout(top_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
+        self.set_async_busy_widgets([self.search_input, self.btn_reset, self.btn_refresh, self.table])
 
     def load_data(self):
         search_text = self.search_input.text().strip()
@@ -193,9 +194,9 @@ class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
         self.clear_edit_state()
         search_text = self.search_input.text().strip()
         self.start_async_task(
-            lambda: self._reload_after_operation(
+            lambda: self.reload_rows_after(
                 lambda: self.backend_client.rename_actor(old_name, new_name),
-                search_text,
+                lambda: self.backend_client.list_actors(search_text),
                 old_name=old_name,
                 new_name=new_name,
             ),
@@ -247,9 +248,9 @@ class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
 
         search_text = self.search_input.text().strip()
         self.start_async_task(
-            lambda: self._reload_after_operation(
+            lambda: self.reload_rows_after(
                 lambda: self.backend_client.delete_actor(actor_name),
-                search_text,
+                lambda: self.backend_client.list_actors(search_text),
                 actor_name=actor_name,
             ),
             self._on_delete_finished,
@@ -288,20 +289,6 @@ class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
                 actor_names.append(item.text().strip())
         return actor_names
 
-    def _reload_after_operation(self, operation, search_text, **payload):
-        operation()
-        return {
-            'rows': self.backend_client.list_actors(search_text),
-            **payload,
-        }
-
-    def _set_async_busy(self, busy):
-        self.search_input.setEnabled(not busy)
-        self.btn_reset.setEnabled(not busy)
-        self.btn_refresh.setEnabled(not busy)
-        self.table.setEnabled(not busy)
-        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
-
     def _on_load_data_finished(self, result):
         self.clear_edit_state()
         self.rows = list((result or {}).get('rows', []) or [])
@@ -311,8 +298,3 @@ class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
         self._on_load_data_finished(result)
         reset_count = int((result or {}).get('reset_count', 0) or 0)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')
-
-    def closeEvent(self, event):
-        if self.block_close_while_async_running(event):
-            return
-        super().closeEvent(event)

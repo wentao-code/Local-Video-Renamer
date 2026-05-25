@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 
 
-class DatabaseViewerWindow(QDialog, AsyncTaskHostMixin):
+class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -89,6 +89,7 @@ class DatabaseViewerWindow(QDialog, AsyncTaskHostMixin):
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table)
         self.setLayout(layout)
+        self.set_async_busy_widgets([self.search_input, self.btn_reset, self.btn_refresh, self.table])
 
     def load_data(self):
         search_text = self.search_input.text().strip()
@@ -181,13 +182,6 @@ class DatabaseViewerWindow(QDialog, AsyncTaskHostMixin):
                 codes.append(item.text().strip())
         return codes
 
-    def _set_async_busy(self, busy):
-        self.search_input.setEnabled(not busy)
-        self.btn_reset.setEnabled(not busy)
-        self.btn_refresh.setEnabled(not busy)
-        self.table.setEnabled(not busy)
-        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
-
     def _on_load_data_finished(self, result):
         self.rows = list((result or {}).get('rows', []) or [])
         self.render_rows(self.rows)
@@ -197,8 +191,3 @@ class DatabaseViewerWindow(QDialog, AsyncTaskHostMixin):
         self._on_load_data_finished(result)
         reset_count = int((result or {}).get('reset_count', 0) or 0)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个视频的补全状态。')
-
-    def closeEvent(self, event):
-        if self.block_close_while_async_running(event):
-            return
-        super().closeEvent(event)

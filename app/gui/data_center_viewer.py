@@ -1,15 +1,13 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QVBoxLayout
 
-from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.enrichment_summary_widgets import SummaryCard
 
 
-class DataCenterWindow(QDialog, AsyncTaskHostMixin):
+class DataCenterWindow(QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
-        self._init_async_task_host()
         self.init_ui()
         self.load_data()
 
@@ -43,17 +41,12 @@ class DataCenterWindow(QDialog, AsyncTaskHostMixin):
         self.setLayout(layout)
 
     def load_data(self):
-        self.start_async_task(
-            lambda: self.backend_client.get_data_center_summary() or {},
-            self._on_load_data_finished,
-            '读取失败',
-        )
+        try:
+            summary = self.backend_client.get_data_center_summary() or {}
+        except Exception as exc:
+            print(f'读取数据中心进度失败: {exc}')
+            return
 
-    def _set_async_busy(self, busy):
-        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
-
-    def _on_load_data_finished(self, summary):
-        summary = dict(summary or {})
         video_summary = summary.get('video_library', {}).get('sources', {})
         code_prefix_summary = summary.get('code_prefix_library', {}).get('sources', {})
         actor_summary = summary.get('actor_library', {}).get('sources', {})
@@ -64,8 +57,3 @@ class DataCenterWindow(QDialog, AsyncTaskHostMixin):
         self.code_prefix_javtxt_card.set_summary(code_prefix_summary.get('javtxt', {}))
         self.actor_avfan_card.set_summary(actor_summary.get('avfan', {}))
         self.actor_javtxt_card.set_summary(actor_summary.get('javtxt', {}))
-
-    def closeEvent(self, event):
-        if self.block_close_while_async_running(event, '加载进行中', '请等待当前加载完成后再关闭窗口。'):
-            return
-        super().closeEvent(event)

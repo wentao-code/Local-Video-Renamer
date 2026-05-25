@@ -1,16 +1,14 @@
-from PyQt5.QtWidgets import QDialog, QGroupBox, QScrollArea, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
 
-from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 
 
-class ActorDetailViewerWindow(QDialog, AsyncTaskHostMixin):
+class ActorDetailViewerWindow(QDialog):
     def __init__(self, backend_client, actor_name, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.actor_name = actor_name
         self.detail = {}
-        self._init_async_task_host()
         self.init_ui()
         self.load_data()
 
@@ -74,14 +72,13 @@ class ActorDetailViewerWindow(QDialog, AsyncTaskHostMixin):
         layout.addStretch()
 
     def load_data(self):
-        self.start_async_task(
-            lambda: self.backend_client.get_actor_detail(self.actor_name),
-            self._on_load_data_finished,
-            '读取失败',
-        )
+        try:
+            self.detail = self.backend_client.get_actor_detail(self.actor_name)
+        except Exception as exc:
+            QMessageBox.critical(self, '读取失败', f'读取演员详情失败：\n{exc}')
+            self.reject()
+            return
 
-    def _on_load_data_finished(self, detail):
-        self.detail = dict(detail or {})
         self.basic_grid.set_value('name', self.detail.get('name', ''))
         self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or '暂无')
         self.basic_grid.set_value('age', self.detail.get('age', '') or '暂无')
@@ -114,8 +111,3 @@ class ActorDetailViewerWindow(QDialog, AsyncTaskHostMixin):
             'web_year',
             format_distribution_summary(self.detail.get('web_year_distribution', []), 'year', items_per_line=3),
         )
-
-    def closeEvent(self, event):
-        if self.block_close_while_async_running(event, '加载进行中', '请等待当前加载完成后再关闭窗口。'):
-            return
-        super().closeEvent(event)
