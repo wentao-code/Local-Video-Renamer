@@ -30,10 +30,10 @@ class MovieAuthorResolver:
     def session(self):
         return self.scraper.session()
 
-    def enrich_entries(self, entries):
-        return self.enrich_entries_with_details(entries).get('entries', [])
+    def enrich_entries(self, entries, progress_callback=None):
+        return self.enrich_entries_with_details(entries, progress_callback=progress_callback).get('entries', [])
 
-    def enrich_entries_with_details(self, entries, max_lookup_count=None):
+    def enrich_entries_with_details(self, entries, max_lookup_count=None, progress_callback=None):
         normalized_entries = self._prepare_entries(entries)
         cached_rows = self._load_cached_rows(normalized_entries)
         pending_video_count_before = self.count_pending_entries(normalized_entries, cached_rows=cached_rows)
@@ -68,6 +68,18 @@ class MovieAuthorResolver:
                 success_video_count += 1
             else:
                 failed_video_count += 1
+
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        'code': code,
+                        'author': author,
+                        'status': resolution.get('status', UNENRICHED_STATUS),
+                        'processed_video_count': processed_video_count,
+                        'success_video_count': success_video_count,
+                        'failed_video_count': failed_video_count,
+                    }
+                )
 
             cached_rows[code] = {
                 'code': code,
