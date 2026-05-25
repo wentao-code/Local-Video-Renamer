@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QThread, Qt
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -13,19 +13,15 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
-from app.gui.backend_task_worker import BackendTaskWorker
+from app.gui.backend_task_worker import AsyncTaskHostMixin
 
 
-class DatabaseViewerWindow(QDialog):
+class DatabaseViewerWindow(QDialog, AsyncTaskHostMixin):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
-        self.all_rows = []
-        self.task_thread = None
-        self.task_worker = None
-        self._task_success_handler = None
-        self._task_error_title = ''
+        self._init_async_task_host()
         self.init_ui()
         self.load_data()
 
@@ -96,36 +92,13 @@ class DatabaseViewerWindow(QDialog):
 
     def load_data(self):
         search_text = self.search_input.text().strip()
-
-        def task():
-            rows = self.backend_client.list_videos(search_text)
-            return {
-                'rows': rows,
-                'search_text': search_text,
-            }
-
-        self._start_background_task(task, self._on_load_data_finished, '读取失败')
-
-    def refresh_summary(self):
-        summary = self._build_summary_from_rows(self.rows)
-        self.summary_label.setText(
-            '已补全数: {enriched_count} | 未补全数: {unenriched_count} | 视频总数: {total_count}'.format(
-                enriched_count=summary.get('enriched_count', 0),
-                unenriched_count=summary.get('unenriched_count', 0),
-                total_count=summary.get('total_count', 0),
-            )
+        self.start_async_task(
+            lambda: {
+                'rows': self.backend_client.list_videos(search_text),
+            },
+            self._on_load_data_finished,
+            '读取失败',
         )
-
-    @staticmethod
-    def _build_summary_from_rows(rows):
-        total_count = len(rows)
-        enriched_count = sum(1 for row in rows if '已补全' in str(row.get('enrichment_status', '') or ''))
-        unenriched_count = max(total_count - enriched_count, 0)
-        return {
-            'enriched_count': enriched_count,
-            'unenriched_count': unenriched_count,
-            'total_count': total_count,
-        }
 
     def render_rows(self, rows):
         self.table.setRowCount(0)
@@ -143,8 +116,8 @@ class DatabaseViewerWindow(QDialog):
             'publisher',
             'enrichment_status',
         )
-
         centered_columns = {0, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
             for col_idx, field in enumerate(fields):
@@ -153,17 +126,23 @@ class DatabaseViewerWindow(QDialog):
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 
-    def filter_data(self, text):
-        if self.task_thread is not None:
-            return
+    def refresh_summary(self):
+        total_count = len(self.rows)
+        enriched_count = sum(1 for row in self.rows if '已补全' in str(row.get('enrichment_status', '') or ''))
+        unenriched_count = max(total_count - enriched_count, 0)
+        self.summary_label.setText(
+            f'已补全数: {enriched_count} | 未补全数: {unenriched_count} | 视频总数: {total_count}'
+        )
 
-        search_text = (text or '').strip()
-        if not search_text:
+    def filter_data(self, text):
+        if self.is_async_task_running():
+            return
+        if not str(text or '').strip():
             self.load_data()
             return
 
         try:
-            self.rows = self.backend_client.list_videos(search_text)
+            self.rows = self.backend_client.list_videos(str(text or '').strip())
             self.render_rows(self.rows)
             self.refresh_summary()
         except Exception as exc:
@@ -184,17 +163,14 @@ class DatabaseViewerWindow(QDialog):
             return
 
         search_text = self.search_input.text().strip()
-
-        def task():
-            reset_count = self.backend_client.reset_video_enrichments(codes)
-            rows = self.backend_client.list_videos(search_text)
-            return {
-                'reset_count': reset_count,
-                'rows': rows,
-                'search_text': search_text,
-            }
-
-        self._start_background_task(task, self._on_reset_finished, '重置失败')
+        self.start_async_task(
+            lambda: {
+                'reset_count': self.backend_client.reset_video_enrichments(codes),
+                'rows': self.backend_client.list_videos(search_text),
+            },
+            self._on_reset_finished,
+            '重置失败',
+        )
 
     def selected_codes(self):
         selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -205,48 +181,7 @@ class DatabaseViewerWindow(QDialog):
                 codes.append(item.text().strip())
         return codes
 
-    def _start_background_task(self, task, success_handler, error_title):
-        if self.task_thread is not None:
-            return False
-
-        self._set_busy(True)
-        self._task_success_handler = success_handler
-        self._task_error_title = str(error_title or '操作失败')
-        self.task_thread = QThread(self)
-        self.task_worker = BackendTaskWorker(task)
-        self.task_worker.moveToThread(self.task_thread)
-        self.task_thread.started.connect(self.task_worker.run)
-        self.task_worker.finished.connect(self._handle_task_finished)
-        self.task_worker.failed.connect(self._handle_task_failed)
-        self.task_worker.finished.connect(self.task_thread.quit)
-        self.task_worker.failed.connect(self.task_thread.quit)
-        self.task_thread.finished.connect(self._cleanup_task_thread)
-        self.task_thread.start()
-        return True
-
-    def _handle_task_finished(self, result):
-        handler = self._task_success_handler
-        self._task_success_handler = None
-        self._task_error_title = ''
-        if handler is not None:
-            handler(result)
-
-    def _handle_task_failed(self, message):
-        error_title = self._task_error_title or '操作失败'
-        self._task_success_handler = None
-        self._task_error_title = ''
-        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
-
-    def _cleanup_task_thread(self):
-        if self.task_worker is not None:
-            self.task_worker.deleteLater()
-        if self.task_thread is not None:
-            self.task_thread.deleteLater()
-        self.task_worker = None
-        self.task_thread = None
-        self._set_busy(False)
-
-    def _set_busy(self, busy):
+    def _set_async_busy(self, busy):
         self.search_input.setEnabled(not busy)
         self.btn_reset.setEnabled(not busy)
         self.btn_refresh.setEnabled(not busy)
@@ -254,22 +189,16 @@ class DatabaseViewerWindow(QDialog):
         self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
 
     def _on_load_data_finished(self, result):
-        rows = list((result or {}).get('rows', []) or [])
-        search_text = str((result or {}).get('search_text', '') or '').strip()
-        if not search_text:
-            self.all_rows = list(rows)
-        self.rows = rows
+        self.rows = list((result or {}).get('rows', []) or [])
         self.render_rows(self.rows)
         self.refresh_summary()
 
     def _on_reset_finished(self, result):
-        reset_count = int((result or {}).get('reset_count', 0) or 0)
         self._on_load_data_finished(result)
+        reset_count = int((result or {}).get('reset_count', 0) or 0)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个视频的补全状态。')
 
     def closeEvent(self, event):
-        if self.task_thread and self.task_thread.isRunning():
-            QMessageBox.information(self, '操作进行中', '请等待当前操作完成后再关闭窗口。')
-            event.ignore()
+        if self.block_close_while_async_running(event):
             return
         super().closeEvent(event)

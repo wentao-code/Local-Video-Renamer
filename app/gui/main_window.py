@@ -28,7 +28,7 @@ from app.core.local_video_labels import (
 )
 from app.core.project_paths import PROJECT_ROOT
 from app.gui.actor_viewer import ActorViewerWindow
-from app.gui.backend_task_worker import BackendTaskWorker
+from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
@@ -121,7 +121,7 @@ class AutoLoginWorker(QObject):
         self.finished.emit(result)
 
 
-class VidNormApp(QWidget):
+class VidNormApp(QWidget, AsyncTaskHostMixin):
     def __init__(self):
         super().__init__()
         self.pending_renames = []
@@ -146,10 +146,7 @@ class VidNormApp(QWidget):
         self.enrichment_progress_timer.timeout.connect(self.refresh_enrichment_progress)
         self.login_thread = None
         self.login_worker = None
-        self.ui_task_thread = None
-        self.ui_task_worker = None
-        self.ui_task_success_handler = None
-        self.ui_task_error_title = ''
+        self._init_async_task_host()
 
         self.ensure_backend_running()
         self.init_ui()
@@ -317,7 +314,7 @@ class VidNormApp(QWidget):
                 'show_message': bool(show_message),
             }
 
-        self._start_ui_task(task, self._on_scan_finished, '错误')
+        self.start_async_task(task, self._on_scan_finished, '错误')
         return True
 
     def import_to_database(self):
@@ -335,7 +332,7 @@ class VidNormApp(QWidget):
                 'scan_result': scan_result,
             }
 
-        self._start_ui_task(task, self._on_import_finished, '错误')
+        self.start_async_task(task, self._on_import_finished, '错误')
 
     def execute_rename(self):
         if not self.pending_renames:
@@ -360,7 +357,7 @@ class VidNormApp(QWidget):
                 'scan_result': scan_result,
             }
 
-        self._start_ui_task(task, self._on_execute_rename_finished, '错误')
+        self.start_async_task(task, self._on_execute_rename_finished, '错误')
 
     def auto_login(self):
         if self.login_thread is not None:
@@ -1004,55 +1001,19 @@ class VidNormApp(QWidget):
         if answer != QMessageBox.Yes:
             return
 
-        self._start_ui_task(
+        self.start_async_task(
             lambda: self.backend_client.reset_browser_profile(),
             self._on_reset_browser_profile_finished,
             '重置失败',
         )
 
-    def _start_ui_task(self, task, success_handler, error_title):
-        if self.ui_task_thread is not None:
+    def start_async_task(self, task, success_handler, error_title='操作失败'):
+        if self.is_async_task_running():
             QMessageBox.information(self, '任务进行中', '请等待当前操作完成后再执行新的按钮操作。')
             return False
+        return super().start_async_task(task, success_handler, error_title)
 
-        self._set_ui_task_busy(True)
-        self.ui_task_success_handler = success_handler
-        self.ui_task_error_title = str(error_title or '操作失败')
-        self.ui_task_thread = QThread(self)
-        self.ui_task_worker = BackendTaskWorker(task)
-        self.ui_task_worker.moveToThread(self.ui_task_thread)
-        self.ui_task_thread.started.connect(self.ui_task_worker.run)
-        self.ui_task_worker.finished.connect(self._handle_ui_task_finished)
-        self.ui_task_worker.failed.connect(self._handle_ui_task_failed)
-        self.ui_task_worker.finished.connect(self.ui_task_thread.quit)
-        self.ui_task_worker.failed.connect(self.ui_task_thread.quit)
-        self.ui_task_thread.finished.connect(self._cleanup_ui_task_thread)
-        self.ui_task_thread.start()
-        return True
-
-    def _handle_ui_task_finished(self, result):
-        handler = self.ui_task_success_handler
-        self.ui_task_success_handler = None
-        self.ui_task_error_title = ''
-        if handler is not None:
-            handler(result)
-
-    def _handle_ui_task_failed(self, message):
-        error_title = self.ui_task_error_title or '操作失败'
-        self.ui_task_success_handler = None
-        self.ui_task_error_title = ''
-        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
-
-    def _cleanup_ui_task_thread(self):
-        if self.ui_task_worker is not None:
-            self.ui_task_worker.deleteLater()
-        if self.ui_task_thread is not None:
-            self.ui_task_thread.deleteLater()
-        self.ui_task_worker = None
-        self.ui_task_thread = None
-        self._set_ui_task_busy(False)
-
-    def _set_ui_task_busy(self, busy):
+    def _set_async_busy(self, busy):
         self.btn_browse.setEnabled(not busy)
         self.btn_path_library.setEnabled(not busy)
         self.btn_scan.setEnabled(not busy)
@@ -1145,9 +1106,7 @@ class VidNormApp(QWidget):
             self.set_current_folder(viewer.selected_path)
 
     def closeEvent(self, event):
-        if self.ui_task_thread and self.ui_task_thread.isRunning():
-            QMessageBox.information(self, '操作进行中', '请等待当前按钮操作完成后再关闭窗口。')
-            event.ignore()
+        if self.block_close_while_async_running(event):
             return
         if self.enrichment_thread and self.enrichment_thread.isRunning():
             QMessageBox.information(self, '补全进行中', '请等待补全任务结束后再关闭窗口。')

@@ -1,18 +1,16 @@
-from PyQt5.QtCore import QThread
-from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QGroupBox, QScrollArea, QVBoxLayout
 
-from app.gui.backend_task_worker import BackendTaskWorker
+from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 
 
-class ActorDetailViewerWindow(QDialog):
+class ActorDetailViewerWindow(QDialog, AsyncTaskHostMixin):
     def __init__(self, backend_client, actor_name, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.actor_name = actor_name
         self.detail = {}
-        self.task_thread = None
-        self.task_worker = None
+        self._init_async_task_host()
         self.init_ui()
         self.load_data()
 
@@ -21,7 +19,6 @@ class ActorDetailViewerWindow(QDialog):
         self.resize(1280, 760)
 
         root_layout = QVBoxLayout(self)
-
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         root_layout.addWidget(scroll_area)
@@ -49,12 +46,7 @@ class ActorDetailViewerWindow(QDialog):
         local_group = QGroupBox('本地视频统计')
         local_layout = QVBoxLayout(local_group)
         self.local_grid = DetailSummaryGrid(columns=1)
-        self.local_grid.set_items(
-            [
-                ('local_prefix', '番号分布：', ''),
-                ('local_year', '年份构成：', ''),
-            ]
-        )
+        self.local_grid.set_items([('local_prefix', '番号分布：', ''), ('local_year', '年份构成：', '')])
         local_layout.addWidget(self.local_grid)
 
         web_group = QGroupBox('网页作品统计')
@@ -82,19 +74,11 @@ class ActorDetailViewerWindow(QDialog):
         layout.addStretch()
 
     def load_data(self):
-        if self.task_thread is not None:
-            return
-
-        self.task_thread = QThread(self)
-        self.task_worker = BackendTaskWorker(lambda: self.backend_client.get_actor_detail(self.actor_name))
-        self.task_worker.moveToThread(self.task_thread)
-        self.task_thread.started.connect(self.task_worker.run)
-        self.task_worker.finished.connect(self._on_load_data_finished)
-        self.task_worker.failed.connect(self._on_load_data_failed)
-        self.task_worker.finished.connect(self.task_thread.quit)
-        self.task_worker.failed.connect(self.task_thread.quit)
-        self.task_thread.finished.connect(self._cleanup_task_thread)
-        self.task_thread.start()
+        self.start_async_task(
+            lambda: self.backend_client.get_actor_detail(self.actor_name),
+            self._on_load_data_finished,
+            '读取失败',
+        )
 
     def _on_load_data_finished(self, detail):
         self.detail = dict(detail or {})
@@ -103,24 +87,14 @@ class ActorDetailViewerWindow(QDialog):
         self.basic_grid.set_value('age', self.detail.get('age', '') or '暂无')
         self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or '暂无')
         self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
-
         self.local_grid.set_value(
             'local_prefix',
-            format_distribution_summary(
-                self.detail.get('local_prefix_distribution', []),
-                'prefix',
-                items_per_line=3,
-            ),
+            format_distribution_summary(self.detail.get('local_prefix_distribution', []), 'prefix', items_per_line=3),
         )
         self.local_grid.set_value(
             'local_year',
-            format_distribution_summary(
-                self.detail.get('local_year_distribution', []),
-                'year',
-                items_per_line=3,
-            ),
+            format_distribution_summary(self.detail.get('local_year_distribution', []), 'year', items_per_line=3),
         )
-
         self.web_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or '未补全')
         self.web_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
         self.web_grid.set_value('web_pages', str(self.detail.get('web_total_pages', 0)))
@@ -134,36 +108,14 @@ class ActorDetailViewerWindow(QDialog):
         self.web_grid.set_value('web_last_enriched', self.detail.get('web_last_enriched_at', '') or '暂无')
         self.web_grid.set_value(
             'web_prefix',
-            format_distribution_summary(
-                self.detail.get('web_prefix_distribution', []),
-                'prefix',
-                items_per_line=3,
-            ),
+            format_distribution_summary(self.detail.get('web_prefix_distribution', []), 'prefix', items_per_line=3),
         )
         self.web_grid.set_value(
             'web_year',
-            format_distribution_summary(
-                self.detail.get('web_year_distribution', []),
-                'year',
-                items_per_line=3,
-            ),
+            format_distribution_summary(self.detail.get('web_year_distribution', []), 'year', items_per_line=3),
         )
 
-    def _on_load_data_failed(self, message):
-        QMessageBox.critical(self, '读取失败', f'读取演员详情失败：\n{str(message or "")}')
-        self.reject()
-
-    def _cleanup_task_thread(self):
-        if self.task_worker is not None:
-            self.task_worker.deleteLater()
-        if self.task_thread is not None:
-            self.task_thread.deleteLater()
-        self.task_worker = None
-        self.task_thread = None
-
     def closeEvent(self, event):
-        if self.task_thread and self.task_thread.isRunning():
-            QMessageBox.information(self, '加载进行中', '请等待当前加载完成后再关闭窗口。')
-            event.ignore()
+        if self.block_close_while_async_running(event, '加载进行中', '请等待当前加载完成后再关闭窗口。'):
             return
         super().closeEvent(event)

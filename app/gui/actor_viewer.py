@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QThread, Qt
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -15,10 +15,10 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
-from app.gui.backend_task_worker import BackendTaskWorker
+from app.gui.backend_task_worker import AsyncTaskHostMixin
 
 
-class ActorViewerWindow(QDialog):
+class ActorViewerWindow(QDialog, AsyncTaskHostMixin):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -26,10 +26,7 @@ class ActorViewerWindow(QDialog):
         self.editing_actor_name = None
         self.editing_row = None
         self.action_buttons = {}
-        self.task_thread = None
-        self.task_worker = None
-        self._task_success_handler = None
-        self._task_error_title = ''
+        self._init_async_task_host()
         self.init_ui()
         self.load_data()
 
@@ -39,7 +36,6 @@ class ActorViewerWindow(QDialog):
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
-
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText('输入演员、作者 ID、生日、年龄或补全状态实时筛选...')
@@ -58,24 +54,10 @@ class ActorViewerWindow(QDialog):
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(
-            [
-                '演员',
-                '作者 ID',
-                '生日',
-                '年龄',
-                '补全状态',
-                '详情',
-                '操作',
-            ]
-        )
+        self.table.setHorizontalHeaderLabels(['演员', '作者 ID', '生日', '年龄', '补全状态', '详情', '操作'])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        for index in range(1, 7):
+            self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -86,14 +68,11 @@ class ActorViewerWindow(QDialog):
 
     def load_data(self):
         search_text = self.search_input.text().strip()
-
-        def task():
-            rows = self.backend_client.list_actors(search_text)
-            return {
-                'rows': rows,
-            }
-
-        self._start_background_task(task, self._on_load_data_finished, '读取失败')
+        self.start_async_task(
+            lambda: {'rows': self.backend_client.list_actors(search_text)},
+            self._on_load_data_finished,
+            '读取失败',
+        )
 
     def render_rows(self, rows):
         self.action_buttons = {}
@@ -107,7 +86,6 @@ class ActorViewerWindow(QDialog):
                 row_data.get('age', ''),
                 row_data.get('enrichment_status', ''),
             )
-
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if col_idx in (1, 2, 3, 4):
@@ -122,7 +100,6 @@ class ActorViewerWindow(QDialog):
     def build_detail_button(self, actor_name):
         button = QPushButton('查看详情')
         button.clicked.connect(lambda _checked=False, name=actor_name: self.show_actor_detail(name))
-
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -133,14 +110,9 @@ class ActorViewerWindow(QDialog):
     def build_action_buttons(self, actor_name):
         edit_button = QPushButton('修改')
         edit_button.clicked.connect(lambda _checked=False, value=actor_name: self.handle_edit_button(value))
-
         delete_button = QPushButton('删除')
         delete_button.clicked.connect(lambda _checked=False, value=actor_name: self.delete_actor(value))
-
-        self.action_buttons[actor_name] = {
-            'edit': edit_button,
-            'delete': delete_button,
-        }
+        self.action_buttons[actor_name] = {'edit': edit_button, 'delete': delete_button}
 
         container = QWidget()
         layout = QHBoxLayout(container)
@@ -154,23 +126,17 @@ class ActorViewerWindow(QDialog):
     def show_actor_detail(self, actor_name):
         if not actor_name:
             return
-        viewer = ActorDetailViewerWindow(
-            backend_client=self.backend_client,
-            actor_name=actor_name,
-            parent=self,
-        )
+        viewer = ActorDetailViewerWindow(self.backend_client, actor_name, self)
         viewer.exec_()
 
     def filter_data(self, text):
-        if self.task_thread is not None:
+        if self.is_async_task_running():
             return
-
         self.clear_edit_state()
-        search_text = (text or '').strip()
+        search_text = str(text or '').strip()
         if not search_text:
             self.load_data()
             return
-
         try:
             self.rows = self.backend_client.list_actors(search_text)
             self.render_rows(self.rows)
@@ -181,18 +147,13 @@ class ActorViewerWindow(QDialog):
         self.editing_actor_name = None
         self.editing_row = None
 
-    def refresh_current_view(self):
-        self.load_data()
-
     def handle_edit_button(self, actor_name):
         if self.editing_actor_name is None:
             self.start_actor_edit(actor_name)
             return
-
         if self.editing_actor_name != actor_name:
             QMessageBox.information(self, '正在编辑', '请先确认当前正在修改的演员行。')
             return
-
         self.confirm_actor_edit()
 
     def start_actor_edit(self, actor_name):
@@ -200,15 +161,12 @@ class ActorViewerWindow(QDialog):
         if row < 0:
             QMessageBox.warning(self, '提示', f'未找到演员：{actor_name}')
             return
-
         self.editing_actor_name = actor_name
         self.editing_row = row
         self.set_actor_cell_editable(row, True)
-
         button = self.action_buttons.get(actor_name, {}).get('edit')
         if button is not None:
             button.setText('确认')
-
         item = self.table.item(row, 0)
         if item is not None:
             self.table.setCurrentCell(row, 0)
@@ -217,7 +175,6 @@ class ActorViewerWindow(QDialog):
     def confirm_actor_edit(self):
         if self.editing_actor_name is None or self.editing_row is None:
             return
-
         item = self.table.item(self.editing_row, 0)
         old_name = self.editing_actor_name
         if item is None:
@@ -226,7 +183,6 @@ class ActorViewerWindow(QDialog):
 
         new_name = item.text().strip()
         self.set_actor_cell_editable(self.editing_row, False)
-
         if not new_name:
             item.setText(old_name)
             self.reset_row_button_text(old_name)
@@ -235,25 +191,25 @@ class ActorViewerWindow(QDialog):
             return
 
         self.clear_edit_state()
+        search_text = self.search_input.text().strip()
+        self.start_async_task(
+            lambda: self._reload_after_operation(
+                lambda: self.backend_client.rename_actor(old_name, new_name),
+                search_text,
+                old_name=old_name,
+                new_name=new_name,
+            ),
+            self._on_rename_finished,
+            '修改失败',
+        )
 
-        def task():
-            self.backend_client.rename_actor(old_name, new_name)
-            rows = self.backend_client.list_actors(self.search_input.text().strip())
-            return {
-                'rows': rows,
-                'old_name': old_name,
-                'new_name': new_name,
-            }
-
-        def on_success(result):
-            self._on_load_data_finished(result)
-            QMessageBox.information(
-                self,
-                '修改完成',
-                f"已将演员 {result.get('old_name', old_name)} 修改为 {result.get('new_name', new_name)}。",
-            )
-
-        self._start_background_task(task, on_success, '修改失败')
+    def _on_rename_finished(self, result):
+        self._on_load_data_finished(result)
+        QMessageBox.information(
+            self,
+            '修改完成',
+            f"已将演员 {result.get('old_name', '')} 修改为 {result.get('new_name', '')}。",
+        )
 
     def reset_row_button_text(self, actor_name):
         button = self.action_buttons.get(actor_name, {}).get('edit')
@@ -264,11 +220,10 @@ class ActorViewerWindow(QDialog):
         item = self.table.item(row, 0)
         if item is None:
             return
-        flags = item.flags()
         if editable:
-            item.setFlags(flags | Qt.ItemIsEditable)
-            return
-        item.setFlags(flags & ~Qt.ItemIsEditable)
+            item.setFlags(item.flags() | Qt.ItemIsEditable)
+        else:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
 
     def find_row_by_actor_name(self, actor_name):
         target = str(actor_name or '').strip()
@@ -282,7 +237,6 @@ class ActorViewerWindow(QDialog):
         if self.editing_actor_name is not None:
             QMessageBox.information(self, '正在编辑', '请先确认当前正在修改的演员行。')
             return
-
         answer = QMessageBox.question(
             self,
             '确认删除',
@@ -291,45 +245,39 @@ class ActorViewerWindow(QDialog):
         if answer != QMessageBox.Yes:
             return
 
-        def task():
-            self.backend_client.delete_actor(actor_name)
-            rows = self.backend_client.list_actors(self.search_input.text().strip())
-            return {
-                'rows': rows,
-                'actor_name': actor_name,
-            }
+        search_text = self.search_input.text().strip()
+        self.start_async_task(
+            lambda: self._reload_after_operation(
+                lambda: self.backend_client.delete_actor(actor_name),
+                search_text,
+                actor_name=actor_name,
+            ),
+            self._on_delete_finished,
+            '删除失败',
+        )
 
-        def on_success(result):
-            self._on_load_data_finished(result)
-            QMessageBox.information(self, '删除完成', f"已删除演员 {result.get('actor_name', actor_name)}。")
-
-        self._start_background_task(task, on_success, '删除失败')
+    def _on_delete_finished(self, result):
+        self._on_load_data_finished(result)
+        QMessageBox.information(self, '删除完成', f"已删除演员 {result.get('actor_name', '')}。")
 
     def reset_selected_rows(self):
         actor_names = self.selected_actor_names()
         if not actor_names:
             QMessageBox.information(self, '未选择', '请先选中要重置的演员行。')
             return
-
-        answer = QMessageBox.question(
-            self,
-            '确认重置',
-            f'确定要重置选中的 {len(actor_names)} 个演员补全状态吗？',
-        )
+        answer = QMessageBox.question(self, '确认重置', f'确定要重置选中的 {len(actor_names)} 个演员补全状态吗？')
         if answer != QMessageBox.Yes:
             return
 
         search_text = self.search_input.text().strip()
-
-        def task():
-            reset_count = self.backend_client.reset_actor_enrichments(actor_names)
-            rows = self.backend_client.list_actors(search_text)
-            return {
-                'reset_count': reset_count,
-                'rows': rows,
-            }
-
-        self._start_background_task(task, self._on_reset_finished, '重置失败')
+        self.start_async_task(
+            lambda: {
+                'reset_count': self.backend_client.reset_actor_enrichments(actor_names),
+                'rows': self.backend_client.list_actors(search_text),
+            },
+            self._on_reset_finished,
+            '重置失败',
+        )
 
     def selected_actor_names(self):
         selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -340,48 +288,14 @@ class ActorViewerWindow(QDialog):
                 actor_names.append(item.text().strip())
         return actor_names
 
-    def _start_background_task(self, task, success_handler, error_title):
-        if self.task_thread is not None:
-            return False
+    def _reload_after_operation(self, operation, search_text, **payload):
+        operation()
+        return {
+            'rows': self.backend_client.list_actors(search_text),
+            **payload,
+        }
 
-        self._set_busy(True)
-        self._task_success_handler = success_handler
-        self._task_error_title = str(error_title or '操作失败')
-        self.task_thread = QThread(self)
-        self.task_worker = BackendTaskWorker(task)
-        self.task_worker.moveToThread(self.task_thread)
-        self.task_thread.started.connect(self.task_worker.run)
-        self.task_worker.finished.connect(self._handle_task_finished)
-        self.task_worker.failed.connect(self._handle_task_failed)
-        self.task_worker.finished.connect(self.task_thread.quit)
-        self.task_worker.failed.connect(self.task_thread.quit)
-        self.task_thread.finished.connect(self._cleanup_task_thread)
-        self.task_thread.start()
-        return True
-
-    def _handle_task_finished(self, result):
-        handler = self._task_success_handler
-        self._task_success_handler = None
-        self._task_error_title = ''
-        if handler is not None:
-            handler(result)
-
-    def _handle_task_failed(self, message):
-        error_title = self._task_error_title or '操作失败'
-        self._task_success_handler = None
-        self._task_error_title = ''
-        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
-
-    def _cleanup_task_thread(self):
-        if self.task_worker is not None:
-            self.task_worker.deleteLater()
-        if self.task_thread is not None:
-            self.task_thread.deleteLater()
-        self.task_worker = None
-        self.task_thread = None
-        self._set_busy(False)
-
-    def _set_busy(self, busy):
+    def _set_async_busy(self, busy):
         self.search_input.setEnabled(not busy)
         self.btn_reset.setEnabled(not busy)
         self.btn_refresh.setEnabled(not busy)
@@ -394,13 +308,11 @@ class ActorViewerWindow(QDialog):
         self.render_rows(self.rows)
 
     def _on_reset_finished(self, result):
-        reset_count = int((result or {}).get('reset_count', 0) or 0)
         self._on_load_data_finished(result)
+        reset_count = int((result or {}).get('reset_count', 0) or 0)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')
 
     def closeEvent(self, event):
-        if self.task_thread and self.task_thread.isRunning():
-            QMessageBox.information(self, '操作进行中', '请等待当前操作完成后再关闭窗口。')
-            event.ignore()
+        if self.block_close_while_async_running(event):
             return
         super().closeEvent(event)
