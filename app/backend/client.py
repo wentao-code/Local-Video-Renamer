@@ -5,6 +5,9 @@ import requests
 from app.core.runtime_config import get_backend_base_url, get_backend_timeout_seconds
 
 
+_DEFAULT_TIMEOUT = object()
+
+
 class BackendClient:
     def __init__(self, base_url=None, timeout=None):
         resolved_base_url = str(base_url or get_backend_base_url()).strip()
@@ -168,12 +171,14 @@ class BackendClient:
     def delete_path(self, path_id):
         return self._post('/paths/delete', {'path_id': path_id}).get('deleted_count', 0)
 
-    def _get(self, path, timeout=None):
-        response = requests.get(self.base_url + path, timeout=timeout or self.timeout)
+    def _get(self, path, timeout=_DEFAULT_TIMEOUT):
+        request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout
+        response = requests.get(self.base_url + path, timeout=request_timeout)
         return self._parse_response(response)
 
-    def _post(self, path, payload=None, timeout=None):
-        response = requests.post(self.base_url + path, json=payload or {}, timeout=timeout or self.timeout)
+    def _post(self, path, payload=None, timeout=_DEFAULT_TIMEOUT):
+        request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout
+        response = requests.post(self.base_url + path, json=payload or {}, timeout=request_timeout)
         return self._parse_response(response)
 
     def _parse_response(self, response):
