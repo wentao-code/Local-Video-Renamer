@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
+from app.gui.video_detail_table import VideoDetailTableWidget
 
 
 class ActorDetailViewerWindow(QDialog):
@@ -14,7 +15,7 @@ class ActorDetailViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle(f'演员详情 - {self.actor_name}')
-        self.resize(1280, 760)
+        self.resize(1380, 1080)
 
         root_layout = QVBoxLayout(self)
         scroll_area = QScrollArea()
@@ -35,8 +36,9 @@ class ActorDetailViewerWindow(QDialog):
                 ('name', '姓名：', ''),
                 ('actor_id', '作者 ID：', ''),
                 ('age', '年龄：', ''),
-                ('birthday', '出生日期：', ''),
+                ('birthday', '生日：', ''),
                 ('local_total', '本地视频总数：', ''),
+                ('local_described_total', '本地带描述视频数：', ''),
             ]
         )
         basic_layout.addWidget(self.basic_grid)
@@ -44,7 +46,7 @@ class ActorDetailViewerWindow(QDialog):
         local_group = QGroupBox('本地视频统计')
         local_layout = QVBoxLayout(local_group)
         self.local_grid = DetailSummaryGrid(columns=1)
-        self.local_grid.set_items([('local_prefix', '番号分布：', ''), ('local_year', '年份构成：', '')])
+        self.local_grid.set_items([('local_prefix', '番号分布：', ''), ('local_year', '年份分布：', '')])
         local_layout.addWidget(self.local_grid)
 
         web_group = QGroupBox('网页作品统计')
@@ -54,21 +56,34 @@ class ActorDetailViewerWindow(QDialog):
             [
                 ('web_status', '补全状态：', ''),
                 ('web_total', '网页作品总数：', ''),
+                ('web_described_total', '网页带描述作品数：', ''),
                 ('web_pages', '网页总页数：', ''),
-                ('eligible_video_count', '满足要求视频数量：', ''),
-                ('web_earliest', '最早发布时间：', ''),
-                ('web_latest', '最新发布时间：', ''),
-                ('eligible_enriched_video_count', '补全满足要求视频数量：', ''),
+                ('eligible_video_count', '满足要求视频数：', ''),
+                ('web_earliest', '最早发布日期：', ''),
+                ('web_latest', '最晚发布日期：', ''),
+                ('eligible_enriched_video_count', '已补全满足要求视频数：', ''),
                 ('web_last_enriched', '最近补全时间：', ''),
                 ('web_prefix', '网页番号分布：', ''),
-                ('web_year', '网页年份构成：', ''),
+                ('web_year', '网页年份分布：', ''),
             ]
         )
         web_layout.addWidget(self.web_grid)
 
+        local_movie_group = QGroupBox('本地视频明细')
+        local_movie_layout = QVBoxLayout(local_movie_group)
+        self.local_movie_table = VideoDetailTableWidget(title='当前演员的本地视频')
+        local_movie_layout.addWidget(self.local_movie_table)
+
+        web_movie_group = QGroupBox('网页作品明细')
+        web_movie_layout = QVBoxLayout(web_movie_group)
+        self.web_movie_table = VideoDetailTableWidget(title='当前演员的网页作品')
+        web_movie_layout.addWidget(self.web_movie_table)
+
         layout.addWidget(basic_group)
         layout.addWidget(local_group)
         layout.addWidget(web_group)
+        layout.addWidget(local_movie_group)
+        layout.addWidget(web_movie_group)
         layout.addStretch()
 
     def load_data(self):
@@ -84,6 +99,8 @@ class ActorDetailViewerWindow(QDialog):
         self.basic_grid.set_value('age', self.detail.get('age', '') or '暂无')
         self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or '暂无')
         self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
+        self.basic_grid.set_value('local_described_total', str(self.detail.get('local_described_video_count', 0)))
+
         self.local_grid.set_value(
             'local_prefix',
             format_distribution_summary(self.detail.get('local_prefix_distribution', []), 'prefix', items_per_line=3),
@@ -92,8 +109,10 @@ class ActorDetailViewerWindow(QDialog):
             'local_year',
             format_distribution_summary(self.detail.get('local_year_distribution', []), 'year', items_per_line=3),
         )
+
         self.web_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or '未补全')
         self.web_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
+        self.web_grid.set_value('web_described_total', str(self.detail.get('web_described_video_count', 0)))
         self.web_grid.set_value('web_pages', str(self.detail.get('web_total_pages', 0)))
         self.web_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
         self.web_grid.set_value('web_earliest', self.detail.get('web_earliest_release_date', '') or '暂无')
@@ -111,3 +130,6 @@ class ActorDetailViewerWindow(QDialog):
             'web_year',
             format_distribution_summary(self.detail.get('web_year_distribution', []), 'year', items_per_line=3),
         )
+
+        self.local_movie_table.set_rows(self.detail.get('local_videos', []))
+        self.web_movie_table.set_rows(self.detail.get('web_movies', []))

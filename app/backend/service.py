@@ -103,6 +103,14 @@ class BackendService:
     def reset_video_enrichments(self, codes):
         return {'reset_count': self.db.reset_video_enrichments(codes)}
 
+    def list_videos_requiring_manual_category(self):
+        self.ensure_database_loaded()
+        return {'videos': self.db.list_videos_requiring_manual_category()}
+
+    def update_video_category(self, code, category):
+        self.ensure_database_loaded()
+        return {'updated_count': self.db.update_video_category(code, category)}
+
     def list_actors(self, search_text=''):
         self.ensure_database_loaded()
         return {'actors': self.db.list_actors(search_text)}

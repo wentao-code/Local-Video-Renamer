@@ -24,6 +24,8 @@ class ActorDetailLibrary:
         web_movies = self.database.list_actor_movies(actor_name)
         eligible_web_movies = self._filter_eligible_movies(web_movies)
         enriched_eligible_count = self._count_enriched_eligible_movies(eligible_web_movies)
+        described_local_video_count = self._count_described_movies(local_videos)
+        described_web_video_count = self._count_described_movies(web_movies)
         web_record = self.database.get_actor_enrichment_record(actor_name)
         web_earliest, web_latest = self._collect_date_range(web_movies)
 
@@ -34,11 +36,13 @@ class ActorDetailLibrary:
             'matched': bool(actor_row.get('matched')),
             'actor_id': actor_row.get('actor_id', '') or web_record.get('actor_id', ''),
             'local_video_count': len(local_videos),
+            'local_described_video_count': described_local_video_count,
             'local_prefix_distribution': self._build_prefix_distribution(local_videos),
             'local_year_distribution': self._build_year_distribution(local_videos),
             'web_enrichment_status': web_record.get('enrichment_status', ''),
             'web_total_pages': web_record.get('avfan_total_pages', 0),
             'web_total_videos': web_record.get('avfan_total_videos', 0),
+            'web_described_video_count': described_web_video_count,
             'eligible_video_count': len(eligible_web_movies),
             'eligible_enriched_video_count': enriched_eligible_count,
             'web_last_enriched_at': web_record.get('last_enriched_at', ''),
@@ -46,6 +50,7 @@ class ActorDetailLibrary:
             'web_latest_release_date': web_latest,
             'web_prefix_distribution': self._build_prefix_distribution(eligible_web_movies),
             'web_year_distribution': self._build_year_distribution(eligible_web_movies),
+            'local_videos': local_videos,
             'web_movies': web_movies,
             'eligible_web_movies': eligible_web_movies,
         }
@@ -78,6 +83,10 @@ class ActorDetailLibrary:
             for movie in (movies or [])
             if normalize_second_source_actor_text((movie or {}).get('author', ''))
         )
+
+    @staticmethod
+    def _count_described_movies(movies):
+        return sum(1 for movie in (movies or []) if str((movie or {}).get('description', '') or '').strip())
 
     def _build_prefix_distribution(self, rows):
         grouped = {}

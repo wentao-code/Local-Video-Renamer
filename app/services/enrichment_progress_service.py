@@ -6,7 +6,16 @@ class EnrichmentProgressService:
         self._lock = Lock()
         self._state = self._build_default_state()
 
-    def start(self, target_label, total_count, source_label='', message='', count_unit='项'):
+    def start(
+        self,
+        target_label,
+        total_count,
+        source_label='',
+        message='',
+        count_unit='项',
+        target_type='',
+        source_key='',
+    ):
         with self._lock:
             self._state = self._build_default_state()
             self._state.update(
@@ -14,6 +23,8 @@ class EnrichmentProgressService:
                     'is_running': True,
                     'target_label': str(target_label or ''),
                     'source_label': str(source_label or ''),
+                    'target_type': str(target_type or ''),
+                    'source_key': str(source_key or ''),
                     'total_count': max(0, int(total_count or 0)),
                     'message': str(message or ''),
                     'count_unit': str(count_unit or '项'),
@@ -70,6 +81,8 @@ class EnrichmentProgressService:
             'is_running': False,
             'target_label': '',
             'source_label': '',
+            'target_type': '',
+            'source_key': '',
             'total_count': 0,
             'processed_count': 0,
             'success_count': 0,

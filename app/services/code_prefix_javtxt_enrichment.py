@@ -1,5 +1,6 @@
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_targets import CODE_PREFIX_LIBRARY_TARGET
 from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.movie_author_resolver import MovieAuthorResolver
 
@@ -40,6 +41,8 @@ class CodePrefixJavtxtEnrichmentService:
                 target_video_count,
                 source_label=source_label,
                 count_unit='视频',
+                target_type=CODE_PREFIX_LIBRARY_TARGET,
+                source_key=JAVTXT_VIDEO_SOURCE,
             )
 
         for prefix in ready_prefixes:
@@ -86,7 +89,7 @@ class CodePrefixJavtxtEnrichmentService:
 
         message = ''
         if not ready_prefixes and blocked_count > 0:
-            message = f'当前有 {blocked_count} 个番号尚未完成天限阁补全，暂时不能使用辛聚谷继续补全。'
+            message = f'当前有 {blocked_count} 个番号尚未完成天陨阁补全，暂时不能使用辛聚谷继续补全。'
 
         result = {
             'requested': limit,
@@ -154,7 +157,7 @@ class CodePrefixJavtxtEnrichmentService:
     def _enrich_single_prefix(self, prefix, max_video_count, progress_state):
         movies = self.database.list_code_prefix_movies(prefix)
         if not movies:
-            raise RuntimeError('请先使用天限阁补全番号库作品列表。')
+            raise RuntimeError('请先使用天陨阁补全番号库作品列表。')
 
         progress_state['_processed_offset'] = int(progress_state.get('processed_video_count', 0) or 0)
         progress_state['_success_offset'] = int(progress_state.get('success_video_count', 0) or 0)

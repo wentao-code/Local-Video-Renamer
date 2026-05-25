@@ -115,6 +115,12 @@ class BackendClient:
     def reset_video_enrichments(self, codes):
         return self._post('/database/videos/reset', {'codes': codes}).get('reset_count', 0)
 
+    def list_videos_requiring_manual_category(self):
+        return self._get('/database/videos/manual-category').get('videos', [])
+
+    def update_video_category(self, code, category):
+        return self._post('/database/videos/category', {'code': code, 'category': category}).get('updated_count', 0)
+
     def list_actors(self, search_text=''):
         query = ''
         if search_text:

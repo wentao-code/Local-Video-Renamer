@@ -1,10 +1,6 @@
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, get_video_enrichment_source_label
-from app.core.enrichment_status import (
-    ENRICHED_STATUS,
-    FAILED_STATUS,
-    NO_SEARCH_RESULTS_STATUS,
-    UNENRICHED_STATUS,
-)
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET
 from app.scraper.avfan_actor_scraper import AvfanActorScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.actor_search_entry_parser import parse_actor_search_card
@@ -30,7 +26,14 @@ class ActorEnrichmentService:
         source_label = get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('演员库', len(candidates), source_label=source_label)
+            self.progress_tracker.start(
+                '演员库',
+                len(candidates),
+                source_label=source_label,
+                count_unit='演员',
+                target_type=ACTOR_LIBRARY_TARGET,
+                source_key=AVFAN_VIDEO_SOURCE,
+            )
 
         for actor_name in candidates:
             if self.should_stop():
@@ -60,11 +63,7 @@ class ActorEnrichmentService:
                     actor_id='',
                     source_key=AVFAN_VIDEO_SOURCE,
                 )
-                results.append({
-                    'actor_name': actor_name,
-                    'status': FAILED_STATUS,
-                    'error': error_message,
-                })
+                results.append({'actor_name': actor_name, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
                 self._update_progress(len(results), success_count, failed_count, actor_name)
                 result = {
@@ -95,11 +94,7 @@ class ActorEnrichmentService:
                     actor_id='',
                     source_key=AVFAN_VIDEO_SOURCE,
                 )
-                results.append({
-                    'actor_name': actor_name,
-                    'status': FAILED_STATUS,
-                    'error': error_message,
-                })
+                results.append({'actor_name': actor_name, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
 
             self._update_progress(len(results), success_count, failed_count, actor_name)
@@ -172,9 +167,7 @@ class ActorEnrichmentService:
                 break
             if page_number > 1:
                 self.scraper.open_listing_page(page, actor_name, page_number)
-            parsed_entries.extend(
-                self._parse_entries(actor_name, self.scraper.collect_page_entries(page), page_number)
-            )
+            parsed_entries.extend(self._parse_entries(actor_name, self.scraper.collect_page_entries(page), page_number))
 
         if stopped_early:
             return {

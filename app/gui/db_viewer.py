@@ -27,14 +27,14 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
 
     def init_ui(self):
         self.setWindowTitle('视频库')
-        self.resize(1240, 640)
+        self.resize(1440, 720)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入视频编号、标题、演员、来源 ID 或存放位置，实时筛选...')
+        self.search_input.setPlaceholderText('输入视频编号、标题、演员、描述、分类或补全状态实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
         self.btn_reset = QPushButton('选中重置')
@@ -52,17 +52,19 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.summary_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(12)
+        self.table.setColumnCount(14)
         self.table.setHorizontalHeaderLabels(
             [
                 '视频编号',
                 '视频标题',
                 '作者/演员',
+                '视频分类',
                 '时长',
                 '大小(GB)',
                 '存放位置',
-                '天限阁 ID',
-                '辛聚谷 ID',
+                '天陨阁ID',
+                '辛聚谷ID',
+                '描述',
                 '发行日期',
                 '制作商',
                 '发行商',
@@ -78,9 +80,11 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(12, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(13, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -107,17 +111,19 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
             'code',
             'title',
             'author',
+            'video_category',
             'duration',
             'size',
             'storage_location',
             'avfan_movie_id',
             'javtxt_movie_id',
+            'description',
             'release_date',
             'maker',
             'publisher',
             'enrichment_status',
         )
-        centered_columns = {0, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+        centered_columns = {0, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13}
 
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)

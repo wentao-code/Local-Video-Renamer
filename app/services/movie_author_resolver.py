@@ -1,12 +1,7 @@
 import re
 from datetime import date, datetime
 
-from app.core.enrichment_status import (
-    ENRICHED_STATUS,
-    FAILED_STATUS,
-    NO_SEARCH_RESULTS_STATUS,
-    UNENRICHED_STATUS,
-)
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.scraper.javtxt_scraper import JavtxtScraper
 
@@ -25,6 +20,7 @@ class MovieAuthorResolver:
         self.scraper = scraper or JavtxtScraper(headless=headless)
         self.should_stop = should_stop or (lambda: False)
         self._author_cache = {}
+        self._description_cache = {}
         self._status_cache = {}
 
     def session(self):
@@ -36,6 +32,7 @@ class MovieAuthorResolver:
     def enrich_entries_with_details(self, entries, max_lookup_count=None, progress_callback=None):
         normalized_entries = self._prepare_entries(entries)
         cached_rows = self._load_cached_rows(normalized_entries)
+        self._hydrate_entries_from_cache(normalized_entries, cached_rows)
         pending_video_count_before = self.count_pending_entries(normalized_entries, cached_rows=cached_rows)
         requested_lookup_count = pending_video_count_before
         if max_lookup_count is not None:
@@ -63,9 +60,12 @@ class MovieAuthorResolver:
             processed_video_count += 1
 
             author = normalize_second_source_actor_text(resolution.get('author', ''))
+            description = str(resolution.get('description', '') or '').strip()
             status = resolution.get('status', UNENRICHED_STATUS)
             if author:
                 entry['author'] = author
+            if description:
+                entry['description'] = description
             if status == ENRICHED_STATUS:
                 success_video_count += 1
             elif status == FAILED_STATUS:
@@ -76,6 +76,7 @@ class MovieAuthorResolver:
                     {
                         'code': code,
                         'author': author,
+                        'description': description,
                         'status': status,
                         'processed_video_count': processed_video_count,
                         'success_video_count': success_video_count,
@@ -86,6 +87,7 @@ class MovieAuthorResolver:
             cached_rows[code] = {
                 'code': code,
                 'javtxt_actors': author,
+                'description': description,
                 'javtxt_enrichment_status': status,
             }
 
@@ -112,6 +114,7 @@ class MovieAuthorResolver:
     def _normalize_entry(self, entry):
         updated = dict(entry or {})
         updated['author'] = normalize_second_source_actor_text(updated.get('author', ''))
+        updated['description'] = str(updated.get('description', '') or '').strip()
         return updated
 
     def _prepare_entries(self, entries):
@@ -126,6 +129,21 @@ class MovieAuthorResolver:
             if self._should_lookup_author(entry)
         ]
         return self.database.get_javtxt_actor_cache_by_codes(eligible_codes)
+
+    def _hydrate_entries_from_cache(self, entries, cached_rows):
+        for entry in entries or []:
+            code = self._normalize_code((entry or {}).get('code', ''))
+            if not code:
+                continue
+
+            cached_row = cached_rows.get(code, {})
+            cached_author = normalize_second_source_actor_text((cached_row or {}).get('javtxt_actors', ''))
+            cached_description = str((cached_row or {}).get('description', '') or '').strip()
+
+            if cached_author and not self._has_author(entry):
+                entry['author'] = cached_author
+            if cached_description and not str((entry or {}).get('description', '') or '').strip():
+                entry['description'] = cached_description
 
     def _should_attempt_lookup(self, entry, cached_rows):
         if not self._should_lookup_author(entry):
@@ -151,30 +169,37 @@ class MovieAuthorResolver:
         return bool(normalize_second_source_actor_text((entry or {}).get('author', '')))
 
     def _resolve_author_result(self, code, cached_row):
-        if code in self._author_cache or code in self._status_cache:
+        if code in self._author_cache or code in self._status_cache or code in self._description_cache:
             return {
                 'author': self._author_cache.get(code, ''),
+                'description': self._description_cache.get(code, ''),
                 'status': self._status_cache.get(code, UNENRICHED_STATUS),
             }
 
         cached_author = normalize_second_source_actor_text((cached_row or {}).get('javtxt_actors', ''))
+        cached_description = str((cached_row or {}).get('description', '') or '').strip()
         cached_status = self._normalize_video_status((cached_row or {}).get('javtxt_enrichment_status', ''))
         if cached_author:
             self._author_cache[code] = cached_author
+            self._description_cache[code] = cached_description
             self._status_cache[code] = ENRICHED_STATUS
             return {
                 'author': cached_author,
+                'description': cached_description,
                 'status': ENRICHED_STATUS,
             }
         if cached_status in TERMINAL_JAVTXT_VIDEO_STATUSES and cached_status != UNENRICHED_STATUS:
             self._author_cache[code] = ''
+            self._description_cache[code] = cached_description
             self._status_cache[code] = cached_status
             return {
                 'author': '',
+                'description': cached_description,
                 'status': cached_status,
             }
 
         author = ''
+        description = ''
         status = UNENRICHED_STATUS
         error_message = ''
         info = {}
@@ -182,6 +207,7 @@ class MovieAuthorResolver:
             info = self.scraper.fetch_by_code(code)
             if info.get('found'):
                 author = normalize_second_source_actor_text(info.get('author', ''))
+                description = str(info.get('description', '') or '').strip()
                 status = ENRICHED_STATUS if author else NO_SEARCH_RESULTS_STATUS
                 if not author:
                     error_message = 'JAVTXT 未返回演员信息'
@@ -193,10 +219,12 @@ class MovieAuthorResolver:
             error_message = str(exc)
 
         self._author_cache[code] = author
+        self._description_cache[code] = description
         self._status_cache[code] = status
         self._save_video_cache(code, info, status=status, error=error_message)
         return {
             'author': author,
+            'description': description,
             'status': status,
         }
 

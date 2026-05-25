@@ -35,6 +35,7 @@ from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
+from app.gui.video_category_viewer import VideoCategoryViewerWindow
 
 
 class EnrichmentWorker(QObject):
@@ -233,6 +234,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_view_code_prefixes = QPushButton('番号库')
         self.btn_view_code_prefixes.clicked.connect(self.show_code_prefix_viewer)
 
+        self.btn_tianji = QPushButton('天机阁')
+        self.btn_tianji.clicked.connect(self.show_video_category_viewer)
+
         self.btn_scan = QPushButton('扫描本地视频')
         self.btn_scan.clicked.connect(self.scan_files)
 
@@ -261,6 +265,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_database)
         top_button_row.addWidget(self.btn_view_actors)
         top_button_row.addWidget(self.btn_view_code_prefixes)
+        top_button_row.addWidget(self.btn_tianji)
         top_button_row.addStretch()
 
         bottom_button_row.addWidget(self.btn_scan)
@@ -1098,6 +1103,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def show_code_prefix_viewer(self):
         viewer = CodePrefixViewerWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
+    def show_video_category_viewer(self):
+        viewer = VideoCategoryViewerWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
     def show_path_library(self):

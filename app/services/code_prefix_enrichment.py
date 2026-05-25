@@ -1,10 +1,6 @@
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, get_video_enrichment_source_label
-from app.core.enrichment_status import (
-    ENRICHED_STATUS,
-    FAILED_STATUS,
-    NO_SEARCH_RESULTS_STATUS,
-    UNENRICHED_STATUS,
-)
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_targets import CODE_PREFIX_LIBRARY_TARGET
 from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.code_prefix_entry_parser import parse_code_prefix_card
@@ -32,7 +28,14 @@ class CodePrefixEnrichmentService:
         source_label = get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('番号库', len(candidates), source_label=source_label)
+            self.progress_tracker.start(
+                '番号库',
+                len(candidates),
+                source_label=source_label,
+                count_unit='番号',
+                target_type=CODE_PREFIX_LIBRARY_TARGET,
+                source_key=AVFAN_VIDEO_SOURCE,
+            )
 
         for prefix in candidates:
             if self.should_stop():
@@ -61,11 +64,7 @@ class CodePrefixEnrichmentService:
                     error=error_message,
                     source_key=AVFAN_VIDEO_SOURCE,
                 )
-                results.append({
-                    'prefix': prefix,
-                    'status': FAILED_STATUS,
-                    'error': error_message,
-                })
+                results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
                 self._update_progress(len(results), success_count, failed_count, prefix)
                 result = {
@@ -95,11 +94,7 @@ class CodePrefixEnrichmentService:
                     error=error_message,
                     source_key=AVFAN_VIDEO_SOURCE,
                 )
-                results.append({
-                    'prefix': prefix,
-                    'status': FAILED_STATUS,
-                    'error': error_message,
-                })
+                results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
 
             self._update_progress(len(results), success_count, failed_count, prefix)
@@ -167,9 +162,7 @@ class CodePrefixEnrichmentService:
                 break
             if page_number > 1:
                 self.scraper.open_listing_page(page, prefix, page_number)
-            parsed_entries.extend(
-                self._parse_entries(prefix, self.scraper.collect_page_entries(page), page_number)
-            )
+            parsed_entries.extend(self._parse_entries(prefix, self.scraper.collect_page_entries(page), page_number))
 
         if stopped_early:
             return {

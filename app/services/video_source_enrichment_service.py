@@ -6,6 +6,7 @@ from app.core.enrichment_sources import (
     normalize_video_enrichment_source,
 )
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_targets import VIDEO_LIBRARY_TARGET
 from app.scraper.avfan_scraper import AvfanScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.scraper.javtxt_scraper import JavtxtScraper
@@ -49,7 +50,14 @@ class VideoSourceEnrichmentService:
         source_label = get_video_enrichment_source_label(self.source_key)
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start('视频库', len(candidates), source_label=source_label)
+            self.progress_tracker.start(
+                '视频库',
+                len(candidates),
+                source_label=source_label,
+                count_unit='视频',
+                target_type=VIDEO_LIBRARY_TARGET,
+                source_key=self.source_key,
+            )
 
         with self.scraper.session():
             for video in candidates:
@@ -68,11 +76,13 @@ class VideoSourceEnrichmentService:
                             source_key=self.source_key,
                         )
                         success_count += 1
-                        results.append({
-                            'code': code,
-                            'status': ENRICHED_STATUS,
-                            'info': info,
-                        })
+                        results.append(
+                            {
+                                'code': code,
+                                'status': ENRICHED_STATUS,
+                                'info': info,
+                            }
+                        )
                     else:
                         error_message = info.get('error', '未搜索到匹配影片')
                         self.database.mark_video_no_search_results(
@@ -81,11 +91,13 @@ class VideoSourceEnrichmentService:
                             source_key=self.source_key,
                         )
                         failed_count += 1
-                        results.append({
-                            'code': code,
-                            'status': NO_SEARCH_RESULTS_STATUS,
-                            'error': error_message,
-                        })
+                        results.append(
+                            {
+                                'code': code,
+                                'status': NO_SEARCH_RESULTS_STATUS,
+                                'error': error_message,
+                            }
+                        )
                 except HumanVerificationRequiredError as exc:
                     error_message = str(exc)
                     self.database.mark_video_enrichment_failed(
@@ -94,11 +106,13 @@ class VideoSourceEnrichmentService:
                         source_key=self.source_key,
                     )
                     failed_count += 1
-                    results.append({
-                        'code': code,
-                        'status': FAILED_STATUS,
-                        'error': error_message,
-                    })
+                    results.append(
+                        {
+                            'code': code,
+                            'status': FAILED_STATUS,
+                            'error': error_message,
+                        }
+                    )
                     self._update_progress(len(results), success_count, failed_count, code)
                     result = self._build_result(
                         limit,
@@ -120,11 +134,13 @@ class VideoSourceEnrichmentService:
                         source_key=self.source_key,
                     )
                     failed_count += 1
-                    results.append({
-                        'code': code,
-                        'status': FAILED_STATUS,
-                        'error': error_message,
-                    })
+                    results.append(
+                        {
+                            'code': code,
+                            'status': FAILED_STATUS,
+                            'error': error_message,
+                        }
+                    )
 
                 self._update_progress(len(results), success_count, failed_count, code)
 
@@ -164,7 +180,8 @@ class VideoSourceEnrichmentService:
             'remaining_count': self.database.count_videos_by_enrichment_status(
                 UNENRICHED_STATUS,
                 source_key=self.source_key,
-            ) + self.database.count_videos_by_enrichment_status(
+            )
+            + self.database.count_videos_by_enrichment_status(
                 FAILED_STATUS,
                 source_key=self.source_key,
             ),

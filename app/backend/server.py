@@ -60,6 +60,10 @@ def make_handler(service):
                 return service.get_data_center_summary()
             if method == 'POST' and path == '/database/videos/reset':
                 return service.reset_video_enrichments(body.get('codes', []))
+            if method == 'GET' and path == '/database/videos/manual-category':
+                return service.list_videos_requiring_manual_category()
+            if method == 'POST' and path == '/database/videos/category':
+                return service.update_video_category(body.get('code'), body.get('category'))
             if method == 'GET' and path == '/database/actors':
                 search_text = query.get('q', [''])[0]
                 return service.list_actors(search_text)

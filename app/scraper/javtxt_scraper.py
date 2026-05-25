@@ -1,6 +1,7 @@
 import re
 from contextlib import contextmanager
 
+from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.core.runtime_config import (
     get_javtxt_base_url,
     get_javtxt_search_url,
@@ -8,13 +9,21 @@ from app.core.runtime_config import (
     get_scraper_locale,
 )
 from app.core.second_source_actor_text import normalize_second_source_actor_text
-from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
 from app.scraper.browser_window import minimize_browser_window_if_needed
 
 
 JAVTXT_DETAIL_RE = re.compile(r'/v/(\d+)')
-SECTION_ICON_RE = re.compile(r'^[🆔🗂️📅🎥🔖🏷️🧲📙🔍🔥🆕📊]')
+SECTION_ICON_RE = re.compile(r'^[^\w\s]')
+TITLE_SUFFIX_RE = re.compile(r'\s*-\s*JAV.*$', re.I)
+
+TITLE_SECTION_LABELS = {'番号', '演员', '出演女优'}
+ACTOR_SECTION_LABELS = ('出演女优', '演员')
+RELEASE_DATE_LABELS = ('📆 发行时间', '发行时间', '發行時間')
+MAKER_LABELS = ('🎥 片商', '片商')
+PUBLISHER_LABELS = ('🔖 厂牌', '厂牌', '廠牌')
+TAG_LABELS = ('🏷️ 类别', '类别', '類別')
+DESCRIPTION_LABELS = ('📝 剧情介绍', '剧情介绍', '劇情介紹')
 
 
 class JavtxtScraper:
@@ -131,10 +140,12 @@ class JavtxtScraper:
         final_url = page.url or ''
         movie_id = extract_javtxt_movie_id(final_url)
         title = extract_title(page, lines, requested_code)
-        actors_text = normalize_second_source_actor_text(extract_actor_text(lines))
-        release_date = extract_detail_value(lines, ('📅 发行时间', '发行时间', '發行時間'))
-        maker = extract_detail_value(lines, ('🎥 片商', '片商'))
-        publisher = extract_detail_value(lines, ('🔖 厂牌', '厂牌', '廠牌'))
+        actors_text = normalize_second_source_actor_text(extract_section_text(lines, ACTOR_SECTION_LABELS))
+        release_date = extract_detail_value(lines, RELEASE_DATE_LABELS)
+        maker = extract_detail_value(lines, MAKER_LABELS)
+        publisher = extract_detail_value(lines, PUBLISHER_LABELS)
+        tags_text = extract_section_text(lines, TAG_LABELS)
+        description = extract_section_text(lines, DESCRIPTION_LABELS)
         return {
             'code': requested_code,
             'title': title,
@@ -142,8 +153,11 @@ class JavtxtScraper:
             'release_date': release_date,
             'maker': maker,
             'publisher': publisher,
+            'description': description,
             'javtxt_title': title,
             'javtxt_actors': actors_text,
+            'javtxt_tags': tags_text,
+            'javtxt_description': description,
             'javtxt_movie_id': movie_id,
             'javtxt_url': final_url,
         }
@@ -172,13 +186,13 @@ def extract_title(page, lines, requested_code):
         if cleaned:
             return cleaned
 
-    for actor_label in ('出演女优', '演员'):
+    for actor_label in ACTOR_SECTION_LABELS:
         if actor_label not in lines:
             continue
         label_index = lines.index(actor_label)
         for index in range(label_index - 1, -1, -1):
             cleaned = clean_title(lines[index], requested_code)
-            if cleaned and cleaned not in {'番号', '演员'}:
+            if cleaned and cleaned not in TITLE_SECTION_LABELS:
                 return cleaned
 
     page_title = ''
@@ -193,7 +207,7 @@ def clean_title(text, requested_code):
     value = str(text or '').strip()
     if not value:
         return ''
-    value = re.sub(r'\s*-\s*JAV档案馆\s*$', '', value, flags=re.I)
+    value = TITLE_SUFFIX_RE.sub('', value).strip()
     normalized_code = normalize_code(requested_code)
     if normalized_code:
         prefix_pattern = re.compile(rf'^\s*{re.escape(normalized_code)}[-_\s:：]*', re.I)
@@ -203,26 +217,21 @@ def clean_title(text, requested_code):
     return value
 
 
-def extract_actor_text(lines):
-    for label in ('出演女优', '演员'):
-        if label not in lines:
-            continue
-        label_index = lines.index(label)
-        for index in range(label_index + 1, len(lines)):
-            line = str(lines[index] or '').strip()
-            if not line:
-                continue
-            if is_next_section_label(line):
-                break
-            return normalize_actor_line(line)
-    return ''
-
-
 def extract_detail_value(lines, labels):
+    section_lines = extract_section_lines(lines, labels)
+    return section_lines[0] if section_lines else ''
+
+
+def extract_section_text(lines, labels):
+    return ' '.join(extract_section_lines(lines, labels)).strip()
+
+
+def extract_section_lines(lines, labels):
     normalized_labels = {str(label or '').strip() for label in labels}
     for index, line in enumerate(lines):
         if str(line or '').strip() not in normalized_labels:
             continue
+        values = []
         for next_index in range(index + 1, len(lines)):
             value = str(lines[next_index] or '').strip()
             if not value:
@@ -231,22 +240,18 @@ def extract_detail_value(lines, labels):
                 continue
             if is_next_section_label(value):
                 break
-            return value
-    return ''
+            values.append(value)
+        return values
+    return []
 
 
 def is_next_section_label(text):
     value = str(text or '').strip()
     if not value:
         return False
-    if value in {'剧情介绍', '出演女优', '演员', '番号'}:
+    if value in {'剧情介绍', '劇情介紹', '出演女优', '演员', '番号', '类别', '類別'}:
         return True
-    return bool(SECTION_ICON_RE.match(value))
-
-
-def normalize_actor_line(text):
-    joined = ' '.join(part for part in re.split(r'\s{2,}', str(text or '').strip()) if part)
-    return normalize_second_source_actor_text(joined)
+    return bool(SECTION_ICON_RE.match(value)) and len(value) <= 12
 
 
 def normalize_code(value):

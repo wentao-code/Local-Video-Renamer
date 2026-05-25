@@ -18,11 +18,13 @@ class CodePrefixDetailLibrary:
         movies = self.database.list_code_prefix_movies(prefix)
         eligible_movies = self._filter_eligible_movies(movies)
         enriched_eligible_count = self._count_enriched_eligible_movies(eligible_movies)
+        described_video_count = self._count_described_movies(movies)
         earliest_release_date, latest_release_date = self._collect_date_range(movies)
 
         return {
             'prefix': prefix,
             'video_count': len(movies),
+            'described_video_count': described_video_count,
             'eligible_video_count': len(eligible_movies),
             'eligible_enriched_video_count': enriched_eligible_count,
             'enrichment_status': enrichment.get('enrichment_status', ''),
@@ -46,6 +48,10 @@ class CodePrefixDetailLibrary:
             for movie in (movies or [])
             if normalize_second_source_actor_text((movie or {}).get('author', ''))
         )
+
+    @staticmethod
+    def _count_described_movies(movies):
+        return sum(1 for movie in (movies or []) if str((movie or {}).get('description', '') or '').strip())
 
     def _collect_date_range(self, movies):
         dates = sorted(

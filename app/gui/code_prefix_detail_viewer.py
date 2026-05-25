@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
+from app.gui.video_detail_table import VideoDetailTableWidget
 
 
 class CodePrefixDetailViewerWindow(QDialog):
@@ -14,7 +15,7 @@ class CodePrefixDetailViewerWindow(QDialog):
 
     def init_ui(self):
         self.setWindowTitle(f'番号详情 - {self.prefix}')
-        self.resize(1280, 760)
+        self.resize(1380, 920)
 
         root_layout = QVBoxLayout(self)
         scroll_area = QScrollArea()
@@ -26,19 +27,21 @@ class CodePrefixDetailViewerWindow(QDialog):
         scroll_area.setWidget(content)
 
         layout = QVBoxLayout(content)
+
         summary_group = QGroupBox('基础信息')
         summary_layout = QVBoxLayout(summary_group)
         self.summary_grid = DetailSummaryGrid(columns=2)
         self.summary_grid.set_items(
             [
                 ('prefix', '番号：', ''),
-                ('video_count', '该番号视频数：', ''),
-                ('total_pages', 'AVFan总页数：', ''),
-                ('total_videos', 'AVFan作品数：', ''),
-                ('eligible_video_count', '满足要求视频数量：', ''),
-                ('eligible_enriched_video_count', '补全满足要求视频数量：', ''),
-                ('earliest_date', '最早发布时间：', ''),
-                ('latest_date', '最新发布时间：', ''),
+                ('video_count', '本地视频数：', ''),
+                ('described_video_count', '网页带描述作品数：', ''),
+                ('total_pages', 'AVFan 总页数：', ''),
+                ('total_videos', 'AVFan 作品数：', ''),
+                ('eligible_video_count', '满足要求视频数：', ''),
+                ('eligible_enriched_video_count', '已补全满足要求视频数：', ''),
+                ('earliest_date', '最早发布日期：', ''),
+                ('latest_date', '最晚发布日期：', ''),
                 ('last_enriched', '最近补全时间：', ''),
             ]
         )
@@ -49,14 +52,20 @@ class CodePrefixDetailViewerWindow(QDialog):
         self.stats_grid = DetailSummaryGrid(columns=1)
         self.stats_grid.set_items(
             [
-                ('year_distribution', '发布年份构成：', ''),
-                ('top_actors', '主演演员前十名：', ''),
+                ('year_distribution', '年份分布：', ''),
+                ('top_actors', '主演演员前十：', ''),
             ]
         )
         stats_layout.addWidget(self.stats_grid)
 
+        movie_group = QGroupBox('网页作品明细')
+        movie_layout = QVBoxLayout(movie_group)
+        self.movie_table = VideoDetailTableWidget(title='当前番号下的网页作品')
+        movie_layout.addWidget(self.movie_table)
+
         layout.addWidget(summary_group)
         layout.addWidget(stats_group)
+        layout.addWidget(movie_group)
         layout.addStretch()
 
     def load_data(self):
@@ -69,6 +78,7 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         self.summary_grid.set_value('prefix', self.detail.get('prefix', ''))
         self.summary_grid.set_value('video_count', str(self.detail.get('video_count', 0)))
+        self.summary_grid.set_value('described_video_count', str(self.detail.get('described_video_count', 0)))
         self.summary_grid.set_value('total_pages', str(self.detail.get('avfan_total_pages', 0)))
         self.summary_grid.set_value('total_videos', str(self.detail.get('avfan_total_videos', 0)))
         self.summary_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
@@ -87,3 +97,4 @@ class CodePrefixDetailViewerWindow(QDialog):
             'top_actors',
             format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=2),
         )
+        self.movie_table.set_rows(self.detail.get('movies', []))

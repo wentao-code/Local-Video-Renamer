@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ChangeListManager">
+    <list default="true" id="563fbf47-c796-4a7a-859a-256c18b2517d" name="更改" comment="">
+      <change beforePath="$PROJECT_DIR$/app/gui/data_center_viewer.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/data_center_viewer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/gui/enrichment_summary_widgets.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/enrichment_summary_widgets.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/actor_enrichment.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/actor_enrichment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/actor_javtxt_enrichment.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/actor_javtxt_enrichment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/code_prefix_enrichment.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/code_prefix_enrichment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/code_prefix_javtxt_enrichment.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/code_prefix_javtxt_enrichment.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/data_center_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/data_center_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/enrichment_progress_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/enrichment_progress_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/video_source_enrichment_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/video_source_enrichment_service.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 7
+}]]></component>
+  <component name="ProjectId" id="3EE7sTaW1ytVZSAAnXfvQEa811j" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true"
+  }
+}]]></component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-1bde30d8e611-7b97d883f26b-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-252.25557.130" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="默认任务">
+      <changelist id="563fbf47-c796-4a7a-859a-256c18b2517d" name="更改" comment="" />
+      <created>1779732082044</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1779732082044</updated>
+    </task>
+    <servers />
+  </component>
+</project>
