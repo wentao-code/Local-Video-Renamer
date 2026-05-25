@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
+from app.gui.backend_task_worker import BackendTaskWorker
 
 
 class ActorViewerWindow(QDialog):
@@ -25,11 +26,15 @@ class ActorViewerWindow(QDialog):
         self.editing_actor_name = None
         self.editing_row = None
         self.action_buttons = {}
+        self.task_thread = None
+        self.task_worker = None
+        self._task_success_handler = None
+        self._task_error_title = ''
         self.init_ui()
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('作者库')
+        self.setWindowTitle('演员库')
         self.resize(1220, 540)
         self.setWindowModality(Qt.WindowModal)
 
@@ -37,31 +42,33 @@ class ActorViewerWindow(QDialog):
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入演员、作者ID、生日、年龄或补全状态实时筛选...')
+        self.search_input.setPlaceholderText('输入演员、作者 ID、生日、年龄或补全状态实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
-        btn_reset = QPushButton('选中重置')
-        btn_reset.clicked.connect(self.reset_selected_rows)
+        self.btn_reset = QPushButton('选中重置')
+        self.btn_reset.clicked.connect(self.reset_selected_rows)
 
-        btn_refresh = QPushButton('刷新数据')
-        btn_refresh.clicked.connect(self.load_data)
+        self.btn_refresh = QPushButton('刷新数据')
+        self.btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('实时筛选:'))
+        top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
-        top_layout.addWidget(btn_reset)
-        top_layout.addWidget(btn_refresh)
+        top_layout.addWidget(self.btn_reset)
+        top_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels([
-            '演员',
-            '作者ID',
-            '生日',
-            '年龄',
-            '补全状态',
-            '详情',
-            '操作',
-        ])
+        self.table.setHorizontalHeaderLabels(
+            [
+                '演员',
+                '作者 ID',
+                '生日',
+                '年龄',
+                '补全状态',
+                '详情',
+                '操作',
+            ]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -78,13 +85,15 @@ class ActorViewerWindow(QDialog):
         self.setLayout(layout)
 
     def load_data(self):
-        self.clear_edit_state()
-        self.table.setRowCount(0)
-        try:
-            self.rows = self.backend_client.list_actors()
-            self.render_rows(self.rows)
-        except Exception as exc:
-            print(f'读取作者库失败: {exc}')
+        search_text = self.search_input.text().strip()
+
+        def task():
+            rows = self.backend_client.list_actors(search_text)
+            return {
+                'rows': rows,
+            }
+
+        self._start_background_task(task, self._on_load_data_finished, '读取失败')
 
     def render_rows(self, rows):
         self.action_buttons = {}
@@ -153,22 +162,26 @@ class ActorViewerWindow(QDialog):
         viewer.exec_()
 
     def filter_data(self, text):
+        if self.task_thread is not None:
+            return
+
         self.clear_edit_state()
+        search_text = (text or '').strip()
+        if not search_text:
+            self.load_data()
+            return
+
         try:
-            self.rows = self.backend_client.list_actors(text)
+            self.rows = self.backend_client.list_actors(search_text)
             self.render_rows(self.rows)
         except Exception as exc:
-            print(f'筛选作者库失败: {exc}')
+            print(f'筛选演员库失败: {exc}')
 
     def clear_edit_state(self):
         self.editing_actor_name = None
         self.editing_row = None
 
     def refresh_current_view(self):
-        search_text = self.search_input.text().strip()
-        if search_text:
-            self.filter_data(search_text)
-            return
         self.load_data()
 
     def handle_edit_button(self, actor_name):
@@ -265,7 +278,7 @@ class ActorViewerWindow(QDialog):
         answer = QMessageBox.question(
             self,
             '确认删除',
-            f'确定删除演员 {actor_name} 吗？\n这会从作者库移除该演员，并清除对应的网页补全数据。',
+            f'确定删除演员 {actor_name} 吗？\n这会从演员库移除该演员，并清除对应的网页补全数据。',
         )
         if answer != QMessageBox.Yes:
             return
@@ -293,14 +306,17 @@ class ActorViewerWindow(QDialog):
         if answer != QMessageBox.Yes:
             return
 
-        try:
-            reset_count = self.backend_client.reset_actor_enrichments(actor_names)
-        except Exception as exc:
-            QMessageBox.critical(self, '重置失败', f'重置演员补全状态失败：\n{exc}')
-            return
+        search_text = self.search_input.text().strip()
 
-        self.load_data()
-        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')
+        def task():
+            reset_count = self.backend_client.reset_actor_enrichments(actor_names)
+            rows = self.backend_client.list_actors(search_text)
+            return {
+                'reset_count': reset_count,
+                'rows': rows,
+            }
+
+        self._start_background_task(task, self._on_reset_finished, '重置失败')
 
     def selected_actor_names(self):
         selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -310,3 +326,61 @@ class ActorViewerWindow(QDialog):
             if item and item.text().strip():
                 actor_names.append(item.text().strip())
         return actor_names
+
+    def _start_background_task(self, task, success_handler, error_title):
+        if self.task_thread is not None:
+            return False
+
+        self._set_busy(True)
+        self._task_success_handler = success_handler
+        self._task_error_title = str(error_title or '操作失败')
+        self.task_thread = QThread(self)
+        self.task_worker = BackendTaskWorker(task)
+        self.task_worker.moveToThread(self.task_thread)
+        self.task_thread.started.connect(self.task_worker.run)
+        self.task_worker.finished.connect(self._handle_task_finished)
+        self.task_worker.failed.connect(self._handle_task_failed)
+        self.task_worker.finished.connect(self.task_thread.quit)
+        self.task_worker.failed.connect(self.task_thread.quit)
+        self.task_thread.finished.connect(self._cleanup_task_thread)
+        self.task_thread.start()
+        return True
+
+    def _handle_task_finished(self, result):
+        handler = self._task_success_handler
+        self._task_success_handler = None
+        self._task_error_title = ''
+        if handler is not None:
+            handler(result)
+
+    def _handle_task_failed(self, message):
+        error_title = self._task_error_title or '操作失败'
+        self._task_success_handler = None
+        self._task_error_title = ''
+        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
+
+    def _cleanup_task_thread(self):
+        if self.task_worker is not None:
+            self.task_worker.deleteLater()
+        if self.task_thread is not None:
+            self.task_thread.deleteLater()
+        self.task_worker = None
+        self.task_thread = None
+        self._set_busy(False)
+
+    def _set_busy(self, busy):
+        self.search_input.setEnabled(not busy)
+        self.btn_reset.setEnabled(not busy)
+        self.btn_refresh.setEnabled(not busy)
+        self.table.setEnabled(not busy)
+        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
+
+    def _on_load_data_finished(self, result):
+        self.clear_edit_state()
+        self.rows = list((result or {}).get('rows', []) or [])
+        self.render_rows(self.rows)
+
+    def _on_reset_finished(self, result):
+        reset_count = int((result or {}).get('reset_count', 0) or 0)
+        self._on_load_data_finished(result)
+        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')

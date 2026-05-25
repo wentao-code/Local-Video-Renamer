@@ -63,10 +63,12 @@ class MovieAuthorResolver:
             processed_video_count += 1
 
             author = normalize_second_source_actor_text(resolution.get('author', ''))
+            status = resolution.get('status', UNENRICHED_STATUS)
             if author:
                 entry['author'] = author
+            if status == ENRICHED_STATUS:
                 success_video_count += 1
-            else:
+            elif status == FAILED_STATUS:
                 failed_video_count += 1
 
             if progress_callback is not None:
@@ -74,7 +76,7 @@ class MovieAuthorResolver:
                     {
                         'code': code,
                         'author': author,
-                        'status': resolution.get('status', UNENRICHED_STATUS),
+                        'status': status,
                         'processed_video_count': processed_video_count,
                         'success_video_count': success_video_count,
                         'failed_video_count': failed_video_count,
@@ -84,7 +86,7 @@ class MovieAuthorResolver:
             cached_rows[code] = {
                 'code': code,
                 'javtxt_actors': author,
-                'javtxt_enrichment_status': resolution.get('status', UNENRICHED_STATUS),
+                'javtxt_enrichment_status': status,
             }
 
         pending_video_count_after = self.count_pending_entries(normalized_entries, cached_rows=cached_rows)

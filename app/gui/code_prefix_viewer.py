@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.gui.backend_task_worker import BackendTaskWorker
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 
 
@@ -25,6 +26,10 @@ class CodePrefixViewerWindow(QDialog):
         self.editing_prefix = None
         self.editing_row = None
         self.action_buttons = {}
+        self.task_thread = None
+        self.task_worker = None
+        self._task_success_handler = None
+        self._task_error_title = ''
         self.init_ui()
         self.load_data()
 
@@ -40,29 +45,31 @@ class CodePrefixViewerWindow(QDialog):
         self.search_input.setPlaceholderText('输入番号前缀实时筛选，例如 AARM、IPX...')
         self.search_input.textChanged.connect(self.filter_data)
 
-        btn_reset = QPushButton('选中重置')
-        btn_reset.clicked.connect(self.reset_selected_rows)
+        self.btn_reset = QPushButton('选中重置')
+        self.btn_reset.clicked.connect(self.reset_selected_rows)
 
-        btn_refresh = QPushButton('刷新数据')
-        btn_refresh.clicked.connect(self.load_data)
+        self.btn_refresh = QPushButton('刷新数据')
+        self.btn_refresh.clicked.connect(self.load_data)
 
         top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
-        top_layout.addWidget(btn_reset)
-        top_layout.addWidget(btn_refresh)
+        top_layout.addWidget(self.btn_reset)
+        top_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
         self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            '番号',
-            '本地视频数',
-            '补全状态',
-            'AVFan作品数',
-            '最早发布日期',
-            '最晚发布日期',
-            '详情',
-            '操作',
-        ])
+        self.table.setHorizontalHeaderLabels(
+            [
+                '番号',
+                '本地视频数',
+                '补全状态',
+                'AVFan作品数',
+                '最早发布日期',
+                '最晚发布日期',
+                '详情',
+                '操作',
+            ]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -80,13 +87,15 @@ class CodePrefixViewerWindow(QDialog):
         self.setLayout(layout)
 
     def load_data(self):
-        self.clear_edit_state()
-        self.table.setRowCount(0)
-        try:
-            self.rows = self.backend_client.list_code_prefixes()
-            self.render_rows(self.rows)
-        except Exception as exc:
-            print(f'读取番号库失败: {exc}')
+        search_text = self.search_input.text().strip()
+
+        def task():
+            rows = self.backend_client.list_code_prefixes(search_text)
+            return {
+                'rows': rows,
+            }
+
+        self._start_background_task(task, self._on_load_data_finished, '读取失败')
 
     def render_rows(self, rows):
         self.action_buttons = {}
@@ -154,9 +163,17 @@ class CodePrefixViewerWindow(QDialog):
         viewer.exec_()
 
     def filter_data(self, text):
+        if self.task_thread is not None:
+            return
+
         self.clear_edit_state()
+        search_text = (text or '').strip()
+        if not search_text:
+            self.load_data()
+            return
+
         try:
-            self.rows = self.backend_client.list_code_prefixes(text)
+            self.rows = self.backend_client.list_code_prefixes(search_text)
             self.render_rows(self.rows)
         except Exception as exc:
             print(f'筛选番号库失败: {exc}')
@@ -166,10 +183,6 @@ class CodePrefixViewerWindow(QDialog):
         self.editing_row = None
 
     def refresh_current_view(self):
-        search_text = self.search_input.text().strip()
-        if search_text:
-            self.filter_data(search_text)
-            return
         self.load_data()
 
     def handle_edit_button(self, prefix):
@@ -268,8 +281,7 @@ class CodePrefixViewerWindow(QDialog):
             '确认删除',
             (
                 f'确定删除番号前缀 {prefix} 吗？\n'
-                '这会从番号库隐藏该前缀，并清除对应的网页补全数据，'
-                '不会删除本地视频记录。'
+                '这会从番号库隐藏该前缀，并清除对应的网页补全数据，不会删除本地视频记录。'
             ),
         )
         if answer != QMessageBox.Yes:
@@ -298,14 +310,17 @@ class CodePrefixViewerWindow(QDialog):
         if answer != QMessageBox.Yes:
             return
 
-        try:
-            reset_count = self.backend_client.reset_code_prefix_enrichments(prefixes)
-        except Exception as exc:
-            QMessageBox.critical(self, '重置失败', f'重置番号补全状态失败：\n{exc}')
-            return
+        search_text = self.search_input.text().strip()
 
-        self.load_data()
-        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个番号的补全状态。')
+        def task():
+            reset_count = self.backend_client.reset_code_prefix_enrichments(prefixes)
+            rows = self.backend_client.list_code_prefixes(search_text)
+            return {
+                'reset_count': reset_count,
+                'rows': rows,
+            }
+
+        self._start_background_task(task, self._on_reset_finished, '重置失败')
 
     def selected_prefixes(self):
         selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -315,3 +330,61 @@ class CodePrefixViewerWindow(QDialog):
             if item and item.text().strip():
                 prefixes.append(item.text().strip())
         return prefixes
+
+    def _start_background_task(self, task, success_handler, error_title):
+        if self.task_thread is not None:
+            return False
+
+        self._set_busy(True)
+        self._task_success_handler = success_handler
+        self._task_error_title = str(error_title or '操作失败')
+        self.task_thread = QThread(self)
+        self.task_worker = BackendTaskWorker(task)
+        self.task_worker.moveToThread(self.task_thread)
+        self.task_thread.started.connect(self.task_worker.run)
+        self.task_worker.finished.connect(self._handle_task_finished)
+        self.task_worker.failed.connect(self._handle_task_failed)
+        self.task_worker.finished.connect(self.task_thread.quit)
+        self.task_worker.failed.connect(self.task_thread.quit)
+        self.task_thread.finished.connect(self._cleanup_task_thread)
+        self.task_thread.start()
+        return True
+
+    def _handle_task_finished(self, result):
+        handler = self._task_success_handler
+        self._task_success_handler = None
+        self._task_error_title = ''
+        if handler is not None:
+            handler(result)
+
+    def _handle_task_failed(self, message):
+        error_title = self._task_error_title or '操作失败'
+        self._task_success_handler = None
+        self._task_error_title = ''
+        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
+
+    def _cleanup_task_thread(self):
+        if self.task_worker is not None:
+            self.task_worker.deleteLater()
+        if self.task_thread is not None:
+            self.task_thread.deleteLater()
+        self.task_worker = None
+        self.task_thread = None
+        self._set_busy(False)
+
+    def _set_busy(self, busy):
+        self.search_input.setEnabled(not busy)
+        self.btn_reset.setEnabled(not busy)
+        self.btn_refresh.setEnabled(not busy)
+        self.table.setEnabled(not busy)
+        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
+
+    def _on_load_data_finished(self, result):
+        self.clear_edit_state()
+        self.rows = list((result or {}).get('rows', []) or [])
+        self.render_rows(self.rows)
+
+    def _on_reset_finished(self, result):
+        reset_count = int((result or {}).get('reset_count', 0) or 0)
+        self._on_load_data_finished(result)
+        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个番号的补全状态。')
