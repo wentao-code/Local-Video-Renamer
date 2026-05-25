@@ -234,18 +234,26 @@ class ActorViewerWindow(QDialog):
             QMessageBox.warning(self, '提示', '演员名称不能为空')
             return
 
-        try:
-            self.backend_client.rename_actor(old_name, new_name)
-        except Exception as exc:
-            item.setText(old_name)
-            self.reset_row_button_text(old_name)
-            self.clear_edit_state()
-            QMessageBox.critical(self, '修改失败', f'修改演员名称失败：\n{exc}')
-            return
-
         self.clear_edit_state()
-        self.refresh_current_view()
-        QMessageBox.information(self, '修改完成', f'已将演员 {old_name} 修改为 {new_name}。')
+
+        def task():
+            self.backend_client.rename_actor(old_name, new_name)
+            rows = self.backend_client.list_actors(self.search_input.text().strip())
+            return {
+                'rows': rows,
+                'old_name': old_name,
+                'new_name': new_name,
+            }
+
+        def on_success(result):
+            self._on_load_data_finished(result)
+            QMessageBox.information(
+                self,
+                '修改完成',
+                f"已将演员 {result.get('old_name', old_name)} 修改为 {result.get('new_name', new_name)}。",
+            )
+
+        self._start_background_task(task, on_success, '修改失败')
 
     def reset_row_button_text(self, actor_name):
         button = self.action_buttons.get(actor_name, {}).get('edit')
@@ -283,14 +291,19 @@ class ActorViewerWindow(QDialog):
         if answer != QMessageBox.Yes:
             return
 
-        try:
+        def task():
             self.backend_client.delete_actor(actor_name)
-        except Exception as exc:
-            QMessageBox.critical(self, '删除失败', f'删除演员失败：\n{exc}')
-            return
+            rows = self.backend_client.list_actors(self.search_input.text().strip())
+            return {
+                'rows': rows,
+                'actor_name': actor_name,
+            }
 
-        self.refresh_current_view()
-        QMessageBox.information(self, '删除完成', f'已删除演员 {actor_name}。')
+        def on_success(result):
+            self._on_load_data_finished(result)
+            QMessageBox.information(self, '删除完成', f"已删除演员 {result.get('actor_name', actor_name)}。")
+
+        self._start_background_task(task, on_success, '删除失败')
 
     def reset_selected_rows(self):
         actor_names = self.selected_actor_names()
@@ -384,3 +397,10 @@ class ActorViewerWindow(QDialog):
         reset_count = int((result or {}).get('reset_count', 0) or 0)
         self._on_load_data_finished(result)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')
+
+    def closeEvent(self, event):
+        if self.task_thread and self.task_thread.isRunning():
+            QMessageBox.information(self, '操作进行中', '请等待当前操作完成后再关闭窗口。')
+            event.ignore()
+            return
+        super().closeEvent(event)

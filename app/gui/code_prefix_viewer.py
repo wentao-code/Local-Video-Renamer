@@ -235,18 +235,26 @@ class CodePrefixViewerWindow(QDialog):
             QMessageBox.warning(self, '提示', '番号前缀不能为空')
             return
 
-        try:
-            self.backend_client.rename_code_prefix(old_prefix, new_prefix)
-        except Exception as exc:
-            item.setText(old_prefix)
-            self.reset_row_button_text(old_prefix)
-            self.clear_edit_state()
-            QMessageBox.critical(self, '修改失败', f'修改番号前缀失败：\n{exc}')
-            return
-
         self.clear_edit_state()
-        self.refresh_current_view()
-        QMessageBox.information(self, '修改完成', f'已将番号前缀 {old_prefix} 修改为 {new_prefix}。')
+
+        def task():
+            self.backend_client.rename_code_prefix(old_prefix, new_prefix)
+            rows = self.backend_client.list_code_prefixes(self.search_input.text().strip())
+            return {
+                'rows': rows,
+                'old_prefix': old_prefix,
+                'new_prefix': new_prefix,
+            }
+
+        def on_success(result):
+            self._on_load_data_finished(result)
+            QMessageBox.information(
+                self,
+                '修改完成',
+                f"已将番号前缀 {result.get('old_prefix', old_prefix)} 修改为 {result.get('new_prefix', new_prefix)}。",
+            )
+
+        self._start_background_task(task, on_success, '修改失败')
 
     def reset_row_button_text(self, prefix):
         button = self.action_buttons.get(prefix, {}).get('edit')
@@ -287,14 +295,19 @@ class CodePrefixViewerWindow(QDialog):
         if answer != QMessageBox.Yes:
             return
 
-        try:
+        def task():
             self.backend_client.delete_code_prefix(prefix)
-        except Exception as exc:
-            QMessageBox.critical(self, '删除失败', f'删除番号前缀失败：\n{exc}')
-            return
+            rows = self.backend_client.list_code_prefixes(self.search_input.text().strip())
+            return {
+                'rows': rows,
+                'prefix': prefix,
+            }
 
-        self.refresh_current_view()
-        QMessageBox.information(self, '删除完成', f'已删除番号前缀 {prefix}。')
+        def on_success(result):
+            self._on_load_data_finished(result)
+            QMessageBox.information(self, '删除完成', f"已删除番号前缀 {result.get('prefix', prefix)}。")
+
+        self._start_background_task(task, on_success, '删除失败')
 
     def reset_selected_rows(self):
         prefixes = self.selected_prefixes()
@@ -388,3 +401,10 @@ class CodePrefixViewerWindow(QDialog):
         reset_count = int((result or {}).get('reset_count', 0) or 0)
         self._on_load_data_finished(result)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个番号的补全状态。')
+
+    def closeEvent(self, event):
+        if self.task_thread and self.task_thread.isRunning():
+            QMessageBox.information(self, '操作进行中', '请等待当前操作完成后再关闭窗口。')
+            event.ignore()
+            return
+        super().closeEvent(event)

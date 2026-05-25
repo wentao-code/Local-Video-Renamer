@@ -28,6 +28,7 @@ from app.core.local_video_labels import (
 )
 from app.core.project_paths import PROJECT_ROOT
 from app.gui.actor_viewer import ActorViewerWindow
+from app.gui.backend_task_worker import BackendTaskWorker
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
@@ -145,6 +146,10 @@ class VidNormApp(QWidget):
         self.enrichment_progress_timer.timeout.connect(self.refresh_enrichment_progress)
         self.login_thread = None
         self.login_worker = None
+        self.ui_task_thread = None
+        self.ui_task_worker = None
+        self.ui_task_success_handler = None
+        self.ui_task_error_title = ''
 
         self.ensure_backend_running()
         self.init_ui()
@@ -190,15 +195,15 @@ class VidNormApp(QWidget):
         self.path_input.setPlaceholderText('请选择包含视频的本地文件夹...')
         self.path_input.setReadOnly(True)
 
-        btn_browse = QPushButton('选择文件夹')
-        btn_browse.clicked.connect(self.browse_folder)
-        btn_path_library = QPushButton('路径库')
-        btn_path_library.clicked.connect(self.show_path_library)
+        self.btn_browse = QPushButton('选择文件夹')
+        self.btn_browse.clicked.connect(self.browse_folder)
+        self.btn_path_library = QPushButton('路径库')
+        self.btn_path_library.clicked.connect(self.show_path_library)
 
         top_layout.addWidget(QLabel('本地目录:'))
         top_layout.addWidget(self.path_input)
-        top_layout.addWidget(btn_path_library)
-        top_layout.addWidget(btn_browse)
+        top_layout.addWidget(self.btn_path_library)
+        top_layout.addWidget(self.btn_browse)
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
@@ -306,63 +311,31 @@ class VidNormApp(QWidget):
             QMessageBox.warning(self, '错误', '请先选择文件夹')
             return False
 
-        try:
-            result = self.backend_client.scan_folder(folder_path)
-        except Exception as exc:
-            QMessageBox.warning(self, '错误', str(exc))
-            return False
+        def task():
+            return {
+                'scan_result': self.backend_client.scan_folder(folder_path),
+                'show_message': bool(show_message),
+            }
 
-        self.pending_renames = result.get('plans', [])
-        self.table.setRowCount(0)
-
-        has_files_to_rename = False
-        has_files_to_import = False
-
-        for row, plan in enumerate(self.pending_renames):
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(plan.get('old_name', '')))
-            self.table.setItem(row, 1, QTableWidgetItem(plan.get('preview_name', '')))
-
-            row_status = plan.get('row_status', '')
-            status_item = QTableWidgetItem(row_status)
-            status_item.setForeground(self._status_color(row_status))
-            self.table.setItem(row, 2, status_item)
-
-            has_files_to_rename = has_files_to_rename or bool(plan.get('can_rename') and plan.get('needs_rename'))
-            has_files_to_import = has_files_to_import or bool(plan.get('import_required'))
-
-        self.btn_execute.setEnabled(has_files_to_rename)
-        self.btn_import_db.setEnabled(has_files_to_import)
-
-        if show_message:
-            QMessageBox.information(
-                self,
-                '扫描完成',
-                (
-                    f"共识别到 {result.get('count', 0)} 个视频。\n"
-                    f"待导入: {result.get('import_count', 0)} 个\n"
-                    f"待重命名: {result.get('rename_count', 0)} 个"
-                ),
-            )
+        self._start_ui_task(task, self._on_scan_finished, '错误')
         return True
 
     def import_to_database(self):
         if not self.pending_renames:
             return
 
-        try:
-            result = self.backend_client.import_videos(self.pending_renames)
-        except Exception as exc:
-            QMessageBox.critical(self, '错误', f'导入视频库失败：\n{exc}')
-            return
+        folder_path = self.path_input.text()
+        plans = list(self.pending_renames)
 
-        success_count = result.get('success_count', 0)
-        self.refresh_scan_results(show_message=False)
-        QMessageBox.information(
-            self,
-            '导入完成',
-            f'成功将 {success_count} 个缺失番号写入视频库，可用于后续补全。',
-        )
+        def task():
+            result = self.backend_client.import_videos(plans)
+            scan_result = self.backend_client.scan_folder(folder_path)
+            return {
+                'success_count': result.get('success_count', 0),
+                'scan_result': scan_result,
+            }
+
+        self._start_ui_task(task, self._on_import_finished, '错误')
 
     def execute_rename(self):
         if not self.pending_renames:
@@ -377,15 +350,17 @@ class VidNormApp(QWidget):
             QMessageBox.information(self, '提示', '当前没有可重命名的视频。')
             return
 
-        try:
-            response = self.backend_client.execute_renames(renamable_plans)
-        except Exception as exc:
-            QMessageBox.critical(self, '错误', f'执行重命名失败：\n{exc}')
-            return
+        folder_path = self.path_input.text()
 
-        success = response.get('success_count', 0)
-        self.refresh_scan_results(show_message=False)
-        QMessageBox.information(self, '结果', f'成功重命名 {success} 个文件。')
+        def task():
+            response = self.backend_client.execute_renames(renamable_plans)
+            scan_result = self.backend_client.scan_folder(folder_path)
+            return {
+                'success_count': response.get('success_count', 0),
+                'scan_result': scan_result,
+            }
+
+        self._start_ui_task(task, self._on_execute_rename_finished, '错误')
 
     def auto_login(self):
         if self.login_thread is not None:
@@ -1029,18 +1004,124 @@ class VidNormApp(QWidget):
         if answer != QMessageBox.Yes:
             return
 
-        self.btn_reset_browser_profile.setEnabled(False)
-        try:
-            result = self.backend_client.reset_browser_profile()
+        self._start_ui_task(
+            lambda: self.backend_client.reset_browser_profile(),
+            self._on_reset_browser_profile_finished,
+            '重置失败',
+        )
+
+    def _start_ui_task(self, task, success_handler, error_title):
+        if self.ui_task_thread is not None:
+            QMessageBox.information(self, '任务进行中', '请等待当前操作完成后再执行新的按钮操作。')
+            return False
+
+        self._set_ui_task_busy(True)
+        self.ui_task_success_handler = success_handler
+        self.ui_task_error_title = str(error_title or '操作失败')
+        self.ui_task_thread = QThread(self)
+        self.ui_task_worker = BackendTaskWorker(task)
+        self.ui_task_worker.moveToThread(self.ui_task_thread)
+        self.ui_task_thread.started.connect(self.ui_task_worker.run)
+        self.ui_task_worker.finished.connect(self._handle_ui_task_finished)
+        self.ui_task_worker.failed.connect(self._handle_ui_task_failed)
+        self.ui_task_worker.finished.connect(self.ui_task_thread.quit)
+        self.ui_task_worker.failed.connect(self.ui_task_thread.quit)
+        self.ui_task_thread.finished.connect(self._cleanup_ui_task_thread)
+        self.ui_task_thread.start()
+        return True
+
+    def _handle_ui_task_finished(self, result):
+        handler = self.ui_task_success_handler
+        self.ui_task_success_handler = None
+        self.ui_task_error_title = ''
+        if handler is not None:
+            handler(result)
+
+    def _handle_ui_task_failed(self, message):
+        error_title = self.ui_task_error_title or '操作失败'
+        self.ui_task_success_handler = None
+        self.ui_task_error_title = ''
+        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
+
+    def _cleanup_ui_task_thread(self):
+        if self.ui_task_worker is not None:
+            self.ui_task_worker.deleteLater()
+        if self.ui_task_thread is not None:
+            self.ui_task_thread.deleteLater()
+        self.ui_task_worker = None
+        self.ui_task_thread = None
+        self._set_ui_task_busy(False)
+
+    def _set_ui_task_busy(self, busy):
+        self.btn_browse.setEnabled(not busy)
+        self.btn_path_library.setEnabled(not busy)
+        self.btn_scan.setEnabled(not busy)
+        self.btn_import_db.setEnabled(not busy and any(bool(plan.get('import_required')) for plan in self.pending_renames))
+        self.btn_execute.setEnabled(
+            not busy and any(bool(plan.get('can_rename') and plan.get('needs_rename')) for plan in self.pending_renames)
+        )
+        self.btn_reset_browser_profile.setEnabled(not busy)
+        self.table.setEnabled(not busy)
+        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
+
+    def _apply_scan_result(self, result):
+        result = dict(result or {})
+        self.pending_renames = result.get('plans', [])
+        self.table.setRowCount(0)
+
+        has_files_to_rename = False
+        has_files_to_import = False
+        for row, plan in enumerate(self.pending_renames):
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(plan.get('old_name', '')))
+            self.table.setItem(row, 1, QTableWidgetItem(plan.get('preview_name', '')))
+
+            row_status = plan.get('row_status', '')
+            status_item = QTableWidgetItem(row_status)
+            status_item.setForeground(self._status_color(row_status))
+            self.table.setItem(row, 2, status_item)
+
+            has_files_to_rename = has_files_to_rename or bool(plan.get('can_rename') and plan.get('needs_rename'))
+            has_files_to_import = has_files_to_import or bool(plan.get('import_required'))
+
+        self.btn_execute.setEnabled(has_files_to_rename)
+        self.btn_import_db.setEnabled(has_files_to_import)
+
+    def _on_scan_finished(self, payload):
+        scan_result = dict((payload or {}).get('scan_result', {}) or {})
+        self._apply_scan_result(scan_result)
+        if (payload or {}).get('show_message'):
             QMessageBox.information(
                 self,
-                '重置完成',
-                f"{result.get('message', '已重置网页登录状态。')}\n\n目录: {result.get('profile_dir', '')}",
+                '扫描完成',
+                (
+                    f"共识别到 {scan_result.get('count', 0)} 个视频。\n"
+                    f"待导入: {scan_result.get('import_count', 0)} 个\n"
+                    f"待重命名: {scan_result.get('rename_count', 0)} 个"
+                ),
             )
-        except Exception as exc:
-            QMessageBox.critical(self, '重置失败', str(exc))
-        finally:
-            self.btn_reset_browser_profile.setEnabled(True)
+
+    def _on_import_finished(self, payload):
+        self._apply_scan_result((payload or {}).get('scan_result', {}))
+        success_count = int((payload or {}).get('success_count', 0) or 0)
+        QMessageBox.information(
+            self,
+            '导入完成',
+            f'成功将 {success_count} 个缺失番号写入视频库，可用于后续补全。',
+        )
+
+    def _on_execute_rename_finished(self, payload):
+        self._apply_scan_result((payload or {}).get('scan_result', {}))
+        success_count = int((payload or {}).get('success_count', 0) or 0)
+        QMessageBox.information(self, '结果', f'成功重命名 {success_count} 个文件。')
+
+    def _on_reset_browser_profile_finished(self, result):
+        result = dict(result or {})
+        QMessageBox.information(
+            self,
+            '重置完成',
+            f"{result.get('message', '已重置网页登录状态。')}\n\n目录: {result.get('profile_dir', '')}",
+        )
 
     def show_data_center(self):
         viewer = DataCenterWindow(backend_client=self.backend_client, parent=self)
@@ -1064,6 +1145,10 @@ class VidNormApp(QWidget):
             self.set_current_folder(viewer.selected_path)
 
     def closeEvent(self, event):
+        if self.ui_task_thread and self.ui_task_thread.isRunning():
+            QMessageBox.information(self, '操作进行中', '请等待当前按钮操作完成后再关闭窗口。')
+            event.ignore()
+            return
         if self.enrichment_thread and self.enrichment_thread.isRunning():
             QMessageBox.information(self, '补全进行中', '请等待补全任务结束后再关闭窗口。')
             event.ignore()

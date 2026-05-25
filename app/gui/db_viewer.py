@@ -266,3 +266,10 @@ class DatabaseViewerWindow(QDialog):
         reset_count = int((result or {}).get('reset_count', 0) or 0)
         self._on_load_data_finished(result)
         QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个视频的补全状态。')
+
+    def closeEvent(self, event):
+        if self.task_thread and self.task_thread.isRunning():
+            QMessageBox.information(self, '操作进行中', '请等待当前操作完成后再关闭窗口。')
+            event.ignore()
+            return
+        super().closeEvent(event)

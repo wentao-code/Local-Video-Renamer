@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -12,6 +12,8 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from app.gui.backend_task_worker import BackendTaskWorker
+
 
 class PathLibraryWindow(QDialog):
     def __init__(self, backend_client, parent=None):
@@ -20,45 +22,51 @@ class PathLibraryWindow(QDialog):
         self.selected_path = ''
         self.paths = []
         self.summary = {}
+        self.task_thread = None
+        self.task_worker = None
+        self._task_success_handler = None
+        self._task_error_title = ''
         self.init_ui()
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('📂 路径库')
+        self.setWindowTitle('路径库')
         self.resize(900, 460)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
-        btn_add = QPushButton('➕ 添加')
-        btn_add.clicked.connect(self.add_path)
-        btn_delete = QPushButton('🗑 删除')
-        btn_delete.clicked.connect(self.delete_selected_path)
-        btn_use = QPushButton('✅ 使用选中路径')
-        btn_use.clicked.connect(self.use_selected_path)
-        btn_refresh = QPushButton('🔄 刷新')
-        btn_refresh.clicked.connect(self.load_data)
+        self.btn_add = QPushButton('添加')
+        self.btn_add.clicked.connect(self.add_path)
+        self.btn_delete = QPushButton('删除')
+        self.btn_delete.clicked.connect(self.delete_selected_path)
+        self.btn_use = QPushButton('使用选中路径')
+        self.btn_use.clicked.connect(self.use_selected_path)
+        self.btn_refresh = QPushButton('刷新')
+        self.btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('已保存路径:'))
+        top_layout.addWidget(QLabel('已保存路径'))
         top_layout.addStretch()
-        top_layout.addWidget(btn_add)
-        top_layout.addWidget(btn_delete)
-        top_layout.addWidget(btn_use)
-        top_layout.addWidget(btn_refresh)
+        top_layout.addWidget(self.btn_add)
+        top_layout.addWidget(self.btn_delete)
+        top_layout.addWidget(self.btn_use)
+        top_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
         self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels([
-            'ID',
-            '入口',
-            '路径',
-            '总容量',
-            '空闲空间',
-            '已用空间',
-            '使用率',
-            '创建时间',
-        ])
+        self.table.setHorizontalHeaderLabels(
+            [
+                'ID',
+                '入口',
+                '路径',
+                '总容量',
+                '剩余空间',
+                '已用空间',
+                '使用率',
+                '创建时间',
+            ]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
@@ -76,13 +84,14 @@ class PathLibraryWindow(QDialog):
         self.setLayout(layout)
 
     def load_data(self):
-        try:
+        def task():
             result = self.backend_client.get_path_library()
-            self.paths = result.get('paths', [])
-            self.summary = result.get('summary', {})
-            self.render_rows(self.paths, self.summary)
-        except Exception as exc:
-            QMessageBox.critical(self, '错误', f'读取路径库失败：\n{str(exc)}')
+            return {
+                'paths': result.get('paths', []),
+                'summary': result.get('summary', {}),
+            }
+
+        self._start_background_task(task, self._on_load_data_finished, '读取失败')
 
     def render_rows(self, paths, summary):
         self.table.setRowCount(0)
@@ -91,11 +100,11 @@ class PathLibraryWindow(QDialog):
             self.table.insertRow(row_idx)
 
             if row_data.get('exists'):
-                entrance = '🔌 U盘入口'
+                entrance = 'U盘入口'
             elif row_data.get('uses_last_snapshot'):
-                entrance = '⚠️ 未连接（上次记录）'
+                entrance = '未连接（上次记录）'
             else:
-                entrance = '⚠️ 未连接'
+                entrance = '未连接'
             usage_percent = row_data.get('usage_percent', '')
             usage_text = f'{usage_percent}%' if usage_percent != '' else ''
             values = (
@@ -145,11 +154,15 @@ class PathLibraryWindow(QDialog):
         if not folder_path:
             return
 
-        try:
+        def task():
             self.backend_client.add_path(folder_path)
-            self.load_data()
-        except Exception as exc:
-            QMessageBox.warning(self, '错误', f'添加路径失败：\n{str(exc)}')
+            result = self.backend_client.get_path_library()
+            return {
+                'paths': result.get('paths', []),
+                'summary': result.get('summary', {}),
+            }
+
+        self._start_background_task(task, self._on_load_data_finished, '添加失败')
 
     def delete_selected_path(self):
         row = self.current_row()
@@ -167,11 +180,15 @@ class PathLibraryWindow(QDialog):
         if confirmed != QMessageBox.Yes:
             return
 
-        try:
+        def task():
             self.backend_client.delete_path(int(path_id))
-            self.load_data()
-        except Exception as exc:
-            QMessageBox.warning(self, '错误', f'删除路径失败：\n{str(exc)}')
+            result = self.backend_client.get_path_library()
+            return {
+                'paths': result.get('paths', []),
+                'summary': result.get('summary', {}),
+            }
+
+        self._start_background_task(task, self._on_load_data_finished, '删除失败')
 
     def use_selected_path(self):
         row = self.current_row()
@@ -191,3 +208,64 @@ class PathLibraryWindow(QDialog):
         if not id_item or not id_item.text().isdigit():
             return -1
         return row
+
+    def _start_background_task(self, task, success_handler, error_title):
+        if self.task_thread is not None:
+            return False
+
+        self._set_busy(True)
+        self._task_success_handler = success_handler
+        self._task_error_title = str(error_title or '操作失败')
+        self.task_thread = QThread(self)
+        self.task_worker = BackendTaskWorker(task)
+        self.task_worker.moveToThread(self.task_thread)
+        self.task_thread.started.connect(self.task_worker.run)
+        self.task_worker.finished.connect(self._handle_task_finished)
+        self.task_worker.failed.connect(self._handle_task_failed)
+        self.task_worker.finished.connect(self.task_thread.quit)
+        self.task_worker.failed.connect(self.task_thread.quit)
+        self.task_thread.finished.connect(self._cleanup_task_thread)
+        self.task_thread.start()
+        return True
+
+    def _handle_task_finished(self, result):
+        handler = self._task_success_handler
+        self._task_success_handler = None
+        self._task_error_title = ''
+        if handler is not None:
+            handler(result)
+
+    def _handle_task_failed(self, message):
+        error_title = self._task_error_title or '操作失败'
+        self._task_success_handler = None
+        self._task_error_title = ''
+        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
+
+    def _cleanup_task_thread(self):
+        if self.task_worker is not None:
+            self.task_worker.deleteLater()
+        if self.task_thread is not None:
+            self.task_thread.deleteLater()
+        self.task_worker = None
+        self.task_thread = None
+        self._set_busy(False)
+
+    def _set_busy(self, busy):
+        self.btn_add.setEnabled(not busy)
+        self.btn_delete.setEnabled(not busy)
+        self.btn_use.setEnabled(not busy)
+        self.btn_refresh.setEnabled(not busy)
+        self.table.setEnabled(not busy)
+        self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
+
+    def _on_load_data_finished(self, result):
+        self.paths = list((result or {}).get('paths', []) or [])
+        self.summary = dict((result or {}).get('summary', {}) or {})
+        self.render_rows(self.paths, self.summary)
+
+    def closeEvent(self, event):
+        if self.task_thread and self.task_thread.isRunning():
+            QMessageBox.information(self, '操作进行中', '请等待当前操作完成后再关闭窗口。')
+            event.ignore()
+            return
+        super().closeEvent(event)
