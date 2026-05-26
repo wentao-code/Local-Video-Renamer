@@ -34,6 +34,7 @@ from app.core.enrichment_targets import (
     VIDEO_LIBRARY_TARGET,
 )
 from app.core.project_paths import ENRICHMENT_SETTINGS_FILE
+from app.gui.i18n import tr
 
 
 SUPPORTED_SOURCE_KEYS = (
@@ -217,7 +218,7 @@ class EnrichmentDialog(QDialog):
         self.current_combo_key = DEFAULT_COMBO_KEY
         self.selected_source_by_target = clone_default_selected_sources()
         self.target_settings = clone_default_target_settings()
-        self.setWindowTitle('补全信息')
+        self.setWindowTitle(tr('enrichment.dialog.title'))
         self.init_ui()
         self.apply_saved_settings(load_saved_settings())
 
@@ -225,14 +226,14 @@ class EnrichmentDialog(QDialog):
         layout = QVBoxLayout()
         form_layout = QFormLayout()
 
-        target_group = QGroupBox('抓取目标')
+        target_group = QGroupBox(tr('enrichment.dialog.target_group'))
         target_layout = QHBoxLayout()
         self.target_button_group = QButtonGroup(self)
         self.target_button_group.setExclusive(True)
 
-        self.video_target_button = QRadioButton('视频库')
-        self.code_prefix_target_button = QRadioButton('番号库')
-        self.actor_target_button = QRadioButton('演员库')
+        self.video_target_button = QRadioButton(tr('enrichment.dialog.video_library'))
+        self.code_prefix_target_button = QRadioButton(tr('enrichment.dialog.code_prefix_library'))
+        self.actor_target_button = QRadioButton(tr('enrichment.dialog.actor_library'))
 
         self.target_button_group.addButton(self.video_target_button)
         self.target_button_group.addButton(self.code_prefix_target_button)
@@ -244,13 +245,13 @@ class EnrichmentDialog(QDialog):
         target_layout.addStretch()
         target_group.setLayout(target_layout)
 
-        source_group = QGroupBox('补全来源')
+        source_group = QGroupBox(tr('enrichment.dialog.source_group'))
         source_layout = QHBoxLayout()
         self.source_button_group = QButtonGroup(self)
         self.source_button_group.setExclusive(True)
-        self.avfan_source_button = QRadioButton('天限阁')
-        self.javtxt_source_button = QRadioButton('辛聚谷')
-        self.javtxt_source_button.setToolTip('辛聚谷用于补全视频标题、演员与第二套视频 ID。')
+        self.avfan_source_button = QRadioButton(tr('enrichment.dialog.avfan_source'))
+        self.javtxt_source_button = QRadioButton(tr('enrichment.dialog.javtxt_source'))
+        self.javtxt_source_button.setToolTip(tr('enrichment.dialog.javtxt_tooltip'))
         self.source_button_group.addButton(self.avfan_source_button)
         self.source_button_group.addButton(self.javtxt_source_button)
         source_layout.addWidget(self.avfan_source_button)
@@ -258,12 +259,12 @@ class EnrichmentDialog(QDialog):
         source_layout.addStretch()
         source_group.setLayout(source_layout)
 
-        combo_group = QGroupBox('组合任务')
+        combo_group = QGroupBox(tr('enrichment.dialog.combo_group'))
         combo_layout = QHBoxLayout()
         self.combo_button_group = QButtonGroup(self)
         self.combo_button_group.setExclusive(True)
-        self.kan_shui_button = QRadioButton('坎水')
-        self.fu_shui_button = QRadioButton('府水')
+        self.kan_shui_button = QRadioButton(tr('enrichment.dialog.kan_shui'))
+        self.fu_shui_button = QRadioButton(tr('enrichment.dialog.fu_shui'))
         self.combo_button_group.addButton(self.kan_shui_button)
         self.combo_button_group.addButton(self.fu_shui_button)
         combo_layout.addWidget(self.kan_shui_button)
@@ -302,24 +303,30 @@ class EnrichmentDialog(QDialog):
 
         self.interval_minutes_input = QSpinBox()
         self.interval_minutes_input.setRange(1, 1440)
-        self.interval_minutes_input.setSuffix(' 分钟')
+        self.interval_minutes_input.setSuffix(tr('enrichment.dialog.minutes_suffix'))
 
-        self.show_browser_checkbox = QCheckBox('显示浏览器窗口')
-        self.cooldown_checkbox = QCheckBox('冷却 3 分钟后再搜索')
+        self.show_browser_checkbox = QCheckBox(tr('enrichment.dialog.show_browser'))
+        self.cooldown_checkbox = QCheckBox(tr('enrichment.dialog.cooldown'))
 
-        form_layout.addRow('本次补全数量:', self.limit_input)
-        form_layout.addRow('每批补全数量:', self.batch_limit_input)
-        form_layout.addRow('批次间隔:', self.interval_minutes_input)
+        form_layout.addRow(tr('enrichment.dialog.limit'), self.limit_input)
+        form_layout.addRow(tr('enrichment.dialog.batch_limit'), self.batch_limit_input)
+        form_layout.addRow(tr('enrichment.dialog.batch_interval'), self.interval_minutes_input)
         form_layout.addRow('', self.show_browser_checkbox)
         form_layout.addRow('', self.cooldown_checkbox)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.batch_button = buttons.addButton('分批补全', QDialogButtonBox.ActionRole)
-        self.combo_single_button = buttons.addButton('单次组合任务下发', QDialogButtonBox.ActionRole)
-        self.combo_batch_button = buttons.addButton('批次组合任务下发', QDialogButtonBox.ActionRole)
-        self.save_button = buttons.addButton('保存配置', QDialogButtonBox.ActionRole)
+        self.batch_button = buttons.addButton(tr('enrichment.dialog.batch_action'), QDialogButtonBox.ActionRole)
+        self.combo_single_button = buttons.addButton(
+            tr('enrichment.dialog.combo_single_action'),
+            QDialogButtonBox.ActionRole,
+        )
+        self.combo_batch_button = buttons.addButton(
+            tr('enrichment.dialog.combo_batch_action'),
+            QDialogButtonBox.ActionRole,
+        )
+        self.save_button = buttons.addButton(tr('enrichment.dialog.save_action'), QDialogButtonBox.ActionRole)
         ok_button = buttons.button(QDialogButtonBox.Ok)
-        ok_button.setText('开始补全')
+        ok_button.setText(tr('enrichment.dialog.start'))
 
         buttons.accepted.connect(self.accept_single)
         buttons.rejected.connect(self.reject)
@@ -557,13 +564,13 @@ class EnrichmentDialog(QDialog):
                 self.selected_combo_key(),
             )
         except Exception as exc:
-            QMessageBox.critical(self, '保存失败', f'无法保存补全配置：\n{exc}')
+            QMessageBox.critical(self, tr('common.save_failed'), tr('enrichment.dialog.save_failed', error=exc))
             return
 
         QMessageBox.information(
             self,
-            '保存成功',
-            f'已保存当前库/来源配置和组合策略到：\n{ENRICHMENT_SETTINGS_FILE}',
+            tr('enrichment.dialog.save_success'),
+            tr('enrichment.dialog.save_success_message', path=ENRICHMENT_SETTINGS_FILE),
         )
 
     @staticmethod

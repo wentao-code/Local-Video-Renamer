@@ -1,5 +1,7 @@
 from PyQt5.QtWidgets import QFrame, QLabel, QProgressBar, QVBoxLayout
 
+from app.gui.i18n import tr
+
 
 class SummaryCard(QFrame):
     def __init__(self, title, parent=None):
@@ -12,8 +14,16 @@ class SummaryCard(QFrame):
         layout.setSpacing(6)
 
         self.title_label = QLabel(title)
-        self.count_label = QLabel('已补全 0 / 0')
-        self.detail_label = QLabel('待补全 0 | 失败 0 | 无结果 0')
+        self.count_label = QLabel(tr('enrichment.summary.count', count_label=tr('enrichment.summary.count_default'), enriched_count=0, total_count=0))
+        self.detail_label = QLabel(
+            tr(
+                'enrichment.summary.detail_full',
+                pending_label=tr('enrichment.summary.pending_default'),
+                pending_count=0,
+                failed_count=0,
+                no_search_count=0,
+            )
+        )
         self.live_label = QLabel('')
         self.live_label.hide()
         self.progress_bar = QProgressBar()
@@ -34,15 +44,36 @@ class SummaryCard(QFrame):
         failed_count = int(summary.get('failed_count', 0) or 0)
         no_search_count = int(summary.get('no_search_count', 0) or 0)
         progress_percent = float(summary.get('progress_percent', 0) or 0)
-        count_label = str(summary.get('count_label', '') or '已补全')
-        pending_label = str(summary.get('pending_label', '') or '待补全')
+        count_label = str(summary.get('count_label', '') or tr('enrichment.summary.count_default'))
+        pending_label = str(summary.get('pending_label', '') or tr('enrichment.summary.pending_default'))
 
         self.title_label.setText(str(summary.get('label', '')))
-        self.count_label.setText(f'{count_label} {enriched_count} / {total_count}')
+        self.count_label.setText(
+            tr(
+                'enrichment.summary.count',
+                count_label=count_label,
+                enriched_count=enriched_count,
+                total_count=total_count,
+            )
+        )
         if show_terminal_details:
-            self.detail_label.setText(f'{pending_label} {pending_count} | 失败 {failed_count} | 无结果 {no_search_count}')
+            self.detail_label.setText(
+                tr(
+                    'enrichment.summary.detail_full',
+                    pending_label=pending_label,
+                    pending_count=pending_count,
+                    failed_count=failed_count,
+                    no_search_count=no_search_count,
+                )
+            )
         else:
-            self.detail_label.setText(f'{pending_label} {pending_count}')
+            self.detail_label.setText(
+                tr(
+                    'enrichment.summary.detail_pending_only',
+                    pending_label=pending_label,
+                    pending_count=pending_count,
+                )
+            )
 
         display_percent = progress_percent
         if live_progress:
@@ -50,7 +81,7 @@ class SummaryCard(QFrame):
             live_processed_count = int(live_progress.get('processed_count', 0) or 0)
             live_success_count = int(live_progress.get('success_count', 0) or 0)
             live_failed_count = int(live_progress.get('failed_count', 0) or 0)
-            live_count_unit = str(live_progress.get('count_unit', '') or '项')
+            live_count_unit = str(live_progress.get('count_unit', '') or tr('enrichment.summary.count_unit_default'))
             live_message = str(live_progress.get('message', '') or '')
             current_item = str(live_progress.get('current_item', '') or '')
 
@@ -58,11 +89,18 @@ class SummaryCard(QFrame):
             if total_count > 0:
                 display_percent = round(((enriched_count + progress_delta) / total_count) * 100.0, 1)
 
-            segments = [f'当前任务 {live_processed_count}/{live_total_count} {live_count_unit}']
-            segments.append(f'成功 {live_success_count}')
-            segments.append(f'失败 {live_failed_count}')
+            segments = [
+                tr(
+                    'enrichment.summary.live',
+                    processed_count=live_processed_count,
+                    total_count=live_total_count,
+                    count_unit=live_count_unit,
+                ),
+                tr('common.success', count=live_success_count),
+                tr('common.failed', count=live_failed_count),
+            ]
             if current_item:
-                segments.append(f'当前: {current_item}')
+                segments.append(tr('common.current', value=current_item))
             elif live_message:
                 segments.append(live_message)
             self.live_label.setText(' | '.join(segments))

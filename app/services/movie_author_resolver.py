@@ -282,6 +282,8 @@ class MovieAuthorResolver:
 
     @staticmethod
     def _is_retryable_empty_author_result(cached_row, cached_status):
+        if cached_status == ENRICHED_STATUS:
+            return True
         if cached_status not in (NO_SEARCH_RESULTS_STATUS, FAILED_STATUS):
             return False
         return bool(

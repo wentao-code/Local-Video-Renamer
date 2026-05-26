@@ -1,6 +1,9 @@
 import re
 
 
+_SUBSTANTIVE_ACTOR_TEXT_RE = re.compile(r'[A-Za-z0-9\u4e00-\u9fffぁ-んァ-ヴー]')
+
+
 _MISSING_ACTOR_TEXTS = {
     '',
     '-',
@@ -28,6 +31,8 @@ def normalize_second_source_actor_text(value):
         return ''
     compact = re.sub(r'[\s\u3000,，、/;；|]+', '', text).lower()
     if compact in _MISSING_ACTOR_TEXTS:
+        return ''
+    if not _SUBSTANTIVE_ACTOR_TEXT_RE.search(text):
         return ''
     return text
 

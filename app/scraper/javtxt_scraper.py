@@ -19,6 +19,8 @@ TITLE_SUFFIX_RE = re.compile(r'\s*-\s*JAV.*$', re.I)
 
 TITLE_SECTION_LABELS = {'番号', '演员', '出演女优'}
 ACTOR_SECTION_LABELS = ('出演女优', '演员')
+PRIMARY_ACTOR_SECTION_LABELS = ('出演女优',)
+SECONDARY_ACTOR_SECTION_LABELS = ('演员',)
 RELEASE_DATE_LABELS = ('发行时间', '登场时间')
 MAKER_LABELS = ('片商',)
 PUBLISHER_LABELS = ('厂牌',)
@@ -154,7 +156,7 @@ class JavtxtScraper:
         final_url = page.url or ''
         movie_id = extract_javtxt_movie_id(final_url)
         title = extract_title(page, lines, requested_code)
-        actors_text = normalize_second_source_actor_text(extract_section_text(lines, ACTOR_SECTION_LABELS))
+        actors_text = extract_actors_text(lines)
         release_date = extract_detail_value(lines, RELEASE_DATE_LABELS)
         maker = extract_detail_value(lines, MAKER_LABELS)
         publisher = extract_detail_value(lines, PUBLISHER_LABELS)
@@ -240,6 +242,49 @@ def clean_title(text, requested_code):
         hyphenated_code = re.sub(r'([A-Z]+)(\d+)$', r'\1-\2', normalized_code)
         value = re.sub(rf'^\s*{re.escape(hyphenated_code)}[-_\s:：*]*', '', value, flags=re.I).strip()
     return value
+
+
+def extract_actors_text(lines):
+    for labels in (PRIMARY_ACTOR_SECTION_LABELS, SECONDARY_ACTOR_SECTION_LABELS):
+        actor_lines = extract_actor_section_lines(lines, labels)
+        actor_text = normalize_second_source_actor_text(' '.join(actor_lines))
+        if actor_text:
+            return actor_text
+    return ''
+
+
+def extract_actor_section_lines(lines, labels):
+    normalized_labels = [str(label or '').strip() for label in labels if str(label or '').strip()]
+    for index, line in enumerate(lines):
+        matched_label, inline_value = match_section_label(line, normalized_labels)
+        if inline_value is None:
+            continue
+
+        values = []
+        inline_actor_text = normalize_second_source_actor_text(inline_value)
+        if inline_actor_text:
+            values.append(inline_actor_text)
+            return values
+
+        for next_index in range(index + 1, len(lines)):
+            value = str(lines[next_index] or '').strip()
+            if not value:
+                continue
+            next_label, next_inline = match_section_label(value, ACTOR_SECTION_LABELS)
+            if next_label:
+                break
+            if is_next_section_label(value):
+                break
+            normalized_value = normalize_second_source_actor_text(value)
+            if normalized_value:
+                values.append(normalized_value)
+            else:
+                break
+        if values:
+            return values
+        if matched_label:
+            return []
+    return []
 
 
 def extract_detail_value(lines, labels):

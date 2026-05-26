@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.i18n import tr
 
 
 class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
@@ -27,23 +28,23 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('路径库')
+        self.setWindowTitle(tr('path.viewer.title'))
         self.resize(900, 460)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
 
-        self.btn_add = QPushButton('添加')
+        self.btn_add = QPushButton(tr('path.viewer.add'))
         self.btn_add.clicked.connect(self.add_path)
-        self.btn_delete = QPushButton('删除')
+        self.btn_delete = QPushButton(tr('path.viewer.delete'))
         self.btn_delete.clicked.connect(self.delete_selected_path)
-        self.btn_use = QPushButton('使用选中路径')
+        self.btn_use = QPushButton(tr('path.viewer.use_selected'))
         self.btn_use.clicked.connect(self.use_selected_path)
-        self.btn_refresh = QPushButton('刷新')
+        self.btn_refresh = QPushButton(tr('path.viewer.refresh'))
         self.btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('已保存路径'))
+        top_layout.addWidget(QLabel(tr('path.viewer.saved_paths')))
         top_layout.addStretch()
         top_layout.addWidget(self.btn_add)
         top_layout.addWidget(self.btn_delete)
@@ -52,7 +53,7 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
 
         self.table = QTableWidget()
         self.table.setColumnCount(8)
-        self.table.setHorizontalHeaderLabels(['ID', '入口', '路径', '总容量', '剩余空间', '已用空间', '使用率', '创建时间'])
+        self.table.setHorizontalHeaderLabels(tr('path.viewer.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
@@ -74,7 +75,7 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.start_async_task(
             lambda: self.backend_client.get_path_library(),
             self._on_load_data_finished,
-            '读取失败',
+            tr('common.read_failed'),
         )
 
     def render_rows(self):
@@ -83,11 +84,11 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
         for row_idx, row_data in enumerate(self.paths):
             self.table.insertRow(row_idx)
             if row_data.get('exists'):
-                entrance = 'U盘入口'
+                entrance = tr('path.viewer.entrance_usb')
             elif row_data.get('uses_last_snapshot'):
-                entrance = '未连接（上次记录）'
+                entrance = tr('path.viewer.entrance_offline_last')
             else:
-                entrance = '未连接'
+                entrance = tr('path.viewer.entrance_offline')
 
             usage_percent = row_data.get('usage_percent', '')
             usage_text = f'{usage_percent}%' if usage_percent != '' else ''
@@ -112,9 +113,13 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
         usage_percent = self.summary.get('usage_percent', '')
         usage_text = f'{usage_percent}%' if usage_percent != '' else ''
         summary_values = (
-            '合计',
-            f"共 {self.summary.get('path_count', 0)} 条 / 在线 {self.summary.get('connected_count', 0)} 条",
-            '所有路径',
+            tr('path.viewer.summary_total'),
+            tr(
+                'path.viewer.summary_count',
+                path_count=self.summary.get('path_count', 0),
+                connected_count=self.summary.get('connected_count', 0),
+            ),
+            tr('path.viewer.summary_all_paths'),
             self.summary.get('total', ''),
             self.summary.get('free', ''),
             self.summary.get('used', ''),
@@ -128,31 +133,35 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
             self.table.setItem(row_idx, col_idx, item)
 
     def add_path(self):
-        folder_path = QFileDialog.getExistingDirectory(self, '添加路径到路径库')
+        folder_path = QFileDialog.getExistingDirectory(self, tr('path.viewer.add_dialog'))
         if not folder_path:
             return
         self.start_async_task(
             lambda: self._reload_after(lambda: self.backend_client.add_path(folder_path)),
             self._on_load_data_finished,
-            '添加失败',
+            tr('path.viewer.add_failed'),
         )
 
     def delete_selected_path(self):
         row = self.current_row()
         if row < 0:
-            QMessageBox.warning(self, '提示', '请先选择要删除的路径')
+            QMessageBox.warning(self, tr('common.prompt'), tr('path.viewer.delete_select_first'))
             return
 
         path_id = int(self.table.item(row, 0).text())
         path_text = self.table.item(row, 2).text()
-        answer = QMessageBox.question(self, '确认删除', f'确定从路径库删除这个路径吗？\n{path_text}')
+        answer = QMessageBox.question(
+            self,
+            tr('path.viewer.confirm_delete_title'),
+            tr('path.viewer.confirm_delete_message', path_text=path_text),
+        )
         if answer != QMessageBox.Yes:
             return
 
         self.start_async_task(
             lambda: self._reload_after(lambda: self.backend_client.delete_path(path_id)),
             self._on_load_data_finished,
-            '删除失败',
+            tr('path.viewer.delete_failed'),
         )
 
     def _reload_after(self, operation):
@@ -162,7 +171,7 @@ class PathLibraryWindow(AsyncTaskHostMixin, QDialog):
     def use_selected_path(self):
         row = self.current_row()
         if row < 0:
-            QMessageBox.warning(self, '提示', '请先选择一个路径')
+            QMessageBox.warning(self, tr('common.prompt'), tr('path.viewer.use_select_first'))
             return
         self.selected_path = self.table.item(row, 2).text()
         self.accept()

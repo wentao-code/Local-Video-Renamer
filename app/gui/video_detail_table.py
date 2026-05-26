@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.gui.i18n import tr
+
 
 class VideoDetailTableWidget(QWidget):
     def __init__(self, title='', parent=None):
@@ -24,22 +26,20 @@ class VideoDetailTableWidget(QWidget):
 
         top_layout = QHBoxLayout()
         self.title_label = QLabel(self._title)
-        self.summary_label = QLabel('共 0 条')
+        self.summary_label = QLabel(tr('video.detail.summary', count=0))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入编号、标题、演员、日期或分类实时筛选...')
+        self.search_input.setPlaceholderText(tr('video.detail.search_placeholder'))
         self.search_input.textChanged.connect(self._apply_filter)
 
         top_layout.addWidget(self.title_label)
         top_layout.addStretch()
-        top_layout.addWidget(QLabel('筛选:'))
+        top_layout.addWidget(QLabel(tr('common.filter')))
         top_layout.addWidget(self.search_input, 1)
         top_layout.addWidget(self.summary_label)
 
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(
-            ['视频编号', '视频标题', '作者/演员', '视频分类', '发布日期']
-        )
+        self.table.setHorizontalHeaderLabels(tr('video.detail.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -82,7 +82,7 @@ class VideoDetailTableWidget(QWidget):
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row_idx, col_idx, item)
 
-        self.summary_label.setText(f'共 {len(rows)} 条')
+        self.summary_label.setText(tr('video.detail.summary', count=len(rows)))
 
     @staticmethod
     def _matches_search(row, search_text):

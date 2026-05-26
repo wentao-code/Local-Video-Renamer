@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QVBoxLayout
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 from app.gui.enrichment_summary_widgets import SummaryCard
+from app.gui.i18n import tr
 
 
 class DataCenterWindow(QDialog):
@@ -18,23 +19,23 @@ class DataCenterWindow(QDialog):
         self.refresh_timer.start()
 
     def init_ui(self):
-        self.setWindowTitle('数据中心')
+        self.setWindowTitle(tr('data_center.title'))
         self.resize(1240, 520)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
-        summary_group = QGroupBox('补全进度')
+        summary_group = QGroupBox(tr('data_center.progress_group'))
         summary_layout = QGridLayout(summary_group)
         summary_layout.setContentsMargins(12, 12, 12, 12)
         summary_layout.setHorizontalSpacing(10)
         summary_layout.setVerticalSpacing(10)
 
-        self.video_avfan_card = SummaryCard('视频库 · 天陨阁')
-        self.video_javtxt_card = SummaryCard('视频库 · 辛聚谷')
-        self.code_prefix_avfan_card = SummaryCard('番号库 · 天陨阁')
-        self.code_prefix_javtxt_card = SummaryCard('番号库 · 辛聚谷')
-        self.actor_avfan_card = SummaryCard('演员库 · 天陨阁')
-        self.actor_javtxt_card = SummaryCard('演员库 · 辛聚谷')
+        self.video_avfan_card = SummaryCard(tr('data_center.video_avfan'))
+        self.video_javtxt_card = SummaryCard(tr('data_center.video_javtxt'))
+        self.code_prefix_avfan_card = SummaryCard(tr('data_center.code_prefix_avfan'))
+        self.code_prefix_javtxt_card = SummaryCard(tr('data_center.code_prefix_javtxt'))
+        self.actor_avfan_card = SummaryCard(tr('data_center.actor_avfan'))
+        self.actor_javtxt_card = SummaryCard(tr('data_center.actor_javtxt'))
 
         summary_layout.addWidget(self.video_avfan_card, 0, 0)
         summary_layout.addWidget(self.video_javtxt_card, 0, 1)
@@ -50,7 +51,7 @@ class DataCenterWindow(QDialog):
         try:
             summary = self.backend_client.get_data_center_summary() or {}
         except Exception as exc:
-            print(f'读取数据中心进度失败: {exc}')
+            print(tr('data_center.read_failed', error=exc))
             return
 
         try:

@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
+from app.gui.i18n import tr
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
 
@@ -23,7 +24,7 @@ class ActorDetailViewerWindow(QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle(f'演员详情 - {self.actor_name}')
+        self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
         self.resize(1380, 980)
 
         root_layout = QVBoxLayout(self)
@@ -37,49 +38,54 @@ class ActorDetailViewerWindow(QDialog):
 
         layout = QVBoxLayout(content)
 
-        basic_group = QGroupBox('基础信息')
+        basic_group = QGroupBox(tr('actor.detail.basic_group'))
         basic_layout = QVBoxLayout(basic_group)
         self.basic_grid = DetailSummaryGrid(columns=2)
         self.basic_grid.set_items(
             [
-                ('name', '姓名：', ''),
-                ('actor_id', '作者 ID：', ''),
-                ('age', '年龄：', ''),
-                ('birthday', '生日：', ''),
-                ('local_total', '本地视频总数：', ''),
+                ('name', tr('actor.detail.name'), ''),
+                ('actor_id', tr('actor.detail.actor_id'), ''),
+                ('age', tr('actor.detail.age'), ''),
+                ('birthday', tr('actor.detail.birthday'), ''),
+                ('local_total', tr('actor.detail.local_total'), ''),
             ]
         )
         basic_layout.addWidget(self.basic_grid)
 
-        local_group = QGroupBox('本地视频统计')
+        local_group = QGroupBox(tr('actor.detail.local_group'))
         local_layout = QVBoxLayout(local_group)
         self.local_grid = DetailSummaryGrid(columns=1)
-        self.local_grid.set_items([('local_prefix', '番号分布：', ''), ('local_year', '年份分布：', '')])
+        self.local_grid.set_items(
+            [
+                ('local_prefix', tr('actor.detail.local_prefix'), ''),
+                ('local_year', tr('actor.detail.local_year'), ''),
+            ]
+        )
         local_layout.addWidget(self.local_grid)
 
-        web_group = QGroupBox('网页作品统计')
+        web_group = QGroupBox(tr('actor.detail.web_group'))
         web_layout = QVBoxLayout(web_group)
         self.web_grid = DetailSummaryGrid(columns=2)
         self.web_grid.set_items(
             [
-                ('web_status', '补全状态：', ''),
-                ('web_total', '网页作品总数：', ''),
-                ('web_pages', '网页总页数：', ''),
-                ('eligible_video_count', '满足要求视频数：', ''),
-                ('web_earliest', '最早发布日期：', ''),
-                ('web_latest', '最晚发布日期：', ''),
-                ('eligible_enriched_video_count', '已补全满足要求视频数：', ''),
-                ('web_last_enriched', '最近补全时间：', ''),
-                ('web_prefix', '网页番号分布：', ''),
-                ('web_year', '网页年份分布：', ''),
+                ('web_status', tr('actor.detail.web_status'), ''),
+                ('web_total', tr('actor.detail.web_total'), ''),
+                ('web_pages', tr('actor.detail.web_pages'), ''),
+                ('eligible_video_count', tr('actor.detail.eligible_video_count'), ''),
+                ('web_earliest', tr('actor.detail.web_earliest'), ''),
+                ('web_latest', tr('actor.detail.web_latest'), ''),
+                ('eligible_enriched_video_count', tr('actor.detail.eligible_enriched_video_count'), ''),
+                ('web_last_enriched', tr('actor.detail.web_last_enriched'), ''),
+                ('web_prefix', tr('actor.detail.web_prefix'), ''),
+                ('web_year', tr('actor.detail.web_year'), ''),
             ]
         )
         web_layout.addWidget(self.web_grid)
 
-        local_movie_group = QGroupBox('本地视频明细')
+        local_movie_group = QGroupBox(tr('actor.detail.local_movie_group'))
         local_movie_layout = QVBoxLayout(local_movie_group)
-        self.local_movie_count_label = QLabel('当前演员的本地视频共 0 条')
-        self.btn_local_movie_detail = QPushButton('详情')
+        self.local_movie_count_label = QLabel(tr('actor.detail.local_movie_count', count=0))
+        self.btn_local_movie_detail = QPushButton(tr('actor.detail.detail'))
         self.btn_local_movie_detail.clicked.connect(self.show_local_movie_detail)
         local_movie_top_layout = QHBoxLayout()
         local_movie_top_layout.addWidget(self.local_movie_count_label)
@@ -87,10 +93,10 @@ class ActorDetailViewerWindow(QDialog):
         local_movie_top_layout.addWidget(self.btn_local_movie_detail)
         local_movie_layout.addLayout(local_movie_top_layout)
 
-        web_movie_group = QGroupBox('网页作品明细')
+        web_movie_group = QGroupBox(tr('actor.detail.web_movie_group'))
         web_movie_layout = QVBoxLayout(web_movie_group)
-        self.web_movie_count_label = QLabel('当前演员的网页作品共 0 条')
-        self.btn_web_movie_detail = QPushButton('详情')
+        self.web_movie_count_label = QLabel(tr('actor.detail.web_movie_count', count=0))
+        self.btn_web_movie_detail = QPushButton(tr('actor.detail.detail'))
         self.btn_web_movie_detail.clicked.connect(self.show_web_movie_detail)
         web_movie_top_layout = QHBoxLayout()
         web_movie_top_layout.addWidget(self.web_movie_count_label)
@@ -109,14 +115,14 @@ class ActorDetailViewerWindow(QDialog):
         try:
             self.detail = self.backend_client.get_actor_detail(self.actor_name)
         except Exception as exc:
-            QMessageBox.critical(self, '读取失败', f'读取演员详情失败：\n{exc}')
+            QMessageBox.critical(self, tr('common.read_failed'), tr('actor.detail.read_failed', error=exc))
             self.reject()
             return
 
         self.basic_grid.set_value('name', self.detail.get('name', ''))
-        self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or '暂无')
-        self.basic_grid.set_value('age', self.detail.get('age', '') or '暂无')
-        self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or '暂无')
+        self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or tr('common.empty'))
+        self.basic_grid.set_value('age', self.detail.get('age', '') or tr('common.empty'))
+        self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or tr('common.empty'))
         self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
 
         self.local_grid.set_value(
@@ -128,17 +134,17 @@ class ActorDetailViewerWindow(QDialog):
             format_distribution_summary(self.detail.get('local_year_distribution', []), 'year', items_per_line=3),
         )
 
-        self.web_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or '未补全')
+        self.web_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or tr('actor.detail.web_status_default'))
         self.web_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
         self.web_grid.set_value('web_pages', str(self.detail.get('web_total_pages', 0)))
         self.web_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
-        self.web_grid.set_value('web_earliest', self.detail.get('web_earliest_release_date', '') or '暂无')
-        self.web_grid.set_value('web_latest', self.detail.get('web_latest_release_date', '') or '暂无')
+        self.web_grid.set_value('web_earliest', self.detail.get('web_earliest_release_date', '') or tr('common.empty'))
+        self.web_grid.set_value('web_latest', self.detail.get('web_latest_release_date', '') or tr('common.empty'))
         self.web_grid.set_value(
             'eligible_enriched_video_count',
             str(self.detail.get('eligible_enriched_video_count', 0)),
         )
-        self.web_grid.set_value('web_last_enriched', self.detail.get('web_last_enriched_at', '') or '暂无')
+        self.web_grid.set_value('web_last_enriched', self.detail.get('web_last_enriched_at', '') or tr('common.empty'))
         self.web_grid.set_value(
             'web_prefix',
             format_distribution_summary(self.detail.get('web_prefix_distribution', []), 'prefix', items_per_line=3),
@@ -150,19 +156,19 @@ class ActorDetailViewerWindow(QDialog):
 
         local_rows = list(self.detail.get('local_videos', []) or [])
         web_rows = list(self.detail.get('web_movies', []) or [])
-        self.local_movie_count_label.setText(f'当前演员的本地视频共 {len(local_rows)} 条')
-        self.web_movie_count_label.setText(f'当前演员的网页作品共 {len(web_rows)} 条')
+        self.local_movie_count_label.setText(tr('actor.detail.local_movie_count', count=len(local_rows)))
+        self.web_movie_count_label.setText(tr('actor.detail.web_movie_count', count=len(web_rows)))
         self.btn_local_movie_detail.setEnabled(bool(local_rows))
         self.btn_web_movie_detail.setEnabled(bool(web_rows))
 
     def show_local_movie_detail(self):
         rows = list(self.detail.get('local_videos', []) or [])
         if not rows:
-            QMessageBox.information(self, '暂无数据', '当前演员还没有可显示的本地视频明细。')
+            QMessageBox.information(self, tr('common.no_data'), tr('actor.detail.local_movie_no_data'))
             return
         viewer = VideoListDetailWindow(
-            title=f'本地视频详情 - {self.actor_name}',
-            table_title=f'{self.actor_name} 的本地视频',
+            title=tr('actor.detail.local_movie_title', actor_name=self.actor_name),
+            table_title=tr('actor.detail.local_movie_table_title', actor_name=self.actor_name),
             rows=rows,
             parent=self,
         )
@@ -171,11 +177,11 @@ class ActorDetailViewerWindow(QDialog):
     def show_web_movie_detail(self):
         rows = list(self.detail.get('web_movies', []) or [])
         if not rows:
-            QMessageBox.information(self, '暂无数据', '当前演员还没有可显示的网页作品明细。')
+            QMessageBox.information(self, tr('common.no_data'), tr('actor.detail.web_movie_no_data'))
             return
         viewer = VideoListDetailWindow(
-            title=f'网页作品详情 - {self.actor_name}',
-            table_title=f'{self.actor_name} 的网页作品',
+            title=tr('actor.detail.web_movie_title', actor_name=self.actor_name),
+            table_title=tr('actor.detail.web_movie_table_title', actor_name=self.actor_name),
             rows=rows,
             parent=self,
         )

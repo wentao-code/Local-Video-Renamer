@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
+from app.gui.i18n import tr
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
 
@@ -23,7 +24,7 @@ class CodePrefixDetailViewerWindow(QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle(f'番号详情 - {self.prefix}')
+        self.setWindowTitle(tr('code_prefix.detail.title', prefix=self.prefix))
         self.resize(1380, 920)
 
         root_layout = QVBoxLayout(self)
@@ -37,39 +38,39 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         layout = QVBoxLayout(content)
 
-        summary_group = QGroupBox('基础信息')
+        summary_group = QGroupBox(tr('code_prefix.detail.summary_group'))
         summary_layout = QVBoxLayout(summary_group)
         self.summary_grid = DetailSummaryGrid(columns=2)
         self.summary_grid.set_items(
             [
-                ('prefix', '番号：', ''),
-                ('video_count', '本地视频数：', ''),
-                ('total_pages', 'AVFan 总页数：', ''),
-                ('total_videos', 'AVFan 作品数：', ''),
-                ('eligible_video_count', '满足要求视频数：', ''),
-                ('eligible_enriched_video_count', '已补全满足要求视频数：', ''),
-                ('earliest_date', '最早发布日期：', ''),
-                ('latest_date', '最晚发布日期：', ''),
-                ('last_enriched', '最近补全时间：', ''),
+                ('prefix', tr('code_prefix.detail.prefix'), ''),
+                ('video_count', tr('code_prefix.detail.video_count'), ''),
+                ('total_pages', tr('code_prefix.detail.total_pages'), ''),
+                ('total_videos', tr('code_prefix.detail.total_videos'), ''),
+                ('eligible_video_count', tr('code_prefix.detail.eligible_video_count'), ''),
+                ('eligible_enriched_video_count', tr('code_prefix.detail.eligible_enriched_video_count'), ''),
+                ('earliest_date', tr('code_prefix.detail.earliest_date'), ''),
+                ('latest_date', tr('code_prefix.detail.latest_date'), ''),
+                ('last_enriched', tr('code_prefix.detail.last_enriched'), ''),
             ]
         )
         summary_layout.addWidget(self.summary_grid)
 
-        stats_group = QGroupBox('摘要统计')
+        stats_group = QGroupBox(tr('code_prefix.detail.stats_group'))
         stats_layout = QVBoxLayout(stats_group)
         self.stats_grid = DetailSummaryGrid(columns=1)
         self.stats_grid.set_items(
             [
-                ('year_distribution', '年份分布：', ''),
-                ('top_actors', '主演演员前十：', ''),
+                ('year_distribution', tr('code_prefix.detail.year_distribution'), ''),
+                ('top_actors', tr('code_prefix.detail.top_actors'), ''),
             ]
         )
         stats_layout.addWidget(self.stats_grid)
 
-        movie_group = QGroupBox('网页作品明细')
+        movie_group = QGroupBox(tr('code_prefix.detail.movie_group'))
         movie_layout = QVBoxLayout(movie_group)
-        self.movie_count_label = QLabel('当前番号下的网页作品共 0 条')
-        self.btn_movie_detail = QPushButton('详情')
+        self.movie_count_label = QLabel(tr('code_prefix.detail.movie_count', count=0))
+        self.btn_movie_detail = QPushButton(tr('code_prefix.detail.detail'))
         self.btn_movie_detail.clicked.connect(self.show_movie_detail)
         movie_top_layout = QHBoxLayout()
         movie_top_layout.addWidget(self.movie_count_label)
@@ -86,7 +87,7 @@ class CodePrefixDetailViewerWindow(QDialog):
         try:
             self.detail = self.backend_client.get_code_prefix_detail(self.prefix)
         except Exception as exc:
-            QMessageBox.critical(self, '读取失败', f'读取番号详情失败：\n{exc}')
+            QMessageBox.critical(self, tr('common.read_failed'), tr('code_prefix.detail.read_failed', error=exc))
             self.reject()
             return
 
@@ -99,9 +100,9 @@ class CodePrefixDetailViewerWindow(QDialog):
             'eligible_enriched_video_count',
             str(self.detail.get('eligible_enriched_video_count', 0)),
         )
-        self.summary_grid.set_value('earliest_date', self.detail.get('earliest_release_date', '') or '暂无')
-        self.summary_grid.set_value('latest_date', self.detail.get('latest_release_date', '') or '暂无')
-        self.summary_grid.set_value('last_enriched', self.detail.get('last_enriched_at', '') or '暂无')
+        self.summary_grid.set_value('earliest_date', self.detail.get('earliest_release_date', '') or tr('common.empty'))
+        self.summary_grid.set_value('latest_date', self.detail.get('latest_release_date', '') or tr('common.empty'))
+        self.summary_grid.set_value('last_enriched', self.detail.get('last_enriched_at', '') or tr('common.empty'))
         self.stats_grid.set_value(
             'year_distribution',
             format_distribution_summary(self.detail.get('year_distribution', []), 'year', items_per_line=3),
@@ -112,17 +113,17 @@ class CodePrefixDetailViewerWindow(QDialog):
         )
 
         rows = list(self.detail.get('movies', []) or [])
-        self.movie_count_label.setText(f'当前番号下的网页作品共 {len(rows)} 条')
+        self.movie_count_label.setText(tr('code_prefix.detail.movie_count', count=len(rows)))
         self.btn_movie_detail.setEnabled(bool(rows))
 
     def show_movie_detail(self):
         rows = list(self.detail.get('movies', []) or [])
         if not rows:
-            QMessageBox.information(self, '暂无数据', '当前番号还没有可显示的网页作品明细。')
+            QMessageBox.information(self, tr('common.no_data'), tr('code_prefix.detail.no_data'))
             return
         viewer = VideoListDetailWindow(
-            title=f'网页作品详情 - {self.prefix}',
-            table_title=f'{self.prefix} 的网页作品',
+            title=tr('code_prefix.detail.movie_title', prefix=self.prefix),
+            table_title=tr('code_prefix.detail.movie_table_title', prefix=self.prefix),
             rows=rows,
             parent=self,
         )

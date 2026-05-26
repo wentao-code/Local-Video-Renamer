@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.i18n import tr
 from app.services.video_category_service import VIDEO_CATEGORY_COLLECTION, VIDEO_CATEGORY_CO_STAR, VIDEO_CATEGORY_SINGLE
 
 
@@ -31,14 +32,14 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('天机阁')
+        self.setWindowTitle(tr('video.category.title'))
         self.resize(1200, 640)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout(self)
         top_layout = QHBoxLayout()
-        self.summary_label = QLabel('待手动分类视频: 0')
-        self.btn_refresh = QPushButton('刷新数据')
+        self.summary_label = QLabel(tr('video.category.summary', count=0))
+        self.btn_refresh = QPushButton(tr('video.category.refresh'))
         self.btn_refresh.clicked.connect(self.load_data)
         top_layout.addWidget(self.summary_label)
         top_layout.addStretch()
@@ -46,9 +47,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(
-            ['视频编号', '视频标题', '单体作品', '共演作品', '合集作品', '确认', '详情']
-        )
+        self.table.setHorizontalHeaderLabels(tr('video.category.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         for index in range(2, 7):
@@ -65,7 +64,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.start_async_task(
             lambda: {'rows': self.backend_client.list_videos_requiring_manual_category()},
             self._on_load_data_finished,
-            '读取失败',
+            tr('common.read_failed'),
         )
 
     def render_rows(self, rows):
@@ -105,7 +104,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         return container
 
     def _build_confirm_button(self, code):
-        button = QPushButton('确认')
+        button = QPushButton(tr('video.category.confirm'))
         button.clicked.connect(lambda _checked=False, value=code: self.confirm_category(value))
         container = QWidget()
         layout = QHBoxLayout(container)
@@ -115,7 +114,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         return container
 
     def _build_detail_button(self, javtxt_url):
-        button = QPushButton('详情')
+        button = QPushButton(tr('video.category.detail'))
         button.clicked.connect(lambda _checked=False, value=javtxt_url: self.open_detail_url(value))
         button.setEnabled(bool(javtxt_url))
         container = QWidget()
@@ -128,7 +127,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
     def confirm_category(self, code):
         selected_category = self.selected_category(code)
         if not selected_category:
-            QMessageBox.information(self, '未选择', '请先为当前视频选择作品类别。')
+            QMessageBox.information(self, tr('common.no_selection'), tr('video.category.select_first'))
             return
 
         def task():
@@ -139,7 +138,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
                 'category': selected_category,
             }
 
-        self.start_async_task(task, self._on_update_category_finished, '保存失败')
+        self.start_async_task(task, self._on_update_category_finished, tr('common.save_failed'))
 
     def selected_category(self, code):
         group = self.category_groups.get(str(code or '').strip().upper())
@@ -153,15 +152,15 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
     def open_detail_url(self, javtxt_url):
         target_url = str(javtxt_url or '').strip()
         if not target_url:
-            QMessageBox.information(self, '缺少链接', '当前视频还没有可打开的第二套系统详情链接。')
+            QMessageBox.information(self, tr('video.category.missing_link_title'), tr('video.category.missing_link_message'))
             return
         if not QDesktopServices.openUrl(QUrl(target_url)):
-            QMessageBox.warning(self, '打开失败', f'无法打开链接：\n{target_url}')
+            QMessageBox.warning(self, tr('video.category.open_failed_title'), tr('video.category.open_failed_message', target_url=target_url))
 
     def _on_load_data_finished(self, result):
         self.rows = list((result or {}).get('rows', []) or [])
         self.render_rows(self.rows)
-        self.summary_label.setText(f'待手动分类视频: {len(self.rows)}')
+        self.summary_label.setText(tr('video.category.summary', count=len(self.rows)))
 
     def _on_update_category_finished(self, result):
         self._on_load_data_finished(result)

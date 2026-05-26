@@ -1,5 +1,6 @@
 from PyQt5.QtWidgets import QDialog, QVBoxLayout
 
+from app.gui.i18n import tr
 from app.gui.video_detail_table import VideoDetailTableWidget
 
 
@@ -8,7 +9,7 @@ class VideoListDetailWindow(QDialog):
         super().__init__(parent)
         self.rows = list(rows or [])
         self.table_title = str(table_title or '').strip()
-        self.setWindowTitle(str(title or '视频详情'))
+        self.setWindowTitle(str(title or tr('video.detail.default_title')))
         self.resize(1320, 760)
         self.init_ui()
 

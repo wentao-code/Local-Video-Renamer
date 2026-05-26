@@ -1,6 +1,8 @@
 from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
+from app.gui.i18n import tr
+
 
 class BackendTaskWorker(QObject):
     finished = pyqtSignal(object)
@@ -43,13 +45,13 @@ class AsyncTaskHostMixin:
             **payload,
         }
 
-    def start_async_task(self, task, success_handler, error_title='操作失败'):
+    def start_async_task(self, task, success_handler, error_title=None):
         if self._async_task_thread is not None:
             return False
 
         self._set_async_busy(True)
         self._async_task_success_handler = success_handler
-        self._async_task_error_title = str(error_title or '操作失败')
+        self._async_task_error_title = str(error_title or tr('common.operation_failed'))
         self._async_task_thread = QThread(self)
         self._async_task_worker = BackendTaskWorker(task)
         self._async_task_worker.moveToThread(self._async_task_thread)
@@ -70,10 +72,10 @@ class AsyncTaskHostMixin:
             handler(result)
 
     def _handle_async_task_failed(self, message):
-        error_title = self._async_task_error_title or '操作失败'
+        error_title = self._async_task_error_title or tr('common.operation_failed')
         self._async_task_success_handler = None
         self._async_task_error_title = ''
-        QMessageBox.critical(self, error_title, str(message or '发生未知错误。'))
+        QMessageBox.critical(self, error_title, str(message or tr('backend_task.unknown_error')))
 
     def _cleanup_async_task_thread(self):
         if self._async_task_worker is not None:
@@ -84,7 +86,9 @@ class AsyncTaskHostMixin:
         self._async_task_thread = None
         self._set_async_busy(False)
 
-    def block_close_while_async_running(self, event, title='操作进行中', message='请等待当前操作完成后再关闭窗口。'):
+    def block_close_while_async_running(self, event, title=None, message=None):
+        title = title or tr('common.task_in_progress')
+        message = message or tr('common.task_wait')
         if self._async_task_thread and self._async_task_thread.isRunning():
             QMessageBox.information(self, title, message)
             event.ignore()

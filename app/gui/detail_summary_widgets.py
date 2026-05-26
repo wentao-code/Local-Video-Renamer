@@ -1,6 +1,8 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QGridLayout, QLabel, QWidget
 
+from app.gui.i18n import tr
+
 
 class DetailSummaryGrid(QWidget):
     def __init__(self, columns=2, parent=None):
@@ -47,12 +49,16 @@ class DetailSummaryGrid(QWidget):
                 widget.deleteLater()
 
 
-def format_distribution_summary(rows, key_name, empty_text='暂无', items_per_line=1):
+def format_distribution_summary(rows, key_name, empty_text=None, items_per_line=1):
     if not rows:
-        return empty_text
+        return empty_text or tr('common.empty')
 
     items = [
-        f"{row.get(key_name, '未知')}: {row.get('video_count', 0)}"
+        tr(
+            'detail.distribution_item',
+            name=row.get(key_name, tr('common.unknown')),
+            count=row.get('video_count', 0),
+        )
         for row in rows
     ]
     return _join_items_by_line(items, items_per_line)

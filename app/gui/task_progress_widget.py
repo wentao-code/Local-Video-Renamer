@@ -1,5 +1,7 @@
 from PyQt5.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
+from app.gui.i18n import tr
+
 
 class TaskProgressWidget(QWidget):
     def __init__(self, parent=None):
@@ -34,15 +36,15 @@ class TaskProgressWidget(QWidget):
         success_count,
         failed_count,
         progress_percent,
-        count_unit='项',
+        count_unit=None,
         current_item='',
         message='',
     ):
-        count_unit = str(count_unit or '项').strip() or '项'
-        title_text = str(title or '').strip() or '子任务'
+        count_unit = str(count_unit or tr('task_progress.count_unit_default')).strip() or tr('task_progress.count_unit_default')
+        title_text = str(title or '').strip() or tr('common.subtask')
         detail_segments = []
         if current_item:
-            detail_segments.append(f'当前: {current_item}')
+            detail_segments.append(tr('common.current', value=current_item))
         if message:
             detail_segments.append(str(message))
 
@@ -51,10 +53,16 @@ class TaskProgressWidget(QWidget):
         self.progress_bar.setValue(int(float(progress_percent or 0) * 10))
         if int(total_count or 0) > 0:
             self.progress_bar.setFormat(
-                f'{int(processed_count or 0)}/{int(total_count or 0)} {count_unit} | '
-                f'成功 {int(success_count or 0)} | 失败 {int(failed_count or 0)} | '
-                f'{float(progress_percent or 0):.1f}%'
+                tr(
+                    'task_progress.progress_format',
+                    processed_count=int(processed_count or 0),
+                    total_count=int(total_count or 0),
+                    count_unit=count_unit,
+                    success_count=int(success_count or 0),
+                    failed_count=int(failed_count or 0),
+                    progress_percent=float(progress_percent or 0),
+                )
             )
         else:
-            self.progress_bar.setFormat(message or '准备中...')
+            self.progress_bar.setFormat(message or tr('common.preparing'))
         self.show()

@@ -35,6 +35,7 @@ from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
+from app.gui.i18n import tr
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
@@ -180,7 +181,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 return
             time.sleep(0.2)
 
-        raise RuntimeError('后端服务启动超时')
+        raise RuntimeError(tr('main.backend_start_timeout'))
 
     def is_backend_alive(self):
         return self.get_backend_health() is not None
@@ -241,28 +242,28 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             time.sleep(0.5)
 
     def init_ui(self):
-        self.setWindowTitle('VidNorm - 本地视频整理工具')
+        self.setWindowTitle(tr('main.title'))
         self.resize(1000, 700)
         main_layout = QVBoxLayout()
 
         top_layout = QHBoxLayout()
         self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText('请选择包含视频的本地文件夹...')
+        self.path_input.setPlaceholderText(tr('main.path_placeholder'))
         self.path_input.setReadOnly(True)
 
-        self.btn_browse = QPushButton('选择文件夹')
+        self.btn_browse = QPushButton(tr('main.browse'))
         self.btn_browse.clicked.connect(self.browse_folder)
-        self.btn_path_library = QPushButton('路径库')
+        self.btn_path_library = QPushButton(tr('main.path_library'))
         self.btn_path_library.clicked.connect(self.show_path_library)
 
-        top_layout.addWidget(QLabel('本地目录:'))
+        top_layout.addWidget(QLabel(tr('main.local_folder')))
         top_layout.addWidget(self.path_input)
         top_layout.addWidget(self.btn_path_library)
         top_layout.addWidget(self.btn_browse)
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(['原文件名', '数据库重命名预览', '状态'])
+        self.table.setHorizontalHeaderLabels(tr('main.scan_headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -279,42 +280,42 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row = QHBoxLayout()
         bottom_button_row = QHBoxLayout()
 
-        self.btn_video_library = QPushButton('视频库')
+        self.btn_video_library = QPushButton(tr('main.video_library'))
         self.btn_video_library.clicked.connect(self.show_video_library)
 
-        self.btn_database = QPushButton('数据中心')
+        self.btn_database = QPushButton(tr('main.data_center'))
         self.btn_database.clicked.connect(self.show_data_center)
 
-        self.btn_view_actors = QPushButton('演员库')
+        self.btn_view_actors = QPushButton(tr('main.actor_library'))
         self.btn_view_actors.clicked.connect(self.show_actor_viewer)
 
-        self.btn_view_code_prefixes = QPushButton('番号库')
+        self.btn_view_code_prefixes = QPushButton(tr('main.code_prefix_library'))
         self.btn_view_code_prefixes.clicked.connect(self.show_code_prefix_viewer)
 
-        self.btn_tianji = QPushButton('天机阁')
+        self.btn_tianji = QPushButton(tr('main.video_category'))
         self.btn_tianji.clicked.connect(self.show_video_category_viewer)
 
-        self.btn_scan = QPushButton('扫描本地视频')
+        self.btn_scan = QPushButton(tr('main.scan_local_videos'))
         self.btn_scan.clicked.connect(self.scan_files)
 
-        self.btn_import_db = QPushButton('导入视频库')
+        self.btn_import_db = QPushButton(tr('main.import_video_library'))
         self.btn_import_db.clicked.connect(self.import_to_database)
         self.btn_import_db.setEnabled(False)
 
-        self.btn_auto_login = QPushButton('自动登录')
+        self.btn_auto_login = QPushButton(tr('main.auto_login'))
         self.btn_auto_login.clicked.connect(self.auto_login)
 
-        self.btn_enrich = QPushButton('补全信息')
+        self.btn_enrich = QPushButton(tr('main.enrich_info'))
         self.btn_enrich.clicked.connect(self.enrich_video_info)
 
-        self.btn_stop_enrich = QPushButton('停止补全')
+        self.btn_stop_enrich = QPushButton(tr('main.stop_enrich'))
         self.btn_stop_enrich.clicked.connect(self.stop_enrichment)
         self.btn_stop_enrich.setEnabled(False)
 
-        self.btn_reset_browser_profile = QPushButton('重置网页登录')
+        self.btn_reset_browser_profile = QPushButton(tr('main.reset_browser_profile'))
         self.btn_reset_browser_profile.clicked.connect(self.reset_browser_profile)
 
-        self.btn_execute = QPushButton('执行重命名')
+        self.btn_execute = QPushButton(tr('main.execute_rename'))
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
 
@@ -350,7 +351,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.setLayout(main_layout)
 
     def browse_folder(self):
-        folder_path = QFileDialog.getExistingDirectory(self, '选择文件夹')
+        folder_path = QFileDialog.getExistingDirectory(self, tr('common.select_folder'))
         if folder_path:
             self.set_current_folder(folder_path)
 
@@ -367,7 +368,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def refresh_scan_results(self, show_message=False):
         folder_path = self.path_input.text()
         if not folder_path:
-            QMessageBox.warning(self, '错误', '请先选择文件夹')
+            QMessageBox.warning(self, tr('common.prompt'), tr('main.select_folder_first'))
             return False
 
         def task():
@@ -376,7 +377,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'show_message': bool(show_message),
             }
 
-        self.start_async_task(task, self._on_scan_finished, '错误')
+        self.start_async_task(task, self._on_scan_finished, tr('common.prompt'))
         return True
 
     def import_to_database(self):
@@ -394,7 +395,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'scan_result': scan_result,
             }
 
-        self.start_async_task(task, self._on_import_finished, '错误')
+        self.start_async_task(task, self._on_import_finished, tr('common.prompt'))
 
     def execute_rename(self):
         if not self.pending_renames:
@@ -406,7 +407,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             if bool(plan.get('can_rename')) and bool(plan.get('needs_rename'))
         ]
         if not renamable_plans:
-            QMessageBox.information(self, '提示', '当前没有可重命名的视频。')
+            QMessageBox.information(self, tr('common.prompt'), tr('main.no_renamable_videos'))
             return
 
         folder_path = self.path_input.text()
@@ -419,17 +420,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'scan_result': scan_result,
             }
 
-        self.start_async_task(task, self._on_execute_rename_finished, '错误')
+        self.start_async_task(task, self._on_execute_rename_finished, tr('common.prompt'))
 
     def auto_login(self):
         if self.login_thread is not None:
-            QMessageBox.information(self, '登录进行中', '当前自动登录还没有结束。')
+            QMessageBox.information(self, tr('main.login_in_progress_title'), tr('main.login_in_progress_message'))
             return
         self.start_auto_login()
 
     def start_auto_login(self):
         self.btn_auto_login.setEnabled(False)
-        self.status_label.setText('正在打开登录页面并自动填充账号密码，请手动输入图片验证码后点击登录。')
+        self.status_label.setText(tr('main.login_status'))
 
         self.login_thread = QThread(self)
         self.login_worker = AutoLoginWorker(self.backend_client)
@@ -444,7 +445,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def enrich_video_info(self):
         if self.enrichment_thread is not None or self.batch_enrichment_active:
-            QMessageBox.information(self, '补全进行中', '当前补全任务还没有结束。')
+            QMessageBox.information(
+                self,
+                tr('main.enrichment_in_progress_title'),
+                tr('main.enrichment_in_progress_message'),
+            )
             return
 
         dialog = EnrichmentDialog(self)
@@ -486,9 +491,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.enrichment_mode = mode
         if mode == 'batch':
             self.batch_enrichment_round += 1
-            self.status_label.setText(f'分批补全第 {self.batch_enrichment_round} 批正在进行中，界面可继续操作。')
+            self.status_label.setText(
+                tr('main.batch_round_running', round_number=self.batch_enrichment_round)
+            )
         else:
-            self.status_label.setText('补全任务进行中，界面可继续操作。')
+            self.status_label.setText(tr('main.single_enrichment_running'))
         self.update_enrichment_controls()
         self.reset_progress_widgets(keep_visible=True)
         self.enrichment_progress_timer.start()
@@ -526,9 +533,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.enrichment_mode = mode
         if mode == 'combo_batch':
             self.batch_enrichment_round += 1
-            self.status_label.setText(f'组合任务第 {self.batch_enrichment_round} 批正在进行中，界面可继续操作。')
+            self.status_label.setText(
+                tr('main.combo_round_running', round_number=self.batch_enrichment_round)
+            )
         else:
-            self.status_label.setText('组合任务进行中，界面可继续操作。')
+            self.status_label.setText(tr('main.combo_running'))
         self.update_enrichment_controls()
         self.reset_progress_widgets(keep_visible=True)
         self.enrichment_progress_timer.start()
@@ -566,7 +575,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         }
         self.batch_enrichment_round = 0
         self.status_label.setText(
-            f"分批补全已启动：每 {values['batch_interval_minutes']} 分钟补全 {values['batch_limit']} 个条目。"
+            tr(
+                'main.batch_started',
+                interval_minutes=values['batch_interval_minutes'],
+                batch_limit=values['batch_limit'],
+            )
         )
         self.update_enrichment_controls()
         self.run_next_batch_enrichment()
@@ -591,7 +604,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         }
         self.batch_enrichment_round = 0
         self.status_label.setText(
-            f"组合批次任务已启动：每 {values['batch_interval_minutes']} 分钟双库并发补全 {values['batch_limit']} 个条目。"
+            tr(
+                'main.combo_batch_started',
+                interval_minutes=values['batch_interval_minutes'],
+                batch_limit=values['batch_limit'],
+            )
         )
         self.update_enrichment_controls()
         self.run_next_batch_enrichment()
@@ -643,7 +660,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.batch_timer.stop()
         self.batch_countdown_timer.stop()
         self.batch_next_run_at = None
-        self.batch_countdown_label.setText('组合批次计划运行中，子任务会在各自批次完成后显示下一批倒计时。')
+        self.batch_countdown_label.setText(tr('main.combo_plan_countdown'))
         self.update_enrichment_controls()
         self.start_combo_enrichment(
             values['combo_key'],
@@ -654,7 +671,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             mode='combo_batch',
             batch_mode=True,
         )
-        self.status_label.setText('组合批次计划运行中，两个子任务会按各自的间隔独立进入下一批。')
+        self.status_label.setText(tr('main.combo_plan_status'))
 
     @staticmethod
     def _build_combo_task_settings_for_mode(combo_task_settings, use_batch_limit):
@@ -704,24 +721,31 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.batch_timer.start(interval_seconds * 1000)
         self.batch_countdown_timer.start()
         if last_result and int(last_result.get('processed_count', 0) or 0) <= 0:
-            entity_label = str(last_result.get('entity_label', '条目') or '条目')
+            entity_label = str(last_result.get('entity_label', tr('main.batch_entity_default')) or tr('main.batch_entity_default'))
             message = str(last_result.get('message', '') or '').strip()
-            status_text = (
-                f'分批补全第 {self.batch_enrichment_round} 批本轮没有可处理的{entity_label}，'
-                f'将在 {interval_minutes} 分钟后继续检查。'
+            status_text = tr(
+                'main.batch_no_items',
+                round_number=self.batch_enrichment_round,
+                entity_label=entity_label,
+                interval_minutes=interval_minutes,
             )
             if message:
-                status_text = f'{status_text} 当前提示：{message}'
+                status_text = tr('main.batch_current_hint', status_text=status_text, message=message)
             self.status_label.setText(status_text)
         else:
             self.status_label.setText(
-                f'分批补全第 {self.batch_enrichment_round} 批已完成，将在 {interval_minutes} 分钟后开始下一批。'
+                tr(
+                    'main.batch_round_completed',
+                    round_number=self.batch_enrichment_round,
+                    interval_minutes=interval_minutes,
+                )
             )
         self.update_batch_countdown()
         self.update_enrichment_controls()
         self.reset_progress_widgets()
 
-    def stop_batch_enrichment(self, message='已停止分批补全计划。'):
+    def stop_batch_enrichment(self, message=None):
+        message = message or tr('main.batch_stopped')
         self.batch_timer.stop()
         self.batch_countdown_timer.stop()
         self.batch_next_run_at = None
@@ -743,14 +767,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
         if remaining_seconds <= 0:
             self.batch_countdown_timer.stop()
-            self.batch_countdown_label.setText('下一批补全即将开始...')
+            self.batch_countdown_label.setText(tr('main.next_batch_soon'))
             return
 
         if hours > 0:
             countdown_text = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
         else:
             countdown_text = f'{minutes:02d}:{seconds:02d}'
-        self.batch_countdown_label.setText(f'分批补全倒计时：{countdown_text}')
+        self.batch_countdown_label.setText(tr('main.batch_countdown', countdown_text=countdown_text))
 
     def update_enrichment_controls(self):
         enrichment_running = self.enrichment_thread is not None
@@ -777,21 +801,21 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         current_item = str(progress.get('current_item', '') or '')
         message = str(progress.get('message', '') or '')
         is_running = bool(progress.get('is_running'))
-        count_unit = str(progress.get('count_unit', '') or '项')
+        count_unit = str(progress.get('count_unit', '') or tr('main.progress_default_unit'))
         log_path = str(progress.get('log_path', '') or '')
 
         if not is_running and total_count <= 0 and not message:
             return
 
-        label_text = target_label or '补全任务'
+        label_text = target_label or tr('main.enrichment_task')
         if source_label:
             label_text = f'{label_text} / {source_label}'
         if current_item:
-            label_text = f'{label_text} | 当前: {current_item}'
+            label_text = f"{label_text} | {tr('common.current', value=current_item)}"
         elif message:
             label_text = f'{label_text} | {message}'
         if log_path and not is_running:
-            label_text = f'{label_text} | 日志: {log_path}'
+            label_text = f"{label_text} | {tr('common.log', value=log_path)}"
 
         self.progress_label.setText(label_text)
         self.progress_bar.show()
@@ -799,18 +823,34 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.progress_bar.setValue(int(progress_percent * 10))
         if total_count > 0:
             self.progress_bar.setFormat(
-                f'{processed_count}/{total_count} | 成功 {success_count} | 失败 {failed_count} | {progress_percent:.1f}%'
+                tr(
+                    'main.progress_format',
+                    processed_count=processed_count,
+                    total_count=total_count,
+                    count_unit='',
+                    success_count=success_count,
+                    failed_count=failed_count,
+                    progress_percent=progress_percent,
+                ).replace('  |', ' |', 1)
             )
         else:
-            self.progress_bar.setFormat(message or '准备中...')
+            self.progress_bar.setFormat(message or tr('common.preparing'))
 
         if total_count > 0:
             self.progress_bar.setFormat(
-                f'{processed_count}/{total_count} {count_unit} | 成功 {success_count} | 失败 {failed_count} | {progress_percent:.1f}%'
+                tr(
+                    'main.progress_format',
+                    processed_count=processed_count,
+                    total_count=total_count,
+                    count_unit=count_unit,
+                    success_count=success_count,
+                    failed_count=failed_count,
+                    progress_percent=progress_percent,
+                )
             )
 
     def refresh_combo_enrichment_progress(self, progress):
-        target_label = str(progress.get('target_label', '') or '组合任务')
+        target_label = str(progress.get('target_label', '') or tr('main.combo_task'))
         message = str(progress.get('message', '') or '')
         current_item = str(progress.get('current_item', '') or '')
         is_running = bool(progress.get('is_running'))
@@ -822,11 +862,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
         label_text = target_label
         if current_item:
-            label_text = f'{label_text} | 当前: {current_item}'
+            label_text = f"{label_text} | {tr('common.current', value=current_item)}"
         elif message:
             label_text = f'{label_text} | {message}'
         if log_path and not is_running:
-            label_text = f'{label_text} | 日志: {log_path}'
+            label_text = f"{label_text} | {tr('common.log', value=log_path)}"
 
         self.progress_label.setText(label_text)
         self.progress_label.show()
@@ -838,13 +878,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 continue
             task_state = dict(subtasks[index] or {})
             combo_subtask_widget.set_progress(
-                title=str(task_state.get('task_label', '') or task_state.get('task_key', '子任务')),
+                title=str(task_state.get('task_label', '') or task_state.get('task_key', tr('common.subtask'))),
                 processed_count=int(task_state.get('processed_count', 0) or 0),
                 total_count=int(task_state.get('total_count', 0) or 0),
                 success_count=int(task_state.get('success_count', 0) or 0),
                 failed_count=int(task_state.get('failed_count', 0) or 0),
                 progress_percent=float(task_state.get('progress_percent', 0) or 0),
-                count_unit=str(task_state.get('count_unit', '') or '项'),
+                count_unit=str(task_state.get('count_unit', '') or tr('main.progress_default_unit')),
                 current_item=str(task_state.get('current_item', '') or ''),
                 message=str(task_state.get('message', '') or ''),
             )
@@ -859,18 +899,18 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         running_segments = []
         for task_state in (progress.get('subtasks', {}) or {}).values():
             task_state = dict(task_state or {})
-            task_label = str(task_state.get('task_label', '') or task_state.get('task_key', '子任务'))
+            task_label = str(task_state.get('task_label', '') or task_state.get('task_key', tr('common.subtask')))
             detail_message = str(task_state.get('message', '') or '').strip()
-            if detail_message.startswith('下一批倒计时'):
+            if detail_message.startswith(tr('main.combo_subtask_waiting_prefix')):
                 waiting_segments.append(f'{task_label}: {detail_message}')
             elif bool(task_state.get('is_running')):
-                running_segments.append(f'{task_label}: 当前批次执行中')
+                running_segments.append(tr('main.combo_subtask_running', task_label=task_label))
 
         if waiting_segments or running_segments:
             self.batch_countdown_label.setText(' | '.join(waiting_segments + running_segments))
             return
 
-        self.batch_countdown_label.setText('组合批次计划运行中，等待子任务状态更新。')
+        self.batch_countdown_label.setText(tr('main.combo_waiting_status'))
 
     def hide_combo_subtask_progress(self):
         for combo_subtask_widget in self.combo_subtask_widgets:
@@ -892,7 +932,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def stop_enrichment(self):
         if self.enrichment_thread is None:
             if self.batch_enrichment_active:
-                self.stop_batch_enrichment('已停止分批补全计划。')
+                self.stop_batch_enrichment(tr('main.batch_stopped'))
             return
 
         self.btn_stop_enrich.setEnabled(False)
@@ -903,106 +943,121 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.batch_countdown_label.setText('')
             self.batch_enrichment_active = False
             self.batch_enrichment_config = None
-        self.status_label.setText('已请求停止补全，当前条目处理完成后会停止。')
+        self.status_label.setText(tr('main.stop_enrichment_requested'))
         try:
             result = self.backend_client.cancel_enrichment()
-            self.status_label.setText(result.get('message', '已请求停止补全。'))
+            self.status_label.setText(result.get('message', tr('main.stop_enrichment_requested_default')))
         except Exception as exc:
             self.update_enrichment_controls()
-            self.status_label.setText('停止补全请求失败。')
-            QMessageBox.critical(self, '停止失败', str(exc))
+            self.status_label.setText(tr('main.stop_enrichment_request_failed'))
+            QMessageBox.critical(self, tr('main.stop_failed'), str(exc))
 
     def on_auto_login_finished(self, result):
         QMessageBox.information(
             self,
-            '自动登录完成',
-            result.get('message', '已完成自动登录。'),
+            tr('main.auto_login_completed'),
+            result.get('message', tr('main.auto_login_completed_default')),
         )
 
     def on_auto_login_failed(self, error_message):
-        QMessageBox.critical(self, '自动登录失败', error_message)
+        QMessageBox.critical(self, tr('main.auto_login_failed'), error_message)
 
     def on_enrichment_finished(self, result):
         mode = self.enrichment_mode
         is_batch_mode = mode in ('batch', 'combo_batch')
-        entity_label = result.get('entity_label', '视频')
+        entity_label = result.get('entity_label', tr('main.entity_default'))
         summary = self.build_enrichment_summary(result)
 
         if result.get('requires_manual_verification'):
-            message = result.get('message') or '检测到 AVFan 人机验证，已停止当前补全任务。'
+            message = result.get('message') or tr('main.manual_verification_message')
             if is_batch_mode:
-                self.stop_batch_enrichment('检测到人机验证，已停止分批补全。')
+                self.stop_batch_enrichment(tr('main.manual_verification_batch_stopped'))
             else:
                 self.status_label.setText('')
-            QMessageBox.warning(self, '需要人工验证', f'{message}\n\n{summary}')
+            QMessageBox.warning(self, tr('main.manual_verification_title'), f'{message}\n\n{summary}')
             return
 
         if mode == 'combo_batch':
             if not self.batch_enrichment_active:
-                self.status_label.setText('已停止组合批次计划。')
+                self.status_label.setText(tr('main.combo_plan_stopped'))
                 self.batch_countdown_label.setText('')
-                QMessageBox.information(self, '组合批次计划已停止', summary)
+                QMessageBox.information(self, tr('main.combo_plan_stopped_title'), summary)
                 return
 
-            self.stop_batch_enrichment('组合批次计划已结束。')
-            QMessageBox.information(self, '组合批次计划已结束', summary)
+            self.stop_batch_enrichment(tr('main.combo_plan_ended'))
+            QMessageBox.information(self, tr('main.combo_plan_ended_title'), summary)
             return
 
         if is_batch_mode:
             if not self.batch_enrichment_active:
-                self.status_label.setText('已停止分批补全计划。')
-                QMessageBox.information(self, '分批补全已停止', summary)
+                self.status_label.setText(tr('main.batch_stopped'))
+                QMessageBox.information(self, tr('main.batch_stopped_title'), summary)
                 return
 
             self.schedule_next_batch_enrichment(last_result=result)
             return
 
-        title = '补全已停止' if result.get('stopped') else '补全完成'
+        title = tr('main.enrichment_stopped_title') if result.get('stopped') else tr('main.enrichment_completed_title')
         QMessageBox.information(self, title, summary)
         self.status_label.setText('')
 
     def on_enrichment_failed(self, error_message):
         mode = self.enrichment_mode
         if mode in ('batch', 'combo_batch'):
-            self.stop_batch_enrichment('分批补全失败，计划已停止。')
-            QMessageBox.critical(self, '分批补全失败', error_message)
+            self.stop_batch_enrichment(tr('main.batch_failed'))
+            QMessageBox.critical(self, tr('main.batch_failed_title'), error_message)
             return
 
         self.status_label.setText('')
-        QMessageBox.critical(self, '补全失败', error_message)
+        QMessageBox.critical(self, tr('main.enrichment_failed_title'), error_message)
 
     def build_enrichment_summary(self, result):
         if result.get('task_kind') == 'combo':
             lines = [
-                f"组合任务：{result.get('combo_label', '')}",
-                '整体统计请以下方两条子任务进度为准：',
+                tr('main.combo_summary_title', combo_label=result.get('combo_label', '')),
+                tr('main.combo_summary_hint'),
             ]
             for task_key, task_result in (result.get('subtask_results', {}) or {}).items():
                 task_label = task_result.get('task_label') or task_result.get('entity_label') or task_key
-                count_unit = task_result.get('count_unit') or '项'
+                count_unit = task_result.get('count_unit') or tr('main.summary_count_unit_default')
                 lines.append(
-                    f"{task_label}: 处理 {task_result.get('processed_count', 0)} {count_unit} / "
-                    f"成功 {task_result.get('success_count', 0)} / 失败 {task_result.get('failed_count', 0)} / "
-                    f"剩余 {task_result.get('remaining_count', 0)} {count_unit}"
+                    tr(
+                        'main.combo_summary_task',
+                        task_label=task_label,
+                        processed_count=task_result.get('processed_count', 0),
+                        count_unit=count_unit,
+                        success_count=task_result.get('success_count', 0),
+                        failed_count=task_result.get('failed_count', 0),
+                        remaining_count=task_result.get('remaining_count', 0),
+                    )
                 )
             if result.get('message'):
-                lines.append(f"消息: {result.get('message')}")
+                lines.append(tr('common.message', value=result.get('message')))
             if result.get('log_path'):
-                lines.append(f"日志: {result.get('log_path')}")
+                lines.append(tr('common.log', value=result.get('log_path')))
             return '\n'.join(lines)
 
-        count_unit = result.get('count_unit') or result.get('entity_label', '项')
-        remaining_label = result.get('remaining_label', '剩余待补全')
+        count_unit = result.get('count_unit') or result.get('entity_label', tr('main.summary_count_unit_default'))
+        remaining_label = result.get('remaining_label', tr('common.remaining_default'))
         lines = [
-            f"本次处理 {result.get('processed_count', 0)} {count_unit}。",
-            f"成功: {result.get('success_count', 0)}",
-            f"失败: {result.get('failed_count', 0)}",
-            f"{remaining_label}: {result.get('remaining_count', 0)} {count_unit}",
+            tr(
+                'main.summary_line_processed',
+                processed_count=result.get('processed_count', 0),
+                count_unit=count_unit,
+            ),
+            tr('main.summary_line_success', success_count=result.get('success_count', 0)),
+            tr('main.summary_line_failed', failed_count=result.get('failed_count', 0)),
+            tr(
+                'main.summary_line_remaining',
+                remaining_label=remaining_label,
+                remaining_count=result.get('remaining_count', 0),
+                count_unit=count_unit,
+            ),
         ]
         if result.get('message'):
-            lines.append(f"消息: {result.get('message')}")
+            lines.append(tr('common.message', value=result.get('message')))
         if result.get('log_path'):
-            lines.append(f"日志: {result.get('log_path')}")
+            lines.append(tr('common.log', value=result.get('log_path')))
         return '\n'.join(lines)
 
     def cleanup_auto_login_thread(self):
@@ -1031,10 +1086,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def reset_browser_profile(self):
         answer = QMessageBox.question(
             self,
-            '重置网页登录状态',
-            '这会清除补全信息使用的专用浏览器登录状态、Cookie 和验证记录。\n'
-            '不会影响视频数据库，也不会影响你日常使用的 Chrome。\n\n'
-            '请先关闭补全过程中弹出的浏览器窗口，然后继续。是否重置？',
+            tr('main.reset_browser_profile_title'),
+            tr('main.reset_browser_profile_message'),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -1044,12 +1097,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.start_async_task(
             lambda: self.backend_client.reset_browser_profile(),
             self._on_reset_browser_profile_finished,
-            '重置失败',
+            tr('common.reset_failed'),
         )
 
-    def start_async_task(self, task, success_handler, error_title='操作失败'):
+    def start_async_task(self, task, success_handler, error_title=None):
         if self.is_async_task_running():
-            QMessageBox.information(self, '任务进行中', '请等待当前操作完成后再执行新的按钮操作。')
+            QMessageBox.information(self, tr('common.task_in_progress'), tr('main.new_button_action_wait'))
             return False
         return super().start_async_task(task, success_handler, error_title)
 
@@ -1094,11 +1147,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if (payload or {}).get('show_message'):
             QMessageBox.information(
                 self,
-                '扫描完成',
-                (
-                    f"共识别到 {scan_result.get('count', 0)} 个视频。\n"
-                    f"待导入: {scan_result.get('import_count', 0)} 个\n"
-                    f"待重命名: {scan_result.get('rename_count', 0)} 个"
+                tr('main.scan_completed'),
+                tr(
+                    'main.scan_completed_message',
+                    count=scan_result.get('count', 0),
+                    import_count=scan_result.get('import_count', 0),
+                    rename_count=scan_result.get('rename_count', 0),
                 ),
             )
 
@@ -1107,21 +1161,29 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         success_count = int((payload or {}).get('success_count', 0) or 0)
         QMessageBox.information(
             self,
-            '导入完成',
-            f'成功将 {success_count} 个缺失番号写入视频库，可用于后续补全。',
+            tr('main.import_completed'),
+            tr('main.import_completed_message', success_count=success_count),
         )
 
     def _on_execute_rename_finished(self, payload):
         self._apply_scan_result((payload or {}).get('scan_result', {}))
         success_count = int((payload or {}).get('success_count', 0) or 0)
-        QMessageBox.information(self, '结果', f'成功重命名 {success_count} 个文件。')
+        QMessageBox.information(
+            self,
+            tr('main.result'),
+            tr('main.rename_completed_message', success_count=success_count),
+        )
 
     def _on_reset_browser_profile_finished(self, result):
         result = dict(result or {})
         QMessageBox.information(
             self,
-            '重置完成',
-            f"{result.get('message', '已重置网页登录状态。')}\n\n目录: {result.get('profile_dir', '')}",
+            tr('common.reset_completed'),
+            tr(
+                'main.reset_completed_message',
+                message=result.get('message', tr('main.reset_completed_default')),
+                profile_dir=result.get('profile_dir', ''),
+            ),
         )
 
     def show_data_center(self):
@@ -1153,15 +1215,27 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if self.block_close_while_async_running(event):
             return
         if self.enrichment_thread and self.enrichment_thread.isRunning():
-            QMessageBox.information(self, '补全进行中', '请等待补全任务结束后再关闭窗口。')
+            QMessageBox.information(
+                self,
+                tr('main.enrichment_in_progress_title'),
+                tr('main.enrichment_close_wait'),
+            )
             event.ignore()
             return
         if self.batch_enrichment_active or self.batch_timer.isActive():
-            QMessageBox.information(self, '分批补全进行中', '请先停止分批补全计划，再关闭窗口。')
+            QMessageBox.information(
+                self,
+                tr('main.batch_close_wait_title'),
+                tr('main.batch_close_wait'),
+            )
             event.ignore()
             return
         if self.login_thread and self.login_thread.isRunning():
-            QMessageBox.information(self, '登录进行中', '请等待自动登录结束后再关闭窗口。')
+            QMessageBox.information(
+                self,
+                tr('main.login_in_progress_title'),
+                tr('main.login_close_wait'),
+            )
             event.ignore()
             return
         if self.backend_process and self.backend_process.poll() is None:

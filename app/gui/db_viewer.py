@@ -18,7 +18,9 @@ from app.core.enrichment_sources import (
     JAVTXT_VIDEO_SOURCE,
     get_video_enrichment_source_label,
 )
+from app.core.enrichment_status import ENRICHED_STATUS
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.i18n import tr
 
 
 class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
@@ -31,7 +33,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('视频库')
+        self.setWindowTitle(tr('db.viewer.title'))
         self.resize(1440, 720)
         self.setWindowModality(Qt.WindowModal)
 
@@ -39,46 +41,30 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
 
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入视频编号、标题、演员、分类或补全状态实时筛选...')
+        self.search_input.setPlaceholderText(tr('db.viewer.search_placeholder'))
         self.search_input.textChanged.connect(self.filter_data)
 
-        self.btn_reset_avfan = QPushButton('天陨重置')
+        self.btn_reset_avfan = QPushButton(tr('db.viewer.reset_avfan'))
         self.btn_reset_avfan.clicked.connect(lambda: self.reset_selected_rows(AVFAN_VIDEO_SOURCE))
 
-        self.btn_reset_javtxt = QPushButton('辛聚重置')
+        self.btn_reset_javtxt = QPushButton(tr('db.viewer.reset_javtxt'))
         self.btn_reset_javtxt.clicked.connect(lambda: self.reset_selected_rows(JAVTXT_VIDEO_SOURCE))
 
-        self.btn_refresh = QPushButton('刷新数据')
+        self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel('实时筛选：'))
+        top_layout.addWidget(QLabel(tr('common.filter_realtime')))
         top_layout.addWidget(self.search_input)
         top_layout.addWidget(self.btn_reset_avfan)
         top_layout.addWidget(self.btn_reset_javtxt)
         top_layout.addWidget(self.btn_refresh)
 
-        self.summary_label = QLabel('已补全数: 0 | 未补全数: 0 | 视频总数: 0')
+        self.summary_label = QLabel(tr('db.viewer.summary', enriched_count=0, unenriched_count=0, total_count=0))
         self.summary_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.table = QTableWidget()
         self.table.setColumnCount(13)
-        self.table.setHorizontalHeaderLabels(
-            [
-                '视频编号',
-                '视频标题',
-                '作者/演员',
-                '视频分类',
-                '时长',
-                '大小(GB)',
-                '存放位置',
-                '天陨ID',
-                '辛聚ID',
-                '发行日期',
-                '制作商',
-                '发行商',
-                '补全状态',
-            ]
-        )
+        self.table.setHorizontalHeaderLabels(tr('db.viewer.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
@@ -111,7 +97,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
                 'rows': self.backend_client.list_videos(search_text),
             },
             self._on_load_data_finished,
-            '读取失败',
+            tr('common.read_failed'),
         )
 
     def render_rows(self, rows):
@@ -143,10 +129,15 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
 
     def refresh_summary(self):
         total_count = len(self.rows)
-        enriched_count = sum(1 for row in self.rows if '已补全' in str(row.get('enrichment_status', '') or ''))
+        enriched_count = sum(1 for row in self.rows if ENRICHED_STATUS in str(row.get('enrichment_status', '') or ''))
         unenriched_count = max(total_count - enriched_count, 0)
         self.summary_label.setText(
-            f'已补全数: {enriched_count} | 未补全数: {unenriched_count} | 视频总数: {total_count}'
+            tr(
+                'db.viewer.summary',
+                enriched_count=enriched_count,
+                unenriched_count=unenriched_count,
+                total_count=total_count,
+            )
         )
 
     def filter_data(self, text):
@@ -161,19 +152,19 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
             self.render_rows(self.rows)
             self.refresh_summary()
         except Exception as exc:
-            print(f'筛选视频库失败: {exc}')
+            print(tr('db.viewer.filter_failed', error=exc))
 
     def reset_selected_rows(self, source_key):
         codes = self.selected_codes()
         if not codes:
-            QMessageBox.information(self, '未选择', '请先选中要重置的视频行。')
+            QMessageBox.information(self, tr('common.no_selection'), tr('db.viewer.select_reset_rows'))
             return
 
         source_label = get_video_enrichment_source_label(source_key)
         answer = QMessageBox.question(
             self,
-            '确认重置',
-            f'确定要重置选中的 {len(codes)} 个视频的{source_label}补全状态吗？',
+            tr('db.viewer.confirm_reset_title'),
+            tr('db.viewer.confirm_reset_message', count=len(codes), source_label=source_label),
         )
         if answer != QMessageBox.Yes:
             return
@@ -186,7 +177,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
                 'source_label': source_label,
             },
             self._on_reset_finished,
-            '重置失败',
+            tr('common.reset_failed'),
         )
 
     def selected_codes(self):
@@ -206,5 +197,9 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
     def _on_reset_finished(self, result):
         self._on_load_data_finished(result)
         reset_count = int((result or {}).get('reset_count', 0) or 0)
-        source_label = str((result or {}).get('source_label', '') or '所选来源')
-        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个视频的{source_label}补全状态。')
+        source_label = str((result or {}).get('source_label', '') or tr('common.reset_source_fallback'))
+        QMessageBox.information(
+            self,
+            tr('common.reset_completed'),
+            tr('db.viewer.reset_completed_message', count=reset_count, source_label=source_label),
+        )
