@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from app.core.enrichment_sources import build_library_enrichment_status_text
+from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
 from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.services.actor_identifier import split_actor_names
 from app.services.movie_author_resolver import JAVTXT_AUTHOR_MIN_RELEASE_DATE
@@ -18,16 +20,14 @@ class CodePrefixDetailLibrary:
         movies = self.database.list_code_prefix_movies(prefix)
         eligible_movies = self._filter_eligible_movies(movies)
         enriched_eligible_count = self._count_enriched_eligible_movies(eligible_movies)
-        described_video_count = self._count_described_movies(movies)
         earliest_release_date, latest_release_date = self._collect_date_range(movies)
 
         return {
             'prefix': prefix,
             'video_count': len(movies),
-            'described_video_count': described_video_count,
             'eligible_video_count': len(eligible_movies),
             'eligible_enriched_video_count': enriched_eligible_count,
-            'enrichment_status': enrichment.get('enrichment_status', ''),
+            'enrichment_status': self._build_live_enrichment_status(enrichment, eligible_movies),
             'avfan_total_pages': enrichment.get('avfan_total_pages', 0),
             'avfan_total_videos': enrichment.get('avfan_total_videos', 0),
             'last_enriched_at': enrichment.get('last_enriched_at', ''),
@@ -49,9 +49,24 @@ class CodePrefixDetailLibrary:
             if normalize_second_source_actor_text((movie or {}).get('author', ''))
         )
 
+    def _build_live_enrichment_status(self, enrichment, eligible_movies):
+        avfan_status = str((enrichment or {}).get('avfan_enrichment_status', '')).strip()
+        if not avfan_status:
+            avfan_status = str((enrichment or {}).get('enrichment_status', '')).strip() or UNENRICHED_STATUS
+
+        javtxt_record_status = str((enrichment or {}).get('javtxt_enrichment_status', '')).strip() or UNENRICHED_STATUS
+        if eligible_movies and all(self._has_javtxt_author(movie) for movie in eligible_movies):
+            javtxt_status = ENRICHED_STATUS
+        elif javtxt_record_status == ENRICHED_STATUS:
+            javtxt_status = UNENRICHED_STATUS
+        else:
+            javtxt_status = javtxt_record_status
+
+        return build_library_enrichment_status_text(avfan_status, javtxt_status)
+
     @staticmethod
-    def _count_described_movies(movies):
-        return sum(1 for movie in (movies or []) if str((movie or {}).get('description', '') or '').strip())
+    def _has_javtxt_author(movie):
+        return bool(normalize_second_source_actor_text((movie or {}).get('author', '')))
 
     def _collect_date_range(self, movies):
         dates = sorted(

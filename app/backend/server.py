@@ -59,7 +59,7 @@ def make_handler(service):
             if method == 'GET' and path == '/data-center/summary':
                 return service.get_data_center_summary()
             if method == 'POST' and path == '/database/videos/reset':
-                return service.reset_video_enrichments(body.get('codes', []))
+                return service.reset_video_enrichments(body.get('codes', []), body.get('source_key'))
             if method == 'GET' and path == '/database/videos/manual-category':
                 return service.list_videos_requiring_manual_category()
             if method == 'POST' and path == '/database/videos/category':
@@ -71,7 +71,7 @@ def make_handler(service):
                 actor_name = query.get('name', [''])[0]
                 return service.get_actor_detail(actor_name)
             if method == 'POST' and path == '/database/actors/reset':
-                return service.reset_actor_enrichments(body.get('actor_names', []))
+                return service.reset_actor_enrichments(body.get('actor_names', []), body.get('source_key'))
             if method == 'POST' and path == '/database/actors/rename':
                 return service.rename_actor(body.get('old_name'), body.get('new_name'))
             if method == 'POST' and path == '/database/actors/delete':
@@ -83,7 +83,7 @@ def make_handler(service):
                 prefix = query.get('prefix', [''])[0]
                 return service.get_code_prefix_detail(prefix)
             if method == 'POST' and path == '/database/code-prefixes/reset':
-                return service.reset_code_prefix_enrichments(body.get('prefixes', []))
+                return service.reset_code_prefix_enrichments(body.get('prefixes', []), body.get('source_key'))
             if method == 'POST' and path == '/database/code-prefixes/rename':
                 return service.rename_code_prefix(body.get('old_prefix'), body.get('new_prefix'))
             if method == 'POST' and path == '/database/code-prefixes/delete':

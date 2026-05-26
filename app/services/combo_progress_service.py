@@ -242,7 +242,17 @@ class ComboSubtaskProgressTracker:
         self.task_definition = dict(task_definition)
         self.logger = logger
 
-    def start(self, target_label, total_count, source_label='', message='', count_unit='项'):
+    def start(
+        self,
+        target_label,
+        total_count,
+        source_label='',
+        message='',
+        count_unit='项',
+        target_type='',
+        source_key='',
+        **_,
+    ):
         self.combo_progress_service.update_subtask_start(
             self.task_definition['task_key'],
             total_count,
@@ -258,6 +268,8 @@ class ComboSubtaskProgressTracker:
             total_count=max(0, int(total_count or 0)),
             source_label=str(source_label or ''),
             count_unit=str(count_unit or '项'),
+            target_type=str(target_type or self.task_definition.get('target_type', '') or ''),
+            source_key=str(source_key or self.task_definition.get('source_key', '') or ''),
         )
 
     def update(self, processed_count, success_count, failed_count, current_item=''):

@@ -276,6 +276,7 @@ class ComboEnrichmentService:
                 show_browser=show_browser,
                 should_stop=should_stop,
                 progress_tracker=progress_tracker,
+                logger=self.logger,
             )
             return service, lambda current_service, current_limit: current_service.enrich_next_prefixes(current_limit)
 
@@ -290,6 +291,7 @@ class ComboEnrichmentService:
                 show_browser=show_browser,
                 should_stop=should_stop,
                 progress_tracker=progress_tracker,
+                logger=self.logger,
             )
             return service, lambda current_service, current_limit: current_service.enrich_next_actors(current_limit)
 
@@ -299,6 +301,7 @@ class ComboEnrichmentService:
                 show_browser=show_browser,
                 should_stop=should_stop,
                 progress_tracker=progress_tracker,
+                logger=self.logger,
             )
             return service, lambda current_service, current_limit: current_service.enrich_next_prefixes(current_limit)
 
@@ -308,6 +311,7 @@ class ComboEnrichmentService:
                 show_browser=show_browser,
                 should_stop=should_stop,
                 progress_tracker=progress_tracker,
+                logger=self.logger,
             )
             return service, lambda current_service, current_limit: current_service.enrich_next_actors(current_limit)
 

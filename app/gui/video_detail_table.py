@@ -26,7 +26,7 @@ class VideoDetailTableWidget(QWidget):
         self.title_label = QLabel(self._title)
         self.summary_label = QLabel('共 0 条')
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入编号、标题、演员、描述、日期或分类实时筛选...')
+        self.search_input.setPlaceholderText('输入编号、标题、演员、日期或分类实时筛选...')
         self.search_input.textChanged.connect(self._apply_filter)
 
         top_layout.addWidget(self.title_label)
@@ -36,16 +36,15 @@ class VideoDetailTableWidget(QWidget):
         top_layout.addWidget(self.summary_label)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(
-            ['视频编号', '视频标题', '作者/演员', '视频分类', '发布日期', '描述']
+            ['视频编号', '视频标题', '作者/演员', '视频分类', '发布日期']
         )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -72,7 +71,7 @@ class VideoDetailTableWidget(QWidget):
     def _render_rows(self, rows):
         self.table.setRowCount(0)
         centered_columns = {0, 2, 3, 4}
-        fields = ('code', 'title', 'author', 'video_category', 'release_date', 'description')
+        fields = ('code', 'title', 'author', 'video_category', 'release_date')
 
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
@@ -89,6 +88,6 @@ class VideoDetailTableWidget(QWidget):
     def _matches_search(row, search_text):
         haystack = ' '.join(
             str((row or {}).get(field, '') or '')
-            for field in ('code', 'title', 'author', 'video_category', 'release_date', 'description')
+            for field in ('code', 'title', 'author', 'video_category', 'release_date')
         ).lower()
         return search_text in haystack

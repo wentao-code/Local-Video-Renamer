@@ -1,7 +1,16 @@
-from PyQt5.QtWidgets import QDialog, QGroupBox, QMessageBox, QScrollArea, QVBoxLayout
+from PyQt5.QtWidgets import (
+    QDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+)
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
-from app.gui.video_detail_table import VideoDetailTableWidget
+from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
 
 class CodePrefixDetailViewerWindow(QDialog):
@@ -35,7 +44,6 @@ class CodePrefixDetailViewerWindow(QDialog):
             [
                 ('prefix', '番号：', ''),
                 ('video_count', '本地视频数：', ''),
-                ('described_video_count', '网页带描述作品数：', ''),
                 ('total_pages', 'AVFan 总页数：', ''),
                 ('total_videos', 'AVFan 作品数：', ''),
                 ('eligible_video_count', '满足要求视频数：', ''),
@@ -60,8 +68,14 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         movie_group = QGroupBox('网页作品明细')
         movie_layout = QVBoxLayout(movie_group)
-        self.movie_table = VideoDetailTableWidget(title='当前番号下的网页作品')
-        movie_layout.addWidget(self.movie_table)
+        self.movie_count_label = QLabel('当前番号下的网页作品共 0 条')
+        self.btn_movie_detail = QPushButton('详情')
+        self.btn_movie_detail.clicked.connect(self.show_movie_detail)
+        movie_top_layout = QHBoxLayout()
+        movie_top_layout.addWidget(self.movie_count_label)
+        movie_top_layout.addStretch()
+        movie_top_layout.addWidget(self.btn_movie_detail)
+        movie_layout.addLayout(movie_top_layout)
 
         layout.addWidget(summary_group)
         layout.addWidget(stats_group)
@@ -78,7 +92,6 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         self.summary_grid.set_value('prefix', self.detail.get('prefix', ''))
         self.summary_grid.set_value('video_count', str(self.detail.get('video_count', 0)))
-        self.summary_grid.set_value('described_video_count', str(self.detail.get('described_video_count', 0)))
         self.summary_grid.set_value('total_pages', str(self.detail.get('avfan_total_pages', 0)))
         self.summary_grid.set_value('total_videos', str(self.detail.get('avfan_total_videos', 0)))
         self.summary_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
@@ -97,4 +110,20 @@ class CodePrefixDetailViewerWindow(QDialog):
             'top_actors',
             format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=2),
         )
-        self.movie_table.set_rows(self.detail.get('movies', []))
+
+        rows = list(self.detail.get('movies', []) or [])
+        self.movie_count_label.setText(f'当前番号下的网页作品共 {len(rows)} 条')
+        self.btn_movie_detail.setEnabled(bool(rows))
+
+    def show_movie_detail(self):
+        rows = list(self.detail.get('movies', []) or [])
+        if not rows:
+            QMessageBox.information(self, '暂无数据', '当前番号还没有可显示的网页作品明细。')
+            return
+        viewer = VideoListDetailWindow(
+            title=f'网页作品详情 - {self.prefix}',
+            table_title=f'{self.prefix} 的网页作品',
+            rows=rows,
+            parent=self,
+        )
+        viewer.exec_()

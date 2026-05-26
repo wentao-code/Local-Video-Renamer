@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.backend.client import BackendClient
+from app.core.backend_protocol import BACKEND_API_REVISION
 from app.core.local_video_labels import (
     ENRICHMENT_REQUIRED_STATUS,
     IMPORT_REQUIRED_STATUS,
@@ -27,6 +28,7 @@ from app.core.local_video_labels import (
     RENAME_REQUIRED_STATUS,
 )
 from app.core.project_paths import PROJECT_ROOT
+from app.core.runtime_config import get_backend_port
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
@@ -155,8 +157,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.reset_progress_widgets()
 
     def ensure_backend_running(self):
-        if self.is_backend_alive():
+        health = self.get_backend_health()
+        if self.is_backend_compatible(health):
             return
+        if health is not None:
+            self.stop_stale_backend()
 
         backend_script = PROJECT_ROOT / 'backend_server.py'
         creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -170,18 +175,70 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
         deadline = time.time() + 5
         while time.time() < deadline:
-            if self.is_backend_alive():
+            health = self.get_backend_health()
+            if self.is_backend_compatible(health):
                 return
             time.sleep(0.2)
 
         raise RuntimeError('后端服务启动超时')
 
     def is_backend_alive(self):
+        return self.get_backend_health() is not None
+
+    def get_backend_health(self):
         try:
-            self.backend_client.health()
-            return True
+            return self.backend_client.health()
         except Exception:
-            return False
+            return None
+
+    def is_backend_compatible(self, health):
+        return bool(health) and str(health.get('backend_revision') or '') == BACKEND_API_REVISION
+
+    def stop_stale_backend(self):
+        if self.backend_process and self.backend_process.poll() is None:
+            self.backend_process.terminate()
+            try:
+                self.backend_process.wait(timeout=3)
+            except Exception:
+                pass
+            return
+
+        creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        port = str(get_backend_port())
+        result = subprocess.run(
+            ['netstat', '-ano', '-p', 'tcp'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='ignore',
+            creationflags=creation_flags,
+        )
+        target_pids = set()
+        port_token = f':{port}'
+        for line in result.stdout.splitlines():
+            upper_line = line.upper()
+            if 'LISTENING' not in upper_line or port_token not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            local_address = parts[1]
+            if port_token not in local_address:
+                continue
+            pid = str(parts[-1] or '').strip()
+            if pid.isdigit():
+                target_pids.add(pid)
+
+        for pid in sorted(target_pids):
+            subprocess.run(
+                ['taskkill', '/PID', pid, '/F'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+
+        if target_pids:
+            time.sleep(0.5)
 
     def init_ui(self):
         self.setWindowTitle('VidNorm - 本地视频整理工具')
@@ -733,7 +790,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             label_text = f'{label_text} | 当前: {current_item}'
         elif message:
             label_text = f'{label_text} | {message}'
-        if log_path and progress.get('task_kind') == 'combo' and not is_running:
+        if log_path and not is_running:
             label_text = f'{label_text} | 日志: {log_path}'
 
         self.progress_label.setText(label_text)
@@ -936,39 +993,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
         count_unit = result.get('count_unit') or result.get('entity_label', '项')
         remaining_label = result.get('remaining_label', '剩余待补全')
-        return (
-            f"本次处理 {result.get('processed_count', 0)} {count_unit}。\n"
-            f"成功: {result.get('success_count', 0)}\n"
-            f"失败: {result.get('failed_count', 0)}\n"
-            f"{remaining_label}: {result.get('remaining_count', 0)} {count_unit}"
-        )
-        if result.get('task_kind') == 'combo':
-            lines = [
-                f"组合任务：{result.get('combo_label', '')}",
-                f"总处理: {result.get('processed_count', 0)}",
-                f"总成功: {result.get('success_count', 0)}",
-                f"总失败: {result.get('failed_count', 0)}",
-                f"总剩余: {result.get('remaining_count', 0)}",
-            ]
-            for task_key, task_result in (result.get('subtask_results', {}) or {}).items():
-                task_label = task_result.get('task_label') or task_result.get('entity_label') or task_key
-                lines.append(
-                    f"{task_label}: 处理 {task_result.get('processed_count', 0)} / 成功 {task_result.get('success_count', 0)} / 失败 {task_result.get('failed_count', 0)} / 剩余 {task_result.get('remaining_count', 0)}"
-                )
-            if result.get('message'):
-                lines.append(f"消息: {result.get('message')}")
-            if result.get('log_path'):
-                lines.append(f"日志: {result.get('log_path')}")
-            return '\n'.join(lines)
-
-        entity_label = result.get('entity_label', '视频')
-        remaining_label = result.get('remaining_label', f'剩余未补全{entity_label}')
-        return (
-            f"本次处理 {result.get('processed_count', 0)} 个{entity_label}。\n"
-            f"成功: {result.get('success_count', 0)} 个\n"
-            f"失败: {result.get('failed_count', 0)} 个\n"
-            f"{remaining_label}: {result.get('remaining_count', 0)} 个"
-        )
+        lines = [
+            f"本次处理 {result.get('processed_count', 0)} {count_unit}。",
+            f"成功: {result.get('success_count', 0)}",
+            f"失败: {result.get('failed_count', 0)}",
+            f"{remaining_label}: {result.get('remaining_count', 0)} {count_unit}",
+        ]
+        if result.get('message'):
+            lines.append(f"消息: {result.get('message')}")
+        if result.get('log_path'):
+            lines.append(f"日志: {result.get('log_path')}")
+        return '\n'.join(lines)
 
     def cleanup_auto_login_thread(self):
         self.btn_auto_login.setEnabled(True)

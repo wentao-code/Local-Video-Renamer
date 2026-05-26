@@ -112,8 +112,8 @@ class BackendClient:
     def get_enrichment_progress(self):
         return self._get('/database/enrich/progress').get('progress', {})
 
-    def reset_video_enrichments(self, codes):
-        return self._post('/database/videos/reset', {'codes': codes}).get('reset_count', 0)
+    def reset_video_enrichments(self, codes, source_key=None):
+        return self._post('/database/videos/reset', {'codes': codes, 'source_key': source_key}).get('reset_count', 0)
 
     def list_videos_requiring_manual_category(self):
         return self._get('/database/videos/manual-category').get('videos', [])
@@ -131,8 +131,8 @@ class BackendClient:
         query = '?' + urlencode({'name': actor_name})
         return self._get('/database/actors/detail' + query).get('actor', {})
 
-    def reset_actor_enrichments(self, actor_names):
-        return self._post('/database/actors/reset', {'actor_names': actor_names}).get('reset_count', 0)
+    def reset_actor_enrichments(self, actor_names, source_key=None):
+        return self._post('/database/actors/reset', {'actor_names': actor_names, 'source_key': source_key}).get('reset_count', 0)
 
     def rename_actor(self, old_name, new_name):
         return self._post(
@@ -153,8 +153,8 @@ class BackendClient:
         query = '?' + urlencode({'prefix': prefix})
         return self._get('/database/code-prefixes/detail' + query).get('prefix_detail', {})
 
-    def reset_code_prefix_enrichments(self, prefixes):
-        return self._post('/database/code-prefixes/reset', {'prefixes': prefixes}).get('reset_count', 0)
+    def reset_code_prefix_enrichments(self, prefixes, source_key=None):
+        return self._post('/database/code-prefixes/reset', {'prefixes': prefixes, 'source_key': source_key}).get('reset_count', 0)
 
     def rename_code_prefix(self, old_prefix, new_prefix):
         return self._post(

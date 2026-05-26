@@ -5,14 +5,24 @@ from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.code_prefix_entry_parser import parse_code_prefix_card
 from app.services.code_prefix_library import CodePrefixLibrary, extract_code_prefix
+from app.services.progress_tracker_compat import start_progress_tracker
 
 
 class CodePrefixEnrichmentService:
-    def __init__(self, database, scraper=None, show_browser=False, should_stop=None, progress_tracker=None):
+    def __init__(
+        self,
+        database,
+        scraper=None,
+        show_browser=False,
+        should_stop=None,
+        progress_tracker=None,
+        logger=None,
+    ):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
+        self.logger = logger
         self.scraper = scraper or AvfanCodePrefixScraper(headless=not show_browser)
 
     def enrich_next_prefixes(self, limit):
@@ -26,22 +36,35 @@ class CodePrefixEnrichmentService:
         failed_count = 0
         stopped = False
         source_label = get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)
+        self._log(
+            'INFO',
+            '番号库补全任务启动',
+            source_key=AVFAN_VIDEO_SOURCE,
+            requested_limit=limit,
+            candidate_count=len(candidates),
+            candidate_prefixes=','.join(candidates[:20]),
+        )
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start(
+            start_progress_tracker(
+                self.progress_tracker,
                 '番号库',
                 len(candidates),
                 source_label=source_label,
                 count_unit='番号',
                 target_type=CODE_PREFIX_LIBRARY_TARGET,
                 source_key=AVFAN_VIDEO_SOURCE,
+                log_path=str(getattr(self.logger, 'log_path', '') or ''),
+                task_kind='single',
             )
 
         for prefix in candidates:
             if self.should_stop():
                 stopped = True
+                self._log('WARNING', '番号库补全收到停止请求', processed_count=len(results))
                 break
 
+            self._log('INFO', '开始处理番号前缀', prefix=prefix)
             try:
                 with self.scraper.session() as page:
                     result = self._enrich_single_prefix(page, prefix)
@@ -66,6 +89,12 @@ class CodePrefixEnrichmentService:
                 )
                 results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
+                self._log(
+                    'ERROR',
+                    '番号库补全被人机验证中断',
+                    prefix=prefix,
+                    error=error_message,
+                )
                 self._update_progress(len(results), success_count, failed_count, prefix)
                 result = {
                     'requested': limit,
@@ -96,6 +125,12 @@ class CodePrefixEnrichmentService:
                 )
                 results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
+                self._log(
+                    'ERROR',
+                    '番号库补全异常，已写入失败状态',
+                    prefix=prefix,
+                    error=error_message,
+                )
 
             self._update_progress(len(results), success_count, failed_count, prefix)
 
@@ -113,6 +148,15 @@ class CodePrefixEnrichmentService:
             'remaining_label': '剩余未补全番号',
         }
         self._finish_progress('番号补全已完成。' if not stopped else '番号补全已停止。', stopped=stopped)
+        self._log(
+            'INFO',
+            '番号库补全任务结束',
+            processed_count=result['processed_count'],
+            success_count=result['success_count'],
+            failed_count=result['failed_count'],
+            remaining_count=result['remaining_count'],
+            stopped=stopped,
+        )
         return result
 
     def _update_progress(self, processed_count, success_count, failed_count, current_item):
@@ -123,6 +167,14 @@ class CodePrefixEnrichmentService:
                 failed_count=failed_count,
                 current_item=current_item,
             )
+        self._log(
+            'INFO',
+            '番号库补全进度更新',
+            processed_count=processed_count,
+            success_count=success_count,
+            failed_count=failed_count,
+            current_item=current_item,
+        )
 
     def _finish_progress(self, message, stopped=False):
         if self.progress_tracker is not None:
@@ -138,6 +190,12 @@ class CodePrefixEnrichmentService:
                 prefixes.append(prefix)
             if len(prefixes) >= limit:
                 break
+        self._log(
+            'INFO',
+            '已筛选番号库候选前缀',
+            candidate_count=len(prefixes),
+            candidate_prefixes=','.join(prefixes[:20]),
+        )
         return prefixes
 
     def _remaining_prefix_count(self):
@@ -155,14 +213,27 @@ class CodePrefixEnrichmentService:
         self.scraper.open_listing_page(page, prefix, 1)
         total_pages = self.scraper.detect_total_pages(page)
         stopped_early = False
+        self._log('INFO', '番号前缀详情页已打开', prefix=prefix, total_pages=total_pages)
 
         for page_number in range(1, total_pages + 1):
             if self.should_stop():
                 stopped_early = True
+                self._log('WARNING', '番号前缀分页抓取提前停止', prefix=prefix, page_number=page_number)
                 break
             if page_number > 1:
                 self.scraper.open_listing_page(page, prefix, page_number)
-            parsed_entries.extend(self._parse_entries(prefix, self.scraper.collect_page_entries(page), page_number))
+            page_rows = self.scraper.collect_page_entries(page)
+            page_entries = self._parse_entries(prefix, page_rows, page_number)
+            parsed_entries.extend(page_entries)
+            self._log(
+                'INFO',
+                '番号前缀分页抓取完成',
+                prefix=prefix,
+                page_number=page_number,
+                raw_row_count=len(page_rows),
+                parsed_entry_count=len(page_entries),
+                accumulated_entry_count=len(parsed_entries),
+            )
 
         if stopped_early:
             return {
@@ -173,6 +244,13 @@ class CodePrefixEnrichmentService:
             }
 
         unique_entries = self._dedupe_entries(parsed_entries)
+        self._log(
+            'INFO',
+            '番号前缀结果去重完成',
+            prefix=prefix,
+            parsed_entry_count=len(parsed_entries),
+            unique_entry_count=len(unique_entries),
+        )
         if unique_entries:
             self.database.replace_code_prefix_movies(prefix, unique_entries)
             self.database.save_code_prefix_enrichment(
@@ -182,6 +260,14 @@ class CodePrefixEnrichmentService:
                 total_videos=len(unique_entries),
                 error='',
                 source_key=AVFAN_VIDEO_SOURCE,
+            )
+            self._log(
+                'INFO',
+                '番号前缀补全成功并写库',
+                prefix=prefix,
+                total_pages=total_pages,
+                video_count=len(unique_entries),
+                status=ENRICHED_STATUS,
             )
             return {
                 'prefix': prefix,
@@ -198,6 +284,13 @@ class CodePrefixEnrichmentService:
             total_videos=0,
             error='未搜索到番号页面内容',
             source_key=AVFAN_VIDEO_SOURCE,
+        )
+        self._log(
+            'WARNING',
+            '番号前缀未抓到页面内容，已写入无搜索结果状态',
+            prefix=prefix,
+            total_pages=total_pages,
+            status=NO_SEARCH_RESULTS_STATUS,
         )
         return {
             'prefix': prefix,
@@ -234,3 +327,7 @@ class CodePrefixEnrichmentService:
                 continue
             deduped[code] = entry
         return [deduped[key] for key in sorted(deduped)]
+
+    def _log(self, level, message, **fields):
+        if self.logger is not None:
+            self.logger.log(level, message, service='code_prefix_enrichment', **fields)

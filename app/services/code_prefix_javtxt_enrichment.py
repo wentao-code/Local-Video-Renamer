@@ -3,18 +3,21 @@ from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHE
 from app.core.enrichment_targets import CODE_PREFIX_LIBRARY_TARGET
 from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.movie_author_resolver import MovieAuthorResolver
+from app.services.progress_tracker_compat import start_progress_tracker
 
 
 class CodePrefixJavtxtEnrichmentService:
-    def __init__(self, database, show_browser=False, should_stop=None, progress_tracker=None):
+    def __init__(self, database, show_browser=False, should_stop=None, progress_tracker=None, logger=None):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
+        self.logger = logger
         self.author_resolver = MovieAuthorResolver(
             database,
             headless=not show_browser,
             should_stop=self.should_stop,
+            logger=self.logger,
         )
 
     def enrich_next_prefixes(self, limit):
@@ -34,20 +37,33 @@ class CodePrefixJavtxtEnrichmentService:
         }
         stopped = False
         source_label = get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)
+        self._log(
+            'INFO',
+            '番号库辛聚谷补全任务启动',
+            requested_limit=limit,
+            ready_prefix_count=len(ready_prefixes),
+            blocked_count=blocked_count,
+            target_video_count=target_video_count,
+            ready_prefixes=','.join(ready_prefixes[:20]),
+        )
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start(
+            start_progress_tracker(
+                self.progress_tracker,
                 '番号库',
                 target_video_count,
                 source_label=source_label,
                 count_unit='视频',
                 target_type=CODE_PREFIX_LIBRARY_TARGET,
                 source_key=JAVTXT_VIDEO_SOURCE,
+                log_path=str(getattr(self.logger, 'log_path', '') or ''),
+                task_kind='single',
             )
 
         for prefix in ready_prefixes:
             if self.should_stop():
                 stopped = True
+                self._log('WARNING', '番号库辛聚谷补全收到停止请求', processed_count=progress_state['processed_video_count'])
                 break
 
             remaining_slots = limit - int(progress_state.get('processed_video_count', 0) or 0)
@@ -80,6 +96,12 @@ class CodePrefixJavtxtEnrichmentService:
                     }
                 )
                 progress_state['failed_video_count'] = int(progress_state.get('failed_video_count', 0) or 0) + 1
+                self._log(
+                    'ERROR',
+                    '番号库辛聚谷补全异常，已写入失败状态',
+                    prefix=prefix,
+                    error=error_message,
+                )
                 self._update_progress(
                     int(progress_state.get('processed_video_count', 0) or 0),
                     int(progress_state.get('success_video_count', 0) or 0),
@@ -109,6 +131,16 @@ class CodePrefixJavtxtEnrichmentService:
         }
         finish_message = message or ('番号库辛聚谷补全已完成。' if not stopped else '番号库辛聚谷补全已停止。')
         self._finish_progress(finish_message, stopped=stopped)
+        self._log(
+            'INFO',
+            '番号库辛聚谷补全任务结束',
+            processed_count=result['processed_count'],
+            success_count=result['success_count'],
+            failed_count=result['failed_count'],
+            remaining_count=result['remaining_count'],
+            blocked_count=blocked_count,
+            stopped=stopped,
+        )
         return result
 
     def _ready_prefixes(self):
@@ -117,8 +149,7 @@ class CodePrefixJavtxtEnrichmentService:
         for row in self.prefix_library.list_prefixes():
             prefix = row.get('prefix', '')
             record = records.get(prefix, {})
-            status = record.get('javtxt_enrichment_status', UNENRICHED_STATUS)
-            if status not in (UNENRICHED_STATUS, FAILED_STATUS) or not self._is_ready_for_javtxt(record):
+            if not self._is_ready_for_javtxt(record):
                 continue
 
             movies = self.database.list_code_prefix_movies(prefix)
@@ -127,6 +158,13 @@ class CodePrefixJavtxtEnrichmentService:
                 continue
 
             prefixes.append(prefix)
+            self._log(
+                'INFO',
+                '番号前缀已进入辛聚谷待补全队列',
+                prefix=prefix,
+                pending_video_count=pending_count,
+                avfan_total_videos=record.get('avfan_total_videos', 0),
+            )
         return prefixes
 
     def _remaining_prefix_video_count(self, prefixes=None):
@@ -162,27 +200,49 @@ class CodePrefixJavtxtEnrichmentService:
         progress_state['_processed_offset'] = int(progress_state.get('processed_video_count', 0) or 0)
         progress_state['_success_offset'] = int(progress_state.get('success_video_count', 0) or 0)
         progress_state['_failed_offset'] = int(progress_state.get('failed_video_count', 0) or 0)
+        pending_before = self.author_resolver.count_pending_entries(movies)
+        self._log(
+            'INFO',
+            '开始处理番号前缀的辛聚谷演员补全',
+            prefix=prefix,
+            movie_count=len(movies),
+            pending_video_count=pending_before,
+            max_video_count=max_video_count,
+        )
 
         with self.author_resolver.session():
             resolution = self.author_resolver.enrich_entries_with_details(
                 movies,
                 max_lookup_count=max_video_count,
-                progress_callback=lambda update: self._on_video_progress(update, progress_state),
+                progress_callback=lambda update: self._on_video_progress(update, progress_state, prefix),
             )
 
         enriched_movies = resolution.get('entries', [])
+        completed = bool(resolution.get('completed'))
+        status = ENRICHED_STATUS if completed else UNENRICHED_STATUS
         self.database.replace_code_prefix_movies(prefix, enriched_movies)
         self.database.save_code_prefix_enrichment(
             prefix=prefix,
-            status=ENRICHED_STATUS if resolution.get('completed') else UNENRICHED_STATUS,
+            status=status,
             total_pages=0,
             total_videos=len(enriched_movies),
             error='',
             source_key=JAVTXT_VIDEO_SOURCE,
         )
+        self._log(
+            'INFO',
+            '番号前缀辛聚谷补全完成并写库',
+            prefix=prefix,
+            status=status,
+            movie_count=len(enriched_movies),
+            processed_video_count=int(resolution.get('processed_video_count', 0) or 0),
+            success_video_count=int(resolution.get('success_video_count', 0) or 0),
+            failed_video_count=int(resolution.get('failed_video_count', 0) or 0),
+            remaining_video_count=int(resolution.get('pending_video_count', 0) or 0),
+        )
         return {
             'prefix': prefix,
-            'status': ENRICHED_STATUS if resolution.get('completed') else UNENRICHED_STATUS,
+            'status': status,
             'video_count': len(enriched_movies),
             'processed_video_count': int(resolution.get('processed_video_count', 0) or 0),
             'success_video_count': int(resolution.get('success_video_count', 0) or 0),
@@ -199,12 +259,20 @@ class CodePrefixJavtxtEnrichmentService:
                 failed_count=failed_count,
                 current_item=current_item,
             )
+        self._log(
+            'INFO',
+            '番号库辛聚谷补全进度更新',
+            processed_count=processed_count,
+            success_count=success_count,
+            failed_count=failed_count,
+            current_item=current_item,
+        )
 
     def _finish_progress(self, message, stopped=False):
         if self.progress_tracker is not None:
             self.progress_tracker.finish(message=message, stopped=stopped)
 
-    def _on_video_progress(self, update, progress_state):
+    def _on_video_progress(self, update, progress_state, prefix):
         offset_processed = int(progress_state.get('_processed_offset', 0) or 0)
         offset_success = int(progress_state.get('_success_offset', 0) or 0)
         offset_failed = int(progress_state.get('_failed_offset', 0) or 0)
@@ -213,9 +281,23 @@ class CodePrefixJavtxtEnrichmentService:
         progress_state['success_video_count'] = offset_success + int(update.get('success_video_count', 0) or 0)
         progress_state['failed_video_count'] = offset_failed + int(update.get('failed_video_count', 0) or 0)
 
+        self._log(
+            'INFO',
+            '番号前缀下视频作者补全进度更新',
+            prefix=prefix,
+            code=str(update.get('code', '') or ''),
+            status=str(update.get('status', '') or ''),
+            processed_video_count=progress_state['processed_video_count'],
+            success_video_count=progress_state['success_video_count'],
+            failed_video_count=progress_state['failed_video_count'],
+        )
         self._update_progress(
             progress_state['processed_video_count'],
             progress_state['success_video_count'],
             progress_state['failed_video_count'],
             str(update.get('code', '') or ''),
         )
+
+    def _log(self, level, message, **fields):
+        if self.logger is not None:
+            self.logger.log(level, message, service='code_prefix_javtxt_enrichment', **fields)

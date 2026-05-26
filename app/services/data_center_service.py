@@ -131,9 +131,7 @@ class DataCenterService:
             eligible_count = len(eligible_movies)
             total_count += eligible_count
 
-            record = records.get(item_key, {})
-            status = self._get_source_status(record, JAVTXT_VIDEO_SOURCE)
-            if status == ENRICHED_STATUS or self._all_movies_have_javtxt_author(eligible_movies):
+            if self._all_movies_have_javtxt_author(eligible_movies):
                 enriched_count += eligible_count
 
         pending_count = max(total_count - enriched_count, 0)

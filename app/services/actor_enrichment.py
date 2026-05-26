@@ -4,13 +4,23 @@ from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET
 from app.scraper.avfan_actor_scraper import AvfanActorScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.actor_search_entry_parser import parse_actor_search_card
+from app.services.progress_tracker_compat import start_progress_tracker
 
 
 class ActorEnrichmentService:
-    def __init__(self, database, scraper=None, show_browser=False, should_stop=None, progress_tracker=None):
+    def __init__(
+        self,
+        database,
+        scraper=None,
+        show_browser=False,
+        should_stop=None,
+        progress_tracker=None,
+        logger=None,
+    ):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
+        self.logger = logger
         self.scraper = scraper or AvfanActorScraper(headless=not show_browser)
 
     def enrich_next_actors(self, limit):
@@ -24,22 +34,35 @@ class ActorEnrichmentService:
         failed_count = 0
         stopped = False
         source_label = get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)
+        self._log(
+            'INFO',
+            '演员库补全任务启动',
+            source_key=AVFAN_VIDEO_SOURCE,
+            requested_limit=limit,
+            candidate_count=len(candidates),
+            candidate_names=' | '.join(candidates[:20]),
+        )
 
         if self.progress_tracker is not None:
-            self.progress_tracker.start(
+            start_progress_tracker(
+                self.progress_tracker,
                 '演员库',
                 len(candidates),
                 source_label=source_label,
                 count_unit='演员',
                 target_type=ACTOR_LIBRARY_TARGET,
                 source_key=AVFAN_VIDEO_SOURCE,
+                log_path=str(getattr(self.logger, 'log_path', '') or ''),
+                task_kind='single',
             )
 
         for actor_name in candidates:
             if self.should_stop():
                 stopped = True
+                self._log('WARNING', '演员库补全收到停止请求', processed_count=len(results))
                 break
 
+            self._log('INFO', '开始处理演员', actor_name=actor_name)
             try:
                 with self.scraper.session() as page:
                     result = self._enrich_single_actor(page, actor_name)
@@ -65,6 +88,12 @@ class ActorEnrichmentService:
                 )
                 results.append({'actor_name': actor_name, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
+                self._log(
+                    'ERROR',
+                    '演员库补全被人机验证中断',
+                    actor_name=actor_name,
+                    error=error_message,
+                )
                 self._update_progress(len(results), success_count, failed_count, actor_name)
                 result = {
                     'requested': limit,
@@ -96,6 +125,12 @@ class ActorEnrichmentService:
                 )
                 results.append({'actor_name': actor_name, 'status': FAILED_STATUS, 'error': error_message})
                 failed_count += 1
+                self._log(
+                    'ERROR',
+                    '演员库补全异常，已写入失败状态',
+                    actor_name=actor_name,
+                    error=error_message,
+                )
 
             self._update_progress(len(results), success_count, failed_count, actor_name)
 
@@ -113,6 +148,15 @@ class ActorEnrichmentService:
             'remaining_label': '剩余未补全演员',
         }
         self._finish_progress('演员库补全已完成。' if not stopped else '演员库补全已停止。', stopped=stopped)
+        self._log(
+            'INFO',
+            '演员库补全任务结束',
+            processed_count=result['processed_count'],
+            success_count=result['success_count'],
+            failed_count=result['failed_count'],
+            remaining_count=result['remaining_count'],
+            stopped=stopped,
+        )
         return result
 
     def _update_progress(self, processed_count, success_count, failed_count, current_item):
@@ -123,6 +167,14 @@ class ActorEnrichmentService:
                 failed_count=failed_count,
                 current_item=current_item,
             )
+        self._log(
+            'INFO',
+            '演员库补全进度更新',
+            processed_count=processed_count,
+            success_count=success_count,
+            failed_count=failed_count,
+            current_item=current_item,
+        )
 
     def _finish_progress(self, message, stopped=False):
         if self.progress_tracker is not None:
@@ -140,6 +192,12 @@ class ActorEnrichmentService:
                 actors.append(actor_name)
             if len(actors) >= limit:
                 break
+        self._log(
+            'INFO',
+            '已筛选演员库候选演员',
+            candidate_count=len(actors),
+            candidate_names=' | '.join(actors[:20]),
+        )
         return actors
 
     def _remaining_actor_count(self):
@@ -160,14 +218,27 @@ class ActorEnrichmentService:
         actor_id = self.scraper.extract_actor_id(actor_page_url)
         total_pages = self.scraper.detect_total_pages(page)
         stopped_early = False
+        self._log('INFO', '演员详情页已打开', actor_name=actor_name, actor_id=actor_id, total_pages=total_pages)
 
         for page_number in range(1, total_pages + 1):
             if self.should_stop():
                 stopped_early = True
+                self._log('WARNING', '演员分页抓取提前停止', actor_name=actor_name, page_number=page_number)
                 break
             if page_number > 1:
                 self.scraper.open_listing_page(page, actor_name, page_number)
-            parsed_entries.extend(self._parse_entries(actor_name, self.scraper.collect_page_entries(page), page_number))
+            page_rows = self.scraper.collect_page_entries(page)
+            page_entries = self._parse_entries(actor_name, page_rows, page_number)
+            parsed_entries.extend(page_entries)
+            self._log(
+                'INFO',
+                '演员分页抓取完成',
+                actor_name=actor_name,
+                page_number=page_number,
+                raw_row_count=len(page_rows),
+                parsed_entry_count=len(page_entries),
+                accumulated_entry_count=len(parsed_entries),
+            )
 
         if stopped_early:
             return {
@@ -178,6 +249,13 @@ class ActorEnrichmentService:
             }
 
         unique_entries = self._dedupe_entries(parsed_entries)
+        self._log(
+            'INFO',
+            '演员作品结果去重完成',
+            actor_name=actor_name,
+            parsed_entry_count=len(parsed_entries),
+            unique_entry_count=len(unique_entries),
+        )
         if unique_entries:
             self.database.replace_actor_movies(actor_name, unique_entries)
             self.database.save_actor_enrichment(
@@ -188,6 +266,15 @@ class ActorEnrichmentService:
                 error='',
                 actor_id=actor_id,
                 source_key=AVFAN_VIDEO_SOURCE,
+            )
+            self._log(
+                'INFO',
+                '演员补全成功并写库',
+                actor_name=actor_name,
+                actor_id=actor_id,
+                total_pages=total_pages,
+                video_count=len(unique_entries),
+                status=ENRICHED_STATUS,
             )
             return {
                 'actor_name': actor_name,
@@ -205,6 +292,14 @@ class ActorEnrichmentService:
             error='未搜索到演员作品页面内容',
             actor_id=actor_id,
             source_key=AVFAN_VIDEO_SOURCE,
+        )
+        self._log(
+            'WARNING',
+            '演员未抓到页面内容，已写入无搜索结果状态',
+            actor_name=actor_name,
+            actor_id=actor_id,
+            total_pages=total_pages,
+            status=NO_SEARCH_RESULTS_STATUS,
         )
         return {
             'actor_name': actor_name,
@@ -237,3 +332,7 @@ class ActorEnrichmentService:
                 continue
             deduped[code] = entry
         return [deduped[key] for key in sorted(deduped)]
+
+    def _log(self, level, message, **fields):
+        if self.logger is not None:
+            self.logger.log(level, message, service='actor_enrichment', **fields)

@@ -14,6 +14,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    get_video_enrichment_source_label,
+)
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 
@@ -38,18 +43,22 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText('输入演员、作者 ID、生日、年龄或补全状态实时筛选...')
+        self.search_input.setPlaceholderText('输入演员、作者ID、生日、年龄或补全状态实时筛选...')
         self.search_input.textChanged.connect(self.filter_data)
 
-        self.btn_reset = QPushButton('选中重置')
-        self.btn_reset.clicked.connect(self.reset_selected_rows)
+        self.btn_reset_avfan = QPushButton('天陨重置')
+        self.btn_reset_avfan.clicked.connect(lambda: self.reset_selected_rows(AVFAN_VIDEO_SOURCE))
+
+        self.btn_reset_javtxt = QPushButton('辛聚重置')
+        self.btn_reset_javtxt.clicked.connect(lambda: self.reset_selected_rows(JAVTXT_VIDEO_SOURCE))
 
         self.btn_refresh = QPushButton('刷新数据')
         self.btn_refresh.clicked.connect(self.load_data)
 
         top_layout.addWidget(QLabel('实时筛选：'))
         top_layout.addWidget(self.search_input)
-        top_layout.addWidget(self.btn_reset)
+        top_layout.addWidget(self.btn_reset_avfan)
+        top_layout.addWidget(self.btn_reset_javtxt)
         top_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
@@ -65,7 +74,9 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         layout.addLayout(top_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
-        self.set_async_busy_widgets([self.search_input, self.btn_reset, self.btn_refresh, self.table])
+        self.set_async_busy_widgets(
+            [self.search_input, self.btn_reset_avfan, self.btn_reset_javtxt, self.btn_refresh, self.table]
+        )
 
     def load_data(self):
         search_text = self.search_input.text().strip()
@@ -261,20 +272,26 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         self._on_load_data_finished(result)
         QMessageBox.information(self, '删除完成', f"已删除演员 {result.get('actor_name', '')}。")
 
-    def reset_selected_rows(self):
+    def reset_selected_rows(self, source_key):
         actor_names = self.selected_actor_names()
         if not actor_names:
             QMessageBox.information(self, '未选择', '请先选中要重置的演员行。')
             return
-        answer = QMessageBox.question(self, '确认重置', f'确定要重置选中的 {len(actor_names)} 个演员补全状态吗？')
+        source_label = get_video_enrichment_source_label(source_key)
+        answer = QMessageBox.question(
+            self,
+            '确认重置',
+            f'确定要重置选中的 {len(actor_names)} 个演员的{source_label}补全状态吗？',
+        )
         if answer != QMessageBox.Yes:
             return
 
         search_text = self.search_input.text().strip()
         self.start_async_task(
             lambda: {
-                'reset_count': self.backend_client.reset_actor_enrichments(actor_names),
+                'reset_count': self.backend_client.reset_actor_enrichments(actor_names, source_key=source_key),
                 'rows': self.backend_client.list_actors(search_text),
+                'source_label': source_label,
             },
             self._on_reset_finished,
             '重置失败',
@@ -297,4 +314,5 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
     def _on_reset_finished(self, result):
         self._on_load_data_finished(result)
         reset_count = int((result or {}).get('reset_count', 0) or 0)
-        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的补全状态。')
+        source_label = str((result or {}).get('source_label', '') or '所选来源')
+        QMessageBox.information(self, '重置完成', f'已重置 {reset_count} 个演员的{source_label}补全状态。')

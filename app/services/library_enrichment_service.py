@@ -19,16 +19,29 @@ class LibraryEnrichmentService:
         cooldown_before_search=False,
         should_stop=None,
         progress_tracker=None,
+        logger=None,
     ):
         self.database = database
         self.show_browser = show_browser
         self.cooldown_before_search = cooldown_before_search
         self.should_stop = should_stop
         self.progress_tracker = progress_tracker
+        self.logger = logger
 
     def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
         if not target_type:
             target_type = VIDEO_LIBRARY_TARGET
+
+        if self.logger is not None:
+            self.logger.log(
+                'INFO',
+                '任务调度开始',
+                requested_target_type=target_type,
+                requested_source_key=source_key or '',
+                limit=max(0, int(limit or 0)),
+                show_browser=bool(self.show_browser),
+                cooldown_before_search=bool(self.cooldown_before_search),
+            )
 
         if target_type == VIDEO_LIBRARY_TARGET:
             service = VideoSourceEnrichmentService(
@@ -38,6 +51,7 @@ class LibraryEnrichmentService:
                 cooldown_before_search=self.cooldown_before_search,
                 should_stop=self.should_stop,
                 progress_tracker=self.progress_tracker,
+                logger=self.logger,
             )
             result = service.enrich_next_videos(limit)
             result.setdefault('entity_label', '视频')
@@ -50,6 +64,7 @@ class LibraryEnrichmentService:
                     show_browser=self.show_browser,
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
+                    logger=self.logger,
                 )
             else:
                 service = CodePrefixEnrichmentService(
@@ -57,6 +72,7 @@ class LibraryEnrichmentService:
                     show_browser=self.show_browser,
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
+                    logger=self.logger,
                 )
             result = service.enrich_next_prefixes(limit)
             result.setdefault('source_key', source_key or AVFAN_VIDEO_SOURCE)
@@ -69,6 +85,7 @@ class LibraryEnrichmentService:
                     show_browser=self.show_browser,
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
+                    logger=self.logger,
                 )
             else:
                 service = ActorEnrichmentService(
@@ -76,6 +93,7 @@ class LibraryEnrichmentService:
                     show_browser=self.show_browser,
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
+                    logger=self.logger,
                 )
             result = service.enrich_next_actors(limit)
             result.setdefault('source_key', source_key or AVFAN_VIDEO_SOURCE)

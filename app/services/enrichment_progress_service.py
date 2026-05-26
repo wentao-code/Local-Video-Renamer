@@ -15,12 +15,15 @@ class EnrichmentProgressService:
         count_unit='项',
         target_type='',
         source_key='',
+        log_path='',
+        task_kind='single',
     ):
         with self._lock:
             self._state = self._build_default_state()
             self._state.update(
                 {
                     'is_running': True,
+                    'task_kind': str(task_kind or 'single'),
                     'target_label': str(target_label or ''),
                     'source_label': str(source_label or ''),
                     'target_type': str(target_type or ''),
@@ -28,6 +31,7 @@ class EnrichmentProgressService:
                     'total_count': max(0, int(total_count or 0)),
                     'message': str(message or ''),
                     'count_unit': str(count_unit or '项'),
+                    'log_path': str(log_path or ''),
                 }
             )
 
@@ -79,6 +83,7 @@ class EnrichmentProgressService:
     def _build_default_state():
         return {
             'is_running': False,
+            'task_kind': '',
             'target_label': '',
             'source_label': '',
             'target_type': '',
@@ -92,4 +97,5 @@ class EnrichmentProgressService:
             'message': '',
             'stopped': False,
             'count_unit': '项',
+            'log_path': '',
         }

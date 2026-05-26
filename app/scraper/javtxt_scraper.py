@@ -19,18 +19,18 @@ TITLE_SUFFIX_RE = re.compile(r'\s*-\s*JAV.*$', re.I)
 
 TITLE_SECTION_LABELS = {'番号', '演员', '出演女优'}
 ACTOR_SECTION_LABELS = ('出演女优', '演员')
-RELEASE_DATE_LABELS = ('📆 发行时间', '发行时间', '發行時間')
-MAKER_LABELS = ('🎥 片商', '片商')
-PUBLISHER_LABELS = ('🔖 厂牌', '厂牌', '廠牌')
-TAG_LABELS = ('🏷️ 类别', '类别', '類別')
-DESCRIPTION_LABELS = ('📝 剧情介绍', '剧情介绍', '劇情介紹')
+RELEASE_DATE_LABELS = ('发行时间', '登场时间')
+MAKER_LABELS = ('片商',)
+PUBLISHER_LABELS = ('厂牌',)
+TAG_LABELS = ('类别',)
 
 
 class JavtxtScraper:
-    def __init__(self, headless=True, locale=None):
+    def __init__(self, headless=True, locale=None, logger=None):
         self.headless = headless
         self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
         self.base_url = get_javtxt_base_url()
+        self.logger = logger
         self._playwright_manager = None
         self._playwright = None
         self._browser = None
@@ -68,6 +68,7 @@ class JavtxtScraper:
         self._context = self._browser.new_context(locale=self.locale, viewport={'width': 1440, 'height': 1200})
         self._page = self._context.new_page()
         minimize_browser_window_if_needed(self._page, self.headless)
+        self._log('INFO', 'JAVTXT 浏览器会话已打开', headless=self.headless, locale=self.locale)
         return self._page
 
     def close_session(self):
@@ -88,6 +89,7 @@ class JavtxtScraper:
                 finally:
                     self._playwright = None
                     self._playwright_manager = None
+                    self._log('INFO', 'JAVTXT 浏览器会话已关闭')
 
     def fetch_by_code(self, code):
         normalized_code = normalize_code(code)
@@ -96,11 +98,13 @@ class JavtxtScraper:
 
         with self.session() as page:
             search_url = self.build_search_url(normalized_code)
+            self._log('INFO', '开始请求 JAVTXT 搜索页', code=normalized_code, search_url=search_url)
             page.goto(search_url, wait_until='domcontentloaded', timeout=60000)
             wait_for_page_ready(page)
 
             detail_url = self.find_first_detail_url(page)
             if not detail_url:
+                self._log('WARNING', 'JAVTXT 搜索页未找到详情链接', code=normalized_code, search_url=search_url)
                 return {
                     'code': normalized_code,
                     'found': False,
@@ -108,11 +112,21 @@ class JavtxtScraper:
                     'source': JAVTXT_VIDEO_SOURCE,
                 }
 
+            self._log('INFO', 'JAVTXT 搜索命中详情页', code=normalized_code, detail_url=detail_url)
             page.goto(detail_url, wait_until='domcontentloaded', timeout=60000)
             wait_for_page_ready(page)
             info = self.parse_movie_info(page, normalized_code)
             info['found'] = bool(info.get('javtxt_movie_id'))
             info['source'] = JAVTXT_VIDEO_SOURCE
+            self._log(
+                'INFO',
+                'JAVTXT 详情页解析完成',
+                code=normalized_code,
+                found=bool(info.get('found')),
+                javtxt_movie_id=info.get('javtxt_movie_id', ''),
+                author=info.get('author', ''),
+                release_date=info.get('release_date', ''),
+            )
             return info
 
     def build_search_url(self, normalized_code):
@@ -145,7 +159,15 @@ class JavtxtScraper:
         maker = extract_detail_value(lines, MAKER_LABELS)
         publisher = extract_detail_value(lines, PUBLISHER_LABELS)
         tags_text = extract_section_text(lines, TAG_LABELS)
-        description = extract_section_text(lines, DESCRIPTION_LABELS)
+        self._log(
+            'INFO',
+            'JAVTXT 页面文本已提取',
+            code=requested_code,
+            visible_line_count=len(lines),
+            movie_id=movie_id,
+            title=title,
+            actors_text=actors_text,
+        )
         return {
             'code': requested_code,
             'title': title,
@@ -153,14 +175,16 @@ class JavtxtScraper:
             'release_date': release_date,
             'maker': maker,
             'publisher': publisher,
-            'description': description,
             'javtxt_title': title,
             'javtxt_actors': actors_text,
             'javtxt_tags': tags_text,
-            'javtxt_description': description,
             'javtxt_movie_id': movie_id,
             'javtxt_url': final_url,
         }
+
+    def _log(self, level, message, **fields):
+        if self.logger is not None:
+            self.logger.log(level, message, service='javtxt_scraper', **fields)
 
 
 def visible_lines(page):
@@ -187,13 +211,14 @@ def extract_title(page, lines, requested_code):
             return cleaned
 
     for actor_label in ACTOR_SECTION_LABELS:
-        if actor_label not in lines:
-            continue
-        label_index = lines.index(actor_label)
-        for index in range(label_index - 1, -1, -1):
-            cleaned = clean_title(lines[index], requested_code)
-            if cleaned and cleaned not in TITLE_SECTION_LABELS:
-                return cleaned
+        for label_index, line in enumerate(lines):
+            matched_label, _ = match_section_label(line, (actor_label,))
+            if matched_label != actor_label:
+                continue
+            for index in range(label_index - 1, -1, -1):
+                cleaned = clean_title(lines[index], requested_code)
+                if cleaned and cleaned not in TITLE_SECTION_LABELS:
+                    return cleaned
 
     page_title = ''
     try:
@@ -210,10 +235,10 @@ def clean_title(text, requested_code):
     value = TITLE_SUFFIX_RE.sub('', value).strip()
     normalized_code = normalize_code(requested_code)
     if normalized_code:
-        prefix_pattern = re.compile(rf'^\s*{re.escape(normalized_code)}[-_\s:：]*', re.I)
+        prefix_pattern = re.compile(rf'^\s*{re.escape(normalized_code)}[-_\s:：*]*', re.I)
         value = prefix_pattern.sub('', value).strip()
         hyphenated_code = re.sub(r'([A-Z]+)(\d+)$', r'\1-\2', normalized_code)
-        value = re.sub(rf'^\s*{re.escape(hyphenated_code)}[-_\s:：]*', '', value, flags=re.I).strip()
+        value = re.sub(rf'^\s*{re.escape(hyphenated_code)}[-_\s:：*]*', '', value, flags=re.I).strip()
     return value
 
 
@@ -227,31 +252,72 @@ def extract_section_text(lines, labels):
 
 
 def extract_section_lines(lines, labels):
-    normalized_labels = {str(label or '').strip() for label in labels}
+    normalized_labels = [
+        str(label or '').strip()
+        for label in labels
+        if str(label or '').strip()
+    ]
     for index, line in enumerate(lines):
-        if str(line or '').strip() not in normalized_labels:
+        _, inline_value = match_section_label(line, normalized_labels)
+        if inline_value is None:
             continue
         values = []
+        if inline_value:
+            values.append(inline_value)
         for next_index in range(index + 1, len(lines)):
             value = str(lines[next_index] or '').strip()
             if not value:
                 continue
-            if value in normalized_labels:
+            if match_section_label(value, normalized_labels)[1] is not None:
                 continue
             if is_next_section_label(value):
                 break
             values.append(value)
-        return values
+        if values:
+            return values
     return []
 
 
+def match_section_label(line, labels):
+    value = str(line or '').strip()
+    if not value:
+        return '', None
+    normalized_value = strip_leading_section_icons(value)
+
+    sorted_labels = sorted(labels, key=len, reverse=True)
+    for label in sorted_labels:
+        if normalized_value == label:
+            return label, ''
+        if not normalized_value.startswith(label):
+            continue
+
+        remainder = normalized_value[len(label):].strip()
+        if remainder:
+            remainder = re.sub(r'^[\s:：|·•-]+', '', remainder).strip()
+        return label, remainder
+
+    return '', None
+
+
 def is_next_section_label(text):
-    value = str(text or '').strip()
+    raw_value = str(text or '').strip()
+    value = strip_leading_section_icons(raw_value)
     if not value:
         return False
-    if value in {'剧情介绍', '劇情介紹', '出演女优', '演员', '番号', '类别', '類別'}:
+    if value in {'出演女优', '演员', '番号', '类别', '标签'}:
         return True
-    return bool(SECTION_ICON_RE.match(value)) and len(value) <= 12
+    if value.endswith(('介绍', '简介')):
+        return True
+    if value.startswith(('剧情', '简介', '介绍', '系列', '片商', '导演', '厂牌', '发行时间', '登场时间')):
+        return True
+    return bool(SECTION_ICON_RE.match(raw_value)) and len(value) <= 12
+
+
+def strip_leading_section_icons(text):
+    value = str(text or '').strip()
+    if not value:
+        return ''
+    return re.sub(r'^[^\w\u4e00-\u9fffぁ-んァ-ヴー]+', '', value).strip()
 
 
 def normalize_code(value):

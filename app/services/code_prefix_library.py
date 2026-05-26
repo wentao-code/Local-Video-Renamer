@@ -103,15 +103,19 @@ class CodePrefixLibrary:
             avfan_status = str((enrichment or {}).get('enrichment_status', '') or '').strip() or UNENRICHED_STATUS
 
         eligible_movies = [movie for movie in (movies or []) if self._is_javtxt_eligible_movie(movie)]
-        if eligible_movies and all(
-            normalize_second_source_actor_text((movie or {}).get('author', ''))
-            for movie in eligible_movies
-        ):
+        javtxt_record_status = str((enrichment or {}).get('javtxt_enrichment_status', '')).strip() or UNENRICHED_STATUS
+        if eligible_movies and all(self._has_javtxt_author(movie) for movie in eligible_movies):
             javtxt_status = ENRICHED_STATUS
+        elif javtxt_record_status == ENRICHED_STATUS:
+            javtxt_status = UNENRICHED_STATUS
         else:
-            javtxt_status = str((enrichment or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+            javtxt_status = javtxt_record_status
 
         return build_library_enrichment_status_text(avfan_status, javtxt_status)
+
+    @staticmethod
+    def _has_javtxt_author(movie):
+        return bool(normalize_second_source_actor_text((movie or {}).get('author', '')))
 
     @staticmethod
     def _is_javtxt_eligible_movie(movie):
