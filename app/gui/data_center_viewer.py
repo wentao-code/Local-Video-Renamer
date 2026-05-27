@@ -1,22 +1,31 @@
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QVBoxLayout
 
+from app.backend.client import BackendClient
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
+from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.enrichment_summary_widgets import SummaryCard
 from app.gui.i18n import tr
 
 
-class DataCenterWindow(QDialog):
+class DataCenterWindow(AsyncTaskHostMixin, QDialog):
+    REFRESH_INTERVAL_MS = 5000
+
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.refresh_client = BackendClient(
+            base_url=backend_client.base_url,
+            timeout=min(max(int(getattr(backend_client, 'timeout', 30) or 30), 5), 10),
+        )
+        self._pending_close = False
+        self._init_async_task_host()
         self.refresh_timer = QTimer(self)
-        self.refresh_timer.setInterval(1000)
+        self.refresh_timer.setSingleShot(True)
         self.refresh_timer.timeout.connect(self.load_data)
         self.init_ui()
         self.load_data()
-        self.refresh_timer.start()
 
     def init_ui(self):
         self.setWindowTitle(tr('data_center.title'))
@@ -48,17 +57,23 @@ class DataCenterWindow(QDialog):
         self.setLayout(layout)
 
     def load_data(self):
-        try:
-            summary = self.backend_client.get_data_center_summary() or {}
-        except Exception as exc:
-            print(tr('data_center.read_failed', error=exc))
+        if self._pending_close or self.is_async_task_running():
             return
 
-        try:
-            progress = self.backend_client.get_enrichment_progress() or {}
-        except Exception:
-            progress = {}
+        self.start_async_task(
+            lambda: {
+                'summary': self.refresh_client.get_data_center_summary() or {},
+                'progress': self.refresh_client.get_enrichment_progress() or {},
+            },
+            self._on_load_data_finished,
+        )
 
+    def _on_load_data_finished(self, result):
+        result = dict(result or {})
+        if self._pending_close:
+            return
+        summary = result.get('summary', {}) or {}
+        progress = result.get('progress', {}) or {}
         live_progress_map = self._build_live_progress_map(progress)
         video_summary = summary.get('video_library', {}).get('sources', {})
         code_prefix_summary = summary.get('code_prefix_library', {}).get('sources', {})
@@ -90,6 +105,31 @@ class DataCenterWindow(QDialog):
             actor_summary.get(JAVTXT_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
         )
+        self._schedule_next_refresh()
+
+    def _handle_async_task_failed(self, message):
+        if self._pending_close:
+            return
+        print(tr('data_center.read_failed', error=message))
+        self._schedule_next_refresh()
+
+    def _cleanup_async_task_thread(self):
+        super()._cleanup_async_task_thread()
+        if self._pending_close:
+            QTimer.singleShot(0, self.accept)
+
+    def _schedule_next_refresh(self):
+        if self._pending_close:
+            return
+        self.refresh_timer.start(self.REFRESH_INTERVAL_MS)
+
+    def closeEvent(self, event):
+        self._pending_close = True
+        self.refresh_timer.stop()
+        if self.is_async_task_running():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _build_live_progress_map(self, progress):
         live_progress_map = {}

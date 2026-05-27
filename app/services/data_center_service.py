@@ -1,3 +1,6 @@
+from threading import Lock
+from time import monotonic
+
 from app.core.javtxt_video_state import summarize_javtxt_movies
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
@@ -8,8 +11,26 @@ class DataCenterService:
     def __init__(self, database):
         self.database = database
         self.code_prefix_library = CodePrefixLibrary(database)
+        self._summary_cache = None
+        self._summary_cache_expires_at = 0.0
+        self._summary_cache_lock = Lock()
 
     def get_summary(self):
+        now = monotonic()
+        if self._summary_cache is not None and now < self._summary_cache_expires_at:
+            return self._summary_cache
+
+        with self._summary_cache_lock:
+            now = monotonic()
+            if self._summary_cache is not None and now < self._summary_cache_expires_at:
+                return self._summary_cache
+
+            summary = self._build_summary()
+            self._summary_cache = summary
+            self._summary_cache_expires_at = now + 5.0
+            return summary
+
+    def _build_summary(self):
         return {
             'video_library': {
                 'label': '视频库',

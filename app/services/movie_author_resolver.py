@@ -77,9 +77,11 @@ class MovieAuthorResolver:
             author = normalize_second_source_actor_text(resolution.get('author', ''))
             status = resolution.get('status', UNENRICHED_STATUS)
             author_raw = str(resolution.get('author_raw', '') or '').strip()
+            javtxt_tags = str(resolution.get('javtxt_tags', '') or '').strip()
             entry['javtxt_enrichment_status'] = status
             entry['javtxt_movie_id'] = str(resolution.get('javtxt_movie_id', '') or '').strip()
             entry['javtxt_url'] = str(resolution.get('javtxt_url', '') or '').strip()
+            entry['javtxt_tags'] = javtxt_tags
             entry['author_raw'] = author_raw
             if author:
                 entry['author'] = author
@@ -118,6 +120,7 @@ class MovieAuthorResolver:
                 'javtxt_enrichment_status': status,
                 'javtxt_movie_id': entry.get('javtxt_movie_id', ''),
                 'javtxt_url': entry.get('javtxt_url', ''),
+                'javtxt_tags': javtxt_tags,
             }
 
         pending_video_count_after = self.count_pending_entries(normalized_entries, cached_rows=cached_rows)
@@ -221,6 +224,7 @@ class MovieAuthorResolver:
                 'author_raw': str((cached_row or {}).get('javtxt_actors_raw', '') or '').strip(),
                 'javtxt_movie_id': str((cached_row or {}).get('javtxt_movie_id', '') or '').strip(),
                 'javtxt_url': str((cached_row or {}).get('javtxt_url', '') or '').strip(),
+                'javtxt_tags': str((cached_row or {}).get('javtxt_tags', '') or '').strip(),
             }
 
         cached_author = normalize_second_source_actor_text((cached_row or {}).get('javtxt_actors', ''))
@@ -237,6 +241,7 @@ class MovieAuthorResolver:
                 'author_raw': str((cached_row or {}).get('javtxt_actors_raw', cached_author) or '').strip(),
                 'javtxt_movie_id': str((cached_row or {}).get('javtxt_movie_id', '') or '').strip(),
                 'javtxt_url': str((cached_row or {}).get('javtxt_url', '') or '').strip(),
+                'javtxt_tags': str((cached_row or {}).get('javtxt_tags', '') or '').strip(),
             }
         if is_resolved_search_state(cached_search_state):
             resolved_status = self._status_from_search_state(cached_search_state, cached_status)
@@ -249,6 +254,7 @@ class MovieAuthorResolver:
                 'author_raw': str((cached_row or {}).get('javtxt_actors_raw', '') or '').strip(),
                 'javtxt_movie_id': str((cached_row or {}).get('javtxt_movie_id', '') or '').strip(),
                 'javtxt_url': str((cached_row or {}).get('javtxt_url', '') or '').strip(),
+                'javtxt_tags': str((cached_row or {}).get('javtxt_tags', '') or '').strip(),
             }
 
         author = ''
@@ -290,6 +296,7 @@ class MovieAuthorResolver:
             'status': status,
             'javtxt_movie_id': str((info or {}).get('javtxt_movie_id', '') or '').strip(),
             'javtxt_url': str((info or {}).get('javtxt_url', '') or '').strip(),
+            'javtxt_tags': str((info or {}).get('javtxt_tags', '') or '').strip(),
         }
 
     def _save_video_cache(self, code, info, status=ENRICHED_STATUS, error=''):

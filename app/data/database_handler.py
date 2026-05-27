@@ -155,6 +155,7 @@ class VideoDatabase:
                     author TEXT,
                     release_date TEXT,
                     avfan_url TEXT,
+                    javtxt_tags TEXT,
                     page_number INTEGER DEFAULT 1,
                     PRIMARY KEY (prefix, code)
                 )
@@ -178,6 +179,7 @@ class VideoDatabase:
                     author TEXT,
                     release_date TEXT,
                     avfan_url TEXT,
+                    javtxt_tags TEXT,
                     page_number INTEGER DEFAULT 1,
                     PRIMARY KEY (actor_name, code)
                 )
@@ -218,6 +220,7 @@ class VideoDatabase:
             self._ensure_column(cursor, 'code_prefix_movies', 'javtxt_enrichment_status', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'code_prefix_movies', 'javtxt_movie_id', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'javtxt_url', 'TEXT')
+            self._ensure_column(cursor, 'code_prefix_movies', 'javtxt_tags', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'author_raw', 'TEXT')
             self._ensure_column(cursor, 'code_prefix_movies', 'video_category', 'TEXT')
             self._ensure_column(cursor, 'actor_enrichments', 'actor_id', 'TEXT DEFAULT ""')
@@ -241,6 +244,7 @@ class VideoDatabase:
             self._ensure_column(cursor, 'actor_movies', 'javtxt_enrichment_status', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_movies', 'javtxt_movie_id', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'javtxt_url', 'TEXT')
+            self._ensure_column(cursor, 'actor_movies', 'javtxt_tags', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'author_raw', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'video_category', 'TEXT')
             cursor.execute(
@@ -295,6 +299,15 @@ class VideoDatabase:
                         ),
                         ''
                     ),
+                    javtxt_tags = COALESCE(
+                        NULLIF(javtxt_tags, ''),
+                        (
+                            SELECT p.javtxt_tags
+                            FROM processed_videos p
+                            WHERE p.code = code_prefix_movies.code
+                        ),
+                        ''
+                    ),
                     author_raw = COALESCE(NULLIF(author_raw, ''), NULLIF(author, ''), '')
                 ''',
                 (UNENRICHED_STATUS, UNENRICHED_STATUS),
@@ -324,6 +337,15 @@ class VideoDatabase:
                         NULLIF(javtxt_url, ''),
                         (
                             SELECT p.javtxt_url
+                            FROM processed_videos p
+                            WHERE p.code = actor_movies.code
+                        ),
+                        ''
+                    ),
+                    javtxt_tags = COALESCE(
+                        NULLIF(javtxt_tags, ''),
+                        (
+                            SELECT p.javtxt_tags
                             FROM processed_videos p
                             WHERE p.code = actor_movies.code
                         ),
@@ -384,7 +406,10 @@ class VideoDatabase:
         if processed_category:
             return processed_category
 
-        return self._determine_auto_video_category('', (movie or {}).get('author', ''))
+        return self._determine_auto_video_category(
+            (movie or {}).get('javtxt_tags', ''),
+            (movie or {}).get('author', ''),
+        )
 
     @staticmethod
     def _normalize_actor_raw_text(value):
@@ -451,12 +476,12 @@ class VideoDatabase:
     def _backfill_web_movie_categories(self, cursor, table_name):
         cursor.execute(
             f'''
-            SELECT rowid, code, author, video_category
+            SELECT rowid, code, author, javtxt_tags, video_category
             FROM {table_name}
             '''
         )
         rows = cursor.fetchall()
-        for rowid, code, author, current_category in rows:
+        for rowid, code, author, javtxt_tags, current_category in rows:
             normalized_current = normalize_video_category(current_category)
             if normalized_current:
                 continue
@@ -476,7 +501,7 @@ class VideoDatabase:
                 if processed_row is not None:
                     processed_category = normalize_video_category(processed_row[0])
 
-            auto_category = processed_category or self._determine_auto_video_category('', author)
+            auto_category = processed_category or self._determine_auto_video_category(javtxt_tags, author)
             if not auto_category:
                 continue
 
@@ -1107,9 +1132,9 @@ class VideoDatabase:
                 cursor.executemany('''
                     INSERT OR REPLACE INTO code_prefix_movies (
                         prefix, code, title, author, release_date, avfan_url, page_number,
-                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, author_raw, video_category
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, author_raw, video_category
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', [
                     (
                         prefix,
@@ -1122,6 +1147,12 @@ class VideoDatabase:
                         str(movie.get('javtxt_enrichment_status', '') or '').strip(),
                         str(movie.get('javtxt_movie_id', '') or '').strip(),
                         str(movie.get('javtxt_url', '') or '').strip(),
+                        str(
+                            movie.get(
+                                'javtxt_tags',
+                                (processed_videos.get(str(movie.get('code', '')).strip().upper(), {}) or {}).get('javtxt_tags', ''),
+                            ) or ''
+                        ).strip(),
                         self._normalize_actor_raw_text(movie.get('author_raw', movie.get('author', ''))),
                         self._resolve_web_movie_category({
                             **dict(movie or {}),
@@ -1160,7 +1191,7 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT prefix, code, title, author, release_date, avfan_url, page_number,
-                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, author_raw, video_category
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, author_raw, video_category
                 FROM code_prefix_movies
                 WHERE prefix = ?
                 ORDER BY release_date DESC, code DESC
@@ -1178,8 +1209,9 @@ class VideoDatabase:
                     'javtxt_enrichment_status': row[7] or UNENRICHED_STATUS,
                     'javtxt_movie_id': row[8] or '',
                     'javtxt_url': row[9] or '',
-                    'author_raw': row[10] or '',
-                    'video_category': normalize_video_category(row[11]),
+                    'javtxt_tags': row[10] or '',
+                    'author_raw': row[11] or '',
+                    'video_category': normalize_video_category(row[12]),
                 }
                 for row in cursor.fetchall()
             ]
@@ -1282,9 +1314,9 @@ class VideoDatabase:
                 cursor.executemany('''
                     INSERT OR REPLACE INTO actor_movies (
                         actor_name, code, title, author, release_date, avfan_url, page_number,
-                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, author_raw, video_category
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, author_raw, video_category
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', [
                     (
                         normalized_name,
@@ -1297,6 +1329,12 @@ class VideoDatabase:
                         str(movie.get('javtxt_enrichment_status', '') or '').strip(),
                         str(movie.get('javtxt_movie_id', '') or '').strip(),
                         str(movie.get('javtxt_url', '') or '').strip(),
+                        str(
+                            movie.get(
+                                'javtxt_tags',
+                                (processed_videos.get(str(movie.get('code', '')).strip().upper(), {}) or {}).get('javtxt_tags', ''),
+                            ) or ''
+                        ).strip(),
                         self._normalize_actor_raw_text(movie.get('author_raw', movie.get('author', ''))),
                         self._resolve_web_movie_category({
                             **dict(movie or {}),
@@ -1336,7 +1374,7 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT actor_name, code, title, author, release_date, avfan_url, page_number,
-                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, author_raw, video_category
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, author_raw, video_category
                 FROM actor_movies
                 WHERE actor_name = ?
                 ORDER BY release_date DESC, code DESC
@@ -1354,8 +1392,9 @@ class VideoDatabase:
                     'javtxt_enrichment_status': row[7] or UNENRICHED_STATUS,
                     'javtxt_movie_id': row[8] or '',
                     'javtxt_url': row[9] or '',
-                    'author_raw': row[10] or '',
-                    'video_category': normalize_video_category(row[11]),
+                    'javtxt_tags': row[10] or '',
+                    'author_raw': row[11] or '',
+                    'video_category': normalize_video_category(row[12]),
                 }
                 for row in cursor.fetchall()
             ]
@@ -1404,10 +1443,16 @@ class VideoDatabase:
                 cursor.execute(
                     f'''
                     UPDATE actor_movies
-                    SET author = ''
+                    SET author = '',
+                        author_raw = '',
+                        javtxt_enrichment_status = ?,
+                        javtxt_movie_id = '',
+                        javtxt_url = '',
+                        javtxt_tags = '',
+                        video_category = ''
                     WHERE actor_name IN ({placeholders})
                     ''',
-                    normalized_names,
+                    [UNENRICHED_STATUS, *normalized_names],
                 )
                 cursor.execute(
                     f'''
@@ -1519,10 +1564,16 @@ class VideoDatabase:
                 cursor.execute(
                     f'''
                     UPDATE code_prefix_movies
-                    SET author = ''
+                    SET author = '',
+                        author_raw = '',
+                        javtxt_enrichment_status = ?,
+                        javtxt_movie_id = '',
+                        javtxt_url = '',
+                        javtxt_tags = '',
+                        video_category = ''
                     WHERE prefix IN ({placeholders})
                     ''',
-                    normalized_prefixes,
+                    [UNENRICHED_STATUS, *normalized_prefixes],
                 )
                 cursor.execute(
                     f'''
@@ -2168,7 +2219,7 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
-                SELECT code, title, author, duration, size, storage_location, video_category
+                SELECT code, title, author, duration, size, storage_location, video_category, javtxt_tags
                 FROM processed_videos
                 WHERE code IN ({placeholders})
                 ''',
@@ -2185,6 +2236,7 @@ class VideoDatabase:
                 'size': row[4] or '',
                 'storage_location': row[5] or '',
                 'video_category': normalize_video_category(row[6]),
+                'javtxt_tags': row[7] or '',
             }
             for row in rows
         }
@@ -2357,7 +2409,7 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
-                SELECT code, javtxt_actors, javtxt_actors_raw, javtxt_movie_id, javtxt_url, javtxt_enrichment_status
+                SELECT code, javtxt_actors, javtxt_actors_raw, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_enrichment_status
                 FROM processed_videos
                 WHERE code IN ({placeholders})
                 ''',
@@ -2372,7 +2424,8 @@ class VideoDatabase:
                 'javtxt_actors_raw': row[2] or '',
                 'javtxt_movie_id': row[3] or '',
                 'javtxt_url': row[4] or '',
-                'javtxt_enrichment_status': row[5] or UNENRICHED_STATUS,
+                'javtxt_tags': row[5] or '',
+                'javtxt_enrichment_status': row[6] or UNENRICHED_STATUS,
             }
             for row in rows
         }

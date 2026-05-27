@@ -489,6 +489,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, source_key, mode='single'):
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
+        self.enrichment_thread = QThread(self)
+        self.enrichment_worker = EnrichmentWorker(
+            self.backend_client,
+            limit,
+            show_browser,
+            cooldown_before_search,
+            target_type,
+            source_key,
+        )
+        self.enrichment_worker.moveToThread(self.enrichment_thread)
         if mode == 'batch':
             self.batch_enrichment_round += 1
             self.status_label.setText(
@@ -500,17 +510,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.reset_progress_widgets(keep_visible=True)
         self.enrichment_progress_timer.start()
         self.refresh_enrichment_progress()
-
-        self.enrichment_thread = QThread(self)
-        self.enrichment_worker = EnrichmentWorker(
-            self.backend_client,
-            limit,
-            show_browser,
-            cooldown_before_search,
-            target_type,
-            source_key,
-        )
-        self.enrichment_worker.moveToThread(self.enrichment_thread)
         self.enrichment_thread.started.connect(self.enrichment_worker.run)
         self.enrichment_worker.finished.connect(self.on_enrichment_finished)
         self.enrichment_worker.failed.connect(self.on_enrichment_failed)
@@ -531,18 +530,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     ):
         self.current_enrichment_kind = 'combo'
         self.enrichment_mode = mode
-        if mode == 'combo_batch':
-            self.batch_enrichment_round += 1
-            self.status_label.setText(
-                tr('main.combo_round_running', round_number=self.batch_enrichment_round)
-            )
-        else:
-            self.status_label.setText(tr('main.combo_running'))
-        self.update_enrichment_controls()
-        self.reset_progress_widgets(keep_visible=True)
-        self.enrichment_progress_timer.start()
-        self.refresh_enrichment_progress()
-
         self.enrichment_thread = QThread(self)
         self.enrichment_worker = ComboEnrichmentWorker(
             self.backend_client,
@@ -554,6 +541,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             batch_mode=batch_mode,
         )
         self.enrichment_worker.moveToThread(self.enrichment_thread)
+        if mode == 'combo_batch':
+            self.batch_enrichment_round += 1
+            self.status_label.setText(
+                tr('main.combo_round_running', round_number=self.batch_enrichment_round)
+            )
+        else:
+            self.status_label.setText(tr('main.combo_running'))
+        self.update_enrichment_controls()
+        self.reset_progress_widgets(keep_visible=True)
+        self.enrichment_progress_timer.start()
+        self.refresh_enrichment_progress()
         self.enrichment_thread.started.connect(self.enrichment_worker.run)
         self.enrichment_worker.finished.connect(self.on_enrichment_finished)
         self.enrichment_worker.failed.connect(self.on_enrichment_failed)
