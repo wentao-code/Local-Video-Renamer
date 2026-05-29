@@ -17,7 +17,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.backend_client = backend_client
         self.refresh_client = BackendClient(
             base_url=backend_client.base_url,
-            timeout=min(max(int(getattr(backend_client, 'timeout', 30) or 30), 5), 10),
+            timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), 90),
         )
         self._pending_close = False
         self._init_async_task_host()

@@ -65,15 +65,16 @@ class CodePrefixLibrary:
             grouped[prefix] = grouped.get(prefix, 0) + 1
 
         search = str(search_text or '').strip().upper()
+        prefixes = [prefix for prefix in sorted(grouped) if not search or search in prefix]
+        movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(prefixes)
+
         results = []
-        for prefix in sorted(grouped):
-            if search and search not in prefix:
-                continue
+        for prefix in prefixes:
 
             enrichment = enrichment_records.get(prefix, {})
-            movies = self.database.list_code_prefix_movies(prefix)
+            movies = movies_by_prefix.get(prefix, [])
             earliest_release_date, latest_release_date = self._collect_date_range(movies)
-            enrichment_status = self._build_live_enrichment_status(enrichment, movies)
+            enrichment_status = self._build_live_enrichment_status(enrichment)
 
             results.append({
                 'prefix': prefix,
@@ -99,16 +100,10 @@ class CodePrefixLibrary:
             return '', ''
         return dates[0], dates[-1]
 
-    def _build_live_enrichment_status(self, enrichment, movies):
+    def _build_live_enrichment_status(self, enrichment):
         avfan_status = str((enrichment or {}).get('avfan_enrichment_status', '') or '').strip()
         if not avfan_status:
             avfan_status = str((enrichment or {}).get('enrichment_status', '') or '').strip() or UNENRICHED_STATUS
 
         javtxt_record_status = str((enrichment or {}).get('javtxt_enrichment_status', '')).strip() or UNENRICHED_STATUS
-        cache_rows = self.database.get_javtxt_actor_cache_by_codes(
-            [str((movie or {}).get('code', '') or '').strip().upper() for movie in (movies or [])]
-        )
-        summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
-        javtxt_status = javtxt_record_status if summary['total_count'] <= 0 else build_javtxt_library_status(movies, cache_rows=cache_rows)
-
-        return build_library_enrichment_status_text(avfan_status, javtxt_status)
+        return build_library_enrichment_status_text(avfan_status, javtxt_record_status)

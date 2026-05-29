@@ -1,13 +1,15 @@
 from threading import Lock
 from time import monotonic
 
-from app.core.javtxt_video_state import summarize_javtxt_movies
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
+from app.core.javtxt_video_state import summarize_javtxt_movies
 from app.services.code_prefix_library import CodePrefixLibrary
 
 
 class DataCenterService:
+    SUMMARY_CACHE_TTL_SECONDS = 5.0
+
     def __init__(self, database):
         self.database = database
         self.code_prefix_library = CodePrefixLibrary(database)
@@ -27,7 +29,7 @@ class DataCenterService:
 
             summary = self._build_summary()
             self._summary_cache = summary
-            self._summary_cache_expires_at = now + 5.0
+            self._summary_cache_expires_at = now + self.SUMMARY_CACHE_TTL_SECONDS
             return summary
 
     def _build_summary(self):
@@ -54,6 +56,7 @@ class DataCenterService:
                 },
             },
         }
+
     def _build_video_source_summary(self, source_key):
         summary = self.database.get_video_enrichment_summary(source_key)
         total_count = int(summary.get('total_count', 0) or 0)
@@ -73,7 +76,6 @@ class DataCenterService:
 
     def _build_code_prefix_source_summary(self, source_key):
         if source_key == JAVTXT_VIDEO_SOURCE:
-            records = self.database.list_code_prefix_enrichment_records()
             prefixes = [
                 str(row.get('prefix', '')).strip().upper()
                 for row in self.code_prefix_library.list_prefixes()
@@ -81,9 +83,7 @@ class DataCenterService:
             ]
             return self._build_javtxt_library_video_summary(
                 f'番号库 · {get_video_enrichment_source_label(source_key)}',
-                item_keys=prefixes,
-                list_movies=self.database.list_code_prefix_movies,
-                records=records,
+                self.database.list_code_prefix_movies_by_prefixes(prefixes),
             )
 
         records = self.database.list_code_prefix_enrichment_records()
@@ -99,7 +99,6 @@ class DataCenterService:
 
     def _build_actor_source_summary(self, source_key):
         if source_key == JAVTXT_VIDEO_SOURCE:
-            records = self.database.list_actor_enrichment_records()
             actor_names = [
                 str(row.get('name', '')).strip()
                 for row in self.database.list_actors()
@@ -107,9 +106,7 @@ class DataCenterService:
             ]
             return self._build_javtxt_library_video_summary(
                 f'演员库 · {get_video_enrichment_source_label(source_key)}',
-                item_keys=actor_names,
-                list_movies=self.database.list_actor_movies,
-                records=records,
+                self.database.list_actor_movies_by_names(actor_names),
             )
 
         records = self.database.list_actor_enrichment_records()
@@ -139,14 +136,12 @@ class DataCenterService:
             'progress_percent': _build_progress_percent(enriched_count, total_count),
         }
 
-    def _build_javtxt_library_video_summary(self, label, item_keys, list_movies, records):
-        del records
-        eligible_movies = []
-
-        for item_key in item_keys:
-            movies = list_movies(item_key)
-            eligible_movies.extend(movies)
-
+    def _build_javtxt_library_video_summary(self, label, movies_by_group):
+        eligible_movies = [
+            movie
+            for movies in (movies_by_group or {}).values()
+            for movie in (movies or [])
+        ]
         cache_rows = self.database.get_javtxt_actor_cache_by_codes(
             [str((movie or {}).get('code', '') or '').strip().upper() for movie in eligible_movies]
         )
@@ -167,6 +162,7 @@ class DataCenterService:
     def _get_source_status(record, source_key):
         key = 'javtxt_enrichment_status' if source_key == JAVTXT_VIDEO_SOURCE else 'avfan_enrichment_status'
         return str((record or {}).get(key, '') or '').strip() or UNENRICHED_STATUS
+
 
 def _build_progress_percent(enriched_count, total_count):
     if total_count <= 0:
