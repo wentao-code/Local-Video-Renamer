@@ -1408,6 +1408,37 @@ class VideoDatabase:
                 for row in cursor.fetchall()
             ]
 
+    def list_all_code_prefix_movies(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT prefix, code, title, author, release_date, avfan_url, page_number,
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, author_raw, video_category
+                FROM code_prefix_movies
+                ORDER BY prefix, release_date DESC, code DESC
+                '''
+            )
+
+            return [
+                {
+                    'prefix': row[0] or '',
+                    'code': row[1] or '',
+                    'title': row[2] or '',
+                    'author': sanitize_actor_text(row[3] or ''),
+                    'release_date': row[4] or '',
+                    'avfan_url': row[5] or '',
+                    'page_number': int(row[6] or 1),
+                    'javtxt_enrichment_status': row[7] or UNENRICHED_STATUS,
+                    'javtxt_movie_id': row[8] or '',
+                    'javtxt_url': row[9] or '',
+                    'javtxt_tags': row[10] or '',
+                    'author_raw': row[11] or '',
+                    'video_category': normalize_video_category(row[12]),
+                }
+                for row in cursor.fetchall()
+            ]
+
     def list_code_prefix_movies_by_prefixes(self, prefixes):
         normalized_prefixes = []
         seen = set()
@@ -1625,6 +1656,37 @@ class VideoDatabase:
                 WHERE actor_name = ?
                 ORDER BY release_date DESC, code DESC
             ''', (normalized_name,))
+
+            return [
+                {
+                    'actor_name': row[0] or '',
+                    'code': row[1] or '',
+                    'title': row[2] or '',
+                    'author': sanitize_actor_text(row[3] or ''),
+                    'release_date': row[4] or '',
+                    'avfan_url': row[5] or '',
+                    'page_number': int(row[6] or 1),
+                    'javtxt_enrichment_status': row[7] or UNENRICHED_STATUS,
+                    'javtxt_movie_id': row[8] or '',
+                    'javtxt_url': row[9] or '',
+                    'javtxt_tags': row[10] or '',
+                    'author_raw': row[11] or '',
+                    'video_category': normalize_video_category(row[12]),
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def list_all_actor_movies(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT actor_name, code, title, author, release_date, avfan_url, page_number,
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, author_raw, video_category
+                FROM actor_movies
+                ORDER BY actor_name, release_date DESC, code DESC
+                '''
+            )
 
             return [
                 {
@@ -2511,11 +2573,11 @@ class VideoDatabase:
             return {}
 
         placeholders = ','.join('?' for _ in normalized_codes)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
-                SELECT code, title, author, duration, size, storage_location, video_category, javtxt_tags
+                SELECT code, title, author, duration, size, storage_location, release_date, video_category, javtxt_tags
                 FROM processed_videos
                 WHERE code IN ({placeholders})
                 ''',
@@ -2531,11 +2593,238 @@ class VideoDatabase:
                 'duration': row[3] or '',
                 'size': row[4] or '',
                 'storage_location': row[5] or '',
-                'video_category': normalize_video_category(row[6]),
-                'javtxt_tags': row[7] or '',
+                'release_date': row[6] or '',
+                'video_category': normalize_video_category(row[7]),
+                'javtxt_tags': row[8] or '',
             }
             for row in rows
         }
+
+    def bulk_update_code_prefix_movies(self, updates):
+        normalized_updates = []
+        for row in updates or []:
+            prefix = str((row or {}).get('prefix', '') or '').strip().upper()
+            code = standardize_video_code((row or {}).get('code', ''))
+            if not prefix or not code:
+                continue
+            normalized_updates.append(
+                (
+                    str((row or {}).get('title', '') or '').strip(),
+                    sanitize_actor_text((row or {}).get('author', '')),
+                    str((row or {}).get('release_date', '') or '').strip(),
+                    str((row or {}).get('avfan_url', '') or '').strip(),
+                    str((row or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
+                    str((row or {}).get('javtxt_movie_id', '') or '').strip(),
+                    str((row or {}).get('javtxt_url', '') or '').strip(),
+                    str((row or {}).get('javtxt_tags', '') or '').strip(),
+                    self._normalize_actor_raw_text((row or {}).get('author_raw', (row or {}).get('author', ''))),
+                    normalize_video_category((row or {}).get('video_category', '')),
+                    prefix,
+                    code,
+                )
+            )
+
+        if not normalized_updates:
+            return 0
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                '''
+                UPDATE code_prefix_movies
+                SET title = ?,
+                    author = ?,
+                    release_date = ?,
+                    avfan_url = ?,
+                    javtxt_enrichment_status = ?,
+                    javtxt_movie_id = ?,
+                    javtxt_url = ?,
+                    javtxt_tags = ?,
+                    author_raw = ?,
+                    video_category = ?
+                WHERE prefix = ? AND code = ?
+                ''',
+                normalized_updates,
+            )
+            conn.commit()
+        return len(normalized_updates)
+
+    def bulk_update_actor_movies(self, updates):
+        normalized_updates = []
+        for row in updates or []:
+            actor_name = str((row or {}).get('actor_name', '') or '').strip()
+            code = standardize_video_code((row or {}).get('code', ''))
+            if not actor_name or not code:
+                continue
+            normalized_updates.append(
+                (
+                    str((row or {}).get('title', '') or '').strip(),
+                    sanitize_actor_text((row or {}).get('author', '')),
+                    str((row or {}).get('release_date', '') or '').strip(),
+                    str((row or {}).get('avfan_url', '') or '').strip(),
+                    str((row or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
+                    str((row or {}).get('javtxt_movie_id', '') or '').strip(),
+                    str((row or {}).get('javtxt_url', '') or '').strip(),
+                    str((row or {}).get('javtxt_tags', '') or '').strip(),
+                    self._normalize_actor_raw_text((row or {}).get('author_raw', (row or {}).get('author', ''))),
+                    normalize_video_category((row or {}).get('video_category', '')),
+                    actor_name,
+                    code,
+                )
+            )
+
+        if not normalized_updates:
+            return 0
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                '''
+                UPDATE actor_movies
+                SET title = ?,
+                    author = ?,
+                    release_date = ?,
+                    avfan_url = ?,
+                    javtxt_enrichment_status = ?,
+                    javtxt_movie_id = ?,
+                    javtxt_url = ?,
+                    javtxt_tags = ?,
+                    author_raw = ?,
+                    video_category = ?
+                WHERE actor_name = ? AND code = ?
+                ''',
+                normalized_updates,
+            )
+            conn.commit()
+        return len(normalized_updates)
+
+    def refresh_code_prefix_javtxt_statuses(self, prefixes):
+        normalized_prefixes = []
+        seen = set()
+        for prefix in prefixes or []:
+            normalized_prefix = str(prefix or '').strip().upper()
+            if not normalized_prefix or normalized_prefix in seen:
+                continue
+            seen.add(normalized_prefix)
+            normalized_prefixes.append(normalized_prefix)
+
+        if not normalized_prefixes:
+            return 0
+
+        movies_by_prefix = self.list_code_prefix_movies_by_prefixes(normalized_prefixes)
+        all_codes = [
+            standardize_video_code((movie or {}).get('code', ''))
+            for rows in movies_by_prefix.values()
+            for movie in rows
+            if (movie or {}).get('code')
+        ]
+        cache_rows = self.get_javtxt_actor_cache_by_codes(all_codes)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            for prefix in normalized_prefixes:
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO code_prefix_enrichments (prefix)
+                    VALUES (?)
+                    ''',
+                    (prefix,),
+                )
+                cursor.execute(
+                    '''
+                    SELECT javtxt_last_error
+                    FROM code_prefix_enrichments
+                    WHERE prefix = ?
+                    ''',
+                    (prefix,),
+                )
+                existing_error = str((cursor.fetchone() or [''])[0] or '')
+                movies = movies_by_prefix.get(prefix, [])
+                summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
+                status = build_javtxt_library_status(movies, cache_rows=cache_rows)
+                cursor.execute(
+                    '''
+                    UPDATE code_prefix_enrichments
+                    SET javtxt_enrichment_status = ?,
+                        javtxt_total_videos = ?,
+                        javtxt_last_error = ?,
+                        javtxt_last_enriched_at = CURRENT_TIMESTAMP
+                    WHERE prefix = ?
+                    ''',
+                    (
+                        status,
+                        int(summary.get('total_count', 0) or 0),
+                        existing_error if status == FAILED_STATUS else '',
+                        prefix,
+                    ),
+                )
+                self._refresh_code_prefix_combined_status(cursor, prefix)
+            conn.commit()
+        return len(normalized_prefixes)
+
+    def refresh_actor_javtxt_statuses(self, actor_names):
+        normalized_actor_names = []
+        seen = set()
+        for actor_name in actor_names or []:
+            normalized_name = str(actor_name or '').strip()
+            if not normalized_name or normalized_name in seen:
+                continue
+            seen.add(normalized_name)
+            normalized_actor_names.append(normalized_name)
+
+        if not normalized_actor_names:
+            return 0
+
+        movies_by_name = self.list_actor_movies_by_names(normalized_actor_names)
+        all_codes = [
+            standardize_video_code((movie or {}).get('code', ''))
+            for rows in movies_by_name.values()
+            for movie in rows
+            if (movie or {}).get('code')
+        ]
+        cache_rows = self.get_javtxt_actor_cache_by_codes(all_codes)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            for actor_name in normalized_actor_names:
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO actor_enrichments (actor_name)
+                    VALUES (?)
+                    ''',
+                    (actor_name,),
+                )
+                cursor.execute(
+                    '''
+                    SELECT javtxt_last_error
+                    FROM actor_enrichments
+                    WHERE actor_name = ?
+                    ''',
+                    (actor_name,),
+                )
+                existing_error = str((cursor.fetchone() or [''])[0] or '')
+                movies = movies_by_name.get(actor_name, [])
+                summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
+                status = build_javtxt_library_status(movies, cache_rows=cache_rows)
+                cursor.execute(
+                    '''
+                    UPDATE actor_enrichments
+                    SET javtxt_enrichment_status = ?,
+                        javtxt_total_videos = ?,
+                        javtxt_last_error = ?,
+                        javtxt_last_enriched_at = CURRENT_TIMESTAMP
+                    WHERE actor_name = ?
+                    ''',
+                    (
+                        status,
+                        int(summary.get('total_count', 0) or 0),
+                        existing_error if status == FAILED_STATUS else '',
+                        actor_name,
+                    ),
+                )
+                self._refresh_actor_combined_status(cursor, actor_name)
+            conn.commit()
+        return len(normalized_actor_names)
 
     def list_videos_requiring_manual_category(self):
         with self._connect() as conn:
@@ -2838,7 +3127,7 @@ class VideoDatabase:
             return {}
 
         placeholders = ','.join('?' for _ in normalized_codes)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
@@ -2926,7 +3215,7 @@ class VideoDatabase:
         new_records = [normalized_records[code] for code in codes if code not in existing_records]
         existing_updates = [normalized_records[code] for code in codes if code in existing_records]
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             if new_records:

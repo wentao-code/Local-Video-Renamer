@@ -128,6 +128,8 @@ def make_handler(service):
                 return service.auto_login()
             if method == 'POST' and path == '/browser-profile/reset':
                 return service.reset_browser_profile()
+            if method == 'POST' and path == '/database/library-status/sync':
+                return service.sync_library_statuses()
 
             raise ValueError(f'未知接口: {method} {path}')
 

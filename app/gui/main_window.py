@@ -315,6 +315,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_reset_browser_profile = QPushButton(tr('main.reset_browser_profile'))
         self.btn_reset_browser_profile.clicked.connect(self.reset_browser_profile)
 
+        self.btn_status_sync = QPushButton(tr('main.status_sync'))
+        self.btn_status_sync.clicked.connect(self.sync_library_statuses)
+
         self.btn_execute = QPushButton(tr('main.execute_rename'))
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
@@ -332,6 +335,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_enrich)
         bottom_button_row.addWidget(self.btn_stop_enrich)
         bottom_button_row.addWidget(self.btn_reset_browser_profile)
+        bottom_button_row.addWidget(self.btn_status_sync)
         bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
 
@@ -1113,6 +1117,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             not busy and any(bool(plan.get('can_rename') and plan.get('needs_rename')) for plan in self.pending_renames)
         )
         self.btn_reset_browser_profile.setEnabled(not busy)
+        self.btn_status_sync.setEnabled(not busy)
         self.table.setEnabled(not busy)
         self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
 
@@ -1181,6 +1186,39 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'main.reset_completed_message',
                 message=result.get('message', tr('main.reset_completed_default')),
                 profile_dir=result.get('profile_dir', ''),
+            ),
+        )
+
+    def sync_library_statuses(self):
+        if self.enrichment_thread is not None or self.batch_enrichment_active:
+            QMessageBox.information(
+                self,
+                tr('main.enrichment_in_progress_title'),
+                tr('main.enrichment_in_progress_message'),
+            )
+            return
+
+        self.start_async_task(
+            lambda: self.backend_client.sync_library_statuses(),
+            self._on_sync_library_statuses_finished,
+            tr('common.operation_failed'),
+        )
+
+    def _on_sync_library_statuses_finished(self, result):
+        result = dict(result or {})
+        QMessageBox.information(
+            self,
+            tr('main.status_sync_completed_title'),
+            tr(
+                'main.status_sync_completed_message',
+                candidate_code_count=int(result.get('candidate_code_count', 0) or 0),
+                shared_code_count=int(result.get('shared_code_count', 0) or 0),
+                synced_code_count=int(result.get('synced_code_count', 0) or 0),
+                updated_code_prefix_movie_count=int(result.get('updated_code_prefix_movie_count', 0) or 0),
+                updated_actor_movie_count=int(result.get('updated_actor_movie_count', 0) or 0),
+                updated_prefix_count=int(result.get('updated_prefix_count', 0) or 0),
+                updated_actor_count=int(result.get('updated_actor_count', 0) or 0),
+                message=str(result.get('message', '') or tr('main.status_sync_completed_default')),
             ),
         )
 

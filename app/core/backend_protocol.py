@@ -1,1 +1,1 @@
-BACKEND_API_REVISION = '2026-05-26-progress-compat-2'
+BACKEND_API_REVISION = '2026-06-01-library-status-sync-1'

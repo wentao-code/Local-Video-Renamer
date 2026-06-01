@@ -19,6 +19,7 @@ from app.services.data_center_service import DataCenterService
 from app.services.enrichment_progress_service import EnrichmentProgressService
 from app.services.library_admin_service import LibraryAdminService
 from app.services.library_enrichment_service import LibraryEnrichmentService
+from app.services.library_status_sync_service import LibraryStatusSyncService
 from app.services.local_video_library_service import LocalVideoLibraryService
 from app.services.path_library import PathLibrary, summarize_paths
 from app.services.task_trace_logger import TaskTraceLogger
@@ -35,6 +36,7 @@ class BackendService:
         self.code_prefix_library = CodePrefixLibrary(self.db)
         self.data_center_service = DataCenterService(self.db)
         self.library_admin_service = LibraryAdminService(self.db)
+        self.library_status_sync_service = LibraryStatusSyncService(self.db)
         self.path_library = PathLibrary()
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
@@ -275,6 +277,12 @@ class BackendService:
 
     def reset_browser_profile(self):
         return reset_avfan_browser_profile()
+
+    def sync_library_statuses(self):
+        self.ensure_database_loaded()
+        if self.enrichment_running:
+            raise RuntimeError('当前有补全任务正在运行，请稍后再执行状态同步。')
+        return self.library_status_sync_service.sync()
 
     def _begin_enrichment_task(self, task_kind):
         with self.enrichment_lock:

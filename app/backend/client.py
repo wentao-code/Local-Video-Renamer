@@ -97,6 +97,9 @@ class BackendClient:
     def reset_browser_profile(self):
         return self._post('/browser-profile/reset')
 
+    def sync_library_statuses(self):
+        return self._post('/database/library-status/sync')
+
     def list_videos(self, search_text=''):
         query = ''
         if search_text:
