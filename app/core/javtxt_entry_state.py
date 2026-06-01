@@ -66,7 +66,7 @@ def classify_search_state(record=None, cached_row=None):
     actor_state = classify_actor_state(record, cached_row=cached_row)
     detail_found = has_detail_reference(record, cached_row=cached_row)
 
-    if actor_state in (JAVTXT_ACTOR_STATE_NAMED, JAVTXT_ACTOR_STATE_UNPUBLISHED):
+    if detail_found and actor_state in (JAVTXT_ACTOR_STATE_NAMED, JAVTXT_ACTOR_STATE_UNPUBLISHED):
         return JAVTXT_SEARCH_STATE_RESOLVED
     if status == NO_SEARCH_RESULTS_STATUS:
         return JAVTXT_SEARCH_STATE_NO_RESULT
@@ -101,7 +101,7 @@ def classify_entry_state(record=None, cached_row=None):
 
 
 def is_manual_category_candidate(record=None, cached_row=None):
-    return classify_actor_state(record, cached_row=cached_row) in (
+    return has_detail_reference(record, cached_row=cached_row) and classify_actor_state(record, cached_row=cached_row) in (
         JAVTXT_ACTOR_STATE_NAMED,
         JAVTXT_ACTOR_STATE_UNPUBLISHED,
     )

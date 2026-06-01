@@ -1,9 +1,14 @@
+from app.core.second_source_actor_text import is_unpublished_actor_text
 from app.services.actor_identifier import split_actor_names
 
 
 VIDEO_CATEGORY_SINGLE = '单体作品'
 VIDEO_CATEGORY_CO_STAR = '共演作品'
 VIDEO_CATEGORY_COLLECTION = '合集作品'
+
+MANUAL_CATEGORY_TIER_FIRST = 'tier_1'
+MANUAL_CATEGORY_TIER_SECOND = 'tier_2'
+MANUAL_CATEGORY_TIER_THIRD = 'tier_3'
 
 VIDEO_CATEGORY_OPTIONS = (
     VIDEO_CATEGORY_SINGLE,
@@ -38,3 +43,19 @@ def detect_video_category(tags_text='', actors_text=''):
 
 def requires_manual_video_category(tags_text='', actors_text=''):
     return not bool(detect_video_category(tags_text, actors_text))
+
+
+def count_video_actors(actors_text=''):
+    return len(split_actor_names(actors_text))
+
+
+def classify_manual_category_tier(actors_text='', author_raw=''):
+    if is_unpublished_actor_text(author_raw):
+        return MANUAL_CATEGORY_TIER_THIRD
+
+    actor_count = count_video_actors(actors_text)
+    if actor_count <= 0:
+        return ''
+    if actor_count > 4:
+        return MANUAL_CATEGORY_TIER_FIRST
+    return MANUAL_CATEGORY_TIER_SECOND

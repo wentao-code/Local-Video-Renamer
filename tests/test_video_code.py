@@ -7,13 +7,19 @@ from pathlib import Path
 
 from app.core.filename_rules import extract_code_from_filename
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
-from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.video_code import compact_video_code, has_supported_video_code, standardize_video_code
 from app.data.database_handler import VideoDatabase
 from app.scraper.javtxt_scraper import extract_page_code
 from app.services.code_prefix_entry_parser import extract_code
 from app.services.movie_author_resolver import MovieAuthorResolver
+from app.services.video_category_service import (
+    MANUAL_CATEGORY_TIER_FIRST,
+    MANUAL_CATEGORY_TIER_SECOND,
+    MANUAL_CATEGORY_TIER_THIRD,
+    classify_manual_category_tier,
+)
 
 
 class VideoCodeStandardizationTest(unittest.TestCase):
@@ -64,6 +70,11 @@ class VideoCodeStandardizationTest(unittest.TestCase):
 
     def test_javtxt_page_code_extraction_matches_standard_lookup_code(self):
         self.assertEqual(extract_page_code(['番号', 'bou-001 (h_113bou00001)']), 'BOU001')
+
+    def test_manual_category_tier_classification(self):
+        self.assertEqual(classify_manual_category_tier('甲 乙 丙 丁 戊', '甲 乙 丙 丁 戊'), MANUAL_CATEGORY_TIER_FIRST)
+        self.assertEqual(classify_manual_category_tier('甲 乙 丙', '甲 乙 丙'), MANUAL_CATEGORY_TIER_SECOND)
+        self.assertEqual(classify_manual_category_tier('', '未公开'), MANUAL_CATEGORY_TIER_THIRD)
 
 
 class VideoCodeDatabaseMigrationTest(unittest.TestCase):
@@ -244,6 +255,90 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
 
         self.assertEqual(rows, [(UNENRICHED_STATUS, '', '', '')])
 
+    def test_database_init_clears_web_movie_actor_state_without_javtxt_detail_reference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO actor_movies (
+                        actor_name, code, title, author, release_date, author_raw,
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        'actor',
+                        'AGMX-151',
+                        'title',
+                        '演员甲 演员乙',
+                        '2025-01-01',
+                        '演员甲 演员乙',
+                        UNENRICHED_STATUS,
+                        '',
+                        '',
+                        '',
+                        '',
+                    ),
+                )
+                conn.commit()
+
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    '''
+                    SELECT author, author_raw, javtxt_enrichment_status, javtxt_url
+                    FROM actor_movies
+                    WHERE actor_name = ? AND code = ?
+                    ''',
+                    ('actor', 'AGMX-151'),
+                ).fetchall()
+
+        self.assertEqual(rows, [('', '', UNENRICHED_STATUS, '')])
+
+    def test_database_init_clears_processed_video_actor_state_without_javtxt_detail_reference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO processed_videos (
+                        code, title, release_date, javtxt_title, javtxt_actors, javtxt_actors_raw,
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        'AGMX-151',
+                        'title',
+                        '2025-01-01',
+                        'title',
+                        '演员甲 演员乙',
+                        '演员甲 演员乙',
+                        ENRICHED_STATUS,
+                        '',
+                        '',
+                        '',
+                        '',
+                    ),
+                )
+                conn.commit()
+
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    '''
+                    SELECT javtxt_actors, javtxt_actors_raw, javtxt_enrichment_status, javtxt_url
+                    FROM processed_videos
+                    WHERE code = ?
+                    ''',
+                    ('AGMX-151',),
+                ).fetchall()
+
+        self.assertEqual(rows, [('', '', UNENRICHED_STATUS, '')])
+
     def test_javtxt_video_library_candidates_skip_ineligible_old_videos(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -278,13 +373,14 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                     '''
                     INSERT INTO processed_videos (
                         code, title, release_date, javtxt_title, javtxt_url,
-                        javtxt_tags, javtxt_enrichment_status, video_category, javtxt_release_date
+                        javtxt_actors, javtxt_actors_raw, javtxt_tags,
+                        javtxt_enrichment_status, video_category, javtxt_release_date
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     [
-                        ('SQTE-241', 'old processed', '2019-01-27', 'old processed', 'https://javtxt.top/v/286795', 'tag', ENRICHED_STATUS, '', ''),
-                        ('ABP-123', 'new processed', '2025-02-01', 'new processed', 'https://javtxt.top/v/123', 'tag', ENRICHED_STATUS, '', '2025-02-01'),
+                        ('SQTE-241', 'old processed', '2019-01-27', 'old processed', 'https://javtxt.top/v/286795', '演员旧', '演员旧', 'tag', ENRICHED_STATUS, '', ''),
+                        ('ABP-123', 'new processed', '2025-02-01', 'new processed', 'https://javtxt.top/v/123', '演员甲 演员乙', '演员甲 演员乙', 'tag', ENRICHED_STATUS, '', '2025-02-01'),
                     ],
                 )
                 conn.executemany(
@@ -324,6 +420,34 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
         self.assertEqual([row['code'] for row in rows], ['ABP-123', 'MIDV-001'])
         self.assertEqual(processed_row, (UNENRICHED_STATUS, ''))
         self.assertEqual(prefix_row, (UNENRICHED_STATUS, ''))
+
+    def test_manual_category_candidates_include_manual_tiers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.executemany(
+                    '''
+                    INSERT INTO code_prefix_movies (
+                        prefix, code, title, author, release_date, javtxt_url,
+                        javtxt_tags, author_raw, video_category, javtxt_release_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    [
+                        ('ABCD', 'ABCD-001', 'five actors', '甲 乙 丙 丁 戊', '2025-01-01', 'https://javtxt.top/v/1', '人妻', '甲 乙 丙 丁 戊', '', '2025-01-01'),
+                        ('EFGH', 'EFGH-002', 'three actors', '甲 乙 丙', '2025-01-01', 'https://javtxt.top/v/2', '人妻', '甲 乙 丙', '', '2025-01-01'),
+                        ('IJKL', 'IJKL-003', 'unpublished', '', '2025-01-01', 'https://javtxt.top/v/3', '人妻', '未公开', '', '2025-01-01'),
+                    ],
+                )
+                conn.commit()
+
+            rows = db.list_videos_requiring_manual_category()['videos']
+            tier_by_code = {row['code']: row['manual_tier'] for row in rows}
+
+        self.assertEqual(tier_by_code['ABCD-001'], MANUAL_CATEGORY_TIER_FIRST)
+        self.assertEqual(tier_by_code['EFGH-002'], MANUAL_CATEGORY_TIER_SECOND)
+        self.assertEqual(tier_by_code['IJKL-003'], MANUAL_CATEGORY_TIER_THIRD)
 
     def test_replace_code_prefix_movies_preserves_processed_video_no_result_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -399,6 +523,56 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
 
         self.assertEqual(movie['javtxt_enrichment_status'], '无搜索结果')
 
+    def test_list_code_prefix_movies_returns_javtxt_release_date(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO code_prefix_movies (
+                        prefix, code, title, author, release_date, avfan_url, page_number,
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                        javtxt_release_date, author_raw, video_category
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        'ACZD', 'ACZD-050', 'ACZD-050', '', '2025-02-01', 'https://example.com/movies/aczd-050', 1,
+                        NO_SEARCH_RESULTS_STATUS, '', '', '', '2025-02-01', '', '',
+                    ),
+                )
+                conn.commit()
+
+            movie = db.list_code_prefix_movies('ACZD')[0]
+
+        self.assertEqual(movie['javtxt_release_date'], '2025-02-01')
+
+    def test_list_actor_movies_returns_javtxt_release_date(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO actor_movies (
+                        actor_name, code, title, author, release_date, avfan_url, page_number,
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                        javtxt_release_date, author_raw, video_category
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        'Actor A', 'ACZD-050', 'ACZD-050', '', '2025-02-01', 'https://example.com/movies/aczd-050', 1,
+                        NO_SEARCH_RESULTS_STATUS, '', '', '', '2025-02-01', '', '',
+                    ),
+                )
+                conn.commit()
+
+            movie = db.list_actor_movies('Actor A')[0]
+
+        self.assertEqual(movie['javtxt_release_date'], '2025-02-01')
+
 
 class _StubDatabase:
     def get_javtxt_actor_cache_by_codes(self, codes):
@@ -406,6 +580,20 @@ class _StubDatabase:
 
     def save_javtxt_cache_for_video(self, code, info, status=ENRICHED_STATUS, error=''):
         return 0
+
+
+class _StubCacheDatabase(_StubDatabase):
+    def __init__(self, cache_rows):
+        self.cache_rows = dict(cache_rows or {})
+
+    def get_javtxt_actor_cache_by_codes(self, codes):
+        results = {}
+        for code in codes or []:
+            normalized_code = standardize_video_code(code)
+            row = self.cache_rows.get(normalized_code)
+            if row:
+                results[normalized_code] = dict(row)
+        return results
 
 
 class _StubScraper:
@@ -429,6 +617,15 @@ class _StubScraper:
         }
 
 
+class _FailOnFetchScraper:
+    @contextmanager
+    def session(self):
+        yield None
+
+    def fetch_by_code(self, code):
+        raise AssertionError(f'fetch_by_code should not be called for {code}')
+
+
 class MovieAuthorResolverEligibilityTest(unittest.TestCase):
     def test_javtxt_result_with_old_release_date_is_downgraded(self):
         resolver = MovieAuthorResolver(_StubDatabase(), scraper=_StubScraper())
@@ -448,6 +645,41 @@ class MovieAuthorResolverEligibilityTest(unittest.TestCase):
         self.assertEqual(entry['javtxt_enrichment_status'], UNENRICHED_STATUS)
         self.assertEqual(entry['javtxt_movie_id'], '272298')
         self.assertEqual(entry['javtxt_url'], 'https://javtxt.top/v/272298')
+
+    def test_cached_no_result_with_release_date_is_not_retried(self):
+        resolver = MovieAuthorResolver(
+            _StubCacheDatabase(
+                {
+                    'ACZD-072': {
+                        'code': 'ACZD-072',
+                        'javtxt_actors': '',
+                        'javtxt_actors_raw': '',
+                        'javtxt_movie_id': '',
+                        'javtxt_url': '',
+                        'javtxt_tags': '',
+                        'javtxt_enrichment_status': NO_SEARCH_RESULTS_STATUS,
+                        'javtxt_release_date': '',
+                        'release_date': '2022-12-09',
+                    }
+                }
+            ),
+            scraper=_FailOnFetchScraper(),
+        )
+        result = resolver.enrich_entries_with_details(
+            [
+                {
+                    'code': 'ACZD072',
+                    'title': 'ACZD-072',
+                    'author': '',
+                    'release_date': '2022-12-09',
+                }
+            ]
+        )
+
+        entry = result['entries'][0]
+        self.assertEqual(result['processed_video_count'], 0)
+        self.assertEqual(result['pending_video_count'], 0)
+        self.assertEqual(entry['code'], 'ACZD072')
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 import re
 
-from app.core.video_code import compact_video_code
+from app.core.video_code import standardize_video_code
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.core.javtxt_entry_state import (
@@ -200,7 +200,7 @@ class MovieAuthorResolver:
         cached_row = cached_rows.get(code, {})
         cached_search_state = classify_search_state(cached_row, cached_row=cached_row)
         cached_author = normalize_second_source_actor_text((cached_row or {}).get('javtxt_actors', ''))
-        cached_has_trusted_release_date = self._has_trusted_javtxt_release_date(cached_row)
+        cached_has_trusted_release_date = self._has_trusted_release_date(cached_row)
         if cached_author:
             entry['author'] = cached_author
             if is_resolved_search_state(cached_search_state) and cached_has_trusted_release_date:
@@ -222,6 +222,17 @@ class MovieAuthorResolver:
     @staticmethod
     def _has_trusted_javtxt_release_date(entry):
         return bool(str((entry or {}).get('javtxt_release_date', '') or '').strip())
+
+    @staticmethod
+    def _has_trusted_release_date(entry):
+        current = dict(entry or {})
+        return bool(
+            str(
+                current.get('javtxt_release_date')
+                or current.get('release_date', '')
+                or ''
+            ).strip()
+        )
 
     def _resolve_author_result(self, code, cached_row):
         if code in self._author_cache or code in self._status_cache:
@@ -352,7 +363,7 @@ class MovieAuthorResolver:
 
     @staticmethod
     def _normalize_code(value):
-        return compact_video_code(value)
+        return standardize_video_code(value)
 
     @staticmethod
     def _normalize_video_status(value):

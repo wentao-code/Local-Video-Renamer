@@ -11,6 +11,7 @@ from app.core.javtxt_entry_state import (
     JAVTXT_SEARCH_STATE_UNSEARCHED,
     classify_actor_state,
     classify_search_state,
+    has_detail_reference,
     normalize_actor_raw_text,
 )
 from app.core.second_source_actor_text import normalize_second_source_actor_text
@@ -47,6 +48,7 @@ def build_merged_movie_snapshot(code, library_rows, processed_row=None, cache_ro
         "author": merged_author,
         "author_raw": merged_author_raw,
         "release_date": _pick_best_text(candidates, "release_date"),
+        "javtxt_release_date": _pick_best_text(candidates, "javtxt_release_date"),
         "avfan_url": _pick_best_text(candidates, "avfan_url"),
         "javtxt_enrichment_status": merged_status,
         "javtxt_movie_id": _pick_best_text([best_search_candidate] + candidates, "javtxt_movie_id"),
@@ -83,6 +85,9 @@ def merge_movie_row(existing_row, merged_snapshot):
     if not str(updated.get("release_date", "") or "").strip() and str(merged.get("release_date", "") or "").strip():
         updated["release_date"] = str(merged.get("release_date", "") or "").strip()
 
+    if not str(updated.get("javtxt_release_date", "") or "").strip() and str(merged.get("javtxt_release_date", "") or "").strip():
+        updated["javtxt_release_date"] = str(merged.get("javtxt_release_date", "") or "").strip()
+
     if not str(updated.get("avfan_url", "") or "").strip() and str(merged.get("avfan_url", "") or "").strip():
         updated["avfan_url"] = str(merged.get("avfan_url", "") or "").strip()
 
@@ -112,6 +117,10 @@ def merge_movie_row(existing_row, merged_snapshot):
     if not current_category and merged_category:
         updated["video_category"] = merged_category
 
+    if not has_detail_reference(updated, cached_row=updated):
+        updated["author"] = ""
+        updated["author_raw"] = ""
+
     updated["author"] = normalize_second_source_actor_text(updated.get("author", ""))
     updated["author_raw"] = normalize_actor_raw_text(updated.get("author_raw", ""))
     updated["video_category"] = normalize_video_category(updated.get("video_category", ""))
@@ -129,6 +138,7 @@ def has_movie_row_changes(before_row, after_row):
         "javtxt_movie_id",
         "javtxt_url",
         "javtxt_tags",
+        "javtxt_release_date",
         "video_category",
     )
     for key in keys:
@@ -146,6 +156,8 @@ def clear_movie_javtxt_state(existing_row):
     if not current:
         return current
     updated = dict(current)
+    updated["author"] = ""
+    updated["author_raw"] = ""
     updated["javtxt_enrichment_status"] = UNENRICHED_STATUS
     updated["javtxt_movie_id"] = ""
     updated["javtxt_url"] = ""
@@ -166,6 +178,10 @@ def _build_processed_candidate(processed_row=None, cache_row=None):
         ),
         "author_raw": normalize_actor_raw_text(cache_row.get("javtxt_actors_raw", "")),
         "release_date": str(processed_row.get("release_date", "") or "").strip(),
+        "javtxt_release_date": str(
+            cache_row.get("javtxt_release_date", processed_row.get("javtxt_release_date", ""))
+            or ""
+        ).strip(),
         "avfan_url": "",
         "javtxt_enrichment_status": str(cache_row.get("javtxt_enrichment_status", "") or "").strip() or UNENRICHED_STATUS,
         "javtxt_movie_id": str(cache_row.get("javtxt_movie_id", "") or "").strip(),
@@ -201,6 +217,8 @@ def _pick_best_author(candidates):
     best_value = ""
     best_score = -1
     for candidate in candidates or []:
+        if not has_detail_reference(candidate, cached_row=candidate):
+            continue
         author = normalize_second_source_actor_text((candidate or {}).get("author", ""))
         author_raw = normalize_actor_raw_text((candidate or {}).get("author_raw", ""))
         score = _author_quality(author, author_raw)
@@ -215,6 +233,8 @@ def _pick_best_author_raw(candidates, merged_author):
     best_score = -1
     normalized_author = normalize_second_source_actor_text(merged_author)
     for candidate in candidates or []:
+        if not has_detail_reference(candidate, cached_row=candidate):
+            continue
         author = normalize_second_source_actor_text((candidate or {}).get("author", ""))
         author_raw = normalize_actor_raw_text((candidate or {}).get("author_raw", ""))
         score = _author_quality(author, author_raw)

@@ -20,7 +20,14 @@ from PyQt5.QtWidgets import (
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
-from app.services.video_category_service import VIDEO_CATEGORY_COLLECTION, VIDEO_CATEGORY_CO_STAR, VIDEO_CATEGORY_SINGLE
+from app.services.video_category_service import (
+    MANUAL_CATEGORY_TIER_FIRST,
+    MANUAL_CATEGORY_TIER_SECOND,
+    MANUAL_CATEGORY_TIER_THIRD,
+    VIDEO_CATEGORY_COLLECTION,
+    VIDEO_CATEGORY_CO_STAR,
+    VIDEO_CATEGORY_SINGLE,
+)
 
 
 COLUMN_CODE = 0
@@ -51,10 +58,12 @@ class VideoCategoryTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._all_rows = []
+        self._filtered_rows = []
         self._visible_rows = []
         self._selected_category_by_code = {}
         self._page = 0
         self._page_size = 200
+        self._active_tier = MANUAL_CATEGORY_TIER_FIRST
 
     def rowCount(self, parent=QModelIndex()):
         if parent.isValid():
@@ -139,6 +148,7 @@ class VideoCategoryTableModel(QAbstractTableModel):
             for code, category in self._selected_category_by_code.items()
             if code in valid_codes
         }
+        self._rebuild_filtered_rows()
         self._page = self._normalized_page(self._page)
         self._rebuild_visible_rows()
         self.endResetModel()
@@ -171,18 +181,18 @@ class VideoCategoryTableModel(QAbstractTableModel):
         return True
 
     def total_count(self):
-        return len(self._all_rows)
+        return len(self._filtered_rows)
 
     def page_count(self):
         return len(self._visible_rows)
 
     def total_pages(self):
-        if not self._all_rows:
+        if not self._filtered_rows:
             return 0
-        return (len(self._all_rows) + self._page_size - 1) // self._page_size
+        return (len(self._filtered_rows) + self._page_size - 1) // self._page_size
 
     def current_page_number(self):
-        return self._page + 1 if self._all_rows else 0
+        return self._page + 1 if self._filtered_rows else 0
 
     def can_go_previous(self):
         return self._page > 0
@@ -192,6 +202,28 @@ class VideoCategoryTableModel(QAbstractTableModel):
 
     def selected_category(self, code):
         return str(self._selected_category_by_code.get(str(code or '').strip().upper(), '') or '').strip()
+
+    def active_tier(self):
+        return self._active_tier
+
+    def set_active_tier(self, tier):
+        normalized_tier = str(tier or '').strip()
+        if normalized_tier not in (
+            MANUAL_CATEGORY_TIER_FIRST,
+            MANUAL_CATEGORY_TIER_SECOND,
+            MANUAL_CATEGORY_TIER_THIRD,
+        ):
+            return False
+        if normalized_tier == self._active_tier:
+            return False
+
+        self.beginResetModel()
+        self._active_tier = normalized_tier
+        self._rebuild_filtered_rows()
+        self._page = 0
+        self._rebuild_visible_rows()
+        self.endResetModel()
+        return True
 
     def set_selected_category(self, code, category):
         normalized_code = str(code or '').strip().upper()
@@ -226,19 +258,27 @@ class VideoCategoryTableModel(QAbstractTableModel):
 
         self.beginResetModel()
         self._all_rows = filtered_rows
+        self._rebuild_filtered_rows()
         self._selected_category_by_code.pop(normalized_code, None)
         self._page = self._normalized_page(self._page)
         self._rebuild_visible_rows()
         self.endResetModel()
         return True
 
+    def _rebuild_filtered_rows(self):
+        self._filtered_rows = [
+            row
+            for row in self._all_rows
+            if str((row or {}).get('manual_tier', '') or '').strip() == self._active_tier
+        ]
+
     def _rebuild_visible_rows(self):
-        if not self._all_rows:
+        if not self._filtered_rows:
             self._visible_rows = []
             return
         start = self._page * self._page_size
         end = start + self._page_size
-        self._visible_rows = self._all_rows[start:end]
+        self._visible_rows = self._filtered_rows[start:end]
 
     def _normalized_page(self, page):
         total_pages = self.total_pages()
@@ -354,6 +394,20 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         layout = QVBoxLayout(self)
         top_layout = QHBoxLayout()
         self.summary_label = QLabel(tr('video.category.summary', count=0, staged_count=0))
+        self.btn_tier_first = QPushButton(tr('video.category.tier_first'))
+        self.btn_tier_first.setCheckable(True)
+        self.btn_tier_first.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_FIRST))
+        self.btn_tier_second = QPushButton(tr('video.category.tier_second'))
+        self.btn_tier_second.setCheckable(True)
+        self.btn_tier_second.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_SECOND))
+        self.btn_tier_third = QPushButton(tr('video.category.tier_third'))
+        self.btn_tier_third.setCheckable(True)
+        self.btn_tier_third.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_THIRD))
+        self._tier_buttons = {
+            MANUAL_CATEGORY_TIER_FIRST: self.btn_tier_first,
+            MANUAL_CATEGORY_TIER_SECOND: self.btn_tier_second,
+            MANUAL_CATEGORY_TIER_THIRD: self.btn_tier_third,
+        }
         self.btn_select_all = QPushButton(tr('video.category.select_all'))
         self.btn_select_all.clicked.connect(self.select_current_page_rows)
         self.btn_batch_single = QPushButton(tr('video.category.batch_single'))
@@ -368,6 +422,9 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.btn_refresh.clicked.connect(self.load_data)
         top_layout.addWidget(self.summary_label)
         top_layout.addStretch()
+        top_layout.addWidget(self.btn_tier_first)
+        top_layout.addWidget(self.btn_tier_second)
+        top_layout.addWidget(self.btn_tier_third)
         top_layout.addWidget(self.btn_select_all)
         top_layout.addWidget(self.btn_batch_single)
         top_layout.addWidget(self.btn_batch_co_star)
@@ -435,6 +492,9 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         layout.addLayout(bottom_layout)
         self.set_async_busy_widgets([
             self.btn_refresh,
+            self.btn_tier_first,
+            self.btn_tier_second,
+            self.btn_tier_third,
             self.btn_select_all,
             self.btn_batch_single,
             self.btn_batch_co_star,
@@ -576,6 +636,15 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.model.set_rows(overview.get('videos', []) or [])
         self._update_summary_label()
 
+    def _set_active_tier(self, tier):
+        if self.is_async_task_running():
+            return
+        if self.model.set_active_tier(tier):
+            self.table.clearSelection()
+            self._update_summary_label()
+            return
+        self._update_tier_button_state()
+
     def _go_previous_page(self):
         if self.model.previous_page():
             self._update_summary_label()
@@ -607,6 +676,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         )
         self._update_navigation_state()
         self._update_sync_button_state()
+        self._update_tier_button_state()
         self._update_batch_button_state()
         self.table.viewport().update()
 
@@ -617,6 +687,13 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
 
     def _update_sync_button_state(self):
         self.btn_sync.setEnabled((not self.is_async_task_running()) and self.staged_count > 0)
+
+    def _update_tier_button_state(self):
+        busy = self.is_async_task_running()
+        active_tier = self.model.active_tier()
+        for tier, button in self._tier_buttons.items():
+            button.setChecked(tier == active_tier)
+            button.setEnabled(not busy)
 
     def _update_batch_button_state(self, *_args):
         busy = self.is_async_task_running()
@@ -645,6 +722,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         super()._cleanup_async_task_thread()
         self._update_navigation_state()
         self._update_sync_button_state()
+        self._update_tier_button_state()
         self._update_batch_button_state()
         self.table.viewport().update()
 
