@@ -842,9 +842,14 @@ class VideoDatabase:
             return UNENRICHED_STATUS, '', '', '', javtxt_release_date, category
 
         return (
-            str((movie or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-            str((movie or {}).get('javtxt_movie_id', '') or '').strip(),
-            str((movie or {}).get('javtxt_url', '') or '').strip(),
+            str(
+                (movie or {}).get(
+                    'javtxt_enrichment_status',
+                    processed_record.get('javtxt_enrichment_status', ''),
+                ) or ''
+            ).strip() or UNENRICHED_STATUS,
+            str((movie or {}).get('javtxt_movie_id', processed_record.get('javtxt_movie_id', '')) or '').strip(),
+            str((movie or {}).get('javtxt_url', processed_record.get('javtxt_url', '')) or '').strip(),
             tags,
             javtxt_release_date,
             category,
@@ -1454,20 +1459,25 @@ class VideoDatabase:
 
     def replace_code_prefix_movies(self, prefix, movies):
         prefix = str(prefix or '').strip().upper()
+        normalized_movies = []
+        if movies:
+            for movie in movies:
+                if not movie or not movie.get('code'):
+                    continue
+                normalized_code = standardize_video_code(movie.get('code', ''))
+                if not normalized_code:
+                    continue
+                normalized_movie = dict(movie)
+                normalized_movie['code'] = normalized_code
+                normalized_movies.append(normalized_movie)
+        processed_videos = self.get_videos_by_codes([movie['code'] for movie in normalized_movies]) if normalized_movies else {}
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (prefix,))
-            if movies:
-                processed_videos = self.get_videos_by_codes(
-                    [standardize_video_code(movie.get('code', '')) for movie in movies if movie.get('code')]
-                )
+            if normalized_movies:
                 values = []
-                for movie in movies:
-                    if not movie.get('code'):
-                        continue
-                    normalized_code = standardize_video_code(movie.get('code', ''))
-                    if not normalized_code:
-                        continue
+                for movie in normalized_movies:
+                    normalized_code = movie['code']
                     processed_record = processed_videos.get(normalized_code, {}) or {}
                     (
                         javtxt_status,
@@ -1723,20 +1733,25 @@ class VideoDatabase:
 
     def replace_actor_movies(self, actor_name, movies):
         normalized_name = str(actor_name or '').strip()
+        normalized_movies = []
+        if movies:
+            for movie in movies:
+                if not movie or not movie.get('code'):
+                    continue
+                normalized_code = standardize_video_code(movie.get('code', ''))
+                if not normalized_code:
+                    continue
+                normalized_movie = dict(movie)
+                normalized_movie['code'] = normalized_code
+                normalized_movies.append(normalized_movie)
+        processed_videos = self.get_videos_by_codes([movie['code'] for movie in normalized_movies]) if normalized_movies else {}
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
-            if movies:
-                processed_videos = self.get_videos_by_codes(
-                    [standardize_video_code(movie.get('code', '')) for movie in movies if movie.get('code')]
-                )
+            if normalized_movies:
                 values = []
-                for movie in movies:
-                    if not movie.get('code'):
-                        continue
-                    normalized_code = standardize_video_code(movie.get('code', ''))
-                    if not normalized_code:
-                        continue
+                for movie in normalized_movies:
+                    normalized_code = movie['code']
                     processed_record = processed_videos.get(normalized_code, {}) or {}
                     (
                         javtxt_status,
@@ -2747,7 +2762,8 @@ class VideoDatabase:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
-                SELECT code, title, author, duration, size, storage_location, release_date, video_category, javtxt_tags, javtxt_release_date
+                SELECT code, title, author, duration, size, storage_location, release_date, video_category,
+                       javtxt_tags, javtxt_release_date, javtxt_enrichment_status, javtxt_movie_id, javtxt_url
                 FROM processed_videos
                 WHERE code IN ({placeholders})
                 ''',
@@ -2767,6 +2783,9 @@ class VideoDatabase:
                 'video_category': normalize_video_category(row[7]),
                 'javtxt_tags': row[8] or '',
                 'javtxt_release_date': row[9] or '',
+                'javtxt_enrichment_status': row[10] or UNENRICHED_STATUS,
+                'javtxt_movie_id': row[11] or '',
+                'javtxt_url': row[12] or '',
             }
             for row in rows
         }

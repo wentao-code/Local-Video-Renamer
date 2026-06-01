@@ -23,9 +23,11 @@ class ActorJavtxtEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        ready_actor_names = self._ready_actor_names()
+        ready_actor_infos = self._ready_actor_infos()
+        ready_actor_names = [info['actor_name'] for info in ready_actor_infos]
         blocked_count = self._blocked_actor_count()
-        remaining_video_count_before = self._remaining_actor_video_count(ready_actor_names)
+        remaining_video_count_before = sum(int(info.get('pending_video_count', 0) or 0) for info in ready_actor_infos)
+        remaining_video_count_after = remaining_video_count_before
         target_video_count = min(limit, remaining_video_count_before)
         results = []
         progress_state = {
@@ -58,7 +60,9 @@ class ActorJavtxtEnrichmentService:
                 task_kind='single',
             )
 
-        for actor_name in ready_actor_names:
+        for actor_info in ready_actor_infos:
+            actor_name = actor_info['actor_name']
+            pending_before = int(actor_info.get('pending_video_count', 0) or 0)
             if self.should_stop():
                 stopped = True
                 self._log('WARNING', '演员库辛聚谷补全收到停止请求', processed_count=progress_state['processed_video_count'])
@@ -71,6 +75,9 @@ class ActorJavtxtEnrichmentService:
             try:
                 result = self._enrich_single_actor(actor_name, remaining_slots, progress_state)
                 results.append(result)
+                remaining_video_count_after = remaining_video_count_after - pending_before + int(
+                    result.get('remaining_video_count', pending_before) or 0
+                )
             except Exception as exc:
                 error_message = str(exc)
                 self.database.save_actor_enrichment(
@@ -93,6 +100,9 @@ class ActorJavtxtEnrichmentService:
                         'remaining_video_count': self._pending_actor_video_count(actor_name),
                         'count_unit': '视频',
                     }
+                )
+                remaining_video_count_after = remaining_video_count_after - pending_before + int(
+                    results[-1].get('remaining_video_count', pending_before) or 0
                 )
                 progress_state['failed_video_count'] = int(progress_state.get('failed_video_count', 0) or 0) + 1
                 self._log(
@@ -117,7 +127,7 @@ class ActorJavtxtEnrichmentService:
             'processed_count': int(progress_state.get('processed_video_count', 0) or 0),
             'success_count': int(progress_state.get('success_video_count', 0) or 0),
             'failed_count': int(progress_state.get('failed_video_count', 0) or 0),
-            'remaining_count': self._remaining_actor_video_count(),
+            'remaining_count': max(0, int(remaining_video_count_after or 0)),
             'results': results,
             'stopped': stopped,
             'entity_label': '演员库 / 辛聚谷',
@@ -142,9 +152,9 @@ class ActorJavtxtEnrichmentService:
         )
         return result
 
-    def _ready_actor_names(self):
+    def _ready_actor_infos(self):
         records = self.database.list_actor_enrichment_records()
-        actor_names = []
+        actor_infos = []
         for row in self.database.list_actors():
             actor_name = str(row.get('name', '')).strip()
             if not actor_name:
@@ -158,7 +168,12 @@ class ActorJavtxtEnrichmentService:
             if pending_count <= 0:
                 continue
 
-            actor_names.append(actor_name)
+            actor_infos.append(
+                {
+                    'actor_name': actor_name,
+                    'pending_video_count': pending_count,
+                }
+            )
             self._log(
                 'INFO',
                 '演员已进入辛聚谷待补全队列',
@@ -166,7 +181,10 @@ class ActorJavtxtEnrichmentService:
                 pending_video_count=pending_count,
                 avfan_total_videos=record.get('avfan_total_videos', 0),
             )
-        return actor_names
+        return actor_infos
+
+    def _ready_actor_names(self):
+        return [info['actor_name'] for info in self._ready_actor_infos()]
 
     def _remaining_actor_video_count(self, ready_actor_names=None):
         actor_names = ready_actor_names if ready_actor_names is not None else self._ready_actor_names()

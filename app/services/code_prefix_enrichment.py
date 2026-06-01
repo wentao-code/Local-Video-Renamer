@@ -58,81 +58,83 @@ class CodePrefixEnrichmentService:
                 task_kind='single',
             )
 
-        for prefix in candidates:
-            if self.should_stop():
-                stopped = True
-                self._log('WARNING', '番号库补全收到停止请求', processed_count=len(results))
-                break
-
-            self._log('INFO', '开始处理番号前缀', prefix=prefix)
-            try:
-                with self.scraper.session() as page:
-                    result = self._enrich_single_prefix(page, prefix)
-                results.append(result)
-                if result.get('stopped'):
+        # Reuse one browser session across the whole batch so a new prefix
+        # does not relaunch the browser window.
+        with self.scraper.session() as page:
+            for prefix in candidates:
+                if self.should_stop():
                     stopped = True
-                    self._update_progress(len(results), success_count, failed_count + 1, prefix)
+                    self._log('WARNING', '番号库补全收到停止请求', processed_count=len(results))
                     break
-                if result.get('status') == ENRICHED_STATUS:
-                    success_count += 1
-                else:
-                    failed_count += 1
-            except HumanVerificationRequiredError as exc:
-                error_message = str(exc)
-                self.database.save_code_prefix_enrichment(
-                    prefix=prefix,
-                    status=FAILED_STATUS,
-                    total_pages=0,
-                    total_videos=0,
-                    error=error_message,
-                    source_key=AVFAN_VIDEO_SOURCE,
-                )
-                results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
-                failed_count += 1
-                self._log(
-                    'ERROR',
-                    '番号库补全被人机验证中断',
-                    prefix=prefix,
-                    error=error_message,
-                )
-                self._update_progress(len(results), success_count, failed_count, prefix)
-                result = {
-                    'requested': limit,
-                    'processed_count': len(results),
-                    'success_count': success_count,
-                    'failed_count': failed_count,
-                    'remaining_count': self._remaining_prefix_count(),
-                    'results': results,
-                    'stopped': True,
-                    'requires_manual_verification': True,
-                    'message': error_message,
-                    'entity_label': '番号',
-                    'source_key': AVFAN_VIDEO_SOURCE,
-                    'source_label': source_label,
-                    'remaining_label': '剩余未补全番号',
-                }
-                self._finish_progress(error_message, stopped=True)
-                return result
-            except Exception as exc:
-                error_message = str(exc)
-                self.database.save_code_prefix_enrichment(
-                    prefix=prefix,
-                    status=FAILED_STATUS,
-                    total_pages=0,
-                    total_videos=0,
-                    error=error_message,
-                    source_key=AVFAN_VIDEO_SOURCE,
-                )
-                results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
-                failed_count += 1
-                self._log(
-                    'ERROR',
-                    '番号库补全异常，已写入失败状态',
-                    prefix=prefix,
-                    error=error_message,
-                )
 
-            self._update_progress(len(results), success_count, failed_count, prefix)
+                self._log('INFO', '开始处理番号前缀', prefix=prefix)
+                try:
+                    result = self._enrich_single_prefix(page, prefix)
+                    results.append(result)
+                    if result.get('stopped'):
+                        stopped = True
+                        self._update_progress(len(results), success_count, failed_count + 1, prefix)
+                        break
+                    if result.get('status') == ENRICHED_STATUS:
+                        success_count += 1
+                    else:
+                        failed_count += 1
+                except HumanVerificationRequiredError as exc:
+                    error_message = str(exc)
+                    self.database.save_code_prefix_enrichment(
+                        prefix=prefix,
+                        status=FAILED_STATUS,
+                        total_pages=0,
+                        total_videos=0,
+                        error=error_message,
+                        source_key=AVFAN_VIDEO_SOURCE,
+                    )
+                    results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
+                    failed_count += 1
+                    self._log(
+                        'ERROR',
+                        '番号库补全被人机验证中断',
+                        prefix=prefix,
+                        error=error_message,
+                    )
+                    self._update_progress(len(results), success_count, failed_count, prefix)
+                    result = {
+                        'requested': limit,
+                        'processed_count': len(results),
+                        'success_count': success_count,
+                        'failed_count': failed_count,
+                        'remaining_count': self._remaining_prefix_count(),
+                        'results': results,
+                        'stopped': True,
+                        'requires_manual_verification': True,
+                        'message': error_message,
+                        'entity_label': '番号',
+                        'source_key': AVFAN_VIDEO_SOURCE,
+                        'source_label': source_label,
+                        'remaining_label': '剩余未补全番号',
+                    }
+                    self._finish_progress(error_message, stopped=True)
+                    return result
+                except Exception as exc:
+                    error_message = str(exc)
+                    self.database.save_code_prefix_enrichment(
+                        prefix=prefix,
+                        status=FAILED_STATUS,
+                        total_pages=0,
+                        total_videos=0,
+                        error=error_message,
+                        source_key=AVFAN_VIDEO_SOURCE,
+                    )
+                    results.append({'prefix': prefix, 'status': FAILED_STATUS, 'error': error_message})
+                    failed_count += 1
+                    self._log(
+                        'ERROR',
+                        '番号库补全异常，已写入失败状态',
+                        prefix=prefix,
+                        error=error_message,
+                    )
+
+                self._update_progress(len(results), success_count, failed_count, prefix)
 
         result = {
             'requested': limit,

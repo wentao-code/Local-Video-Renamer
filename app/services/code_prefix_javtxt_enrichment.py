@@ -25,9 +25,11 @@ class CodePrefixJavtxtEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        ready_prefixes = self._ready_prefixes()
+        ready_prefix_infos = self._ready_prefix_infos()
+        ready_prefixes = [info['prefix'] for info in ready_prefix_infos]
         blocked_count = self._blocked_prefix_count()
-        remaining_video_count_before = self._remaining_prefix_video_count(ready_prefixes)
+        remaining_video_count_before = sum(int(info.get('pending_video_count', 0) or 0) for info in ready_prefix_infos)
+        remaining_video_count_after = remaining_video_count_before
         target_video_count = min(limit, remaining_video_count_before)
         results = []
         progress_state = {
@@ -60,54 +62,65 @@ class CodePrefixJavtxtEnrichmentService:
                 task_kind='single',
             )
 
-        for prefix in ready_prefixes:
-            if self.should_stop():
-                stopped = True
-                self._log('WARNING', '番号库辛聚谷补全收到停止请求', processed_count=progress_state['processed_video_count'])
-                break
+        # Reuse one JAVTXT browser session across the whole batch so moving
+        # to the next prefix does not reopen the browser window.
+        with self.author_resolver.session():
+            for prefix_info in ready_prefix_infos:
+                prefix = prefix_info['prefix']
+                pending_before = int(prefix_info.get('pending_video_count', 0) or 0)
+                if self.should_stop():
+                    stopped = True
+                    self._log('WARNING', '番号库辛聚谷补全收到停止请求', processed_count=progress_state['processed_video_count'])
+                    break
 
-            remaining_slots = limit - int(progress_state.get('processed_video_count', 0) or 0)
-            if remaining_slots <= 0:
-                break
+                remaining_slots = limit - int(progress_state.get('processed_video_count', 0) or 0)
+                if remaining_slots <= 0:
+                    break
 
-            try:
-                result = self._enrich_single_prefix(prefix, remaining_slots, progress_state)
-                results.append(result)
-            except Exception as exc:
-                error_message = str(exc)
-                self.database.save_code_prefix_enrichment(
-                    prefix=prefix,
-                    status=FAILED_STATUS,
-                    total_pages=0,
-                    total_videos=0,
-                    error=error_message,
-                    source_key=JAVTXT_VIDEO_SOURCE,
-                )
-                results.append(
-                    {
-                        'prefix': prefix,
-                        'status': FAILED_STATUS,
-                        'error': error_message,
-                        'processed_video_count': 0,
-                        'success_video_count': 0,
-                        'failed_video_count': 1,
-                        'remaining_video_count': self._pending_prefix_video_count(prefix),
-                        'count_unit': '视频',
-                    }
-                )
-                progress_state['failed_video_count'] = int(progress_state.get('failed_video_count', 0) or 0) + 1
-                self._log(
-                    'ERROR',
-                    '番号库辛聚谷补全异常，已写入失败状态',
-                    prefix=prefix,
-                    error=error_message,
-                )
-                self._update_progress(
-                    int(progress_state.get('processed_video_count', 0) or 0),
-                    int(progress_state.get('success_video_count', 0) or 0),
-                    int(progress_state.get('failed_video_count', 0) or 0),
-                    prefix,
-                )
+                try:
+                    result = self._enrich_single_prefix(prefix, remaining_slots, progress_state)
+                    results.append(result)
+                    remaining_video_count_after = remaining_video_count_after - pending_before + int(
+                        result.get('remaining_video_count', pending_before) or 0
+                    )
+                except Exception as exc:
+                    error_message = str(exc)
+                    self.database.save_code_prefix_enrichment(
+                        prefix=prefix,
+                        status=FAILED_STATUS,
+                        total_pages=0,
+                        total_videos=0,
+                        error=error_message,
+                        source_key=JAVTXT_VIDEO_SOURCE,
+                    )
+                    results.append(
+                        {
+                            'prefix': prefix,
+                            'status': FAILED_STATUS,
+                            'error': error_message,
+                            'processed_video_count': 0,
+                            'success_video_count': 0,
+                            'failed_video_count': 1,
+                            'remaining_video_count': self._pending_prefix_video_count(prefix),
+                            'count_unit': '视频',
+                        }
+                    )
+                    remaining_video_count_after = remaining_video_count_after - pending_before + int(
+                        results[-1].get('remaining_video_count', pending_before) or 0
+                    )
+                    progress_state['failed_video_count'] = int(progress_state.get('failed_video_count', 0) or 0) + 1
+                    self._log(
+                        'ERROR',
+                        '番号库辛聚谷补全异常，已写入失败状态',
+                        prefix=prefix,
+                        error=error_message,
+                    )
+                    self._update_progress(
+                        int(progress_state.get('processed_video_count', 0) or 0),
+                        int(progress_state.get('success_video_count', 0) or 0),
+                        int(progress_state.get('failed_video_count', 0) or 0),
+                        prefix,
+                    )
 
         message = ''
         if not ready_prefixes and blocked_count > 0:
@@ -118,7 +131,7 @@ class CodePrefixJavtxtEnrichmentService:
             'processed_count': int(progress_state.get('processed_video_count', 0) or 0),
             'success_count': int(progress_state.get('success_video_count', 0) or 0),
             'failed_count': int(progress_state.get('failed_video_count', 0) or 0),
-            'remaining_count': self._remaining_prefix_video_count(),
+            'remaining_count': max(0, int(remaining_video_count_after or 0)),
             'results': results,
             'stopped': stopped,
             'entity_label': '番号库 / 辛聚谷',
@@ -143,9 +156,9 @@ class CodePrefixJavtxtEnrichmentService:
         )
         return result
 
-    def _ready_prefixes(self):
+    def _ready_prefix_infos(self):
         records = self.database.list_code_prefix_enrichment_records()
-        prefixes = []
+        prefix_infos = []
         for row in self.prefix_library.list_prefixes():
             prefix = row.get('prefix', '')
             record = records.get(prefix, {})
@@ -157,7 +170,12 @@ class CodePrefixJavtxtEnrichmentService:
             if pending_count <= 0:
                 continue
 
-            prefixes.append(prefix)
+            prefix_infos.append(
+                {
+                    'prefix': prefix,
+                    'pending_video_count': pending_count,
+                }
+            )
             self._log(
                 'INFO',
                 '番号前缀已进入辛聚谷待补全队列',
@@ -165,7 +183,10 @@ class CodePrefixJavtxtEnrichmentService:
                 pending_video_count=pending_count,
                 avfan_total_videos=record.get('avfan_total_videos', 0),
             )
-        return prefixes
+        return prefix_infos
+
+    def _ready_prefixes(self):
+        return [info['prefix'] for info in self._ready_prefix_infos()]
 
     def _remaining_prefix_video_count(self, prefixes=None):
         target_prefixes = prefixes if prefixes is not None else self._ready_prefixes()
@@ -210,12 +231,11 @@ class CodePrefixJavtxtEnrichmentService:
             max_video_count=max_video_count,
         )
 
-        with self.author_resolver.session():
-            resolution = self.author_resolver.enrich_entries_with_details(
-                movies,
-                max_lookup_count=max_video_count,
-                progress_callback=lambda update: self._on_video_progress(update, progress_state, prefix),
-            )
+        resolution = self.author_resolver.enrich_entries_with_details(
+            movies,
+            max_lookup_count=max_video_count,
+            progress_callback=lambda update: self._on_video_progress(update, progress_state, prefix),
+        )
 
         enriched_movies = resolution.get('entries', [])
         completed = bool(resolution.get('completed'))

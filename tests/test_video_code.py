@@ -325,6 +325,80 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
         self.assertEqual(processed_row, (UNENRICHED_STATUS, ''))
         self.assertEqual(prefix_row, (UNENRICHED_STATUS, ''))
 
+    def test_replace_code_prefix_movies_preserves_processed_video_no_result_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.import_local_videos(
+                [
+                    {'code': 'ACZD-050', 'storage_location': 'D:\\videos', 'size': '1GB'},
+                ]
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    UPDATE processed_videos
+                    SET release_date = ?, javtxt_release_date = ?, javtxt_enrichment_status = ?, javtxt_enrichment_error = ?
+                    WHERE code = ?
+                    ''',
+                    ('2025-02-01', '2025-02-01', '无搜索结果', '未搜索到匹配影片', 'ACZD-050'),
+                )
+                conn.commit()
+
+            db.replace_code_prefix_movies(
+                'ACZD',
+                [
+                    {
+                        'code': 'ACZD-050',
+                        'title': 'ACZD-050',
+                        'author': '',
+                        'release_date': '2025-02-01',
+                        'avfan_url': 'https://example.com/movies/aczd-050',
+                    }
+                ],
+            )
+
+            movie = db.list_code_prefix_movies('ACZD')[0]
+
+        self.assertEqual(movie['javtxt_enrichment_status'], '无搜索结果')
+
+    def test_replace_actor_movies_preserves_processed_video_no_result_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.import_local_videos(
+                [
+                    {'code': 'ACZD-050', 'storage_location': 'D:\\videos', 'size': '1GB'},
+                ]
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    UPDATE processed_videos
+                    SET release_date = ?, javtxt_release_date = ?, javtxt_enrichment_status = ?, javtxt_enrichment_error = ?
+                    WHERE code = ?
+                    ''',
+                    ('2025-02-01', '2025-02-01', '无搜索结果', '未搜索到匹配影片', 'ACZD-050'),
+                )
+                conn.commit()
+
+            db.replace_actor_movies(
+                'Actor A',
+                [
+                    {
+                        'code': 'ACZD-050',
+                        'title': 'ACZD-050',
+                        'author': '',
+                        'release_date': '2025-02-01',
+                        'avfan_url': 'https://example.com/movies/aczd-050',
+                    }
+                ],
+            )
+
+            movie = db.list_actor_movies('Actor A')[0]
+
+        self.assertEqual(movie['javtxt_enrichment_status'], '无搜索结果')
+
 
 class _StubDatabase:
     def get_javtxt_actor_cache_by_codes(self, codes):
