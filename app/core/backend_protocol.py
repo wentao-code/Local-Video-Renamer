@@ -1,1 +1,1 @@
-BACKEND_API_REVISION = '2026-06-01-library-status-sync-1'
+BACKEND_API_REVISION = '2026-06-01-javtxt-eligibility-cleanup-2'

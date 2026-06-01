@@ -14,6 +14,7 @@ from app.core.javtxt_entry_state import (
     normalize_actor_raw_text,
 )
 from app.core.second_source_actor_text import normalize_second_source_actor_text
+from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.services.video_category_service import normalize_video_category
 
 
@@ -134,6 +135,22 @@ def has_movie_row_changes(before_row, after_row):
         if str((before_row or {}).get(key, "") or "").strip() != str((after_row or {}).get(key, "") or "").strip():
             return True
     return False
+
+
+def is_sync_eligible_movie(movie):
+    return is_javtxt_eligible_movie(movie)
+
+
+def clear_movie_javtxt_state(existing_row):
+    current = dict(existing_row or {})
+    if not current:
+        return current
+    updated = dict(current)
+    updated["javtxt_enrichment_status"] = UNENRICHED_STATUS
+    updated["javtxt_movie_id"] = ""
+    updated["javtxt_url"] = ""
+    updated["javtxt_tags"] = ""
+    return updated
 
 
 def _build_processed_candidate(processed_row=None, cache_row=None):

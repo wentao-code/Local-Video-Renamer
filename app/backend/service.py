@@ -48,6 +48,7 @@ class BackendService:
 
     def load_database(self):
         self.actor_library_sync_service.sync_from_video_library()
+        self.db.sanitize_ineligible_javtxt_state()
         self.database_loaded = True
         return {
             'count': self.db.get_video_count(),

@@ -50,7 +50,9 @@ def is_javtxt_eligible_movie(movie):
     if _contains_collection_marker((movie or {}).get('javtxt_tags', '')):
         return False
 
-    release_date_text = str((movie or {}).get('release_date', '') or '').strip()
+    release_date_text = str(
+        ((movie or {}).get('javtxt_release_date') or (movie or {}).get('release_date', '')) or ''
+    ).strip()
     if not release_date_text:
         return False
 

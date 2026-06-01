@@ -1,6 +1,8 @@
 from app.services.library_status_sync_merger import (
     build_merged_movie_snapshot,
+    clear_movie_javtxt_state,
     has_movie_row_changes,
+    is_sync_eligible_movie,
     merge_movie_row,
 )
 
@@ -48,16 +50,18 @@ class LibraryStatusSyncService:
             if not merged_snapshot:
                 continue
 
+            is_eligible = is_sync_eligible_movie(merged_snapshot)
+
             code_changed = False
             for row in prefix_rows_by_code.get(code, []):
-                merged_row = merge_movie_row(row, merged_snapshot)
+                merged_row = merge_movie_row(row, merged_snapshot) if is_eligible else clear_movie_javtxt_state(row)
                 if has_movie_row_changes(row, merged_row):
                     code_prefix_updates.append(merged_row)
                     affected_prefixes.add(str(merged_row.get("prefix", "") or "").strip().upper())
                     code_changed = True
 
             for row in actor_rows_by_code.get(code, []):
-                merged_row = merge_movie_row(row, merged_snapshot)
+                merged_row = merge_movie_row(row, merged_snapshot) if is_eligible else clear_movie_javtxt_state(row)
                 if has_movie_row_changes(row, merged_row):
                     actor_updates.append(merged_row)
                     affected_actors.add(str(merged_row.get("actor_name", "") or "").strip())
