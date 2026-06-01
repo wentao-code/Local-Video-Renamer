@@ -20,6 +20,7 @@ from app.services.enrichment_progress_service import EnrichmentProgressService
 from app.services.library_admin_service import LibraryAdminService
 from app.services.library_enrichment_service import LibraryEnrichmentService
 from app.services.library_status_sync_service import LibraryStatusSyncService
+from app.services.ladder_board_service import LadderBoardService
 from app.services.local_video_library_service import LocalVideoLibraryService
 from app.services.path_library import PathLibrary, summarize_paths
 from app.services.task_trace_logger import TaskTraceLogger
@@ -37,6 +38,7 @@ class BackendService:
         self.data_center_service = DataCenterService(self.db)
         self.library_admin_service = LibraryAdminService(self.db)
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
+        self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
@@ -162,6 +164,18 @@ class BackendService:
 
     def delete_code_prefix(self, prefix):
         return {'deleted_count': self.library_admin_service.delete_code_prefix(prefix)}
+
+    def get_ladder_board(self, board_key):
+        self.ensure_database_loaded()
+        return {'board': self.ladder_board_service.get_board(board_key)}
+
+    def admit_ladder_entry(self, board_key, entity_name, tier):
+        self.ensure_database_loaded()
+        return {'board': self.ladder_board_service.admit_entry(board_key, entity_name, tier)}
+
+    def update_ladder_entry_medal(self, board_key, entity_name, medal):
+        self.ensure_database_loaded()
+        return {'board': self.ladder_board_service.update_medal(board_key, entity_name, medal)}
 
     def list_paths(self):
         paths = []

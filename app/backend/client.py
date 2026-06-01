@@ -177,6 +177,22 @@ class BackendClient:
     def delete_code_prefix(self, prefix):
         return self._post('/database/code-prefixes/delete', {'prefix': prefix}).get('deleted_count', 0)
 
+    def get_ladder_board(self, board_key):
+        query = '?' + urlencode({'board_key': board_key})
+        return self._get('/ladder/board' + query).get('board', {})
+
+    def admit_ladder_entry(self, board_key, entity_name, tier):
+        return self._post(
+            '/ladder/entries/select',
+            {'board_key': board_key, 'entity_name': entity_name, 'tier': tier},
+        ).get('board', {})
+
+    def update_ladder_entry_medal(self, board_key, entity_name, medal):
+        return self._post(
+            '/ladder/entries/medal',
+            {'board_key': board_key, 'entity_name': entity_name, 'medal': medal},
+        ).get('board', {})
+
     def get_path_library(self):
         return self._get('/paths')
 

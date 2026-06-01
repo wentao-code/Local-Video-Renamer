@@ -94,6 +94,12 @@ def make_handler(service):
                 return service.rename_code_prefix(body.get('old_prefix'), body.get('new_prefix'))
             if method == 'POST' and path == '/database/code-prefixes/delete':
                 return service.delete_code_prefix(body.get('prefix'))
+            if method == 'GET' and path == '/ladder/board':
+                return service.get_ladder_board(query.get('board_key', [''])[0])
+            if method == 'POST' and path == '/ladder/entries/select':
+                return service.admit_ladder_entry(body.get('board_key'), body.get('entity_name'), body.get('tier'))
+            if method == 'POST' and path == '/ladder/entries/medal':
+                return service.update_ladder_entry_medal(body.get('board_key'), body.get('entity_name'), body.get('medal'))
             if method == 'GET' and path == '/paths':
                 return service.list_paths()
             if method == 'POST' and path == '/paths/add':

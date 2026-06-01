@@ -1,7 +1,10 @@
+import os
 from copy import deepcopy
 
+from app.gui.i18n_patch import GUI_TEXT_PATCHES
 
-GUI_TEXTS = {
+
+BASE_GUI_TEXTS = {
     'common.current': '当前: {value}',
     'common.empty': '暂无',
     'common.filter': '筛选:',
@@ -340,6 +343,18 @@ GUI_TEXTS = {
     'video.detail.search_placeholder': '输入编号、标题、演员、日期或分类实时筛选...',
     'video.detail.headers': ['视频编号', '视频标题', '作者/演员', '视频分类', '发布日期'],
 }
+
+
+def _build_gui_texts():
+    merged = deepcopy(BASE_GUI_TEXTS)
+    merged.update(dict(GUI_TEXT_PATCHES.get('zh_CN', {}) or {}))
+    active_locale = str(os.getenv('GUI_LOCALE', 'zh_CN') or 'zh_CN').strip()
+    if active_locale != 'zh_CN':
+        merged.update(dict(GUI_TEXT_PATCHES.get(active_locale, {}) or {}))
+    return merged
+
+
+GUI_TEXTS = _build_gui_texts()
 
 
 def tr(key, **kwargs):

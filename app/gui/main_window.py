@@ -36,6 +36,7 @@ from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.i18n import tr
+from app.gui.ladder_board_viewer import LadderBoardWindow
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
@@ -295,6 +296,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_tianji = QPushButton(tr('main.video_category'))
         self.btn_tianji.clicked.connect(self.show_video_category_viewer)
 
+        self.btn_ladder_board = QPushButton(tr('main.ladder_board'))
+        self.btn_ladder_board.clicked.connect(self.show_ladder_board_viewer)
+
         self.btn_scan = QPushButton(tr('main.scan_local_videos'))
         self.btn_scan.clicked.connect(self.scan_files)
 
@@ -327,6 +331,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_view_actors)
         top_button_row.addWidget(self.btn_view_code_prefixes)
         top_button_row.addWidget(self.btn_tianji)
+        top_button_row.addWidget(self.btn_ladder_board)
         top_button_row.addStretch()
 
         bottom_button_row.addWidget(self.btn_scan)
@@ -1240,6 +1245,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def show_video_category_viewer(self):
         viewer = VideoCategoryViewerWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
+    def show_ladder_board_viewer(self):
+        viewer = LadderBoardWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
     def show_path_library(self):

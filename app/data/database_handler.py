@@ -33,6 +33,7 @@ from app.core.javtxt_entry_state import (
     is_retryable_search_state,
     normalize_actor_raw_text,
 )
+from app.core.ladder_board import normalize_ladder_board_key, normalize_ladder_entity_type, normalize_ladder_tier
 from app.core.second_source_actor_text import is_unpublished_actor_text, normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
 from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
@@ -211,6 +212,20 @@ class VideoDatabase:
                 )
                 '''
             )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS ladder_entries (
+                    board_key TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    entity_name TEXT NOT NULL,
+                    tier TEXT NOT NULL DEFAULT '',
+                    medal TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (board_key, entity_type, entity_name)
+                )
+                '''
+            )
             self._ensure_column(cursor, 'path_library', 'last_total_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_used_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_free_bytes', 'INTEGER DEFAULT 0')
@@ -266,11 +281,16 @@ class VideoDatabase:
             self._ensure_column(cursor, 'actor_movies', 'javtxt_release_date', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'author_raw', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'video_category', 'TEXT')
+            self._ensure_column(cursor, 'ladder_entries', 'tier', 'TEXT NOT NULL DEFAULT ""')
+            self._ensure_column(cursor, 'ladder_entries', 'medal', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'ladder_entries', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+            self._ensure_column(cursor, 'ladder_entries', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_index(cursor, 'idx_processed_videos_manual_category', 'processed_videos', 'javtxt_enrichment_status, video_category, code')
             self._ensure_index(cursor, 'idx_code_prefix_movies_code', 'code_prefix_movies', 'code')
             self._ensure_index(cursor, 'idx_code_prefix_movies_category_code', 'code_prefix_movies', 'video_category, code')
             self._ensure_index(cursor, 'idx_actor_movies_code', 'actor_movies', 'code')
             self._ensure_index(cursor, 'idx_actor_movies_category_code', 'actor_movies', 'video_category, code')
+            self._ensure_index(cursor, 'idx_ladder_entries_board', 'ladder_entries', 'board_key, entity_type, tier, entity_name')
             cursor.execute(
                 '''
                 UPDATE code_prefix_enrichments
@@ -2259,7 +2279,7 @@ class VideoDatabase:
     def list_videos(self, search_text=''):
         search_text = (search_text or '').strip()
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             if search_text:
                 like_value = f'%{search_text}%'
@@ -2733,13 +2753,13 @@ class VideoDatabase:
             return int(cursor.rowcount or 0)
 
     def get_video_count(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM processed_videos')
             return int(cursor.fetchone()[0] or 0)
 
     def get_actor_count(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM actors')
             return int(cursor.fetchone()[0] or 0)
@@ -3601,6 +3621,101 @@ class VideoDatabase:
                 for row in cursor.fetchall()
                 if str(row[0] or '').strip()
             }
+
+    def list_ladder_entries(self, board_key=None, entity_type=None):
+        normalized_board_key = normalize_ladder_board_key(board_key)
+        normalized_entity_type = normalize_ladder_entity_type(entity_type)
+        clauses = []
+        params = []
+        if normalized_board_key:
+            clauses.append('board_key = ?')
+            params.append(normalized_board_key)
+        if normalized_entity_type:
+            clauses.append('entity_type = ?')
+            params.append(normalized_entity_type)
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT board_key, entity_type, entity_name, tier, medal, created_at, updated_at
+                FROM ladder_entries
+                {where_sql}
+                ORDER BY updated_at DESC, entity_name
+                ''',
+                params,
+            )
+            return [
+                {
+                    'board_key': row[0] or '',
+                    'entity_type': row[1] or '',
+                    'entity_name': row[2] or '',
+                    'tier': row[3] or '',
+                    'medal': row[4] or '',
+                    'created_at': row[5] or '',
+                    'updated_at': row[6] or '',
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def save_ladder_entry(self, board_key, entity_type, entity_name, tier):
+        normalized_board_key = normalize_ladder_board_key(board_key)
+        normalized_entity_type = normalize_ladder_entity_type(entity_type)
+        normalized_name = str(entity_name or '').strip()
+        normalized_tier = normalize_ladder_tier(tier)
+        if not normalized_entity_type:
+            raise ValueError('缺少榜单类型')
+        if not normalized_name:
+            raise ValueError('缺少榜单名称')
+        if not normalized_tier:
+            raise ValueError('缺少榜单等级')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO ladder_entries (
+                    board_key, entity_type, entity_name, tier, medal, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ''',
+                (normalized_board_key, normalized_entity_type, normalized_name, normalized_tier),
+            )
+            cursor.execute(
+                '''
+                UPDATE ladder_entries
+                SET tier = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE board_key = ? AND entity_type = ? AND entity_name = ?
+                ''',
+                (normalized_tier, normalized_board_key, normalized_entity_type, normalized_name),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def update_ladder_entry_medal(self, board_key, entity_type, entity_name, medal):
+        normalized_board_key = normalize_ladder_board_key(board_key)
+        normalized_entity_type = normalize_ladder_entity_type(entity_type)
+        normalized_name = str(entity_name or '').strip()
+        if not normalized_entity_type:
+            raise ValueError('缺少榜单类型')
+        if not normalized_name:
+            raise ValueError('缺少榜单名称')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE ladder_entries
+                SET medal = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE board_key = ? AND entity_type = ? AND entity_name = ?
+                ''',
+                (str(medal or '').strip(), normalized_board_key, normalized_entity_type, normalized_name),
+            )
+            if int(cursor.rowcount or 0) <= 0:
+                raise ValueError('未找到对应入选者')
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def insert_missing_actors(self, actors):
         hidden_actors = self.list_hidden_actors()
