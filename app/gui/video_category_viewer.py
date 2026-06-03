@@ -1,3 +1,4 @@
+from app.backend.client import BackendClient
 from PyQt5.QtCore import QAbstractTableModel, QEvent, QModelIndex, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
@@ -36,7 +37,8 @@ COLUMN_SINGLE = 2
 COLUMN_CO_STAR = 3
 COLUMN_COLLECTION = 4
 COLUMN_STAGE = 5
-COLUMN_DETAIL = 6
+COLUMN_AVFAN_DETAIL = 6
+COLUMN_JAVTXT_DETAIL = 7
 
 CATEGORY_COLUMNS = {
     COLUMN_SINGLE: VIDEO_CATEGORY_SINGLE,
@@ -48,7 +50,8 @@ CATEGORY_ROLE = Qt.UserRole + 1
 SELECTED_ROLE = Qt.UserRole + 2
 ACTION_ENABLED_ROLE = Qt.UserRole + 3
 CODE_ROLE = Qt.UserRole + 4
-DETAIL_URL_ROLE = Qt.UserRole + 5
+ACTION_URL_ROLE = Qt.UserRole + 5
+ACTION_SOURCE_ROLE = Qt.UserRole + 6
 
 RADIO_COLUMN_WIDTH = 88
 ACTION_COLUMN_WIDTH = 84
@@ -73,7 +76,7 @@ class VideoCategoryTableModel(QAbstractTableModel):
     def columnCount(self, parent=QModelIndex()):
         if parent.isValid():
             return 0
-        return 7
+        return 8
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
@@ -90,8 +93,10 @@ class VideoCategoryTableModel(QAbstractTableModel):
                 return str(row.get('title', '') or '').strip()
             if column == COLUMN_STAGE:
                 return tr('video.category.stage')
-            if column == COLUMN_DETAIL:
-                return tr('video.category.detail')
+            if column == COLUMN_AVFAN_DETAIL:
+                return tr('video.category.avfan_detail')
+            if column == COLUMN_JAVTXT_DETAIL:
+                return tr('video.category.javtxt_detail')
             return ''
 
         if role == Qt.TextAlignmentRole:
@@ -108,15 +113,25 @@ class VideoCategoryTableModel(QAbstractTableModel):
         if role == ACTION_ENABLED_ROLE:
             if column == COLUMN_STAGE:
                 return bool(self.selected_category(code))
-            if column == COLUMN_DETAIL:
+            if column == COLUMN_AVFAN_DETAIL:
+                return bool(str(row.get('avfan_url', '') or '').strip())
+            if column == COLUMN_JAVTXT_DETAIL:
                 return bool(str(row.get('javtxt_url', '') or '').strip())
             return True
 
         if role == CODE_ROLE:
             return code
 
-        if role == DETAIL_URL_ROLE:
+        if role == ACTION_URL_ROLE:
+            if column == COLUMN_AVFAN_DETAIL:
+                return str(row.get('avfan_url', '') or '').strip()
             return str(row.get('javtxt_url', '') or '').strip()
+
+        if role == ACTION_SOURCE_ROLE:
+            if column == COLUMN_AVFAN_DETAIL:
+                return tr('video.category.avfan_detail')
+            if column == COLUMN_JAVTXT_DETAIL:
+                return tr('video.category.javtxt_detail')
 
         return None
 
@@ -381,6 +396,10 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.refresh_client = BackendClient(
+            base_url=backend_client.base_url,
+            timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), 90),
+        )
         self.staged_count = 0
         self._init_async_task_host()
         self.init_ui()
@@ -440,7 +459,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         for index in (COLUMN_SINGLE, COLUMN_CO_STAR, COLUMN_COLLECTION):
             self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Fixed)
             self.table.setColumnWidth(index, RADIO_COLUMN_WIDTH)
-        for index in (COLUMN_STAGE, COLUMN_DETAIL):
+        for index in (COLUMN_STAGE, COLUMN_AVFAN_DETAIL, COLUMN_JAVTXT_DETAIL):
             self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Fixed)
             self.table.setColumnWidth(index, ACTION_COLUMN_WIDTH)
         self.table.verticalHeader().setVisible(False)
@@ -462,9 +481,13 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.stage_delegate.clicked.connect(self._on_stage_index_clicked)
         self.table.setItemDelegateForColumn(COLUMN_STAGE, self.stage_delegate)
 
-        self.detail_delegate = ActionButtonDelegate(self.table)
-        self.detail_delegate.clicked.connect(self._on_detail_index_clicked)
-        self.table.setItemDelegateForColumn(COLUMN_DETAIL, self.detail_delegate)
+        self.avfan_detail_delegate = ActionButtonDelegate(self.table)
+        self.avfan_detail_delegate.clicked.connect(self._on_detail_index_clicked)
+        self.table.setItemDelegateForColumn(COLUMN_AVFAN_DETAIL, self.avfan_detail_delegate)
+
+        self.javtxt_detail_delegate = ActionButtonDelegate(self.table)
+        self.javtxt_detail_delegate.clicked.connect(self._on_detail_index_clicked)
+        self.table.setItemDelegateForColumn(COLUMN_JAVTXT_DETAIL, self.javtxt_detail_delegate)
 
         bottom_layout = QHBoxLayout()
         self.page_size_label = QLabel(tr('video.category.page_size'))
@@ -508,7 +531,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
 
     def load_data(self):
         self.start_async_task(
-            lambda: self.backend_client.list_videos_requiring_manual_category(),
+            lambda: self.refresh_client.list_videos_requiring_manual_category(),
             self._on_load_data_finished,
             tr('common.read_failed'),
         )
@@ -520,7 +543,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
 
         def task():
             sync_result = self.backend_client.sync_staged_video_categories()
-            overview = self.backend_client.list_videos_requiring_manual_category()
+            overview = self.refresh_client.list_videos_requiring_manual_category()
             return {
                 'sync_result': sync_result,
                 'overview': overview,
@@ -528,13 +551,26 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
 
         self.start_async_task(task, self._on_sync_finished, tr('common.operation_failed'))
 
-    def open_detail_url(self, javtxt_url):
-        target_url = str(javtxt_url or '').strip()
+    def open_detail_url(self, target_url, source_label=''):
+        target_url = str(target_url or '').strip()
+        source_label = str(source_label or '').strip()
         if not target_url:
-            QMessageBox.information(self, tr('video.category.missing_link_title'), tr('video.category.missing_link_message'))
+            QMessageBox.information(
+                self,
+                tr('video.category.missing_link_title'),
+                tr('video.category.missing_link_message', source_label=source_label or tr('video.category.detail')),
+            )
             return
         if not QDesktopServices.openUrl(QUrl(target_url)):
-            QMessageBox.warning(self, tr('video.category.open_failed_title'), tr('video.category.open_failed_message', target_url=target_url))
+            QMessageBox.warning(
+                self,
+                tr('video.category.open_failed_title'),
+                tr(
+                    'video.category.open_failed_message',
+                    source_label=source_label or tr('video.category.detail'),
+                    target_url=target_url,
+                ),
+            )
 
     def select_current_page_rows(self):
         if self.is_async_task_running() or self.model.page_count() <= 0:
@@ -587,7 +623,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def _on_detail_index_clicked(self, index):
-        self.open_detail_url(index.data(DETAIL_URL_ROLE))
+        self.open_detail_url(index.data(ACTION_URL_ROLE), index.data(ACTION_SOURCE_ROLE))
 
     def _on_load_data_finished(self, result):
         self._apply_overview(result)

@@ -821,6 +821,18 @@ class VideoDatabase:
             prefixes = [str((row or [''])[0] or '').strip().upper() for row in cursor.fetchall()]
             cursor.execute('SELECT DISTINCT actor_name FROM actor_movies')
             actor_names = [str((row or [''])[0] or '').strip() for row in cursor.fetchall()]
+            cursor.execute(
+                '''
+                SELECT code FROM code_prefix_movies
+                UNION
+                SELECT code FROM actor_movies
+                '''
+            )
+            shared_codes = [
+                standardize_video_code((row or [''])[0])
+                for row in cursor.fetchall()
+                if standardize_video_code((row or [''])[0])
+            ]
             self._clear_processed_video_javtxt_state_without_detail_reference(cursor)
             self._clear_ineligible_processed_video_javtxt_state(cursor)
             self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'code_prefix_movies')
@@ -829,12 +841,81 @@ class VideoDatabase:
             self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'actor_movies')
             self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
             self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
+            self._propagate_processed_video_javtxt_state_for_codes(cursor, shared_codes)
             conn.commit()
 
         if prefixes:
             self.refresh_code_prefix_javtxt_statuses(prefixes)
         if actor_names:
             self.refresh_actor_javtxt_statuses(actor_names)
+
+    def _clear_processed_video_javtxt_codes(self, cursor, codes):
+        normalized_codes = []
+        seen = set()
+        for code in codes or []:
+            normalized_code = standardize_video_code(code)
+            if not normalized_code or normalized_code in seen:
+                continue
+            seen.add(normalized_code)
+            normalized_codes.append(normalized_code)
+        if not normalized_codes:
+            return
+
+        for index in range(0, len(normalized_codes), 500):
+            chunk = normalized_codes[index:index + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            cursor.execute(
+                f'''
+                UPDATE processed_videos
+                SET javtxt_movie_id = '',
+                    javtxt_url = '',
+                    javtxt_title = '',
+                    javtxt_actors = '',
+                    javtxt_actors_raw = '',
+                    javtxt_tags = '',
+                    javtxt_release_date = '',
+                    javtxt_enrichment_status = ?,
+                    javtxt_enrichment_error = '',
+                    javtxt_enriched_at = NULL
+                WHERE code IN ({placeholders})
+                ''',
+                (UNENRICHED_STATUS, *chunk),
+            )
+
+    def _clear_web_movie_javtxt_rowids(self, cursor, table_name, rowids):
+        if table_name not in {'code_prefix_movies', 'actor_movies'}:
+            raise ValueError(f'Unsupported web movie table: {table_name}')
+        normalized_rowids = []
+        seen = set()
+        for rowid in rowids or []:
+            try:
+                normalized_rowid = int(rowid)
+            except (TypeError, ValueError):
+                continue
+            if normalized_rowid <= 0 or normalized_rowid in seen:
+                continue
+            seen.add(normalized_rowid)
+            normalized_rowids.append(normalized_rowid)
+        if not normalized_rowids:
+            return
+
+        for index in range(0, len(normalized_rowids), 500):
+            chunk = normalized_rowids[index:index + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            cursor.execute(
+                f'''
+                UPDATE {table_name}
+                SET author = '',
+                    author_raw = '',
+                    javtxt_enrichment_status = ?,
+                    javtxt_movie_id = '',
+                    javtxt_url = '',
+                    javtxt_tags = '',
+                    javtxt_release_date = ''
+                WHERE rowid IN ({placeholders})
+                ''',
+                (UNENRICHED_STATUS, *chunk),
+            )
 
     def _normalize_existing_web_movie_codes(self, cursor):
         self._normalize_processed_video_codes(cursor)
@@ -1204,6 +1285,132 @@ class VideoDatabase:
         ]
         for index in range(0, len(codes), 500):
             self._propagate_web_movie_javtxt_state_for_codes(cursor, codes[index:index + 500])
+
+    def _load_processed_video_javtxt_state_by_codes(self, cursor, codes):
+        normalized_codes = []
+        seen = set()
+        for code in codes or []:
+            normalized_code = standardize_video_code(code)
+            if not normalized_code or normalized_code in seen:
+                continue
+            seen.add(normalized_code)
+            normalized_codes.append(normalized_code)
+        if not normalized_codes:
+            return {}
+
+        placeholders = ','.join('?' for _ in normalized_codes)
+        cursor.execute(
+            f'''
+            SELECT code,
+                   COALESCE(NULLIF(javtxt_title, ''), NULLIF(title, ''), code),
+                   release_date,
+                   javtxt_release_date,
+                   javtxt_tags,
+                   video_category,
+                   javtxt_enrichment_status,
+                   javtxt_movie_id,
+                   javtxt_url,
+                   javtxt_actors,
+                   javtxt_actors_raw
+            FROM processed_videos
+            WHERE code IN ({placeholders})
+            ''',
+            normalized_codes,
+        )
+        return {
+            standardize_video_code(row[0]): {
+                'code': row[0] or '',
+                'title': row[1] or '',
+                'release_date': row[2] or '',
+                'javtxt_release_date': row[3] or '',
+                'javtxt_tags': row[4] or '',
+                'video_category': normalize_video_category(row[5]),
+                'javtxt_enrichment_status': row[6] or UNENRICHED_STATUS,
+                'javtxt_movie_id': row[7] or '',
+                'javtxt_url': row[8] or '',
+                'author': sanitize_actor_text(row[9] or ''),
+                'author_raw': self._normalize_actor_raw_text(row[10] or row[9] or ''),
+            }
+            for row in cursor.fetchall()
+            if standardize_video_code(row[0])
+        }
+
+    def _propagate_processed_video_javtxt_state_for_codes(self, cursor, codes):
+        processed_rows = self._load_processed_video_javtxt_state_by_codes(cursor, codes)
+        if not processed_rows:
+            return 0
+
+        updates = []
+        for code, row in processed_rows.items():
+            candidate = {
+                'code': code,
+                'title': row.get('title', ''),
+                'release_date': row.get('release_date', ''),
+                'javtxt_release_date': row.get('javtxt_release_date', ''),
+                'javtxt_tags': row.get('javtxt_tags', ''),
+                'video_category': row.get('video_category', ''),
+            }
+            if is_javtxt_eligible_movie(candidate):
+                javtxt_status = str(row.get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+                javtxt_movie_id = str(row.get('javtxt_movie_id', '') or '').strip()
+                javtxt_url = str(row.get('javtxt_url', '') or '').strip()
+                javtxt_tags = str(row.get('javtxt_tags', '') or '').strip()
+                javtxt_release_date = str(row.get('javtxt_release_date', '') or '').strip()
+                release_date = str(row.get('release_date', '') or '').strip()
+                video_category = normalize_video_category(row.get('video_category', ''))
+                has_detail_reference = self._has_javtxt_detail_reference(
+                    {'javtxt_movie_id': javtxt_movie_id, 'javtxt_url': javtxt_url}
+                )
+                if javtxt_status == ENRICHED_STATUS and not has_detail_reference:
+                    javtxt_status = UNENRICHED_STATUS
+                author = sanitize_actor_text(row.get('author', '')) if has_detail_reference else ''
+                author_raw = self._normalize_actor_raw_text(row.get('author_raw', '')) if has_detail_reference else ''
+            else:
+                javtxt_status = UNENRICHED_STATUS
+                javtxt_movie_id = ''
+                javtxt_url = ''
+                javtxt_tags = ''
+                javtxt_release_date = ''
+                release_date = str(row.get('release_date', '') or '').strip()
+                video_category = normalize_video_category(row.get('video_category', ''))
+                author = ''
+                author_raw = ''
+
+            updates.append(
+                (
+                    author,
+                    author_raw,
+                    javtxt_status,
+                    javtxt_movie_id,
+                    javtxt_url,
+                    javtxt_tags,
+                    javtxt_release_date,
+                    release_date,
+                    video_category,
+                    code,
+                )
+            )
+
+        updated_count = 0
+        for table_name in ('code_prefix_movies', 'actor_movies'):
+            cursor.executemany(
+                f'''
+                UPDATE {table_name}
+                SET author = ?,
+                    author_raw = ?,
+                    javtxt_enrichment_status = ?,
+                    javtxt_movie_id = ?,
+                    javtxt_url = ?,
+                    javtxt_tags = ?,
+                    javtxt_release_date = COALESCE(NULLIF(?, ''), javtxt_release_date),
+                    release_date = COALESCE(NULLIF(?, ''), release_date),
+                    video_category = COALESCE(NULLIF(?, ''), video_category)
+                WHERE code = ?
+                ''',
+                updates,
+            )
+            updated_count += int(cursor.rowcount or 0)
+        return updated_count
 
     def save_plans(self, plans):
         """将扫描到的计划列表批量写入/更新到数据库"""
@@ -2859,6 +3066,7 @@ class VideoDatabase:
                     self._update_processed_video_javtxt_metadata(cursor, code, info)
                     self._clear_processed_video_javtxt_state(cursor, code)
                     self._refresh_combined_video_status(cursor, code, '')
+                    self._propagate_processed_video_javtxt_state_for_codes(cursor, [code])
                     conn.commit()
                     return
                 cursor.execute(
@@ -2905,6 +3113,7 @@ class VideoDatabase:
                     tags_text=normalized_javtxt['sanitized_javtxt_tags'],
                     actors_text=normalized_javtxt['sanitized_javtxt_actors'] or normalized_javtxt['sanitized_author'],
                 )
+                self._propagate_processed_video_javtxt_state_for_codes(cursor, [code])
             else:
                 cursor.execute(
                     f'''
@@ -2940,6 +3149,7 @@ class VideoDatabase:
 
     def _update_video_source_status(self, code, source_key, status, error):
         status_column, error_column, at_column = self._video_source_columns(source_key)
+        normalized_source = normalize_video_enrichment_source(source_key)
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -2953,6 +3163,8 @@ class VideoDatabase:
                 (status, error, code),
             )
             self._refresh_combined_video_status(cursor, code, error)
+            if normalized_source == JAVTXT_VIDEO_SOURCE:
+                self._propagate_processed_video_javtxt_state_for_codes(cursor, [code])
             conn.commit()
 
     def _refresh_combined_video_status(self, cursor, code, error_message=''):
@@ -3113,6 +3325,7 @@ class VideoDatabase:
                     ''',
                     [UNENRICHED_STATUS, *normalized_codes],
                 )
+                self._propagate_processed_video_javtxt_state_for_codes(cursor, normalized_codes)
             elif normalized_source == AVFAN_VIDEO_SOURCE:
                 cursor.execute(
                     f'''
@@ -3157,6 +3370,7 @@ class VideoDatabase:
                         *normalized_codes,
                     ],
                 )
+                self._propagate_processed_video_javtxt_state_for_codes(cursor, normalized_codes)
             for code in normalized_codes:
                 self._refresh_combined_video_status(cursor, code, '')
             conn.commit()
@@ -3475,12 +3689,14 @@ class VideoDatabase:
         return len(normalized_actor_names)
 
     def list_videos_requiring_manual_category(self):
-        self.sanitize_ineligible_javtxt_state()
         with self._connect() as conn:
             cursor = conn.cursor()
             staged_rows = self._list_staged_video_categories(cursor)
             staged_codes = set(staged_rows)
             manual_rows = {}
+            processed_codes_to_clear = []
+            prefix_rowids_to_clear = []
+            actor_rowids_to_clear = []
 
             cursor.execute(
                 '''
@@ -3512,10 +3728,13 @@ class VideoDatabase:
                         'video_category': normalize_video_category(row[7]),
                     }
                 ):
+                    if (row[2] or '').strip() or (row[3] or '').strip() or (row[4] or '').strip():
+                        processed_codes_to_clear.append(code)
                     continue
                 manual_rows[code] = {
                         'code': code,
                         'title': row[1] or '',
+                        'avfan_url': '',
                         'javtxt_url': row[2] or '',
                         'manual_tier': self._classify_manual_category_tier(row[3], row[4]),
                         'actor_count': count_video_actors(row[3]),
@@ -3525,8 +3744,10 @@ class VideoDatabase:
 
             cursor.execute(
                 '''
-                SELECT code,
+                SELECT rowid,
+                       code,
                        COALESCE(NULLIF(title, ''), code) AS display_title,
+                       avfan_url,
                        javtxt_url,
                        author,
                        author_raw,
@@ -3539,24 +3760,40 @@ class VideoDatabase:
                 '''
             )
             for row in cursor.fetchall():
-                if str(row[0] or '').strip().upper() in staged_codes:
+                code = str(row[1] or '').strip().upper()
+                if code in staged_codes:
+                    continue
+                if not is_javtxt_eligible_movie(
+                    {
+                        'code': code,
+                        'title': row[2] or '',
+                        'release_date': row[7] or '',
+                        'javtxt_tags': row[8] or '',
+                        'video_category': normalize_video_category(row[9]),
+                    }
+                ):
+                    if str(row[4] or '').strip() or str(row[5] or '').strip() or str(row[6] or '').strip():
+                        prefix_rowids_to_clear.append(row[0])
                     continue
                 self._merge_manual_category_row(
                     manual_rows,
-                    code=row[0],
-                    title=row[1],
-                    javtxt_url=row[2],
-                    author=row[3],
-                    author_raw=row[4],
-                    release_date=row[5],
-                    javtxt_tags=row[6],
-                    video_category=row[7],
+                    code=code,
+                    title=row[2],
+                    avfan_url=row[3],
+                    javtxt_url=row[4],
+                    author=row[5],
+                    author_raw=row[6],
+                    release_date=row[7],
+                    javtxt_tags=row[8],
+                    video_category=row[9],
                 )
 
             cursor.execute(
                 '''
-                SELECT code,
+                SELECT rowid,
+                       code,
                        COALESCE(NULLIF(title, ''), code) AS display_title,
+                       avfan_url,
                        javtxt_url,
                        author,
                        author_raw,
@@ -3569,19 +3806,42 @@ class VideoDatabase:
                 '''
             )
             for row in cursor.fetchall():
-                if str(row[0] or '').strip().upper() in staged_codes:
+                code = str(row[1] or '').strip().upper()
+                if code in staged_codes:
+                    continue
+                if not is_javtxt_eligible_movie(
+                    {
+                        'code': code,
+                        'title': row[2] or '',
+                        'release_date': row[7] or '',
+                        'javtxt_tags': row[8] or '',
+                        'video_category': normalize_video_category(row[9]),
+                    }
+                ):
+                    if str(row[4] or '').strip() or str(row[5] or '').strip() or str(row[6] or '').strip():
+                        actor_rowids_to_clear.append(row[0])
                     continue
                 self._merge_manual_category_row(
                     manual_rows,
-                    code=row[0],
-                    title=row[1],
-                    javtxt_url=row[2],
-                    author=row[3],
-                    author_raw=row[4],
-                    release_date=row[5],
-                    javtxt_tags=row[6],
-                    video_category=row[7],
+                    code=code,
+                    title=row[2],
+                    avfan_url=row[3],
+                    javtxt_url=row[4],
+                    author=row[5],
+                    author_raw=row[6],
+                    release_date=row[7],
+                    javtxt_tags=row[8],
+                    video_category=row[9],
                 )
+
+            if processed_codes_to_clear:
+                self._clear_processed_video_javtxt_codes(cursor, processed_codes_to_clear)
+            if prefix_rowids_to_clear:
+                self._clear_web_movie_javtxt_rowids(cursor, 'code_prefix_movies', prefix_rowids_to_clear)
+            if actor_rowids_to_clear:
+                self._clear_web_movie_javtxt_rowids(cursor, 'actor_movies', actor_rowids_to_clear)
+            if processed_codes_to_clear or prefix_rowids_to_clear or actor_rowids_to_clear:
+                conn.commit()
         return {
             'videos': [manual_rows[code] for code in sorted(manual_rows)],
             'staged_count': len(staged_rows),
@@ -3766,6 +4026,7 @@ class VideoDatabase:
         rows_by_code,
         code,
         title,
+        avfan_url,
         javtxt_url,
         author='',
         author_raw='',
@@ -3804,6 +4065,7 @@ class VideoDatabase:
         candidate = {
             'code': normalized_code,
             'title': str(title or '').strip() or normalized_code,
+            'avfan_url': str(avfan_url or '').strip(),
             'javtxt_url': str(javtxt_url or '').strip(),
             'manual_tier': manual_tier,
             'actor_count': count_video_actors(author),
@@ -3812,6 +4074,8 @@ class VideoDatabase:
             rows_by_code[normalized_code] = candidate
             return
 
+        if not current.get('avfan_url') and candidate['avfan_url']:
+            current['avfan_url'] = candidate['avfan_url']
         if not current.get('javtxt_url') and candidate['javtxt_url']:
             current['javtxt_url'] = candidate['javtxt_url']
         if not current.get('manual_tier') and candidate['manual_tier']:
@@ -3965,6 +4229,7 @@ class VideoDatabase:
                 self._update_processed_video_javtxt_metadata(cursor, normalized_code, info)
                 self._clear_processed_video_javtxt_state(cursor, normalized_code)
                 self._refresh_combined_video_status(cursor, normalized_code, '')
+                self._propagate_processed_video_javtxt_state_for_codes(cursor, [normalized_code])
                 conn.commit()
                 return 0
             cursor.execute(
@@ -4004,6 +4269,7 @@ class VideoDatabase:
                 actors_text=normalized_javtxt['sanitized_javtxt_actors'],
             )
             self._refresh_combined_video_status(cursor, normalized_code, normalized_javtxt['error'])
+            self._propagate_processed_video_javtxt_state_for_codes(cursor, [normalized_code])
             conn.commit()
             return int(cursor.rowcount or 0)
 
