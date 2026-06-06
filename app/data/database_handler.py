@@ -4366,6 +4366,7 @@ class VideoDatabase:
             normalized_records[code] = {
                 'code': code,
                 'storage_location': str((record or {}).get('storage_location', '') or '').strip(),
+                'duration': str((record or {}).get('duration', '') or '').strip(),
                 'size': str((record or {}).get('size', '') or '').strip(),
             }
 
@@ -4394,11 +4395,12 @@ class VideoDatabase:
                         avfan_enrichment_status,
                         javtxt_enrichment_status
                     )
-                    VALUES (?, '', '', '', ?, ?, ?, ?, ?)
+                    VALUES (?, '', '', ?, ?, ?, ?, ?, ?)
                     ''',
                     [
                         (
                             record['code'],
+                            record['duration'],
                             record['size'],
                             record['storage_location'],
                             build_video_enrichment_status_text(UNENRICHED_STATUS, UNENRICHED_STATUS),
@@ -4413,12 +4415,15 @@ class VideoDatabase:
                 cursor.executemany(
                     '''
                     UPDATE processed_videos
-                    SET size = CASE WHEN ? <> '' THEN ? ELSE size END,
+                    SET duration = CASE WHEN ? <> '' THEN ? ELSE duration END,
+                        size = CASE WHEN ? <> '' THEN ? ELSE size END,
                         storage_location = CASE WHEN ? <> '' THEN ? ELSE storage_location END
                     WHERE code = ?
                     ''',
                     [
                         (
+                            record['duration'],
+                            record['duration'],
                             record['size'],
                             record['size'],
                             record['storage_location'],

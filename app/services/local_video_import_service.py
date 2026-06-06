@@ -14,6 +14,7 @@ class LocalVideoImportService:
                 {
                     'code': code,
                     'storage_location': plan.get('storage_location', ''),
+                    'duration': metadata.get('duration', ''),
                     'size': metadata.get('size') or plan.get('size_on_disk', ''),
                 }
             )

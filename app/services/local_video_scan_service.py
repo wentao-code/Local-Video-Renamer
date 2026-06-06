@@ -3,6 +3,7 @@ from pathlib import Path
 from app.core.filename_rules import DEFAULT_VIDEO_EXTS, build_normalized_filename, extract_code_from_filename
 from app.core.local_video_labels import build_preview_name, build_row_status
 from app.core.video_models import RenamePlan, VideoMetadata, plan_to_dict
+from app.services.local_video_media_info import read_local_video_media_info
 from app.services.path_library import get_storage_location_name
 
 
@@ -51,11 +52,13 @@ class LocalVideoScanService:
             if not code:
                 continue
 
+            media_info = read_local_video_media_info(file_path)
             scanned_files.append(
                 {
                     'file_path': file_path,
                     'code': code,
-                    'size_on_disk': f'{file_path.stat().st_size / (1024 ** 3):.2f}',
+                    'duration': media_info.duration,
+                    'size_on_disk': media_info.size_gb,
                 }
             )
         return scanned_files
@@ -67,8 +70,8 @@ class LocalVideoScanService:
             code=entry['code'],
             title=str(db_record.get('title', '')).strip(),
             author=str(db_record.get('author', '')).strip(),
-            duration=str(db_record.get('duration', '')).strip(),
-            size=str(db_record.get('size', '')).strip() or entry['size_on_disk'],
+            duration=str(entry.get('duration', '')).strip() or str(db_record.get('duration', '')).strip(),
+            size=str(entry.get('size_on_disk', '')).strip() or str(db_record.get('size', '')).strip(),
         )
         new_path = entry['file_path']
         if can_rename:
