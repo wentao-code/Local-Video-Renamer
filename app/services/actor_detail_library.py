@@ -16,8 +16,9 @@ YEAR_RE = re.compile(r'(19|20)\d{2}')
 
 
 class ActorDetailLibrary:
-    def __init__(self, database):
+    def __init__(self, database, video_ladder_tag_service=None):
         self.database = database
+        self.video_ladder_tag_service = video_ladder_tag_service
 
     def get_actor_detail(self, actor_name):
         actor_name = str(actor_name or '').strip()
@@ -25,8 +26,9 @@ class ActorDetailLibrary:
             raise ValueError('缺少演员姓名')
 
         actor_row = self._find_actor(actor_name)
-        local_videos = self._find_local_actor_videos(actor_name)
-        raw_web_movies = self.database.list_actor_movies(actor_name)
+        medal_maps = self._load_medal_maps()
+        local_videos = self._find_local_actor_videos(actor_name, medal_maps=medal_maps)
+        raw_web_movies = self._enrich_rows(self.database.list_actor_movies(actor_name), medal_maps=medal_maps)
         web_movies = self._filter_eligible_movies(raw_web_movies)
         eligible_web_movies = list(web_movies)
         web_record = self.database.get_actor_enrichment_record(actor_name)
@@ -72,13 +74,23 @@ class ActorDetailLibrary:
             'matched': False,
         }
 
-    def _find_local_actor_videos(self, actor_name):
+    def _find_local_actor_videos(self, actor_name, medal_maps=None):
         matched = []
-        for row in self.database.list_videos():
+        for row in self._enrich_rows(self.database.list_videos(), medal_maps=medal_maps):
             actor_names = split_actor_names(row.get('author', ''))
             if actor_name in actor_names:
                 matched.append(row)
         return matched
+
+    def _load_medal_maps(self):
+        if self.video_ladder_tag_service is None:
+            return None
+        return self.video_ladder_tag_service.load_medal_maps()
+
+    def _enrich_rows(self, rows, medal_maps=None):
+        if self.video_ladder_tag_service is None:
+            return list(rows or [])
+        return self.video_ladder_tag_service.enrich_video_rows(rows, medal_maps=medal_maps)
 
     def _filter_eligible_movies(self, rows):
         return [row for row in (rows or []) if self._is_eligible_movie(row)]

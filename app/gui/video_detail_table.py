@@ -38,13 +38,14 @@ class VideoDetailTableWidget(QWidget):
         top_layout.addWidget(self.summary_label)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
+        self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(tr('video.detail.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -70,8 +71,8 @@ class VideoDetailTableWidget(QWidget):
 
     def _render_rows(self, rows):
         self.table.setRowCount(0)
-        centered_columns = {0, 2, 3, 4}
-        fields = ('code', 'title', 'author', 'video_category', 'release_date')
+        centered_columns = {0, 3, 4}
+        fields = ('code', 'title', 'author', 'video_category', 'release_date', 'ladder_tag_text')
 
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
@@ -88,6 +89,6 @@ class VideoDetailTableWidget(QWidget):
     def _matches_search(row, search_text):
         haystack = ' '.join(
             str((row or {}).get(field, '') or '')
-            for field in ('code', 'title', 'author', 'video_category', 'release_date')
+            for field in ('code', 'title', 'author', 'video_category', 'release_date', 'ladder_tag_text')
         ).lower()
         return search_text in haystack

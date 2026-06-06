@@ -10,8 +10,9 @@ from app.services.actor_identifier import split_actor_names
 
 
 class CodePrefixDetailLibrary:
-    def __init__(self, database):
+    def __init__(self, database, video_ladder_tag_service=None):
         self.database = database
+        self.video_ladder_tag_service = video_ladder_tag_service
 
     def get_prefix_detail(self, prefix):
         prefix = str(prefix or '').strip().upper()
@@ -19,7 +20,8 @@ class CodePrefixDetailLibrary:
             raise ValueError('缺少番号前缀')
 
         enrichment = self.database.get_code_prefix_enrichment_record(prefix)
-        raw_movies = self.database.list_code_prefix_movies(prefix)
+        medal_maps = self._load_medal_maps()
+        raw_movies = self._enrich_rows(self.database.list_code_prefix_movies(prefix), medal_maps=medal_maps)
         movies = self._filter_eligible_movies(raw_movies)
         eligible_movies = list(movies)
         earliest_release_date, latest_release_date = self._collect_date_range(movies)
@@ -48,6 +50,16 @@ class CodePrefixDetailLibrary:
 
     def _filter_eligible_movies(self, movies):
         return [movie for movie in (movies or []) if self._is_eligible_movie(movie)]
+
+    def _load_medal_maps(self):
+        if self.video_ladder_tag_service is None:
+            return None
+        return self.video_ladder_tag_service.load_medal_maps()
+
+    def _enrich_rows(self, rows, medal_maps=None):
+        if self.video_ladder_tag_service is None:
+            return list(rows or [])
+        return self.video_ladder_tag_service.enrich_video_rows(rows, medal_maps=medal_maps)
 
     def _build_live_enrichment_status(self, enrichment, movies, cache_rows):
         avfan_status = str((enrichment or {}).get('avfan_enrichment_status', '')).strip()

@@ -1,6 +1,7 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -21,6 +22,19 @@ from app.core.enrichment_sources import (
 from app.core.enrichment_status import ENRICHED_STATUS
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
+from app.gui.video_library_settings import load_video_library_settings, save_video_library_settings
+from app.gui.video_library_sorting import (
+    DEFAULT_VIDEO_SORT_FIELD,
+    DEFAULT_VIDEO_SORT_ORDER,
+    VIDEO_SORT_FIELDS,
+    VIDEO_SORT_ORDERS,
+    normalize_video_sort_settings,
+    sort_video_rows,
+)
+
+
+VIDEO_TEXT_COLUMN_WIDTH = 150
+VIDEO_COMPANY_COLUMN_WIDTH = 130
 
 
 class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
@@ -28,6 +42,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
+        self.sort_settings = load_video_library_settings()
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -44,6 +59,18 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.search_input.setPlaceholderText(tr('db.viewer.search_placeholder'))
         self.search_input.textChanged.connect(self.filter_data)
 
+        self.sort_field_combo = QComboBox()
+        for sort_field in VIDEO_SORT_FIELDS:
+            self.sort_field_combo.addItem(tr(f'db.viewer.sort_field.{sort_field}'), sort_field)
+
+        self.sort_order_combo = QComboBox()
+        for sort_order in VIDEO_SORT_ORDERS:
+            self.sort_order_combo.addItem(tr(f'db.viewer.sort_order.{sort_order}'), sort_order)
+
+        self.btn_apply_sort = QPushButton(tr('db.viewer.sort_apply'))
+        self.btn_apply_sort.clicked.connect(self.apply_sort_settings)
+        self.apply_sort_settings_to_controls()
+
         self.btn_reset_avfan = QPushButton(tr('db.viewer.reset_avfan'))
         self.btn_reset_avfan.clicked.connect(lambda: self.reset_selected_rows(AVFAN_VIDEO_SOURCE))
 
@@ -55,6 +82,11 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
 
         top_layout.addWidget(QLabel(tr('common.filter_realtime')))
         top_layout.addWidget(self.search_input)
+        top_layout.addWidget(QLabel(tr('db.viewer.sort_field_label')))
+        top_layout.addWidget(self.sort_field_combo)
+        top_layout.addWidget(QLabel(tr('db.viewer.sort_order_label')))
+        top_layout.addWidget(self.sort_order_combo)
+        top_layout.addWidget(self.btn_apply_sort)
         top_layout.addWidget(self.btn_reset_avfan)
         top_layout.addWidget(self.btn_reset_javtxt)
         top_layout.addWidget(self.btn_refresh)
@@ -63,12 +95,14 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.summary_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(13)
+        self.table.setColumnCount(14)
         self.table.setHorizontalHeaderLabels(tr('db.viewer.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table.setColumnWidth(1, VIDEO_TEXT_COLUMN_WIDTH)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.table.setColumnWidth(2, VIDEO_TEXT_COLUMN_WIDTH)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
@@ -76,9 +110,13 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(9, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(12, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(11, QHeaderView.Fixed)
+        self.table.setColumnWidth(11, VIDEO_COMPANY_COLUMN_WIDTH)
+        self.table.horizontalHeader().setSectionResizeMode(12, QHeaderView.Fixed)
+        self.table.setColumnWidth(12, VIDEO_COMPANY_COLUMN_WIDTH)
+        self.table.horizontalHeader().setSectionResizeMode(13, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setTextElideMode(Qt.ElideRight)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
@@ -87,7 +125,16 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         layout.addWidget(self.table)
         self.setLayout(layout)
         self.set_async_busy_widgets(
-            [self.search_input, self.btn_reset_avfan, self.btn_reset_javtxt, self.btn_refresh, self.table]
+            [
+                self.search_input,
+                self.sort_field_combo,
+                self.sort_order_combo,
+                self.btn_apply_sort,
+                self.btn_reset_avfan,
+                self.btn_reset_javtxt,
+                self.btn_refresh,
+                self.table,
+            ]
         )
 
     def load_data(self):
@@ -106,6 +153,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
             'code',
             'title',
             'author',
+            'ladder_tag_text',
             'video_category',
             'duration',
             'size',
@@ -117,7 +165,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
             'publisher',
             'enrichment_status',
         )
-        centered_columns = {0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+        centered_columns = {0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
 
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
@@ -148,11 +196,41 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
             return
 
         try:
-            self.rows = self.backend_client.list_videos(str(text or '').strip())
+            self.rows = self.sorted_rows(self.backend_client.list_videos(str(text or '').strip()))
             self.render_rows(self.rows)
             self.refresh_summary()
         except Exception as exc:
             print(tr('db.viewer.filter_failed', error=exc))
+
+    def apply_sort_settings(self):
+        self.sort_settings = normalize_video_sort_settings({
+            'sort_field': self.sort_field_combo.currentData(),
+            'sort_order': self.sort_order_combo.currentData(),
+        })
+        try:
+            save_video_library_settings(self.sort_settings)
+        except Exception as exc:
+            QMessageBox.critical(self, tr('common.save_failed'), tr('db.viewer.sort_save_failed', error=exc))
+            return
+
+        self.rows = self.sorted_rows(self.rows)
+        self.render_rows(self.rows)
+        self.refresh_summary()
+
+    def apply_sort_settings_to_controls(self):
+        sort_field = self.sort_settings.get('sort_field', DEFAULT_VIDEO_SORT_FIELD)
+        sort_order = self.sort_settings.get('sort_order', DEFAULT_VIDEO_SORT_ORDER)
+        field_index = self.sort_field_combo.findData(sort_field)
+        order_index = self.sort_order_combo.findData(sort_order)
+        self.sort_field_combo.setCurrentIndex(max(field_index, 0))
+        self.sort_order_combo.setCurrentIndex(max(order_index, 0))
+
+    def sorted_rows(self, rows):
+        return sort_video_rows(
+            rows,
+            self.sort_settings.get('sort_field', DEFAULT_VIDEO_SORT_FIELD),
+            self.sort_settings.get('sort_order', DEFAULT_VIDEO_SORT_ORDER),
+        )
 
     def reset_selected_rows(self, source_key):
         codes = self.selected_codes()
@@ -190,7 +268,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         return codes
 
     def _on_load_data_finished(self, result):
-        self.rows = list((result or {}).get('rows', []) or [])
+        self.rows = self.sorted_rows(list((result or {}).get('rows', []) or []))
         self.render_rows(self.rows)
         self.refresh_summary()
 

@@ -1,6 +1,7 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QHeaderView,
@@ -20,6 +21,15 @@ from app.core.enrichment_sources import (
     get_video_enrichment_source_label,
 )
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
+from app.gui.actor_library_settings import load_actor_library_settings, save_actor_library_settings
+from app.gui.actor_library_sorting import (
+    ACTOR_SORT_FIELDS,
+    ACTOR_SORT_ORDERS,
+    DEFAULT_ACTOR_SORT_FIELD,
+    DEFAULT_ACTOR_SORT_ORDER,
+    normalize_actor_sort_settings,
+    sort_actor_rows,
+)
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 
@@ -32,6 +42,7 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         self.editing_actor_name = None
         self.editing_row = None
         self.action_buttons = {}
+        self.sort_settings = load_actor_library_settings()
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -47,6 +58,18 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         self.search_input.setPlaceholderText(tr('actor.viewer.search_placeholder'))
         self.search_input.textChanged.connect(self.filter_data)
 
+        self.sort_field_combo = QComboBox()
+        for sort_field in ACTOR_SORT_FIELDS:
+            self.sort_field_combo.addItem(tr(f'actor.viewer.sort_field.{sort_field}'), sort_field)
+
+        self.sort_order_combo = QComboBox()
+        for sort_order in ACTOR_SORT_ORDERS:
+            self.sort_order_combo.addItem(tr(f'common.sort_order.{sort_order}'), sort_order)
+
+        self.btn_apply_sort = QPushButton(tr('common.ok'))
+        self.btn_apply_sort.clicked.connect(self.apply_sort_settings)
+        self.apply_sort_settings_to_controls()
+
         self.btn_reset_avfan = QPushButton(tr('actor.viewer.reset_avfan'))
         self.btn_reset_avfan.clicked.connect(lambda: self.reset_selected_rows(AVFAN_VIDEO_SOURCE))
 
@@ -58,6 +81,11 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
 
         top_layout.addWidget(QLabel(tr('common.filter_realtime')))
         top_layout.addWidget(self.search_input)
+        top_layout.addWidget(QLabel(tr('common.sort_field_label')))
+        top_layout.addWidget(self.sort_field_combo)
+        top_layout.addWidget(QLabel(tr('common.sort_order_label')))
+        top_layout.addWidget(self.sort_order_combo)
+        top_layout.addWidget(self.btn_apply_sort)
         top_layout.addWidget(self.btn_reset_avfan)
         top_layout.addWidget(self.btn_reset_javtxt)
         top_layout.addWidget(self.btn_refresh)
@@ -76,7 +104,16 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         layout.addWidget(self.table)
         self.setLayout(layout)
         self.set_async_busy_widgets(
-            [self.search_input, self.btn_reset_avfan, self.btn_reset_javtxt, self.btn_refresh, self.table]
+            [
+                self.search_input,
+                self.sort_field_combo,
+                self.sort_order_combo,
+                self.btn_apply_sort,
+                self.btn_reset_avfan,
+                self.btn_reset_javtxt,
+                self.btn_refresh,
+                self.table,
+            ]
         )
 
     def load_data(self):
@@ -151,10 +188,42 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
             self.load_data()
             return
         try:
-            self.rows = self.backend_client.list_actors(search_text)
+            self.rows = self.sorted_rows(self.backend_client.list_actors(search_text))
             self.render_rows(self.rows)
         except Exception as exc:
             print(tr('actor.viewer.filter_failed', error=exc))
+
+    def apply_sort_settings(self):
+        if self.editing_actor_name is not None:
+            QMessageBox.information(self, tr('actor.viewer.editing_title'), tr('actor.viewer.editing_message'))
+            return
+        self.sort_settings = normalize_actor_sort_settings({
+            'sort_field': self.sort_field_combo.currentData(),
+            'sort_order': self.sort_order_combo.currentData(),
+        })
+        try:
+            save_actor_library_settings(self.sort_settings)
+        except Exception as exc:
+            QMessageBox.critical(self, tr('common.save_failed'), tr('actor.viewer.sort_save_failed', error=exc))
+            return
+
+        self.rows = self.sorted_rows(self.rows)
+        self.render_rows(self.rows)
+
+    def apply_sort_settings_to_controls(self):
+        sort_field = self.sort_settings.get('sort_field', DEFAULT_ACTOR_SORT_FIELD)
+        sort_order = self.sort_settings.get('sort_order', DEFAULT_ACTOR_SORT_ORDER)
+        field_index = self.sort_field_combo.findData(sort_field)
+        order_index = self.sort_order_combo.findData(sort_order)
+        self.sort_field_combo.setCurrentIndex(max(field_index, 0))
+        self.sort_order_combo.setCurrentIndex(max(order_index, 0))
+
+    def sorted_rows(self, rows):
+        return sort_actor_rows(
+            rows,
+            self.sort_settings.get('sort_field', DEFAULT_ACTOR_SORT_FIELD),
+            self.sort_settings.get('sort_order', DEFAULT_ACTOR_SORT_ORDER),
+        )
 
     def clear_edit_state(self):
         self.editing_actor_name = None
@@ -317,7 +386,7 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
 
     def _on_load_data_finished(self, result):
         self.clear_edit_state()
-        self.rows = list((result or {}).get('rows', []) or [])
+        self.rows = self.sorted_rows(list((result or {}).get('rows', []) or []))
         self.render_rows(self.rows)
 
     def _on_reset_finished(self, result):

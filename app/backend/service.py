@@ -24,16 +24,18 @@ from app.services.ladder_board_service import LadderBoardService
 from app.services.local_video_library_service import LocalVideoLibraryService
 from app.services.path_library import PathLibrary, summarize_paths
 from app.services.task_trace_logger import TaskTraceLogger
+from app.services.video_ladder_tag_service import VideoLadderTagService
 
 
 class BackendService:
     def __init__(self, base_dir=None):
         self.base_dir = Path(base_dir or PROJECT_ROOT)
         self.db = VideoDatabase(DATABASE_FILE)
+        self.video_ladder_tag_service = VideoLadderTagService(self.db)
         self.local_video_library = LocalVideoLibraryService(self.db)
-        self.actor_detail_library = ActorDetailLibrary(self.db)
+        self.actor_detail_library = ActorDetailLibrary(self.db, self.video_ladder_tag_service)
         self.actor_library_sync_service = ActorLibrarySyncService(self.db)
-        self.code_prefix_detail_library = CodePrefixDetailLibrary(self.db)
+        self.code_prefix_detail_library = CodePrefixDetailLibrary(self.db, self.video_ladder_tag_service)
         self.code_prefix_library = CodePrefixLibrary(self.db)
         self.data_center_service = DataCenterService(self.db)
         self.library_admin_service = LibraryAdminService(self.db)
@@ -84,7 +86,8 @@ class BackendService:
         return {'success_count': self.local_video_library.import_videos(plans_data)}
 
     def list_videos(self, search_text=''):
-        return {'videos': self.db.list_videos(search_text)}
+        rows = self.video_ladder_tag_service.enrich_video_rows(self.db.list_videos())
+        return {'videos': self.video_ladder_tag_service.filter_video_rows(rows, search_text)}
 
     def get_video_enrichment_summary(self):
         return {'summary': self.db.get_video_enrichment_summary()}

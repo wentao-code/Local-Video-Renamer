@@ -6,6 +6,9 @@ __pycache__/
 *.db
 .env
 .enrichment_settings.json
+.video_library_settings.json
+.actor_library_settings.json
+.code_prefix_library_settings.json
 browser_profiles/
 combo_task_logs/
 *.log
