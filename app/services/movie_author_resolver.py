@@ -331,9 +331,14 @@ class MovieAuthorResolver:
                 ):
                     info = dict(info or {})
                     info['found'] = False
-                    info['error'] = 'JAVTXT 页面发布日期不满足补全条件'
+                    info['javtxt_movie_id'] = ''
+                    info['javtxt_url'] = ''
+                    info['author'] = ''
+                    info['javtxt_actors'] = ''
+                    info['javtxt_actors_raw'] = ''
+                    info['error'] = 'JAVTXT 页面不满足补全条件'
                     author = ''
-                    status = UNENRICHED_STATUS
+                    status = NO_SEARCH_RESULTS_STATUS
                     error_message = str(info.get('error', '') or '')
                 else:
                     author = normalize_second_source_actor_text(info.get('author', ''))

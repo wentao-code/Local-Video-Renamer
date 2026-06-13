@@ -9,6 +9,7 @@ from app.core.enrichment_status import (
     NO_SEARCH_RESULTS_STATUS,
     NO_VIDEO_DETAIL_STATUS,
     UNENRICHED_STATUS,
+    is_no_result_status,
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
@@ -38,6 +39,9 @@ from app.core.ladder_board import normalize_ladder_board_key, normalize_ladder_e
 from app.core.second_source_actor_text import is_unpublished_actor_text, normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
 from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
+
+
+JAVTXT_INELIGIBLE_ERROR = 'JAVTXT 页面不满足补全条件'
 from app.services.video_category_service import (
     MANUAL_CATEGORY_TIER_FIRST,
     MANUAL_CATEGORY_TIER_SECOND,
@@ -604,7 +608,14 @@ class VideoDatabase:
 
         cursor.execute(
             f'''
-            SELECT rowid, code, title, release_date, javtxt_tags, video_category, javtxt_release_date
+            SELECT rowid,
+                   code,
+                   title,
+                   release_date,
+                   javtxt_tags,
+                   video_category,
+                   javtxt_release_date,
+                   javtxt_enrichment_status
             FROM {table_name}
             WHERE COALESCE(javtxt_enrichment_status, '') <> ?
                OR COALESCE(javtxt_movie_id, '') <> ''
@@ -613,8 +624,18 @@ class VideoDatabase:
             ''',
             (UNENRICHED_STATUS,),
         )
-        rowids_to_clear = []
-        for rowid, code, title, release_date, javtxt_tags, video_category, javtxt_release_date in cursor.fetchall():
+        rowids_to_mark_no_result = []
+        rowids_to_preserve_terminal = []
+        for (
+            rowid,
+            code,
+            title,
+            release_date,
+            javtxt_tags,
+            video_category,
+            javtxt_release_date,
+            javtxt_status,
+        ) in cursor.fetchall():
             if is_javtxt_eligible_movie(
                 {
                     'code': code,
@@ -626,21 +647,40 @@ class VideoDatabase:
                 }
             ):
                 continue
-            rowids_to_clear.append(rowid)
+            if is_no_result_status(javtxt_status):
+                rowids_to_preserve_terminal.append(rowid)
+            else:
+                rowids_to_mark_no_result.append(rowid)
 
-        for index in range(0, len(rowids_to_clear), 500):
-            chunk = rowids_to_clear[index:index + 500]
+        for index in range(0, len(rowids_to_preserve_terminal), 500):
+            chunk = rowids_to_preserve_terminal[index:index + 500]
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
                 UPDATE {table_name}
-                SET javtxt_enrichment_status = ?,
+                SET author = '',
+                    author_raw = '',
                     javtxt_movie_id = '',
-                    javtxt_url = '',
-                    javtxt_tags = ''
+                    javtxt_url = ''
                 WHERE rowid IN ({placeholders})
                 ''',
-                (UNENRICHED_STATUS, *chunk),
+                (*chunk,),
+            )
+
+        for index in range(0, len(rowids_to_mark_no_result), 500):
+            chunk = rowids_to_mark_no_result[index:index + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            cursor.execute(
+                f'''
+                UPDATE {table_name}
+                SET author = '',
+                    author_raw = '',
+                    javtxt_enrichment_status = ?,
+                    javtxt_movie_id = '',
+                    javtxt_url = ''
+                WHERE rowid IN ({placeholders})
+                ''',
+                (NO_SEARCH_RESULTS_STATUS, *chunk),
             )
 
     def _clear_web_movie_javtxt_state_without_detail_reference(self, cursor, table_name):
@@ -723,7 +763,8 @@ class VideoDatabase:
                    release_date,
                    javtxt_tags,
                    video_category,
-                   javtxt_release_date
+                   javtxt_release_date,
+                   javtxt_enrichment_status
             FROM processed_videos
             WHERE COALESCE(javtxt_enrichment_status, '') <> ?
                OR COALESCE(javtxt_movie_id, '') <> ''
@@ -732,8 +773,17 @@ class VideoDatabase:
             ''',
             (UNENRICHED_STATUS,),
         )
-        codes_to_clear = []
-        for code, title, release_date, javtxt_tags, video_category, javtxt_release_date in cursor.fetchall():
+        codes_to_mark_no_result = []
+        codes_to_preserve_terminal = []
+        for (
+            code,
+            title,
+            release_date,
+            javtxt_tags,
+            video_category,
+            javtxt_release_date,
+            javtxt_status,
+        ) in cursor.fetchall():
             if is_javtxt_eligible_movie(
                 {
                     'code': code,
@@ -747,29 +797,44 @@ class VideoDatabase:
                 continue
             normalized_code = standardize_video_code(code)
             if normalized_code:
-                codes_to_clear.append(normalized_code)
+                if is_no_result_status(javtxt_status):
+                    codes_to_preserve_terminal.append(normalized_code)
+                else:
+                    codes_to_mark_no_result.append(normalized_code)
 
-        if not codes_to_clear:
-            return
-
-        for index in range(0, len(codes_to_clear), 500):
-            chunk = codes_to_clear[index:index + 500]
+        for index in range(0, len(codes_to_preserve_terminal), 500):
+            chunk = codes_to_preserve_terminal[index:index + 500]
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
                 UPDATE processed_videos
                 SET javtxt_movie_id = '',
                     javtxt_url = '',
-                    javtxt_title = '',
                     javtxt_actors = '',
-                    javtxt_actors_raw = '',
-                    javtxt_tags = '',
-                    javtxt_enrichment_status = ?,
-                    javtxt_enrichment_error = '',
-                    javtxt_enriched_at = NULL
+                    javtxt_actors_raw = ''
                 WHERE code IN ({placeholders})
                 ''',
-                (UNENRICHED_STATUS, *chunk),
+                (*chunk,),
+            )
+
+        for index in range(0, len(codes_to_mark_no_result), 500):
+            chunk = codes_to_mark_no_result[index:index + 500]
+            placeholders = ','.join('?' for _ in chunk)
+            cursor.execute(
+                f'''
+                UPDATE processed_videos
+                SET javtxt_movie_id = '',
+                    javtxt_url = '',
+                    javtxt_actors = '',
+                    javtxt_actors_raw = '',
+                    javtxt_enrichment_status = ?,
+                    javtxt_enrichment_error = CASE
+                        WHEN COALESCE(javtxt_enrichment_error, '') = '' THEN ?
+                        ELSE javtxt_enrichment_error
+                    END
+                WHERE code IN ({placeholders})
+                ''',
+                (NO_SEARCH_RESULTS_STATUS, JAVTXT_INELIGIBLE_ERROR, *chunk),
             )
 
     def _clear_processed_video_javtxt_state_without_detail_reference(self, cursor):
@@ -1024,6 +1089,10 @@ class VideoDatabase:
     def _normalize_web_movie_javtxt_fields(self, movie, processed_record=None):
         processed_record = processed_record or {}
         tags = self._first_nonblank_text((movie or {}).get('javtxt_tags', ''), processed_record.get('javtxt_tags', ''))
+        merged_status = self._first_nonblank_text(
+            (movie or {}).get('javtxt_enrichment_status', ''),
+            processed_record.get('javtxt_enrichment_status', ''),
+        ) or UNENRICHED_STATUS
         javtxt_release_date = self._first_nonblank_text(
             (movie or {}).get('javtxt_release_date', ''),
             processed_record.get('javtxt_release_date', ''),
@@ -1047,13 +1116,12 @@ class VideoDatabase:
             'video_category': category,
         }
         if not is_javtxt_eligible_movie(candidate):
+            if is_no_result_status(merged_status):
+                return merged_status, '', '', tags, javtxt_release_date, category
             return UNENRICHED_STATUS, '', '', '', javtxt_release_date, category
 
         return (
-            self._first_nonblank_text(
-                (movie or {}).get('javtxt_enrichment_status', ''),
-                processed_record.get('javtxt_enrichment_status', ''),
-            ) or UNENRICHED_STATUS,
+            merged_status,
             self._first_nonblank_text((movie or {}).get('javtxt_movie_id', ''), processed_record.get('javtxt_movie_id', '')),
             self._first_nonblank_text((movie or {}).get('javtxt_url', ''), processed_record.get('javtxt_url', '')),
             tags,
@@ -1380,11 +1448,13 @@ class VideoDatabase:
                 author = sanitize_actor_text(row.get('author', '')) if has_detail_reference else ''
                 author_raw = self._normalize_actor_raw_text(row.get('author_raw', '')) if has_detail_reference else ''
             else:
-                javtxt_status = UNENRICHED_STATUS
+                javtxt_status = str(row.get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+                if not is_no_result_status(javtxt_status):
+                    javtxt_status = UNENRICHED_STATUS
                 javtxt_movie_id = ''
                 javtxt_url = ''
-                javtxt_tags = ''
-                javtxt_release_date = ''
+                javtxt_tags = str(row.get('javtxt_tags', '') or '').strip() if is_no_result_status(javtxt_status) else ''
+                javtxt_release_date = str(row.get('javtxt_release_date', '') or '').strip()
                 release_date = str(row.get('release_date', '') or '').strip()
                 video_category = normalize_video_category(row.get('video_category', ''))
                 author = ''
@@ -2920,8 +2990,17 @@ class VideoDatabase:
                         tags_text=normalized_javtxt['sanitized_javtxt_tags'],
                         actors_text=normalized_javtxt['sanitized_javtxt_actors'] or normalized_javtxt['sanitized_author'],
                     )
-                    self._clear_processed_video_javtxt_state(cursor, code)
-                    self._refresh_combined_video_status(cursor, code, '')
+                    self._mark_processed_video_javtxt_ineligible(
+                        cursor,
+                        code,
+                        normalized_javtxt['status'],
+                        normalized_javtxt['error'],
+                    )
+                    self._refresh_combined_video_status(
+                        cursor,
+                        code,
+                        normalized_javtxt['error'] or JAVTXT_INELIGIBLE_ERROR,
+                    )
                     self._propagate_processed_video_javtxt_state_for_codes(cursor, [code])
                     conn.commit()
                     self._refresh_web_movie_parent_javtxt_statuses_for_codes([code])
@@ -4088,18 +4167,52 @@ class VideoDatabase:
             '''
             UPDATE processed_videos
             SET title = COALESCE(NULLIF(?, ''), title),
+                javtxt_title = COALESCE(NULLIF(?, ''), javtxt_title),
                 release_date = COALESCE(NULLIF(?, ''), release_date),
                 maker = COALESCE(NULLIF(?, ''), maker),
                 publisher = COALESCE(NULLIF(?, ''), publisher),
+                javtxt_tags = COALESCE(NULLIF(?, ''), javtxt_tags),
                 javtxt_release_date = COALESCE(NULLIF(?, ''), javtxt_release_date)
             WHERE code = ?
             ''',
             (
                 str(info.get('title', info.get('javtxt_title', '')) or '').strip(),
+                str(info.get('javtxt_title', info.get('title', '')) or '').strip(),
                 str(info.get('release_date', '') or '').strip(),
                 join_values(info.get('maker')),
                 join_values(info.get('publisher')),
+                str(info.get('javtxt_tags', '') or '').strip(),
                 str(info.get('release_date', '') or '').strip(),
+                normalized_code,
+            ),
+        )
+
+    @staticmethod
+    def _resolve_ineligible_javtxt_status(status):
+        normalized_status = str(status or '').strip()
+        if is_no_result_status(normalized_status):
+            return normalized_status
+        return NO_SEARCH_RESULTS_STATUS
+
+    def _mark_processed_video_javtxt_ineligible(self, cursor, code, status, error=''):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return
+        cursor.execute(
+            '''
+            UPDATE processed_videos
+            SET javtxt_movie_id = '',
+                javtxt_url = '',
+                javtxt_actors = '',
+                javtxt_actors_raw = '',
+                javtxt_enrichment_status = ?,
+                javtxt_enrichment_error = ?,
+                javtxt_enriched_at = CURRENT_TIMESTAMP
+            WHERE code = ?
+            ''',
+            (
+                self._resolve_ineligible_javtxt_status(status),
+                str(error or '').strip() or JAVTXT_INELIGIBLE_ERROR,
                 normalized_code,
             ),
         )
@@ -4144,8 +4257,17 @@ class VideoDatabase:
                     tags_text=normalized_javtxt['sanitized_javtxt_tags'],
                     actors_text=normalized_javtxt['sanitized_javtxt_actors'] or normalized_javtxt['sanitized_author'],
                 )
-                self._clear_processed_video_javtxt_state(cursor, normalized_code)
-                self._refresh_combined_video_status(cursor, normalized_code, '')
+                self._mark_processed_video_javtxt_ineligible(
+                    cursor,
+                    normalized_code,
+                    normalized_javtxt['status'],
+                    normalized_javtxt['error'],
+                )
+                self._refresh_combined_video_status(
+                    cursor,
+                    normalized_code,
+                    normalized_javtxt['error'] or JAVTXT_INELIGIBLE_ERROR,
+                )
                 self._propagate_processed_video_javtxt_state_for_codes(cursor, [normalized_code])
                 conn.commit()
                 self._refresh_web_movie_parent_javtxt_statuses_for_codes([normalized_code])

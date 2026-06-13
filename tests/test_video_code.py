@@ -90,6 +90,17 @@ class VideoCodeStandardizationTest(unittest.TestCase):
         self.assertEqual(detect_video_category('16时间以上作品 独家分发 熟女', ''), VIDEO_CATEGORY_COLLECTION)
         self.assertEqual(detect_video_category('16小时以上作品 精选合集', '甲 乙'), VIDEO_CATEGORY_COLLECTION)
 
+    def test_vrtm_prefix_is_not_misclassified_as_vr_marker(self):
+        self.assertTrue(
+            is_javtxt_eligible_movie(
+                {
+                    'code': 'VRTM-518',
+                    'title': 'あぶない放課後 新・女教師スペシャル つかもと友希 VRTM-518',
+                    'release_date': '2020-09-11',
+                }
+            )
+        )
+
     def test_javtxt_summary_separates_success_no_result_and_no_detail(self):
         summary = summarize_javtxt_movies(
             [
@@ -233,7 +244,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
 
         self.assertEqual(rows, [('010216-061', UNENRICHED_STATUS, '', '', '')])
 
-    def test_database_init_clears_ineligible_processed_video_javtxt_state(self):
+    def test_database_init_converts_ineligible_processed_video_javtxt_state_to_terminal_no_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             VideoDatabase(db_path)
@@ -274,7 +285,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                     ('SQTE-241',),
                 ).fetchall()
 
-        self.assertEqual(rows, [(UNENRICHED_STATUS, '', '', '')])
+        self.assertEqual(rows, [(NO_SEARCH_RESULTS_STATUS, '', '', 'tag')])
 
     def test_database_init_clears_legacy_web_movie_javtxt_state_without_trusted_release_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -378,6 +389,111 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 ).fetchone()
 
         self.assertEqual(rows, (NO_SEARCH_RESULTS_STATUS, NO_SEARCH_RESULTS_STATUS))
+
+    def test_database_init_converts_ineligible_web_movie_state_to_terminal_no_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO code_prefix_movies (
+                        prefix, code, title, author, release_date, avfan_url, page_number,
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                        javtxt_release_date, author_raw, video_category
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        'CEMD',
+                        'CEMD-046',
+                        '羽月希22時間03分ベスト',
+                        '演员A',
+                        '2021-08-07',
+                        'https://example.com/movies/cemd-046',
+                        1,
+                        ENRICHED_STATUS,
+                        '381297',
+                        'https://javtxt.top/v/381297',
+                        '16小时以上作品 女优精选集',
+                        '2021-08-07',
+                        '演员A',
+                        '',
+                    ),
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO actor_movies (
+                        actor_name, code, title, author, release_date, avfan_url, page_number,
+                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                        javtxt_release_date, author_raw, video_category
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        '演员A',
+                        'CEMD-046',
+                        '羽月希22時間03分ベスト',
+                        '演员A',
+                        '2021-08-07',
+                        'https://example.com/movies/cemd-046',
+                        1,
+                        ENRICHED_STATUS,
+                        '381297',
+                        'https://javtxt.top/v/381297',
+                        '16小时以上作品 女优精选集',
+                        '2021-08-07',
+                        '演员A',
+                        '',
+                    ),
+                )
+                conn.commit()
+
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    '''
+                    SELECT
+                        (SELECT javtxt_enrichment_status FROM code_prefix_movies WHERE prefix = ? AND code = ?),
+                        (SELECT javtxt_movie_id FROM code_prefix_movies WHERE prefix = ? AND code = ?),
+                        (SELECT javtxt_url FROM code_prefix_movies WHERE prefix = ? AND code = ?),
+                        (SELECT author FROM code_prefix_movies WHERE prefix = ? AND code = ?),
+                        (SELECT javtxt_tags FROM code_prefix_movies WHERE prefix = ? AND code = ?),
+                        (SELECT javtxt_enrichment_status FROM actor_movies WHERE actor_name = ? AND code = ?),
+                        (SELECT javtxt_movie_id FROM actor_movies WHERE actor_name = ? AND code = ?),
+                        (SELECT javtxt_url FROM actor_movies WHERE actor_name = ? AND code = ?),
+                        (SELECT author FROM actor_movies WHERE actor_name = ? AND code = ?),
+                        (SELECT javtxt_tags FROM actor_movies WHERE actor_name = ? AND code = ?)
+                    ''',
+                    (
+                        'CEMD', 'CEMD-046',
+                        'CEMD', 'CEMD-046',
+                        'CEMD', 'CEMD-046',
+                        'CEMD', 'CEMD-046',
+                        'CEMD', 'CEMD-046',
+                        '演员A', 'CEMD-046',
+                        '演员A', 'CEMD-046',
+                        '演员A', 'CEMD-046',
+                        '演员A', 'CEMD-046',
+                        '演员A', 'CEMD-046',
+                    ),
+                ).fetchone()
+
+        self.assertEqual(
+            rows,
+            (
+                NO_SEARCH_RESULTS_STATUS,
+                '',
+                '',
+                '',
+                '16小时以上作品 女优精选集',
+                NO_SEARCH_RESULTS_STATUS,
+                '',
+                '',
+                '',
+                '16小时以上作品 女优精选集',
+            ),
+        )
 
     def test_database_init_clears_web_movie_actor_state_without_javtxt_detail_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -577,7 +693,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
             pending_count = db.count_pending_video_enrichments(JAVTXT_VIDEO_SOURCE)
 
         self.assertEqual(row[0], VIDEO_CATEGORY_COLLECTION)
-        self.assertEqual(row[1], UNENRICHED_STATUS)
+        self.assertEqual(row[1], NO_SEARCH_RESULTS_STATUS)
         self.assertEqual(pending_rows, [])
         self.assertEqual(pending_count, 0)
 
@@ -702,6 +818,44 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
             movie = db.list_code_prefix_movies('ACZD')[0]
 
         self.assertEqual(movie['javtxt_enrichment_status'], '无搜索结果')
+
+    def test_replace_code_prefix_movies_preserves_ineligible_processed_video_no_result_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.import_local_videos(
+                [
+                    {'code': 'CEMD-046', 'storage_location': 'D:\\videos', 'size': '1GB'},
+                ]
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    UPDATE processed_videos
+                    SET release_date = ?, javtxt_release_date = ?, javtxt_enrichment_status = ?, javtxt_enrichment_error = ?, javtxt_tags = ?
+                    WHERE code = ?
+                    ''',
+                    ('2021-08-07', '2021-08-07', NO_SEARCH_RESULTS_STATUS, 'JAVTXT 页面不满足补全条件', '16時間以上作品 女优精选集', 'CEMD-046'),
+                )
+                conn.commit()
+
+            db.replace_code_prefix_movies(
+                'CEMD',
+                [
+                    {
+                        'code': 'CEMD-046',
+                        'title': '羽月希22時間03分ベスト',
+                        'author': '',
+                        'release_date': '2021-08-07',
+                        'avfan_url': 'https://example.com/movies/cemd-046',
+                    }
+                ],
+            )
+
+            movie = db.list_code_prefix_movies('CEMD')[0]
+
+        self.assertEqual(movie['javtxt_enrichment_status'], NO_SEARCH_RESULTS_STATUS)
+        self.assertEqual(movie['javtxt_tags'], '16時間以上作品 女优精选集')
 
     def test_replace_actor_movies_preserves_processed_video_no_result_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -892,6 +1046,64 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
         self.assertEqual(summary['no_search_count'], 0)
         self.assertEqual(summary['no_detail_count'], 1)
 
+    def test_save_javtxt_cache_for_video_ineligible_result_skips_future_retries(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.import_local_videos(
+                [
+                    {'code': 'NSPS-702', 'storage_location': 'D:\\videos', 'size': '1GB'},
+                ]
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    UPDATE processed_videos
+                    SET release_date = ?
+                    WHERE code = ?
+                    ''',
+                    ('2020-12-22', 'NSPS-702'),
+                )
+                conn.commit()
+
+            db.save_javtxt_cache_for_video(
+                'NSPS-702',
+                {
+                    'title': 'legacy movie',
+                    'javtxt_title': 'old movie',
+                    'javtxt_actors': '演员A',
+                    'javtxt_actors_raw': '演员A',
+                    'release_date': '2018-05-13',
+                    'javtxt_tags': '人妻',
+                    'javtxt_movie_id': '272298',
+                    'javtxt_url': 'https://javtxt.top/v/272298',
+                },
+                status=NO_SEARCH_RESULTS_STATUS,
+                error='JAVTXT 页面不满足补全条件',
+            )
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    '''
+                    SELECT javtxt_enrichment_status, javtxt_enrichment_error, javtxt_movie_id, javtxt_url, javtxt_tags
+                    FROM processed_videos
+                    WHERE code = ?
+                    ''',
+                    ('NSPS-702',),
+                ).fetchone()
+
+            pending_rows = db.list_videos_for_enrichment(10, JAVTXT_VIDEO_SOURCE)
+            pending_count = db.count_pending_video_enrichments(JAVTXT_VIDEO_SOURCE)
+            summary = db.get_video_enrichment_summary(JAVTXT_VIDEO_SOURCE)
+
+        self.assertEqual(row, (NO_SEARCH_RESULTS_STATUS, 'JAVTXT 页面不满足补全条件', '', '', '人妻'))
+        self.assertEqual(pending_rows, [])
+        self.assertEqual(pending_count, 0)
+        self.assertEqual(summary['enriched_count'], 0)
+        self.assertEqual(summary['success_count'], 0)
+        self.assertEqual(summary['no_search_count'], 0)
+        self.assertEqual(summary['no_detail_count'], 0)
+
     def test_replace_code_prefix_movies_refreshes_javtxt_parent_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -1067,6 +1279,71 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
             record = db.get_code_prefix_enrichment_record('AARM')
 
         self.assertEqual(record['javtxt_enrichment_status'], UNENRICHED_STATUS)
+
+    def test_sanitize_ineligible_javtxt_state_converts_processed_video_state_to_terminal_no_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.import_local_videos(
+                [
+                    {'code': 'CEMD-046', 'storage_location': 'D:\\videos', 'size': '1GB'},
+                ]
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    UPDATE processed_videos
+                    SET title = ?,
+                        release_date = ?,
+                        javtxt_release_date = ?,
+                        javtxt_title = ?,
+                        javtxt_actors = ?,
+                        javtxt_actors_raw = ?,
+                        javtxt_tags = ?,
+                        javtxt_movie_id = ?,
+                        javtxt_url = ?,
+                        javtxt_enrichment_status = ?
+                    WHERE code = ?
+                    ''',
+                    (
+                        '羽月希22時間03分ベスト',
+                        '2021-08-07',
+                        '2021-08-07',
+                        '羽月希22時間03分ベスト',
+                        '演员A',
+                        '演员A',
+                        '16小时以上作品 女优精选集',
+                        '381297',
+                        'https://javtxt.top/v/381297',
+                        ENRICHED_STATUS,
+                        'CEMD-046',
+                    ),
+                )
+                conn.commit()
+
+            db.sanitize_ineligible_javtxt_state()
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    '''
+                    SELECT javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_actors, javtxt_actors_raw, javtxt_tags
+                    FROM processed_videos
+                    WHERE code = ?
+                    ''',
+                    ('CEMD-046',),
+                ).fetchone()
+
+        self.assertEqual(
+            row,
+            (
+                NO_SEARCH_RESULTS_STATUS,
+                '',
+                '',
+                '',
+                '',
+                '16小时以上作品 女优精选集',
+            ),
+        )
 
     def test_replace_code_prefix_movies_clears_actor_state_without_javtxt_detail_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1503,9 +1780,9 @@ class MovieAuthorResolverEligibilityTest(unittest.TestCase):
 
         entry = result['entries'][0]
         self.assertEqual(entry['release_date'], '2018-05-13')
-        self.assertEqual(entry['javtxt_enrichment_status'], UNENRICHED_STATUS)
-        self.assertEqual(entry['javtxt_movie_id'], '272298')
-        self.assertEqual(entry['javtxt_url'], 'https://javtxt.top/v/272298')
+        self.assertEqual(entry['javtxt_enrichment_status'], NO_SEARCH_RESULTS_STATUS)
+        self.assertEqual(entry['javtxt_movie_id'], '')
+        self.assertEqual(entry['javtxt_url'], '')
 
     def test_cached_no_result_with_release_date_is_not_retried(self):
         resolver = MovieAuthorResolver(

@@ -23,7 +23,7 @@ from app.services.video_category_service import (
 
 
 JAVTXT_AUTHOR_MIN_RELEASE_DATE = date(2020, 1, 1)
-VR_MARKER_RE = re.compile(r'v\s*r', re.IGNORECASE)
+VR_MARKER_RE = re.compile(r'(?<![A-Z0-9])V\s*R(?![A-Z0-9])', re.IGNORECASE)
 COLLECTION_TITLE_KEYWORDS = (
     '合集',
     '精选合集',
