@@ -25,6 +25,7 @@ from app.services.ladder_board_service import LadderBoardService
 from app.services.local_video_library_service import LocalVideoLibraryService
 from app.services.path_library import PathLibrary, summarize_paths
 from app.services.task_trace_logger import TaskTraceLogger
+from app.services.video_filter_service import VideoFilterService
 from app.services.video_ladder_tag_service import VideoLadderTagService
 
 
@@ -45,6 +46,7 @@ class BackendService:
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
         self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
+        self.video_filter_service = VideoFilterService()
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
         self.database_loaded = False
@@ -93,7 +95,8 @@ class BackendService:
 
     def list_videos(self, search_text=''):
         rows = self.video_ladder_tag_service.enrich_video_rows(self.db.list_videos())
-        return {'videos': self.video_ladder_tag_service.filter_video_rows(rows, search_text)}
+        visible_rows = self.video_filter_service.filter_library_rows(rows)
+        return {'videos': self.video_ladder_tag_service.filter_video_rows(visible_rows, search_text)}
 
     def get_video_enrichment_summary(self):
         return {'summary': self.db.get_video_enrichment_summary()}
@@ -226,6 +229,7 @@ class BackendService:
                 should_stop=self.enrichment_cancel_event.is_set,
                 progress_tracker=self.enrichment_progress,
                 logger=logger,
+                video_candidate_filter=self.video_filter_service.build_pre_enrichment_filter(),
             )
             if target_type == ACTOR_LIBRARY_TARGET:
                 self.actor_library_sync_service.sync_from_video_library()

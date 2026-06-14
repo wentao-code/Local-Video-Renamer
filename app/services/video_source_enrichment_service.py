@@ -25,12 +25,14 @@ class VideoSourceEnrichmentService:
         should_stop=None,
         progress_tracker=None,
         logger=None,
+        candidate_filter=None,
     ):
         self.database = database
         self.source_key = normalize_video_enrichment_source(source_key)
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
+        self.candidate_filter = candidate_filter if callable(candidate_filter) else None
         self.scraper = scraper or self._build_scraper(show_browser, cooldown_before_search)
 
     def _build_scraper(self, show_browser, cooldown_before_search):
@@ -46,7 +48,8 @@ class VideoSourceEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        candidates = self.database.list_videos_for_enrichment(limit, self.source_key)
+        candidate_filter = self.candidate_filter if self.source_key == JAVTXT_VIDEO_SOURCE else None
+        candidates = self.database.list_videos_for_enrichment(limit, self.source_key, candidate_filter=candidate_filter)
         results = []
         success_count = 0
         failed_count = 0
@@ -275,7 +278,10 @@ class VideoSourceEnrichmentService:
         message='',
     ):
         if hasattr(self.database, 'count_pending_video_enrichments'):
-            remaining_count = self.database.count_pending_video_enrichments(self.source_key)
+            remaining_count = self.database.count_pending_video_enrichments(
+                self.source_key,
+                candidate_filter=self.candidate_filter if self.source_key == JAVTXT_VIDEO_SOURCE else None,
+            )
         else:
             remaining_count = self.database.count_videos_by_enrichment_status(
                 UNENRICHED_STATUS,

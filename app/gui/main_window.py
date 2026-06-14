@@ -42,6 +42,7 @@ from app.gui.ladder_board_viewer import LadderBoardWindow
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
+from app.gui.video_filter_dialog import VideoFilterDialog
 
 
 class EnrichmentWorker(QObject):
@@ -133,6 +134,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         super().__init__()
         self.pending_renames = []
         self.backend_process = None
+        self.owns_backend_process = False
         self.backend_instance_token = ''
         self.backend_client = BackendClient()
         self.enrichment_thread = None
@@ -163,10 +165,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def ensure_backend_running(self):
         self.backend_instance_token = uuid.uuid4().hex
+        self.owns_backend_process = False
         health = self.get_backend_health()
+        if self.is_reusable_backend_instance(health):
+            self.backend_instance_token = str((health or {}).get('backend_instance_token') or self.backend_instance_token)
+            return
         if health is not None:
             self.stop_backend_on_port()
             health = self.get_backend_health()
+            if self.is_reusable_backend_instance(health):
+                self.backend_instance_token = str((health or {}).get('backend_instance_token') or self.backend_instance_token)
+                return
             if health is not None:
                 raise RuntimeError(tr('main.backend_port_in_use', port=get_backend_port()))
 
@@ -182,6 +191,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             errors='ignore',
             creationflags=creation_flags,
         )
+        self.owns_backend_process = True
 
         deadline = time.time() + 5
         while time.time() < deadline:
@@ -225,6 +235,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.is_backend_compatible(health)
             and str((health or {}).get('backend_instance_token') or '').strip() == self.backend_instance_token
         )
+
+    @staticmethod
+    def is_reusable_backend_instance(health):
+        if not health:
+            return False
+        if str((health or {}).get('backend_revision') or '').strip() != BACKEND_API_REVISION:
+            return False
+        existing_project_root = str((health or {}).get('project_root') or '').strip()
+        if not existing_project_root:
+            return False
+        return Path(existing_project_root).resolve() == PROJECT_ROOT.resolve()
 
     def stop_backend_on_port(self):
         if self.backend_process and self.backend_process.poll() is None:
@@ -274,6 +295,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             time.sleep(0.5)
 
     def stop_owned_backend(self):
+        if not self.owns_backend_process:
+            return
         if self.backend_process and self.backend_process.poll() is None:
             self.backend_process.terminate()
             try:
@@ -281,11 +304,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             except Exception:
                 pass
             self.backend_process = None
+            self.owns_backend_process = False
             return
 
         health = self.get_backend_health()
         if self.is_expected_backend_instance(health):
             self.stop_backend_on_port()
+        self.owns_backend_process = False
 
     def init_ui(self):
         self.setWindowTitle(tr('main.title'))
@@ -344,6 +369,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_ladder_board = QPushButton(tr('main.ladder_board'))
         self.btn_ladder_board.clicked.connect(self.show_ladder_board_viewer)
 
+        self.btn_video_filter = QPushButton(tr('main.video_filter'))
+        self.btn_video_filter.clicked.connect(self.show_video_filter_dialog)
+
         self.btn_scan = QPushButton(tr('main.scan_local_videos'))
         self.btn_scan.clicked.connect(self.scan_files)
 
@@ -377,6 +405,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_view_code_prefixes)
         top_button_row.addWidget(self.btn_tianji)
         top_button_row.addWidget(self.btn_ladder_board)
+        top_button_row.addWidget(self.btn_video_filter)
         top_button_row.addStretch()
 
         bottom_button_row.addWidget(self.btn_scan)
@@ -1295,6 +1324,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def show_ladder_board_viewer(self):
         viewer = LadderBoardWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
+
+    def show_video_filter_dialog(self):
+        dialog = VideoFilterDialog(self)
+        dialog.exec_()
 
     def show_path_library(self):
         viewer = PathLibraryWindow(backend_client=self.backend_client, parent=self)

@@ -693,7 +693,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
             pending_count = db.count_pending_video_enrichments(JAVTXT_VIDEO_SOURCE)
 
         self.assertEqual(row[0], VIDEO_CATEGORY_COLLECTION)
-        self.assertEqual(row[1], NO_SEARCH_RESULTS_STATUS)
+        self.assertEqual(row[1], ENRICHED_STATUS)
         self.assertEqual(pending_rows, [])
         self.assertEqual(pending_count, 0)
 

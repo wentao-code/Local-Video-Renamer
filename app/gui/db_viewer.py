@@ -22,6 +22,7 @@ from app.core.enrichment_sources import (
 from app.core.enrichment_status import ENRICHED_STATUS
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
+from app.gui.video_filter_dialog import VideoFilterDialog
 from app.gui.video_library_settings import load_video_library_settings, save_video_library_settings
 from app.gui.video_library_sorting import (
     DEFAULT_VIDEO_SORT_FIELD,
@@ -77,6 +78,9 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.btn_reset_javtxt = QPushButton(tr('db.viewer.reset_javtxt'))
         self.btn_reset_javtxt.clicked.connect(lambda: self.reset_selected_rows(JAVTXT_VIDEO_SOURCE))
 
+        self.btn_filter_rules = QPushButton(tr('main.video_filter'))
+        self.btn_filter_rules.clicked.connect(self.open_filter_dialog)
+
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(self.load_data)
 
@@ -89,6 +93,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_apply_sort)
         top_layout.addWidget(self.btn_reset_avfan)
         top_layout.addWidget(self.btn_reset_javtxt)
+        top_layout.addWidget(self.btn_filter_rules)
         top_layout.addWidget(self.btn_refresh)
 
         self.summary_label = QLabel(tr('db.viewer.summary', enriched_count=0, unenriched_count=0, total_count=0))
@@ -132,6 +137,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
                 self.btn_apply_sort,
                 self.btn_reset_avfan,
                 self.btn_reset_javtxt,
+                self.btn_filter_rules,
                 self.btn_refresh,
                 self.table,
             ]
@@ -153,7 +159,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
             'code',
             'title',
             'author',
-            'ladder_tag_text',
+            'javtxt_tags',
             'video_category',
             'duration',
             'size',
@@ -216,6 +222,11 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.rows = self.sorted_rows(self.rows)
         self.render_rows(self.rows)
         self.refresh_summary()
+
+    def open_filter_dialog(self):
+        dialog = VideoFilterDialog(self)
+        if dialog.exec_():
+            self.load_data()
 
     def apply_sort_settings_to_controls(self):
         sort_field = self.sort_settings.get('sort_field', DEFAULT_VIDEO_SORT_FIELD)

@@ -20,6 +20,7 @@ class LibraryEnrichmentService:
         should_stop=None,
         progress_tracker=None,
         logger=None,
+        video_candidate_filter=None,
     ):
         self.database = database
         self.show_browser = show_browser
@@ -27,6 +28,7 @@ class LibraryEnrichmentService:
         self.should_stop = should_stop
         self.progress_tracker = progress_tracker
         self.logger = logger
+        self.video_candidate_filter = video_candidate_filter
 
     def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
         if not target_type:
@@ -52,6 +54,7 @@ class LibraryEnrichmentService:
                 should_stop=self.should_stop,
                 progress_tracker=self.progress_tracker,
                 logger=self.logger,
+                candidate_filter=self.video_candidate_filter,
             )
             result = service.enrich_next_videos(limit)
             result.setdefault('entity_label', '视频')

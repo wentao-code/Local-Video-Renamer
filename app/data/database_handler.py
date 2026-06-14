@@ -2857,9 +2857,10 @@ class VideoDatabase:
             for row in rows
         ]
 
-    def list_videos_for_enrichment(self, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
+    def list_videos_for_enrichment(self, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, candidate_filter=None):
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, _, _ = self._video_source_columns(normalized_source)
+        candidate_filter = candidate_filter if callable(candidate_filter) else None
         with self._connect() as conn:
             cursor = conn.cursor()
             if normalized_source == JAVTXT_VIDEO_SOURCE:
@@ -2870,13 +2871,14 @@ class VideoDatabase:
                     search_state = classify_search_state(record, cached_row=record)
                     if not is_retryable_search_state(search_state):
                         continue
-                    pending_rows.append(
-                        {
-                            'code': record['code'],
-                            'title': record['title'],
-                            'author': record['local_author'] or record['author'],
-                        }
-                    )
+                    candidate = {
+                        'code': record['code'],
+                        'title': record['title'],
+                        'author': record['local_author'] or record['author'],
+                    }
+                    if candidate_filter is not None and not candidate_filter(candidate):
+                        continue
+                    pending_rows.append(candidate)
                     if len(pending_rows) >= int(limit):
                         break
                 return pending_rows
@@ -3148,9 +3150,10 @@ class VideoDatabase:
             )
             return int(cursor.fetchone()[0] or 0)
 
-    def count_pending_video_enrichments(self, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
+    def count_pending_video_enrichments(self, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, candidate_filter=None):
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, _, _ = self._video_source_columns(normalized_source)
+        candidate_filter = candidate_filter if callable(candidate_filter) else None
         with self._connect() as conn:
             cursor = conn.cursor()
             if normalized_source == JAVTXT_VIDEO_SOURCE:
@@ -3160,6 +3163,13 @@ class VideoDatabase:
                         continue
                     search_state = classify_search_state(record, cached_row=record)
                     if is_retryable_search_state(search_state):
+                        candidate = {
+                            'code': record['code'],
+                            'title': record['title'],
+                            'author': record['local_author'] or record['author'],
+                        }
+                        if candidate_filter is not None and not candidate_filter(candidate):
+                            continue
                         pending_count += 1
                 return pending_count
             else:

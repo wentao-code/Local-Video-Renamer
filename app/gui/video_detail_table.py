@@ -72,7 +72,7 @@ class VideoDetailTableWidget(QWidget):
     def _render_rows(self, rows):
         self.table.setRowCount(0)
         centered_columns = {0, 3, 4}
-        fields = ('code', 'title', 'author', 'video_category', 'release_date', 'ladder_tag_text')
+        fields = ('code', 'title', 'author', 'video_category', 'release_date', 'javtxt_tags')
 
         for row_idx, row_data in enumerate(rows):
             self.table.insertRow(row_idx)
@@ -89,6 +89,6 @@ class VideoDetailTableWidget(QWidget):
     def _matches_search(row, search_text):
         haystack = ' '.join(
             str((row or {}).get(field, '') or '')
-            for field in ('code', 'title', 'author', 'video_category', 'release_date', 'ladder_tag_text')
+            for field in ('code', 'title', 'author', 'video_category', 'release_date', 'javtxt_tags')
         ).lower()
         return search_text in haystack
