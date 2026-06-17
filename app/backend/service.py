@@ -16,6 +16,7 @@ from app.services.combo_progress_service import ComboProgressService
 from app.services.combo_task_logger import ComboTaskLogger
 from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
 from app.services.code_prefix_library import CodePrefixLibrary
+from app.services.code_prefix_video_category_bulk_service import CodePrefixVideoCategoryBulkService
 from app.services.data_center_service import DataCenterService
 from app.services.enrichment_progress_service import EnrichmentProgressService
 from app.services.library_admin_service import LibraryAdminService
@@ -46,6 +47,7 @@ class BackendService:
             self.video_filter_service,
         )
         self.code_prefix_library = CodePrefixLibrary(self.db)
+        self.code_prefix_video_category_bulk_service = CodePrefixVideoCategoryBulkService(self.db)
         self.data_center_service = DataCenterService(self.db)
         self.library_admin_service = LibraryAdminService(self.db)
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
@@ -174,6 +176,10 @@ class BackendService:
 
     def get_code_prefix_detail(self, prefix):
         return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(prefix)}
+
+    def update_code_prefix_uncategorized_video_category(self, prefix, category):
+        self.ensure_database_loaded()
+        return self.code_prefix_video_category_bulk_service.update_uncategorized_videos(prefix, category)
 
     def reset_code_prefix_enrichments(self, prefixes, source_key=None):
         self.ensure_database_loaded()

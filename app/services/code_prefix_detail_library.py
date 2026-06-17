@@ -7,6 +7,8 @@ from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
 from app.core.video_code import standardize_video_code
 from app.services.actor_identifier import split_actor_names
+from app.services.code_prefix_library import extract_code_prefix
+from app.services.video_category_summary import build_video_category_distribution, count_uncategorized_video_rows
 
 
 class CodePrefixDetailLibrary:
@@ -22,6 +24,8 @@ class CodePrefixDetailLibrary:
 
         enrichment = self.database.get_code_prefix_enrichment_record(prefix)
         medal_maps = self._load_medal_maps()
+        raw_local_videos = self._find_local_prefix_videos(prefix, medal_maps=medal_maps)
+        local_videos = self._filter_visible_movies(raw_local_videos)
         raw_movies = self._enrich_rows(self.database.list_code_prefix_movies(prefix), medal_maps=medal_maps)
         movies = self._filter_visible_movies(self._filter_eligible_movies(raw_movies))
         eligible_movies = list(movies)
@@ -33,7 +37,7 @@ class CodePrefixDetailLibrary:
 
         return {
             'prefix': prefix,
-            'video_count': len(movies),
+            'video_count': len(local_videos),
             'eligible_video_count': len(eligible_movies),
             'eligible_enriched_video_count': movie_summary['enriched_count'],
             'enrichment_status': self._build_live_enrichment_status(enrichment, movies, cache_rows),
@@ -44,10 +48,21 @@ class CodePrefixDetailLibrary:
             'latest_release_date': latest_release_date,
             'year_distribution': self._build_year_distribution(eligible_movies),
             'top_actors': self._build_top_actors(eligible_movies),
+            'video_category_distribution': build_video_category_distribution(eligible_movies),
+            'uncategorized_eligible_video_count': count_uncategorized_video_rows(eligible_movies),
+            'local_videos': local_videos,
             'movies': movies,
             'eligible_movies': eligible_movies,
+            'raw_local_video_count': len(raw_local_videos),
             'raw_video_count': len(raw_movies),
         }
+
+    def _find_local_prefix_videos(self, prefix, medal_maps=None):
+        matched = []
+        for row in self._enrich_rows(self.database.list_videos(), medal_maps=medal_maps):
+            if extract_code_prefix(row.get('code', '')) == prefix:
+                matched.append(row)
+        return matched
 
     def _filter_eligible_movies(self, movies):
         return [movie for movie in (movies or []) if self._is_eligible_movie(movie)]

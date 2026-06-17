@@ -165,6 +165,12 @@ class BackendClient:
         query = '?' + urlencode({'prefix': prefix})
         return self._get('/database/code-prefixes/detail' + query).get('prefix_detail', {})
 
+    def update_code_prefix_uncategorized_video_category(self, prefix, category):
+        return self._post(
+            '/database/code-prefixes/detail/category',
+            {'prefix': prefix, 'category': category},
+        )
+
     def reset_code_prefix_enrichments(self, prefixes, source_key=None):
         return self._post('/database/code-prefixes/reset', {'prefixes': prefixes, 'source_key': source_key}).get('reset_count', 0)
 

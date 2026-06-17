@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 from app.gui.i18n import tr
+from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
@@ -22,6 +23,7 @@ class ActorDetailViewerWindow(QDialog):
         self.actor_name = actor_name
         self.detail = {}
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
+        video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
         self.load_data()
 
@@ -80,6 +82,7 @@ class ActorDetailViewerWindow(QDialog):
                 ('web_last_enriched', tr('actor.detail.web_last_enriched'), ''),
                 ('web_prefix', tr('actor.detail.web_prefix'), ''),
                 ('web_year', tr('actor.detail.web_year'), ''),
+                ('web_video_categories', tr('actor.detail.web_video_categories'), ''),
             ]
         )
         web_layout.addWidget(self.web_grid)
@@ -155,6 +158,14 @@ class ActorDetailViewerWindow(QDialog):
             'web_year',
             format_distribution_summary(self.detail.get('web_year_distribution', []), 'year', items_per_line=3),
         )
+        self.web_grid.set_value(
+            'web_video_categories',
+            format_distribution_summary(
+                self.detail.get('web_video_category_distribution', []),
+                'name',
+                items_per_line=2,
+            ),
+        )
 
         local_rows = list(self.detail.get('local_videos', []) or [])
         web_rows = list(self.detail.get('web_movies', []) or [])
@@ -190,5 +201,9 @@ class ActorDetailViewerWindow(QDialog):
         viewer.exec_()
 
     def on_filter_rules_saved(self):
+        if self.isVisible():
+            self.load_data()
+
+    def on_video_categories_updated(self):
         if self.isVisible():
             self.load_data()

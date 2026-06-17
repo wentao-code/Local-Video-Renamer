@@ -22,6 +22,7 @@ from app.core.enrichment_sources import (
 from app.core.enrichment_status import ENRICHED_STATUS
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
+from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_dialog import VideoFilterDialog
 from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.video_library_settings import load_video_library_settings, save_video_library_settings
@@ -47,6 +48,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         self.sort_settings = load_video_library_settings()
         self._init_async_task_host()
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
+        video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
         self.load_data()
 
@@ -230,6 +232,13 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         dialog.exec_()
 
     def on_filter_rules_saved(self):
+        if self.is_async_task_running():
+            return
+        if not self.isVisible():
+            return
+        self.load_data()
+
+    def on_video_categories_updated(self):
         if self.is_async_task_running():
             return
         if not self.isVisible():

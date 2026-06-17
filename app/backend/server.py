@@ -88,6 +88,8 @@ def make_handler(service):
             if method == 'GET' and path == '/database/code-prefixes/detail':
                 prefix = query.get('prefix', [''])[0]
                 return service.get_code_prefix_detail(prefix)
+            if method == 'POST' and path == '/database/code-prefixes/detail/category':
+                return service.update_code_prefix_uncategorized_video_category(body.get('prefix'), body.get('category'))
             if method == 'POST' and path == '/database/code-prefixes/reset':
                 return service.reset_code_prefix_enrichments(body.get('prefixes', []), body.get('source_key'))
             if method == 'POST' and path == '/database/code-prefixes/rename':

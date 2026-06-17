@@ -7,9 +7,11 @@ from app.core.javtxt_video_state import (
 )
 from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
+from app.core.actor_profile_display import normalize_actor_age_for_display
 from app.core.video_code import standardize_video_code
 from app.services.actor_identifier import split_actor_names
 from app.services.code_prefix_library import extract_code_prefix
+from app.services.video_category_summary import build_video_category_distribution
 
 
 YEAR_RE = re.compile(r'(19|20)\d{2}')
@@ -38,11 +40,12 @@ class ActorDetailLibrary:
             [standardize_video_code((movie or {}).get('code', '')) for movie in web_movies]
         )
         web_summary = summarize_javtxt_movies(web_movies, cache_rows=cache_rows)
+        birthday = actor_row.get('birthday', '')
 
         return {
             'name': actor_name,
-            'birthday': actor_row.get('birthday', ''),
-            'age': actor_row.get('age', ''),
+            'birthday': birthday,
+            'age': normalize_actor_age_for_display(actor_row.get('age', ''), birthday),
             'matched': bool(actor_row.get('matched')),
             'actor_id': actor_row.get('actor_id', '') or web_record.get('actor_id', ''),
             'local_video_count': len(local_videos),
@@ -58,6 +61,7 @@ class ActorDetailLibrary:
             'web_latest_release_date': web_latest,
             'web_prefix_distribution': self._build_prefix_distribution(eligible_web_movies),
             'web_year_distribution': self._build_year_distribution(eligible_web_movies),
+            'web_video_category_distribution': build_video_category_distribution(eligible_web_movies),
             'local_videos': local_videos,
             'web_movies': web_movies,
             'eligible_web_movies': eligible_web_movies,

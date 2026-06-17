@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import (
 
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 from app.gui.i18n import tr
+from app.gui.video_category_batch_action_widget import VideoCategoryBatchActionWidget
+from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
@@ -22,6 +24,7 @@ class CodePrefixDetailViewerWindow(QDialog):
         self.prefix = str(prefix or '').strip().upper()
         self.detail = {}
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
+        video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
         self.load_data()
 
@@ -65,9 +68,24 @@ class CodePrefixDetailViewerWindow(QDialog):
             [
                 ('year_distribution', tr('code_prefix.detail.year_distribution'), ''),
                 ('top_actors', tr('code_prefix.detail.top_actors'), ''),
+                ('video_categories', tr('code_prefix.detail.video_categories'), ''),
             ]
         )
         stats_layout.addWidget(self.stats_grid)
+        self.category_batch_widget = VideoCategoryBatchActionWidget()
+        self.category_batch_widget.apply_button.clicked.connect(self.apply_uncategorized_video_category)
+        stats_layout.addWidget(self.category_batch_widget)
+
+        local_movie_group = QGroupBox(tr('code_prefix.detail.local_movie_group'))
+        local_movie_layout = QVBoxLayout(local_movie_group)
+        self.local_movie_count_label = QLabel(tr('code_prefix.detail.local_movie_count', count=0))
+        self.btn_local_movie_detail = QPushButton(tr('code_prefix.detail.detail'))
+        self.btn_local_movie_detail.clicked.connect(self.show_local_movie_detail)
+        local_movie_top_layout = QHBoxLayout()
+        local_movie_top_layout.addWidget(self.local_movie_count_label)
+        local_movie_top_layout.addStretch()
+        local_movie_top_layout.addWidget(self.btn_local_movie_detail)
+        local_movie_layout.addLayout(local_movie_top_layout)
 
         movie_group = QGroupBox(tr('code_prefix.detail.movie_group'))
         movie_layout = QVBoxLayout(movie_group)
@@ -82,6 +100,7 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         layout.addWidget(summary_group)
         layout.addWidget(stats_group)
+        layout.addWidget(local_movie_group)
         layout.addWidget(movie_group)
         layout.addStretch()
 
@@ -113,10 +132,76 @@ class CodePrefixDetailViewerWindow(QDialog):
             'top_actors',
             format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=2),
         )
+        self.stats_grid.set_value(
+            'video_categories',
+            format_distribution_summary(self.detail.get('video_category_distribution', []), 'name', items_per_line=2),
+        )
+        self.category_batch_widget.set_busy(False)
+        self.category_batch_widget.set_uncategorized_count(
+            self.detail.get('uncategorized_eligible_video_count', 0)
+        )
 
+        local_rows = list(self.detail.get('local_videos', []) or [])
         rows = list(self.detail.get('movies', []) or [])
+        self.local_movie_count_label.setText(tr('code_prefix.detail.local_movie_count', count=len(local_rows)))
         self.movie_count_label.setText(tr('code_prefix.detail.movie_count', count=len(rows)))
+        self.btn_local_movie_detail.setEnabled(bool(local_rows))
         self.btn_movie_detail.setEnabled(bool(rows))
+
+    def apply_uncategorized_video_category(self):
+        selected_category = self.category_batch_widget.selected_category()
+        if not selected_category:
+            QMessageBox.information(
+                self,
+                tr('common.prompt'),
+                tr('code_prefix.detail.category_batch_select_first'),
+            )
+            return
+
+        pending_count = int(self.detail.get('uncategorized_eligible_video_count', 0) or 0)
+        if pending_count <= 0:
+            QMessageBox.information(
+                self,
+                tr('common.no_data'),
+                tr('code_prefix.detail.category_batch_empty'),
+            )
+            return
+
+        self.category_batch_widget.set_busy(True)
+        try:
+            result = self.backend_client.update_code_prefix_uncategorized_video_category(self.prefix, selected_category)
+        except Exception as exc:
+            self.category_batch_widget.set_busy(False)
+            QMessageBox.critical(
+                self,
+                tr('common.operation_failed'),
+                tr('code_prefix.detail.category_batch_failed', error=exc),
+            )
+            return
+
+        video_category_update_event_bus.categories_updated.emit()
+        QMessageBox.information(
+            self,
+            tr('code_prefix.detail.category_batch_completed_title'),
+            tr(
+                'code_prefix.detail.category_batch_completed',
+                count=int((result or {}).get('matched_count', 0) or 0),
+                category=selected_category,
+            ),
+        )
+
+    def show_local_movie_detail(self):
+        rows = list(self.detail.get('local_videos', []) or [])
+        if not rows:
+            QMessageBox.information(self, tr('common.no_data'), tr('code_prefix.detail.local_movie_no_data'))
+            return
+        viewer = VideoListDetailWindow(
+            title=tr('code_prefix.detail.local_movie_title', prefix=self.prefix),
+            table_title=tr('code_prefix.detail.local_movie_table_title', prefix=self.prefix),
+            rows=rows,
+            parent=self,
+        )
+        viewer.exec_()
 
     def show_movie_detail(self):
         rows = list(self.detail.get('movies', []) or [])
@@ -132,5 +217,9 @@ class CodePrefixDetailViewerWindow(QDialog):
         viewer.exec_()
 
     def on_filter_rules_saved(self):
+        if self.isVisible():
+            self.load_data()
+
+    def on_video_categories_updated(self):
         if self.isVisible():
             self.load_data()

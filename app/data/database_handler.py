@@ -36,6 +36,7 @@ from app.core.javtxt_entry_state import (
     normalize_actor_raw_text,
 )
 from app.core.ladder_board import normalize_ladder_board_key, normalize_ladder_entity_type, normalize_ladder_tier
+from app.core.actor_profile_display import normalize_actor_age_for_display
 from app.core.second_source_actor_text import is_unpublished_actor_text, normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
 from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
@@ -1675,7 +1676,7 @@ class VideoDatabase:
                 {
                     'name': actor_name,
                     'birthday': row[1] or '',
-                    'age': row[2] or '',
+                    'age': normalize_actor_age_for_display(row[2] or '', row[1] or ''),
                     'matched': bool(row[3]),
                     'actor_id': row[4] or '',
                     'enrichment_status': enrichment_status or UNENRICHED_STATUS,
@@ -3962,45 +3963,79 @@ class VideoDatabase:
             }
 
     def update_video_category(self, code, category):
-        normalized_code = standardize_video_code(code)
+        return self.update_video_categories([code], category).get('updated_count', 0)
+
+    def update_video_categories(self, codes, category, clear_staged=False):
+        normalized_codes = []
+        seen = set()
+        for code in codes or []:
+            normalized_code = standardize_video_code(code)
+            if not normalized_code or normalized_code in seen:
+                continue
+            seen.add(normalized_code)
+            normalized_codes.append(normalized_code)
+
         normalized_category = normalize_video_category(category)
-        if not normalized_code:
-            raise ValueError('缺少视频编号')
+        if not normalized_codes:
+            return {
+                'updated_count': 0,
+                'code_count': 0,
+                'cleared_staged_count': 0,
+            }
         if normalized_category not in VIDEO_CATEGORY_OPTIONS:
             raise ValueError('视频分类无效')
+
+        payload = [(normalized_category, code) for code in normalized_codes]
+        placeholders = ','.join('?' for _ in normalized_codes)
 
         with self._connect() as conn:
             cursor = conn.cursor()
             updated_count = 0
-            cursor.execute(
+            cursor.executemany(
                 '''
                 UPDATE processed_videos
                 SET video_category = ?
                 WHERE code = ?
                 ''',
-                (normalized_category, normalized_code),
+                payload,
             )
             updated_count += int(cursor.rowcount or 0)
-            cursor.execute(
+            cursor.executemany(
                 '''
                 UPDATE code_prefix_movies
                 SET video_category = ?
                 WHERE code = ?
                 ''',
-                (normalized_category, normalized_code),
+                payload,
             )
             updated_count += int(cursor.rowcount or 0)
-            cursor.execute(
+            cursor.executemany(
                 '''
                 UPDATE actor_movies
                 SET video_category = ?
                 WHERE code = ?
                 ''',
-                (normalized_category, normalized_code),
+                payload,
             )
             updated_count += int(cursor.rowcount or 0)
+
+            cleared_staged_count = 0
+            if clear_staged:
+                cursor.execute(
+                    f'''
+                    DELETE FROM manual_category_staging
+                    WHERE code IN ({placeholders})
+                    ''',
+                    normalized_codes,
+                )
+                cleared_staged_count = int(cursor.rowcount or 0)
+
             conn.commit()
-            return updated_count
+            return {
+                'updated_count': updated_count,
+                'code_count': len(normalized_codes),
+                'cleared_staged_count': cleared_staged_count,
+            }
 
     @staticmethod
     def _list_staged_video_categories(cursor):
