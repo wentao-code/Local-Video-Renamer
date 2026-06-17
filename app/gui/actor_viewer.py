@@ -31,19 +31,24 @@ from app.gui.actor_library_sorting import (
     sort_actor_rows,
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.services.actor_profile_update_service import ActorProfileUpdateService
 
 
-class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
+class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
         self.editing_actor_name = None
         self.editing_row = None
+        self.editing_actor_original = None
+        self.actor_profile_update_service = ActorProfileUpdateService()
         self.action_buttons = {}
         self.sort_settings = load_actor_library_settings()
         self._init_async_task_host()
+        self._init_deferred_reload(self.load_data)
         self.init_ui()
         self.load_data()
 
@@ -117,6 +122,9 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def load_data(self):
+        if self.is_async_task_running():
+            self.schedule_deferred_reload(0)
+            return
         search_text = self.search_input.text().strip()
         self.start_async_task(
             lambda: {'rows': self.backend_client.list_actors(search_text)},
@@ -180,18 +188,8 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         viewer.exec_()
 
     def filter_data(self, text):
-        if self.is_async_task_running():
-            return
         self.clear_edit_state()
-        search_text = str(text or '').strip()
-        if not search_text:
-            self.load_data()
-            return
-        try:
-            self.rows = self.sorted_rows(self.backend_client.list_actors(search_text))
-            self.render_rows(self.rows)
-        except Exception as exc:
-            print(tr('actor.viewer.filter_failed', error=exc))
+        self.schedule_deferred_reload()
 
     def apply_sort_settings(self):
         if self.editing_actor_name is not None:
@@ -228,6 +226,7 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
     def clear_edit_state(self):
         self.editing_actor_name = None
         self.editing_row = None
+        self.editing_actor_original = None
 
     def handle_edit_button(self, actor_name):
         if self.editing_actor_name is None:
@@ -245,7 +244,12 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
             return
         self.editing_actor_name = actor_name
         self.editing_row = row
-        self.set_actor_cell_editable(row, True)
+        self.editing_actor_original = {
+            'name': self._item_text(row, 0),
+            'birthday': self._item_text(row, 2),
+            'age': self._item_text(row, 3),
+        }
+        self.set_actor_row_editable(row, True)
         button = self.action_buttons.get(actor_name, {}).get('edit')
         if button is not None:
             button.setText(tr('common.ok'))
@@ -257,43 +261,60 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
     def confirm_actor_edit(self):
         if self.editing_actor_name is None or self.editing_row is None:
             return
-        item = self.table.item(self.editing_row, 0)
         old_name = self.editing_actor_name
-        if item is None:
+        original = dict(self.editing_actor_original or {})
+        if not original:
             self.clear_edit_state()
             return
 
-        new_name = item.text().strip()
-        self.set_actor_cell_editable(self.editing_row, False)
+        new_name = self._item_text(self.editing_row, 0)
+        birthday = self._item_text(self.editing_row, 2)
+        age = self._item_text(self.editing_row, 3)
         if not new_name:
-            item.setText(old_name)
+            self.set_actor_row_editable(self.editing_row, False)
+            self.restore_editing_row_values(original)
             self.reset_row_button_text(old_name)
             self.clear_edit_state()
             QMessageBox.warning(self, tr('common.prompt'), tr('actor.viewer.name_required'))
             return
 
+        try:
+            normalized_payload = self.actor_profile_update_service.normalize_payload(new_name, birthday=birthday, age=age)
+        except Exception as exc:
+            QMessageBox.warning(self, tr('common.prompt'), str(exc))
+            return
+
+        self._set_item_text(self.editing_row, 0, normalized_payload.get('name', ''))
+        self._set_item_text(self.editing_row, 2, normalized_payload.get('birthday', ''))
+        self._set_item_text(self.editing_row, 3, normalized_payload.get('age', ''))
+        self.set_actor_row_editable(self.editing_row, False)
+
         self.clear_edit_state()
         search_text = self.search_input.text().strip()
         self.start_async_task(
             lambda: self.reload_rows_after(
-                lambda: self.backend_client.rename_actor(old_name, new_name),
+                lambda: self.backend_client.rename_actor(
+                    old_name,
+                    normalized_payload.get('name', ''),
+                    birthday=normalized_payload.get('birthday', ''),
+                    age=normalized_payload.get('age', ''),
+                ),
                 lambda: self.backend_client.list_actors(search_text),
                 old_name=old_name,
-                new_name=new_name,
+                new_name=normalized_payload.get('name', ''),
             ),
-            self._on_rename_finished,
+            self._on_update_finished,
             tr('actor.viewer.rename_failed'),
         )
 
-    def _on_rename_finished(self, result):
+    def _on_update_finished(self, result):
         self._on_load_data_finished(result)
         QMessageBox.information(
             self,
             tr('actor.viewer.rename_completed'),
             tr(
-                'actor.viewer.rename_completed_message',
-                old_name=result.get('old_name', ''),
-                new_name=result.get('new_name', ''),
+                'actor.viewer.update_completed_message',
+                actor_name=result.get('new_name', '') or result.get('old_name', ''),
             ),
         )
 
@@ -302,14 +323,31 @@ class ActorViewerWindow(AsyncTaskHostMixin, QDialog):
         if button is not None:
             button.setText(tr('actor.viewer.edit'))
 
-    def set_actor_cell_editable(self, row, editable):
-        item = self.table.item(row, 0)
-        if item is None:
+    def set_actor_row_editable(self, row, editable):
+        for column in (0, 2, 3):
+            item = self.table.item(row, column)
+            if item is None:
+                continue
+            if editable:
+                item.setFlags(item.flags() | Qt.ItemIsEditable)
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+
+    def restore_editing_row_values(self, values):
+        if self.editing_row is None:
             return
-        if editable:
-            item.setFlags(item.flags() | Qt.ItemIsEditable)
-        else:
-            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        self._set_item_text(self.editing_row, 0, values.get('name', ''))
+        self._set_item_text(self.editing_row, 2, values.get('birthday', ''))
+        self._set_item_text(self.editing_row, 3, values.get('age', ''))
+
+    def _item_text(self, row, column):
+        item = self.table.item(row, column)
+        return item.text().strip() if item is not None else ''
+
+    def _set_item_text(self, row, column, value):
+        item = self.table.item(row, column)
+        if item is not None:
+            item.setText(str(value or ''))
 
     def find_row_by_actor_name(self, actor_name):
         target = str(actor_name or '').strip()

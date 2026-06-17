@@ -50,6 +50,7 @@ class CodePrefixDetailViewerWindow(QDialog):
             [
                 ('prefix', tr('code_prefix.detail.prefix'), ''),
                 ('ladder_tier', tr('code_prefix.detail.ladder_tier'), ''),
+                ('update_status', tr('code_prefix.detail.update_status'), ''),
                 ('video_count', tr('code_prefix.detail.video_count'), ''),
                 ('total_pages', tr('code_prefix.detail.total_pages'), ''),
                 ('total_videos', tr('code_prefix.detail.total_videos'), ''),
@@ -121,6 +122,10 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         self.summary_grid.set_value('prefix', self.detail.get('prefix', ''))
         self.summary_grid.set_value('ladder_tier', self.detail.get('ladder_tier', '') or tr('common.empty'))
+        self.summary_grid.set_value(
+            'update_status',
+            tr(f"detail.update_status.{self.detail.get('update_status', 'inactive')}"),
+        )
         self.summary_grid.set_value('video_count', str(self.detail.get('video_count', 0)))
         self.summary_grid.set_value('total_pages', str(self.detail.get('avfan_total_pages', 0)))
         self.summary_grid.set_value('total_videos', str(self.detail.get('avfan_total_videos', 0)))

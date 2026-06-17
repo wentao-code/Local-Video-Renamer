@@ -50,6 +50,7 @@ class ActorDetailViewerWindow(QDialog):
                 ('name', tr('actor.detail.name'), ''),
                 ('actor_id', tr('actor.detail.actor_id'), ''),
                 ('ladder_tier', tr('actor.detail.ladder_tier'), ''),
+                ('update_status', tr('actor.detail.update_status'), ''),
                 ('local_total', tr('actor.detail.local_total'), ''),
                 ('web_total', tr('actor.detail.web_total'), ''),
                 ('age', tr('actor.detail.age'), ''),
@@ -157,6 +158,10 @@ class ActorDetailViewerWindow(QDialog):
         self.basic_grid.set_value('name', self.detail.get('name', ''))
         self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or tr('common.empty'))
         self.basic_grid.set_value('ladder_tier', self.detail.get('ladder_tier', '') or tr('common.empty'))
+        self.basic_grid.set_value(
+            'update_status',
+            tr(f"detail.update_status.{self.detail.get('update_status', 'inactive')}"),
+        )
         self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
         self.basic_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
         self.basic_grid.set_value('age', self.detail.get('age', '') or tr('common.empty'))

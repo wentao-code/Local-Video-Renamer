@@ -21,6 +21,7 @@ from app.core.enrichment_sources import (
 )
 from app.core.enrichment_status import ENRICHED_STATUS
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
 from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_dialog import VideoFilterDialog
@@ -40,13 +41,14 @@ VIDEO_TEXT_COLUMN_WIDTH = 150
 VIDEO_COMPANY_COLUMN_WIDTH = 130
 
 
-class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
+class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
         self.sort_settings = load_video_library_settings()
         self._init_async_task_host()
+        self._init_deferred_reload(self.load_data)
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
         video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
@@ -148,6 +150,9 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def load_data(self):
+        if self.is_async_task_running():
+            self.schedule_deferred_reload(0)
+            return
         search_text = self.search_input.text().strip()
         self.start_async_task(
             lambda: {
@@ -199,18 +204,7 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def filter_data(self, text):
-        if self.is_async_task_running():
-            return
-        if not str(text or '').strip():
-            self.load_data()
-            return
-
-        try:
-            self.rows = self.sorted_rows(self.backend_client.list_videos(str(text or '').strip()))
-            self.render_rows(self.rows)
-            self.refresh_summary()
-        except Exception as exc:
-            print(tr('db.viewer.filter_failed', error=exc))
+        self.schedule_deferred_reload()
 
     def apply_sort_settings(self):
         self.sort_settings = normalize_video_sort_settings({
@@ -232,18 +226,14 @@ class DatabaseViewerWindow(AsyncTaskHostMixin, QDialog):
         dialog.exec_()
 
     def on_filter_rules_saved(self):
-        if self.is_async_task_running():
-            return
         if not self.isVisible():
             return
-        self.load_data()
+        self.schedule_deferred_reload(0)
 
     def on_video_categories_updated(self):
-        if self.is_async_task_running():
-            return
         if not self.isVisible():
             return
-        self.load_data()
+        self.schedule_deferred_reload(0)
 
     def apply_sort_settings_to_controls(self):
         sort_field = self.sort_settings.get('sort_field', DEFAULT_VIDEO_SORT_FIELD)

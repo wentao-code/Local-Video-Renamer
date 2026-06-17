@@ -45,7 +45,8 @@ from app.data.repositories import (
     MigrationMixin,
     PathRepositoryMixin,
 )
-from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
+from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name, split_actor_names
+from app.services.code_prefix_library import extract_code_prefix
 
 
 JAVTXT_INELIGIBLE_ERROR = 'JAVTXT 页面不满足补全条件'
@@ -2463,9 +2464,11 @@ class VideoDatabase(
             conn.commit()
             return len(normalized_names)
 
-    def rename_actor(self, old_name, new_name, author_updates=None):
+    def rename_actor(self, old_name, new_name, birthday='', age='', author_updates=None):
         normalized_old_name = str(old_name or '').strip()
         normalized_new_name = str(new_name or '').strip()
+        normalized_birthday = str(birthday or '').strip()
+        normalized_age = str(age or '').strip()
         updates = list(author_updates or [])
         if not normalized_old_name or not normalized_new_name:
             raise ValueError('演员名称不能为空')
@@ -2485,8 +2488,8 @@ class VideoDatabase(
                 raise ValueError(f'演员 {normalized_new_name} 的作品记录已存在')
 
             cursor.execute(
-                'UPDATE actors SET name = ? WHERE name = ?',
-                (normalized_new_name, normalized_old_name),
+                'UPDATE actors SET name = ?, birthday = ?, age = ? WHERE name = ?',
+                (normalized_new_name, normalized_birthday, normalized_age, normalized_old_name),
             )
             updated_actor_count = int(cursor.rowcount or 0)
 
@@ -2719,74 +2722,139 @@ class VideoDatabase(
             'last_checked_at': row[8] or '',
         }
 
-    def list_videos(self, search_text=''):
-        search_text = (search_text or '').strip()
+    @staticmethod
+    def _build_processed_video_row(row):
+        return {
+            'code': row[0] or '',
+            'title': row[1] or '',
+            'author': sanitize_actor_text(row[2] or ''),
+            'duration': row[3] or '',
+            'size': row[4] or '',
+            'storage_location': row[5] or '',
+            'avfan_movie_id': row[6] or '',
+            'javtxt_movie_id': row[7] or '',
+            'javtxt_url': row[8] or '',
+            'javtxt_title': row[9] or '',
+            'javtxt_actors': sanitize_actor_text(row[10] or ''),
+            'javtxt_tags': row[11] or '',
+            'video_category': normalize_video_category(row[12]),
+            'release_date': row[13] or '',
+            'maker': row[14] or '',
+            'publisher': row[15] or '',
+            'avfan_enrichment_status': row[16] or UNENRICHED_STATUS,
+            'javtxt_enrichment_status': row[17] or UNENRICHED_STATUS,
+            'enrichment_status': build_video_enrichment_status_text(row[16], row[17]),
+        }
 
+    def _fetch_processed_video_rows(self, where_sql='', parameters=None):
+        parameters = tuple(parameters or ())
         with self._connect() as conn:
             cursor = conn.cursor()
-            if search_text:
-                like_value = f'%{search_text}%'
-                cursor.execute(
-                    '''
-                    SELECT code, title, author, duration, size, storage_location,
-                           avfan_movie_id, javtxt_movie_id, javtxt_url, javtxt_title, javtxt_actors, javtxt_tags,
-                           video_category,
-                           release_date, maker, publisher,
-                           avfan_enrichment_status, javtxt_enrichment_status
-                    FROM processed_videos
-                    WHERE code LIKE ? OR title LIKE ? OR author LIKE ? OR storage_location LIKE ?
-                       OR avfan_movie_id LIKE ? OR javtxt_movie_id LIKE ? OR javtxt_title LIKE ? OR javtxt_actors LIKE ?
-                       OR video_category LIKE ?
-                       OR release_date LIKE ? OR maker LIKE ? OR publisher LIKE ?
-                       OR avfan_enrichment_status LIKE ? OR javtxt_enrichment_status LIKE ?
-                    ORDER BY code
-                    ''',
-                    (
-                        like_value, like_value, like_value, like_value,
-                        like_value, like_value, like_value, like_value,
-                        like_value, like_value, like_value,
-                        like_value,
-                        like_value, like_value,
-                    ),
-                )
-            else:
-                cursor.execute(
-                    '''
-                    SELECT code, title, author, duration, size, storage_location,
-                           avfan_movie_id, javtxt_movie_id, javtxt_url, javtxt_title, javtxt_actors, javtxt_tags,
-                           video_category,
-                           release_date, maker, publisher,
-                           avfan_enrichment_status, javtxt_enrichment_status
-                    FROM processed_videos
-                    ORDER BY code
-                    '''
-                )
-
+            cursor.execute(
+                f'''
+                SELECT code, title, author, duration, size, storage_location,
+                       avfan_movie_id, javtxt_movie_id, javtxt_url, javtxt_title, javtxt_actors, javtxt_tags,
+                       video_category,
+                       release_date, maker, publisher,
+                       avfan_enrichment_status, javtxt_enrichment_status
+                FROM processed_videos
+                {where_sql}
+                ORDER BY code
+                ''',
+                parameters,
+            )
             rows = cursor.fetchall()
+        return [self._build_processed_video_row(row) for row in rows]
 
+    def list_videos(self, search_text=''):
+        search_text = (search_text or '').strip()
+        if not search_text:
+            return self._fetch_processed_video_rows()
+
+        like_value = f'%{search_text}%'
+        return self._fetch_processed_video_rows(
+            '''
+            WHERE code LIKE ? OR title LIKE ? OR author LIKE ? OR storage_location LIKE ?
+               OR avfan_movie_id LIKE ? OR javtxt_movie_id LIKE ? OR javtxt_title LIKE ? OR javtxt_actors LIKE ?
+               OR video_category LIKE ?
+               OR release_date LIKE ? OR maker LIKE ? OR publisher LIKE ?
+               OR avfan_enrichment_status LIKE ? OR javtxt_enrichment_status LIKE ?
+            ''',
+            (
+                like_value, like_value, like_value, like_value,
+                like_value, like_value, like_value, like_value,
+                like_value, like_value, like_value,
+                like_value,
+                like_value, like_value,
+            ),
+        )
+
+    def list_local_videos_by_actor_name(self, actor_name):
+        rows = self.list_local_videos_by_actor_names([actor_name])
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return []
         return [
-            {
-                'code': row[0] or '',
-                'title': row[1] or '',
-                'author': sanitize_actor_text(row[2] or ''),
-                'duration': row[3] or '',
-                'size': row[4] or '',
-                'storage_location': row[5] or '',
-                'avfan_movie_id': row[6] or '',
-                'javtxt_movie_id': row[7] or '',
-                'javtxt_url': row[8] or '',
-                'javtxt_title': row[9] or '',
-                'javtxt_actors': sanitize_actor_text(row[10] or ''),
-                'javtxt_tags': row[11] or '',
-                'video_category': normalize_video_category(row[12]),
-                'release_date': row[13] or '',
-                'maker': row[14] or '',
-                'publisher': row[15] or '',
-                'avfan_enrichment_status': row[16] or UNENRICHED_STATUS,
-                'javtxt_enrichment_status': row[17] or UNENRICHED_STATUS,
-                'enrichment_status': build_video_enrichment_status_text(row[16], row[17]),
-            }
+            row
             for row in rows
+            if normalized_name in split_actor_names(row.get('author', ''))
+        ]
+
+    def list_local_videos_by_actor_names(self, actor_names):
+        normalized_names = []
+        seen = set()
+        for actor_name in actor_names or []:
+            normalized_name = str(actor_name or '').strip()
+            if not normalized_name or normalized_name in seen:
+                continue
+            seen.add(normalized_name)
+            normalized_names.append(normalized_name)
+        if not normalized_names:
+            return []
+
+        rows = self._fetch_processed_video_rows(
+            'WHERE ' + ' OR '.join('author LIKE ?' for _ in normalized_names),
+            [f'%{actor_name}%' for actor_name in normalized_names],
+        )
+        target_names = set(normalized_names)
+        return [
+            row
+            for row in rows
+            if target_names.intersection(split_actor_names(row.get('author', '')))
+        ]
+
+    def list_local_videos_by_prefix(self, prefix):
+        rows = self.list_local_videos_by_prefixes([prefix])
+        normalized_prefix = str(prefix or '').strip().upper()
+        if not normalized_prefix:
+            return []
+        return [
+            row
+            for row in rows
+            if extract_code_prefix(row.get('code', '')) == normalized_prefix
+        ]
+
+    def list_local_videos_by_prefixes(self, prefixes):
+        normalized_prefixes = []
+        seen = set()
+        for prefix in prefixes or []:
+            normalized_prefix = str(prefix or '').strip().upper()
+            if not normalized_prefix or normalized_prefix in seen:
+                continue
+            seen.add(normalized_prefix)
+            normalized_prefixes.append(normalized_prefix)
+        if not normalized_prefixes:
+            return []
+
+        rows = self._fetch_processed_video_rows(
+            'WHERE ' + ' OR '.join('code LIKE ?' for _ in normalized_prefixes),
+            [f'{prefix}%' for prefix in normalized_prefixes],
+        )
+        target_prefixes = set(normalized_prefixes)
+        return [
+            row
+            for row in rows
+            if extract_code_prefix(row.get('code', '')) in target_prefixes
         ]
 
     def list_video_summary_rows(self):

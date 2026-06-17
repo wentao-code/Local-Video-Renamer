@@ -79,7 +79,12 @@ def make_handler(service):
             if method == 'POST' and path == '/database/actors/reset':
                 return service.reset_actor_enrichments(body.get('actor_names', []), body.get('source_key'))
             if method == 'POST' and path == '/database/actors/rename':
-                return service.rename_actor(body.get('old_name'), body.get('new_name'))
+                return service.rename_actor(
+                    body.get('old_name'),
+                    body.get('new_name'),
+                    body.get('birthday', ''),
+                    body.get('age', ''),
+                )
             if method == 'POST' and path == '/database/actors/delete':
                 return service.delete_actor(body.get('actor_name'))
             if method == 'GET' and path == '/database/code-prefixes':

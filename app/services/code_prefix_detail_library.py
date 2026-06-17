@@ -9,6 +9,7 @@ from app.core.enrichment_status import UNENRICHED_STATUS
 from app.core.video_code import standardize_video_code
 from app.services.actor_identifier import split_actor_names
 from app.services.code_prefix_library import extract_code_prefix
+from app.services.detail_update_status_service import resolve_update_status
 from app.services.video_category_summary import build_video_category_distribution, count_uncategorized_video_rows
 
 
@@ -40,6 +41,7 @@ class CodePrefixDetailLibrary:
         return {
             'prefix': prefix,
             'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
+            'update_status': resolve_update_status(local_videos + eligible_movies),
             'video_count': len(local_videos),
             'eligible_video_count': len(eligible_movies),
             'eligible_enriched_video_count': movie_summary['enriched_count'],
@@ -61,6 +63,11 @@ class CodePrefixDetailLibrary:
         }
 
     def _find_local_prefix_videos(self, prefix, medal_maps=None):
+        if hasattr(self.database, 'list_local_videos_by_prefix'):
+            return self._enrich_rows(
+                self.database.list_local_videos_by_prefix(prefix),
+                medal_maps=medal_maps,
+            )
         matched = []
         for row in self._enrich_rows(self.database.list_videos(), medal_maps=medal_maps):
             if extract_code_prefix(row.get('code', '')) == prefix:

@@ -146,10 +146,10 @@ class BackendClient:
     def reset_actor_enrichments(self, actor_names, source_key=None):
         return self._post('/database/actors/reset', {'actor_names': actor_names, 'source_key': source_key}).get('reset_count', 0)
 
-    def rename_actor(self, old_name, new_name):
+    def rename_actor(self, old_name, new_name, birthday='', age=''):
         return self._post(
             '/database/actors/rename',
-            {'old_name': old_name, 'new_name': new_name},
+            {'old_name': old_name, 'new_name': new_name, 'birthday': birthday, 'age': age},
         ).get('updated_count', 0)
 
     def delete_actor(self, actor_name):

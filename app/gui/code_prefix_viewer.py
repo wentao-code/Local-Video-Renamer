@@ -34,10 +34,11 @@ from app.gui.code_prefix_library_sorting import (
     sort_code_prefix_rows,
 )
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
+from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
 
 
-class CodePrefixViewerWindow(AsyncTaskHostMixin, QDialog):
+class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -47,6 +48,7 @@ class CodePrefixViewerWindow(AsyncTaskHostMixin, QDialog):
         self.action_buttons = {}
         self.sort_settings = load_code_prefix_library_settings()
         self._init_async_task_host()
+        self._init_deferred_reload(self.load_data)
         self.init_ui()
         self.load_data()
 
@@ -120,6 +122,9 @@ class CodePrefixViewerWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def load_data(self):
+        if self.is_async_task_running():
+            self.schedule_deferred_reload(0)
+            return
         search_text = self.search_input.text().strip()
         self.start_async_task(
             lambda: {'rows': self.backend_client.list_code_prefixes(search_text)},
@@ -183,18 +188,8 @@ class CodePrefixViewerWindow(AsyncTaskHostMixin, QDialog):
         viewer.exec_()
 
     def filter_data(self, text):
-        if self.is_async_task_running():
-            return
         self.clear_edit_state()
-        search_text = str(text or '').strip()
-        if not search_text:
-            self.load_data()
-            return
-        try:
-            self.rows = self.sorted_rows(self.backend_client.list_code_prefixes(search_text))
-            self.render_rows(self.rows)
-        except Exception as exc:
-            print(tr('code_prefix.viewer.filter_failed', error=exc))
+        self.schedule_deferred_reload()
 
     def apply_sort_settings(self):
         if self.editing_prefix is not None:

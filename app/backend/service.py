@@ -97,9 +97,25 @@ class BackendService:
         return {'success_count': self.local_video_library.import_videos(plans_data)}
 
     def list_videos(self, search_text=''):
-        rows = self.video_ladder_tag_service.enrich_video_rows(self.db.list_videos())
-        visible_rows = self.video_filter_service.filter_video_rows(rows)
-        return {'videos': self.video_ladder_tag_service.filter_video_rows(visible_rows, search_text)}
+        self.ensure_database_loaded()
+        normalized_search = str(search_text or '').strip()
+        if not normalized_search:
+            return {'videos': self.video_filter_service.filter_video_rows(self.db.list_videos())}
+
+        medal_maps = self.video_ladder_tag_service.load_medal_maps()
+        rows_by_code = {
+            str((row or {}).get('code', '') or '').strip(): dict(row or {})
+            for row in self.db.list_videos(normalized_search)
+            if str((row or {}).get('code', '') or '').strip()
+        }
+        for row in self._expand_video_search_candidates_by_ladder_tags(normalized_search, medal_maps=medal_maps):
+            code = str((row or {}).get('code', '') or '').strip()
+            if code:
+                rows_by_code[code] = dict(row or {})
+
+        visible_rows = self.video_filter_service.filter_video_rows(list(rows_by_code.values()))
+        enriched_rows = self.video_ladder_tag_service.enrich_video_rows(visible_rows, medal_maps=medal_maps)
+        return {'videos': self.video_ladder_tag_service.filter_video_rows(enriched_rows, normalized_search)}
 
     def get_video_enrichment_summary(self):
         return {'summary': self.db.get_video_enrichment_summary()}
@@ -156,22 +172,25 @@ class BackendService:
         return {'actors': self.db.list_actors(search_text)}
 
     def get_actor_detail(self, actor_name):
+        self.ensure_database_loaded()
         return {'actor': self.actor_detail_library.get_actor_detail(actor_name)}
 
     def reset_actor_enrichments(self, actor_names, source_key=None):
         self.ensure_database_loaded()
         return {'reset_count': self.db.reset_actor_enrichments(actor_names, source_key=source_key)}
 
-    def rename_actor(self, old_name, new_name):
-        return {'updated_count': self.library_admin_service.rename_actor(old_name, new_name)}
+    def rename_actor(self, old_name, new_name, birthday='', age=''):
+        return {'updated_count': self.library_admin_service.rename_actor(old_name, new_name, birthday=birthday, age=age)}
 
     def delete_actor(self, actor_name):
         return {'deleted_count': self.library_admin_service.delete_actor(actor_name)}
 
     def list_code_prefixes(self, search_text=''):
+        self.ensure_database_loaded()
         return {'prefixes': self.code_prefix_library.list_prefixes(search_text)}
 
     def get_code_prefix_detail(self, prefix):
+        self.ensure_database_loaded()
         return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(prefix)}
 
     def update_code_prefix_uncategorized_video_category(self, prefix, category):
@@ -199,6 +218,36 @@ class BackendService:
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
         self.ensure_database_loaded()
         return {'board': self.ladder_board_service.update_medal(board_key, entity_name, medal)}
+
+    def _expand_video_search_candidates_by_ladder_tags(self, search_text, medal_maps=None):
+        normalized_search = str(search_text or '').strip().lower()
+        if not normalized_search:
+            return []
+
+        active_medal_maps = dict(medal_maps or self.video_ladder_tag_service.load_medal_maps())
+        actor_names = [
+            actor_name
+            for actor_name, medals in (active_medal_maps.get('actor_medal_map', {}) or {}).items()
+            if any(normalized_search in str(medal or '').strip().lower() for medal in medals or [])
+        ]
+        prefixes = [
+            prefix
+            for prefix, medals in (active_medal_maps.get('prefix_medal_map', {}) or {}).items()
+            if any(normalized_search in str(medal or '').strip().lower() for medal in medals or [])
+        ]
+
+        rows_by_code = {}
+        if actor_names and hasattr(self.db, 'list_local_videos_by_actor_names'):
+            for row in self.db.list_local_videos_by_actor_names(actor_names):
+                code = str((row or {}).get('code', '') or '').strip()
+                if code:
+                    rows_by_code[code] = dict(row or {})
+        if prefixes and hasattr(self.db, 'list_local_videos_by_prefixes'):
+            for row in self.db.list_local_videos_by_prefixes(prefixes):
+                code = str((row or {}).get('code', '') or '').strip()
+                if code:
+                    rows_by_code[code] = dict(row or {})
+        return list(rows_by_code.values())
 
     def list_paths(self):
         paths = []

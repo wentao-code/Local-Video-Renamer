@@ -12,6 +12,7 @@ from app.core.actor_profile_display import normalize_actor_age_for_display
 from app.core.video_code import standardize_video_code
 from app.services.actor_identifier import split_actor_names
 from app.services.code_prefix_library import extract_code_prefix
+from app.services.detail_update_status_service import resolve_update_status
 from app.services.video_category_summary import build_video_category_distribution
 
 
@@ -51,6 +52,7 @@ class ActorDetailLibrary:
             'matched': bool(actor_row.get('matched')),
             'actor_id': actor_row.get('actor_id', '') or web_record.get('actor_id', ''),
             'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
+            'update_status': resolve_update_status(local_videos + eligible_web_movies),
             'local_video_count': len(local_videos),
             'local_prefix_distribution': self._build_prefix_distribution(local_videos),
             'local_year_distribution': self._build_year_distribution(local_videos),
@@ -83,6 +85,11 @@ class ActorDetailLibrary:
         }
 
     def _find_local_actor_videos(self, actor_name, medal_maps=None):
+        if hasattr(self.database, 'list_local_videos_by_actor_name'):
+            return self._enrich_rows(
+                self.database.list_local_videos_by_actor_name(actor_name),
+                medal_maps=medal_maps,
+            )
         matched = []
         for row in self._enrich_rows(self.database.list_videos(), medal_maps=medal_maps):
             actor_names = split_actor_names(row.get('author', ''))
