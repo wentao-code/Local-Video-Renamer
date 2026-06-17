@@ -130,7 +130,7 @@ class CodePrefixDetailLibrary:
                 grouped[normalized] = grouped.get(normalized, 0) + 1
 
         ordered = sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
-        return [{'name': name, 'video_count': count} for name, count in ordered[:10]]
+        return [{'name': name, 'video_count': count} for name, count in ordered[:14]]
 
     @staticmethod
     def _is_eligible_movie(movie):

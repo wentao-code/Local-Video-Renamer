@@ -130,7 +130,7 @@ BASE_GUI_TEXTS = {
     'code_prefix.detail.last_enriched': '最近补全时间：',
     'code_prefix.detail.stats_group': '摘要统计',
     'code_prefix.detail.year_distribution': '年份分布：',
-    'code_prefix.detail.top_actors': '主演演员前十：',
+    'code_prefix.detail.top_actors': '主演演员：',
     'code_prefix.detail.video_categories': '视频分类情况：',
     'code_prefix.detail.category_batch_placeholder': '选择分类',
     'code_prefix.detail.category_batch_apply': '设置',

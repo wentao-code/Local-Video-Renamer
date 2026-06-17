@@ -2858,6 +2858,39 @@ class VideoDatabase:
             for row in rows
         ]
 
+    def list_video_summary_rows(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT code, title, release_date,
+                       avfan_enrichment_status, javtxt_enrichment_status,
+                       javtxt_movie_id, javtxt_url, javtxt_title,
+                       javtxt_actors, javtxt_actors_raw, javtxt_tags, javtxt_release_date
+                FROM processed_videos
+                ORDER BY code
+                '''
+            )
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'code': row[0] or '',
+                'title': row[1] or '',
+                'release_date': row[2] or '',
+                'avfan_enrichment_status': row[3] or UNENRICHED_STATUS,
+                'javtxt_enrichment_status': row[4] or UNENRICHED_STATUS,
+                'javtxt_movie_id': row[5] or '',
+                'javtxt_url': row[6] or '',
+                'javtxt_title': row[7] or '',
+                'author': sanitize_actor_text(row[8] or ''),
+                'author_raw': self._normalize_actor_raw_text(row[9] or row[8] or ''),
+                'javtxt_tags': row[10] or '',
+                'javtxt_release_date': row[11] or '',
+            }
+            for row in rows
+        ]
+
     def list_videos_for_enrichment(self, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, candidate_filter=None):
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, _, _ = self._video_source_columns(normalized_source)

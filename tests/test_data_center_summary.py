@@ -5,10 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS
 from app.data.database_handler import VideoDatabase
 from app.services.data_center_service import DataCenterService
+from app.services.video_filter_service import VideoFilterService
 
 
 class DataCenterSummarySplitCountsTest(unittest.TestCase):
@@ -95,8 +96,145 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_actor_javtxt_summary_deduplicates_same_video_code_across_multiple_actors(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            self._seed_processed_video(
+                db_path,
+                code="AAA-001",
+                title="Resolved Video",
+                author="Actor A Actor B",
+                release_date="2024-01-01",
+                status=ENRICHED_STATUS,
+                movie_id="m1",
+                url="https://example.com/1",
+            )
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    [("Actor A",), ("Actor B",)],
+                )
+                conn.commit()
+
+            shared_movie = self._build_library_movie(
+                "AAA-001",
+                "Resolved Video",
+                "Actor A Actor B",
+                "2024-01-01",
+                ENRICHED_STATUS,
+                "m1",
+                "https://example.com/1",
+            )
+            db.replace_actor_movies("Actor A", [shared_movie])
+            db.replace_actor_movies("Actor B", [shared_movie])
+
+            summary = DataCenterService(db).get_summary()
+            actor_summary = summary["actor_library"]["sources"][JAVTXT_VIDEO_SOURCE]
+
+            self.assertEqual(actor_summary["total_count"], 1)
+            self.assertEqual(actor_summary["success_count"], 1)
+            self.assertEqual(actor_summary["pending_count"], 0)
+
+            del summary
+            del db
+            gc.collect()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_filtered_videos_are_excluded_from_video_based_data_center_stats(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            self._seed_processed_video(
+                db_path,
+                code="AAA-001",
+                title="Visible Video",
+                author="Actor A",
+                release_date="2024-01-01",
+                status=ENRICHED_STATUS,
+                movie_id="m1",
+                url="https://example.com/1",
+                avfan_status=ENRICHED_STATUS,
+            )
+            self._seed_processed_video(
+                db_path,
+                code="AAA-002",
+                title="Filtered Collection",
+                author="Actor A",
+                release_date="2024-01-02",
+                status=ENRICHED_STATUS,
+                movie_id="m2",
+                url="https://example.com/2",
+                avfan_status=ENRICHED_STATUS,
+            )
+
+            movies = [
+                self._build_library_movie("AAA-001", "Visible Video", "Actor A", "2024-01-01", ENRICHED_STATUS, "m1", "https://example.com/1"),
+                self._build_library_movie("AAA-002", "Filtered Collection", "Actor A", "2024-01-02", ENRICHED_STATUS, "m2", "https://example.com/2"),
+            ]
+            db.replace_code_prefix_movies("AAA", movies)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    ("Actor A",),
+                )
+                conn.commit()
+
+            db.replace_actor_movies("Actor A", movies)
+
+            filter_service = VideoFilterService(
+                settings_loader=lambda: {
+                    "rules": {
+                        "code": [],
+                        "title": ["Collection"],
+                        "javtxt_tags": [],
+                    }
+                }
+            )
+            summary = DataCenterService(db, video_filter_service=filter_service).get_summary()
+
+            video_avfan_summary = summary["video_library"]["sources"][AVFAN_VIDEO_SOURCE]
+            self.assertEqual(video_avfan_summary["total_count"], 1)
+            self.assertEqual(video_avfan_summary["success_count"], 1)
+
+            video_javtxt_summary = summary["video_library"]["sources"][JAVTXT_VIDEO_SOURCE]
+            self.assertEqual(video_javtxt_summary["total_count"], 1)
+            self.assertEqual(video_javtxt_summary["success_count"], 1)
+
+            code_prefix_summary = summary["code_prefix_library"]["sources"][JAVTXT_VIDEO_SOURCE]
+            self.assertEqual(code_prefix_summary["total_count"], 1)
+            self.assertEqual(code_prefix_summary["success_count"], 1)
+
+            actor_summary = summary["actor_library"]["sources"][JAVTXT_VIDEO_SOURCE]
+            self.assertEqual(actor_summary["total_count"], 1)
+            self.assertEqual(actor_summary["success_count"], 1)
+
+            del summary
+            del db
+            gc.collect()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     @staticmethod
-    def _seed_processed_video(db_path, code, title, author, release_date, status, movie_id="", url=""):
+    def _seed_processed_video(
+        db_path,
+        code,
+        title,
+        author,
+        release_date,
+        status,
+        movie_id="",
+        url="",
+        avfan_status=UNENRICHED_STATUS,
+        javtxt_tags="",
+    ):
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 """
@@ -116,7 +254,7 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                     javtxt_tags,
                     video_category
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
                 """,
                 (
                     code,
@@ -125,12 +263,13 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                     release_date,
                     release_date,
                     UNENRICHED_STATUS,
-                    UNENRICHED_STATUS,
+                    avfan_status,
                     status,
                     movie_id,
                     url,
                     author if status == ENRICHED_STATUS else "",
                     author if status == ENRICHED_STATUS else "",
+                    javtxt_tags,
                 ),
             )
             conn.commit()

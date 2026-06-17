@@ -45,7 +45,7 @@ class CodePrefixDetailViewerWindow(QDialog):
 
         summary_group = QGroupBox(tr('code_prefix.detail.summary_group'))
         summary_layout = QVBoxLayout(summary_group)
-        self.summary_grid = DetailSummaryGrid(columns=2)
+        self.summary_grid = DetailSummaryGrid(columns=5)
         self.summary_grid.set_items(
             [
                 ('prefix', tr('code_prefix.detail.prefix'), ''),
@@ -56,10 +56,16 @@ class CodePrefixDetailViewerWindow(QDialog):
                 ('eligible_enriched_video_count', tr('code_prefix.detail.eligible_enriched_video_count'), ''),
                 ('earliest_date', tr('code_prefix.detail.earliest_date'), ''),
                 ('latest_date', tr('code_prefix.detail.latest_date'), ''),
-                ('last_enriched', tr('code_prefix.detail.last_enriched'), ''),
             ]
         )
         summary_layout.addWidget(self.summary_grid)
+        self.last_enriched_grid = DetailSummaryGrid(columns=1)
+        self.last_enriched_grid.set_items(
+            [
+                ('last_enriched', tr('code_prefix.detail.last_enriched'), ''),
+            ]
+        )
+        summary_layout.addWidget(self.last_enriched_grid)
 
         stats_group = QGroupBox(tr('code_prefix.detail.stats_group'))
         stats_layout = QVBoxLayout(stats_group)
@@ -123,18 +129,18 @@ class CodePrefixDetailViewerWindow(QDialog):
         )
         self.summary_grid.set_value('earliest_date', self.detail.get('earliest_release_date', '') or tr('common.empty'))
         self.summary_grid.set_value('latest_date', self.detail.get('latest_release_date', '') or tr('common.empty'))
-        self.summary_grid.set_value('last_enriched', self.detail.get('last_enriched_at', '') or tr('common.empty'))
+        self.last_enriched_grid.set_value('last_enriched', self.detail.get('last_enriched_at', '') or tr('common.empty'))
         self.stats_grid.set_value(
             'year_distribution',
-            format_distribution_summary(self.detail.get('year_distribution', []), 'year', items_per_line=3),
+            format_distribution_summary(self.detail.get('year_distribution', []), 'year', items_per_line=10),
         )
         self.stats_grid.set_value(
             'top_actors',
-            format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=2),
+            format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=7),
         )
         self.stats_grid.set_value(
             'video_categories',
-            format_distribution_summary(self.detail.get('video_category_distribution', []), 'name', items_per_line=2),
+            format_distribution_summary(self.detail.get('video_category_distribution', []), 'name', items_per_line=4),
         )
         self.category_batch_widget.set_busy(False)
         self.category_batch_widget.set_uncategorized_count(

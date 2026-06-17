@@ -48,7 +48,7 @@ class BackendService:
         )
         self.code_prefix_library = CodePrefixLibrary(self.db)
         self.code_prefix_video_category_bulk_service = CodePrefixVideoCategoryBulkService(self.db)
-        self.data_center_service = DataCenterService(self.db)
+        self.data_center_service = DataCenterService(self.db, self.video_filter_service)
         self.library_admin_service = LibraryAdminService(self.db)
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
         self.ladder_board_service = LadderBoardService(self.db)
