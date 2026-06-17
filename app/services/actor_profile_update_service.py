@@ -1,11 +1,13 @@
 from datetime import date
 
+from app.core.actor_profile_display import UNKNOWN_ACTOR_AGE_TEXT
 from app.services.actor_identifier import is_ignored_actor_name, normalize_actor_name
 
 
 DEFAULT_BIRTHDAY_MONTH = 7
 DEFAULT_BIRTHDAY_DAY = 18
 _UNKNOWN_BIRTHDAY_VALUES = {'暂无', '未知'}
+_UNKNOWN_AGE_VALUES = {'暂无', '未知', UNKNOWN_ACTOR_AGE_TEXT}
 
 
 class ActorProfileUpdateService:
@@ -35,25 +37,33 @@ class ActorProfileUpdateService:
             'age': normalized_age,
         }
 
-    @staticmethod
-    def _normalize_birthday_text(value):
+    @classmethod
+    def _normalize_birthday_text(cls, value):
         text = str(value or '').strip()
         if not text or text in _UNKNOWN_BIRTHDAY_VALUES:
             return ''
         try:
-            parsed = date.fromisoformat(text)
+            parsed = cls._parse_birthday_date(text)
         except ValueError as exc:
-            raise ValueError('生日格式必须为 YYYY-MM-DD') from exc
+            raise ValueError('生日格式必须为 YYYY-MM-DD 或 YYYY/M/D') from exc
         return parsed.isoformat()
 
     @staticmethod
     def _normalize_age_text(value):
         text = str(value or '').strip()
-        if not text:
+        if not text or text in _UNKNOWN_AGE_VALUES:
             return ''
         if not text.isdigit():
             raise ValueError('年龄必须为非负整数')
         return str(int(text))
+
+    @staticmethod
+    def _parse_birthday_date(value):
+        text = str(value or '').strip()
+        if '/' in text:
+            year_text, month_text, day_text = text.split('/')
+            return date(int(year_text), int(month_text), int(day_text))
+        return date.fromisoformat(text)
 
     @staticmethod
     def _calculate_age_from_birthday(birthday_text, today=None):

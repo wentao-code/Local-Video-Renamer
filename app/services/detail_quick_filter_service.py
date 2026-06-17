@@ -1,5 +1,5 @@
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
-from app.core.ladder_board import LADDER_TIER_A, LADDER_TIER_B, LADDER_TIER_C, LADDER_TIER_S
+from app.core.ladder_board import LADDER_TIER_A, LADDER_TIER_B, LADDER_TIER_C, LADDER_TIER_D, LADDER_TIER_S
 
 
 DETAIL_FILTER_ALL = 'all'
@@ -19,6 +19,7 @@ DETAIL_FILTER_TIER_S = 'tier_s'
 DETAIL_FILTER_TIER_A = 'tier_a'
 DETAIL_FILTER_TIER_B = 'tier_b'
 DETAIL_FILTER_TIER_C = 'tier_c'
+DETAIL_FILTER_TIER_D = 'tier_d'
 DETAIL_FILTER_MISSING_BIRTHDAY = 'missing_birthday'
 DETAIL_FILTER_MISSING_AGE = 'missing_age'
 
@@ -46,6 +47,7 @@ TIER_DETAIL_FILTER_OPTIONS = (
     DETAIL_FILTER_TIER_A,
     DETAIL_FILTER_TIER_B,
     DETAIL_FILTER_TIER_C,
+    DETAIL_FILTER_TIER_D,
 )
 
 ACTOR_DETAIL_FILTER_OPTIONS = (
@@ -118,6 +120,8 @@ def matches_detail_filter(row, filter_key):
         return ladder_tier == LADDER_TIER_B
     if normalized_key == DETAIL_FILTER_TIER_C:
         return ladder_tier == LADDER_TIER_C
+    if normalized_key == DETAIL_FILTER_TIER_D:
+        return ladder_tier == LADDER_TIER_D
     if normalized_key == DETAIL_FILTER_MISSING_BIRTHDAY:
         return not birthday
     if normalized_key == DETAIL_FILTER_MISSING_AGE:

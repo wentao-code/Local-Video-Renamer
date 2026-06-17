@@ -7,6 +7,7 @@ from pathlib import Path
 from app.core.ladder_board import (
     LADDER_BOARD_ACTOR,
     LADDER_BOARD_CODE_PREFIX,
+    normalize_ladder_tier,
     normalize_ladder_medal_text,
     split_ladder_medals,
 )

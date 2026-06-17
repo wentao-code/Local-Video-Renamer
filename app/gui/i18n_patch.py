@@ -208,3 +208,35 @@ GUI_TEXT_PATCHES = {
         'video.detail.search_placeholder': 'Filter by code, title, actor, date, category, or tags...',
     },
 }
+
+GUI_TEXT_PATCHES['zh_CN'].update(
+    {
+        'main.network_offline_warning_title': '网络已断开',
+        'main.network_offline_warning_message': '检测到当前电脑无法访问网络目标（{failed_targets}），已自动停止所有补全任务。',
+        'main.network_offline_stop_requested': '检测到断网，已自动请求停止补全任务。',
+        'main.network_offline_stop_failed': '断网后自动停止补全任务失败。',
+        'ladder.candidate.select_tier_first': '请先为当前候选项选择 S/A/B/C/D 等级。',
+        'detail.quick_filter.tier_d': '只看 D 级',
+        'detail.update_tier': '修改等级',
+        'detail.update_tier_completed': '已将等级设置为 {tier}。',
+        'main.network_status_unknown': '网络状态：检测中',
+        'main.network_status_online': '网络正常',
+        'main.network_status_offline': '网络异常（{count}/{threshold}）',
+    }
+)
+
+GUI_TEXT_PATCHES['en_US'].update(
+    {
+        'main.network_offline_warning_title': 'Network Disconnected',
+        'main.network_offline_warning_message': 'The computer can no longer reach network targets ({failed_targets}), so all enrichment tasks were stopped automatically.',
+        'main.network_offline_stop_requested': 'Network disconnected. Stop requested for all enrichment tasks.',
+        'main.network_offline_stop_failed': 'Failed to stop enrichment tasks after the network disconnected.',
+        'ladder.candidate.select_tier_first': 'Select an S/A/B/C/D tier before adding this candidate.',
+        'detail.quick_filter.tier_d': 'Tier D Only',
+        'detail.update_tier': 'Update Tier',
+        'detail.update_tier_completed': 'Tier was updated to {tier}.',
+        'main.network_status_unknown': 'Network: Checking',
+        'main.network_status_online': 'Network Online',
+        'main.network_status_offline': 'Network Offline ({count}/{threshold})',
+    }
+)

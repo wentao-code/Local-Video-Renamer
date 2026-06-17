@@ -6,6 +6,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 
+from app.core.actor_profile_display import UNKNOWN_ACTOR_AGE_TEXT
 from app.data.database_handler import VideoDatabase
 from app.services.actor_profile_update_service import ActorProfileUpdateService
 from app.services.library_admin_service import LibraryAdminService
@@ -43,6 +44,28 @@ class ActorProfileUpdateServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(payload['age'], '26')
+
+    def test_accepts_slash_birthday_from_display_text(self):
+        payload = ActorProfileUpdateService().normalize_payload(
+            '演员D',
+            birthday='1950/9/14',
+            age='',
+            today=date(2026, 6, 17),
+        )
+
+        self.assertEqual(payload['birthday'], '1950-09-14')
+        self.assertEqual(payload['age'], '75')
+
+    def test_treats_unknown_display_age_as_empty(self):
+        payload = ActorProfileUpdateService().normalize_payload(
+            '演员E',
+            birthday='',
+            age=UNKNOWN_ACTOR_AGE_TEXT,
+            today=date(2026, 6, 17),
+        )
+
+        self.assertEqual(payload['birthday'], '')
+        self.assertEqual(payload['age'], '')
 
 
 class ActorLibraryAdminUpdateTest(unittest.TestCase):

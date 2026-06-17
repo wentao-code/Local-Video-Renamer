@@ -44,6 +44,7 @@ from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.gui.video_filter_dialog import VideoFilterDialog
+from app.services.network_guard_service import NetworkGuardService
 
 
 class EnrichmentWorker(QObject):
@@ -156,6 +157,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.enrichment_progress_timer = QTimer(self)
         self.enrichment_progress_timer.setInterval(1000)
         self.enrichment_progress_timer.timeout.connect(self.refresh_enrichment_progress)
+        self.network_guard_service = NetworkGuardService()
+        self.network_guard_timer = QTimer(self)
+        self.network_guard_timer.setInterval(5000)
+        self.network_guard_timer.timeout.connect(self.check_network_guard)
+        self.network_guard_failure_count = 0
+        self.network_stop_requested = False
+        self.network_last_probe_online = None
         self.login_thread = None
         self.login_worker = None
         self.login_task_runner = None
@@ -165,6 +173,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.init_ui()
         self.update_enrichment_controls()
         self.reset_progress_widgets()
+        self.start_network_guard()
+        self.check_network_guard()
 
     def ensure_backend_running(self):
         self.backend_instance_token = uuid.uuid4().hex
@@ -369,12 +379,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
 
         self.status_label = QLabel('')
+        self.network_status_label = QLabel(tr('main.network_status_unknown'))
         self.progress_label = QLabel('')
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.setTextVisible(True)
         self.combo_subtask_widgets = [TaskProgressWidget(self), TaskProgressWidget(self)]
         self.batch_countdown_label = QLabel('')
+        self.update_network_status_label()
 
         button_layout = QVBoxLayout()
         top_button_row = QHBoxLayout()
@@ -450,9 +462,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         button_layout.addLayout(top_button_row)
         button_layout.addLayout(bottom_button_row)
 
+        status_bar_layout = QHBoxLayout()
+        status_bar_layout.addWidget(self.status_label, 1)
+        status_bar_layout.addWidget(self.network_status_label, 0, Qt.AlignRight)
+
         main_layout.addLayout(top_layout)
         main_layout.addWidget(self.table)
-        main_layout.addWidget(self.status_label)
+        main_layout.addLayout(status_bar_layout)
         main_layout.addWidget(self.progress_label)
         main_layout.addWidget(self.progress_bar)
         for combo_subtask_widget in self.combo_subtask_widgets:
@@ -881,6 +897,92 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         enrichment_running = self.enrichment_thread is not None
         self.btn_enrich.setEnabled(not enrichment_running and not self.batch_enrichment_active)
         self.btn_stop_enrich.setEnabled(enrichment_running or self.batch_enrichment_active)
+        self.update_network_guard()
+
+    def update_network_guard(self):
+        self.start_network_guard()
+        if not self._has_active_enrichment_plan():
+            self.network_stop_requested = False
+
+    def start_network_guard(self):
+        if self.network_guard_timer.isActive():
+            return
+        self.network_guard_timer.start()
+
+    def stop_network_guard(self):
+        self.network_guard_timer.stop()
+        self.network_guard_failure_count = 0
+        self.network_stop_requested = False
+        self.network_last_probe_online = None
+        self.update_network_status_label()
+
+    def check_network_guard(self):
+        try:
+            probe_result = self.network_guard_service.probe()
+        except Exception:
+            self.network_last_probe_online = None
+            self.update_network_status_label()
+            return
+
+        if bool((probe_result or {}).get('is_online')):
+            self.network_guard_failure_count = 0
+            self.network_stop_requested = False
+            self.network_last_probe_online = True
+            self.update_network_status_label(probe_result=probe_result)
+            return
+
+        self.network_guard_failure_count += 1
+        self.network_last_probe_online = False
+        self.update_network_status_label(probe_result=probe_result)
+        if not self._has_active_enrichment_plan():
+            self.network_stop_requested = False
+            return
+        if self.network_stop_requested:
+            return
+        if self.network_guard_failure_count < self.network_guard_service.required_failures:
+            return
+
+        self.network_stop_requested = True
+        self.handle_network_disconnect(probe_result)
+
+    def update_network_status_label(self, probe_result=None):
+        if self.network_last_probe_online is True:
+            self.network_status_label.setText(tr('main.network_status_online'))
+            self.network_status_label.setStyleSheet('color: #1b7f3b;')
+            reachable_target = str((probe_result or {}).get('reachable_target', '') or '').strip()
+            self.network_status_label.setToolTip(reachable_target)
+            return
+        if self.network_last_probe_online is False:
+            self.network_status_label.setText(
+                tr(
+                    'main.network_status_offline',
+                    count=self.network_guard_failure_count,
+                    threshold=self.network_guard_service.required_failures,
+                )
+            )
+            self.network_status_label.setStyleSheet('color: #b42318;')
+            failed_targets = ' / '.join((probe_result or {}).get('failed_targets', [])[:3]) or tr('common.unknown')
+            self.network_status_label.setToolTip(failed_targets)
+            return
+        self.network_status_label.setText(tr('main.network_status_unknown'))
+        self.network_status_label.setStyleSheet('color: #667085;')
+        self.network_status_label.setToolTip('')
+
+    def _has_active_enrichment_plan(self):
+        return bool(self.enrichment_thread is not None or self.batch_enrichment_active)
+
+    def handle_network_disconnect(self, probe_result=None):
+        failed_targets = ' / '.join((probe_result or {}).get('failed_targets', [])[:3]) or tr('common.unknown')
+        requested_message = tr('main.network_offline_stop_requested', failed_targets=failed_targets)
+        failed_message = tr('main.network_offline_stop_failed')
+        warning_message = tr('main.network_offline_warning_message', failed_targets=failed_targets)
+
+        self._request_enrichment_stop(requested_message, failed_message)
+        QMessageBox.warning(
+            self,
+            tr('main.network_offline_warning_title'),
+            warning_message,
+        )
 
     def refresh_enrichment_progress(self):
         try:
@@ -1031,9 +1133,15 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.progress_label.hide()
 
     def stop_enrichment(self):
+        self._request_enrichment_stop(
+            tr('main.stop_enrichment_requested'),
+            tr('main.stop_enrichment_request_failed'),
+        )
+
+    def _request_enrichment_stop(self, requested_message, failed_message):
         if self.enrichment_thread is None:
             if self.batch_enrichment_active:
-                self.stop_batch_enrichment(tr('main.batch_stopped'))
+                self.stop_batch_enrichment(requested_message)
             return
 
         self.btn_stop_enrich.setEnabled(False)
@@ -1044,13 +1152,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.batch_countdown_label.setText('')
             self.batch_enrichment_active = False
             self.batch_enrichment_config = None
-        self.status_label.setText(tr('main.stop_enrichment_requested'))
+        self.status_label.setText(requested_message)
         try:
             result = self.backend_client.cancel_enrichment()
-            self.status_label.setText(result.get('message', tr('main.stop_enrichment_requested_default')))
+            self.status_label.setText(result.get('message', requested_message or tr('main.stop_enrichment_requested_default')))
         except Exception as exc:
             self.update_enrichment_controls()
-            self.status_label.setText(tr('main.stop_enrichment_request_failed'))
+            self.status_label.setText(failed_message)
             QMessageBox.critical(self, tr('main.stop_failed'), str(exc))
 
     def on_auto_login_finished(self, result):

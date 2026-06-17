@@ -2,6 +2,7 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -12,6 +13,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from app.core.ladder_board import LADDER_BOARD_CODE_PREFIX, LADDER_TIERS
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary
 from app.gui.i18n import tr
 from app.gui.video_category_batch_action_widget import VideoCategoryBatchActionWidget
@@ -66,11 +68,21 @@ class CodePrefixDetailViewerWindow(QDialog):
         self.btn_open_web = QPushButton(tr('detail.open_web'))
         self.btn_open_web.clicked.connect(self.open_web_page)
         action_layout.addWidget(self.btn_open_web)
+        self.tier_combo = QComboBox()
+        for tier in LADDER_TIERS:
+            self.tier_combo.addItem(tier, tier)
+        self.tier_combo.setMinimumHeight(30)
+        self.tier_combo.setMinimumWidth(78)
+        action_layout.addWidget(self.tier_combo)
+        self.btn_update_tier = QPushButton(tr('detail.update_tier'))
+        self.btn_update_tier.clicked.connect(self.update_ladder_tier)
+        action_layout.addWidget(self.btn_update_tier)
         for button in (
             self.btn_prev_item,
             self.btn_next_item,
             self.btn_copy_prefix,
             self.btn_open_web,
+            self.btn_update_tier,
         ):
             button.setMinimumHeight(30)
             button.setMinimumWidth(92)
@@ -195,6 +207,7 @@ class CodePrefixDetailViewerWindow(QDialog):
         self.btn_local_movie_detail.setEnabled(bool(local_rows))
         self.btn_movie_detail.setEnabled(bool(rows))
         self.btn_open_web.setEnabled(bool(str(self.detail.get('web_url', '') or '').strip()))
+        self._sync_tier_combo()
         self._refresh_navigation_buttons()
 
     def copy_prefix(self):
@@ -215,6 +228,24 @@ class CodePrefixDetailViewerWindow(QDialog):
 
     def show_next_item(self):
         self._jump_to_neighbor(1)
+
+    def update_ladder_tier(self):
+        selected_tier = str(self.tier_combo.currentData() or '').strip().upper()
+        if not selected_tier:
+            return
+        try:
+            self.backend_client.admit_ladder_entry(LADDER_BOARD_CODE_PREFIX, self.prefix, selected_tier)
+        except Exception as exc:
+            QMessageBox.critical(self, tr('common.save_failed'), str(exc))
+            return
+        self.detail['ladder_tier'] = selected_tier
+        self.summary_grid.set_value('ladder_tier', selected_tier)
+        self._refresh_parent_after_tier_update()
+        QMessageBox.information(
+            self,
+            tr('common.save_success'),
+            tr('detail.update_tier_completed', tier=selected_tier),
+        )
 
     def apply_uncategorized_video_category(self):
         selected_category = self.category_batch_widget.selected_category()
@@ -324,3 +355,16 @@ class CodePrefixDetailViewerWindow(QDialog):
         if hasattr(self.parent(), 'select_prefix_row'):
             self.parent().select_prefix_row(self.prefix)
         self.load_data()
+
+    def _sync_tier_combo(self):
+        current_tier = str((self.detail or {}).get('ladder_tier', '') or '').strip().upper()
+        combo_index = self.tier_combo.findData(current_tier or LADDER_TIERS[0])
+        self.tier_combo.setCurrentIndex(max(combo_index, 0))
+
+    def _refresh_parent_after_tier_update(self):
+        parent = self.parent()
+        if hasattr(parent, 'load_board'):
+            parent.load_board()
+            return
+        if hasattr(parent, 'load_data'):
+            parent.load_data()

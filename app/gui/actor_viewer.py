@@ -61,26 +61,33 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
-        top_layout = QHBoxLayout()
+        filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(10)
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(10)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText(tr('actor.viewer.search_placeholder'))
         self.search_input.textChanged.connect(self.filter_data)
+        self.search_input.setMinimumWidth(180)
 
         self.detail_filter_combo = QComboBox()
         for filter_key in ACTOR_DETAIL_FILTER_OPTIONS:
             self.detail_filter_combo.addItem(tr(f'detail.quick_filter.{filter_key}'), filter_key)
         initial_filter_index = self.detail_filter_combo.findData(self.detail_quick_filter_key)
         self.detail_filter_combo.setCurrentIndex(max(initial_filter_index, 0))
+        self.detail_filter_combo.setMinimumWidth(180)
         self.btn_apply_detail_filter = QPushButton(tr('detail.apply_filter'))
         self.btn_apply_detail_filter.clicked.connect(self.apply_quick_filter_from_controls)
 
         self.sort_field_combo = QComboBox()
         for sort_field in ACTOR_SORT_FIELDS:
             self.sort_field_combo.addItem(tr(f'actor.viewer.sort_field.{sort_field}'), sort_field)
+        self.sort_field_combo.setMinimumWidth(120)
 
         self.sort_order_combo = QComboBox()
         for sort_order in ACTOR_SORT_ORDERS:
             self.sort_order_combo.addItem(tr(f'common.sort_order.{sort_order}'), sort_order)
+        self.sort_order_combo.setMinimumWidth(120)
 
         self.btn_apply_sort = QPushButton(tr('common.ok'))
         self.btn_apply_sort.clicked.connect(self.apply_sort_settings)
@@ -95,19 +102,22 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(self.load_data)
 
-        top_layout.addWidget(QLabel(tr('common.filter_realtime')))
-        top_layout.addWidget(self.search_input)
-        top_layout.addWidget(QLabel(tr('detail.quick_filter_label')))
-        top_layout.addWidget(self.detail_filter_combo)
-        top_layout.addWidget(self.btn_apply_detail_filter)
-        top_layout.addWidget(QLabel(tr('common.sort_field_label')))
-        top_layout.addWidget(self.sort_field_combo)
-        top_layout.addWidget(QLabel(tr('common.sort_order_label')))
-        top_layout.addWidget(self.sort_order_combo)
-        top_layout.addWidget(self.btn_apply_sort)
-        top_layout.addWidget(self.btn_reset_avfan)
-        top_layout.addWidget(self.btn_reset_javtxt)
-        top_layout.addWidget(self.btn_refresh)
+        filter_layout.addWidget(QLabel(tr('common.filter_realtime')))
+        filter_layout.addWidget(self.search_input)
+        filter_layout.addWidget(QLabel(tr('detail.quick_filter_label')))
+        filter_layout.addWidget(self.detail_filter_combo)
+        filter_layout.addWidget(self.btn_apply_detail_filter)
+        filter_layout.addWidget(QLabel(tr('common.sort_field_label')))
+        filter_layout.addWidget(self.sort_field_combo)
+        filter_layout.addWidget(QLabel(tr('common.sort_order_label')))
+        filter_layout.addWidget(self.sort_order_combo)
+        filter_layout.addStretch()
+
+        action_layout.addStretch()
+        action_layout.addWidget(self.btn_apply_sort)
+        action_layout.addWidget(self.btn_reset_avfan)
+        action_layout.addWidget(self.btn_reset_javtxt)
+        action_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
@@ -119,7 +129,8 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
-        layout.addLayout(top_layout)
+        layout.addLayout(filter_layout)
+        layout.addLayout(action_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
         self.set_async_busy_widgets(
@@ -249,6 +260,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.render_rows(self.rows)
 
     def clear_edit_state(self):
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.editing_actor_name = None
         self.editing_row = None
         self.editing_actor_original = None
@@ -273,8 +285,15 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             'name': self._item_text(row, 0),
             'birthday': self._item_text(row, 2),
             'age': self._item_text(row, 3),
+            'raw_birthday': self._row_data_value(actor_name, 'birthday'),
+            'raw_age': self._row_data_value(actor_name, 'raw_age'),
         }
         self.set_actor_row_editable(row, True)
+        self.table.setEditTriggers(
+            QAbstractItemView.SelectedClicked
+            | QAbstractItemView.DoubleClicked
+            | QAbstractItemView.EditKeyPressed
+        )
         button = self.action_buttons.get(actor_name, {}).get('edit')
         if button is not None:
             button.setText(tr('common.ok'))
@@ -293,8 +312,8 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             return
 
         new_name = self._item_text(self.editing_row, 0)
-        birthday = self._item_text(self.editing_row, 2)
-        age = self._item_text(self.editing_row, 3)
+        birthday = self._edited_value_or_original_raw(2, original.get('birthday', ''), original.get('raw_birthday', ''))
+        age = self._edited_value_or_original_raw(3, original.get('age', ''), original.get('raw_age', ''))
         if not new_name:
             self.set_actor_row_editable(self.editing_row, False)
             self.restore_editing_row_values(original)
@@ -373,6 +392,22 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         item = self.table.item(row, column)
         if item is not None:
             item.setText(str(value or ''))
+
+    def _row_data_value(self, actor_name, field_name):
+        target_name = str(actor_name or '').strip()
+        for row_data in self.rows:
+            if str((row_data or {}).get('name', '') or '').strip() == target_name:
+                return str((row_data or {}).get(field_name, '') or '').strip()
+        for row_data in self.all_rows:
+            if str((row_data or {}).get('name', '') or '').strip() == target_name:
+                return str((row_data or {}).get(field_name, '') or '').strip()
+        return ''
+
+    def _edited_value_or_original_raw(self, column, original_display_value, original_raw_value):
+        current_text = self._item_text(self.editing_row, column)
+        if current_text == str(original_display_value or '').strip():
+            return str(original_raw_value or '').strip()
+        return current_text
 
     def find_row_by_actor_name(self, actor_name):
         target = str(actor_name or '').strip()
