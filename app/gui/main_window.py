@@ -4,7 +4,7 @@ import time
 import uuid
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -37,6 +37,7 @@ from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
+from app.gui.gui_task_runner import GuiTaskRunner
 from app.gui.i18n import tr
 from app.gui.ladder_board_viewer import LadderBoardWindow
 from app.gui.path_library_viewer import PathLibraryWindow
@@ -139,6 +140,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.backend_client = BackendClient()
         self.enrichment_thread = None
         self.enrichment_worker = None
+        self.enrichment_task_runner = None
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = None
         self.batch_enrichment_active = False
@@ -156,6 +158,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.enrichment_progress_timer.timeout.connect(self.refresh_enrichment_progress)
         self.login_thread = None
         self.login_worker = None
+        self.login_task_runner = None
         self._init_async_task_host()
 
         self.ensure_backend_running()
@@ -541,16 +544,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_auto_login.setEnabled(False)
         self.status_label.setText(tr('main.login_status'))
 
-        self.login_thread = QThread(self)
         self.login_worker = AutoLoginWorker(self.backend_client)
-        self.login_worker.moveToThread(self.login_thread)
-        self.login_thread.started.connect(self.login_worker.run)
-        self.login_worker.finished.connect(self.on_auto_login_finished)
-        self.login_worker.failed.connect(self.on_auto_login_failed)
-        self.login_worker.finished.connect(self.login_thread.quit)
-        self.login_worker.failed.connect(self.login_thread.quit)
-        self.login_thread.finished.connect(self.cleanup_auto_login_thread)
-        self.login_thread.start()
+        self.login_task_runner = GuiTaskRunner(
+            self,
+            self.login_worker,
+            self.on_auto_login_finished,
+            self.on_auto_login_failed,
+            self.cleanup_auto_login_thread,
+        )
+        self.login_thread = self.login_task_runner.thread
+        self.login_task_runner.start()
 
     def enrich_video_info(self):
         if self.enrichment_thread is not None or self.batch_enrichment_active:
@@ -598,7 +601,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, source_key, mode='single'):
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
-        self.enrichment_thread = QThread(self)
         self.enrichment_worker = EnrichmentWorker(
             self.backend_client,
             limit,
@@ -607,7 +609,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             target_type,
             source_key,
         )
-        self.enrichment_worker.moveToThread(self.enrichment_thread)
         if mode == 'batch':
             self.batch_enrichment_round += 1
             self.status_label.setText(
@@ -615,17 +616,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             )
         else:
             self.status_label.setText(tr('main.single_enrichment_running'))
-        self.update_enrichment_controls()
-        self.reset_progress_widgets(keep_visible=True)
-        self.enrichment_progress_timer.start()
-        self.refresh_enrichment_progress()
-        self.enrichment_thread.started.connect(self.enrichment_worker.run)
-        self.enrichment_worker.finished.connect(self.on_enrichment_finished)
-        self.enrichment_worker.failed.connect(self.on_enrichment_failed)
-        self.enrichment_worker.finished.connect(self.enrichment_thread.quit)
-        self.enrichment_worker.failed.connect(self.enrichment_thread.quit)
-        self.enrichment_thread.finished.connect(self.cleanup_enrichment_thread)
-        self.enrichment_thread.start()
+        self._start_enrichment_task_runner()
 
     def start_combo_enrichment(
         self,
@@ -639,7 +630,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     ):
         self.current_enrichment_kind = 'combo'
         self.enrichment_mode = mode
-        self.enrichment_thread = QThread(self)
         self.enrichment_worker = ComboEnrichmentWorker(
             self.backend_client,
             combo_key,
@@ -649,7 +639,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             combo_task_settings=combo_task_settings,
             batch_mode=batch_mode,
         )
-        self.enrichment_worker.moveToThread(self.enrichment_thread)
         if mode == 'combo_batch':
             self.batch_enrichment_round += 1
             self.status_label.setText(
@@ -657,17 +646,22 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             )
         else:
             self.status_label.setText(tr('main.combo_running'))
+        self._start_enrichment_task_runner()
+
+    def _start_enrichment_task_runner(self):
         self.update_enrichment_controls()
         self.reset_progress_widgets(keep_visible=True)
         self.enrichment_progress_timer.start()
         self.refresh_enrichment_progress()
-        self.enrichment_thread.started.connect(self.enrichment_worker.run)
-        self.enrichment_worker.finished.connect(self.on_enrichment_finished)
-        self.enrichment_worker.failed.connect(self.on_enrichment_failed)
-        self.enrichment_worker.finished.connect(self.enrichment_thread.quit)
-        self.enrichment_worker.failed.connect(self.enrichment_thread.quit)
-        self.enrichment_thread.finished.connect(self.cleanup_enrichment_thread)
-        self.enrichment_thread.start()
+        self.enrichment_task_runner = GuiTaskRunner(
+            self,
+            self.enrichment_worker,
+            self.on_enrichment_finished,
+            self.on_enrichment_failed,
+            self.cleanup_enrichment_thread,
+        )
+        self.enrichment_thread = self.enrichment_task_runner.thread
+        self.enrichment_task_runner.start()
 
     def start_batch_enrichment(self, values):
         self.batch_enrichment_active = True
@@ -1170,20 +1164,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def cleanup_auto_login_thread(self):
         self.btn_auto_login.setEnabled(True)
         self.status_label.setText('')
-        if self.login_worker is not None:
-            self.login_worker.deleteLater()
-        if self.login_thread is not None:
-            self.login_thread.deleteLater()
         self.login_worker = None
         self.login_thread = None
+        self.login_task_runner = None
 
     def cleanup_enrichment_thread(self):
-        if self.enrichment_worker is not None:
-            self.enrichment_worker.deleteLater()
-        if self.enrichment_thread is not None:
-            self.enrichment_thread.deleteLater()
         self.enrichment_worker = None
         self.enrichment_thread = None
+        self.enrichment_task_runner = None
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = None
         self.update_enrichment_controls()

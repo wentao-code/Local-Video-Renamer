@@ -9,6 +9,9 @@ class CodePrefixDetailLibraryTest(unittest.TestCase):
             def get_code_prefix_enrichment_record(self, prefix):
                 return {}
 
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
+                return {'tier': 'A'} if entity_name == 'NEM' else {}
+
             def list_videos(self):
                 return [
                     {'code': 'NEM-001', 'title': 'Local 1', 'release_date': '2024-01-01', 'author': 'Actor A'},
@@ -36,12 +39,16 @@ class CodePrefixDetailLibraryTest(unittest.TestCase):
         detail = CodePrefixDetailLibrary(FakeDatabase()).get_prefix_detail('NEM')
 
         self.assertEqual(detail['video_count'], 2)
+        self.assertEqual(detail['ladder_tier'], 'A')
         self.assertEqual([row['code'] for row in detail['local_videos']], ['NEM-001', 'NEM-002'])
         self.assertEqual([row['code'] for row in detail['movies']], ['NEM-001'])
 
     def test_prefix_detail_keeps_top_14_actors_by_appearance_count(self):
         class FakeDatabase:
             def get_code_prefix_enrichment_record(self, prefix):
+                return {}
+
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
                 return {}
 
             def list_videos(self):

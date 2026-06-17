@@ -35,10 +35,16 @@ from app.core.javtxt_entry_state import (
     is_retryable_search_state,
     normalize_actor_raw_text,
 )
-from app.core.ladder_board import normalize_ladder_board_key, normalize_ladder_entity_type, normalize_ladder_tier
 from app.core.actor_profile_display import normalize_actor_age_for_display
 from app.core.second_source_actor_text import is_unpublished_actor_text, normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
+from app.data.repositories import (
+    ActorRepositoryMixin,
+    CodePrefixRepositoryMixin,
+    LadderRepositoryMixin,
+    MigrationMixin,
+    PathRepositoryMixin,
+)
 from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name
 
 
@@ -47,6 +53,7 @@ from app.services.video_category_service import (
     MANUAL_CATEGORY_TIER_FIRST,
     MANUAL_CATEGORY_TIER_SECOND,
     MANUAL_CATEGORY_TIER_THIRD,
+    VIDEO_CATEGORY_COLLECTION,
     VIDEO_CATEGORY_OPTIONS,
     classify_manual_category_tier,
     count_video_actors,
@@ -65,7 +72,13 @@ def sanitize_actor_text(value):
     return normalize_second_source_actor_text(value)
 
 
-class VideoDatabase:
+class VideoDatabase(
+    MigrationMixin,
+    PathRepositoryMixin,
+    ActorRepositoryMixin,
+    CodePrefixRepositoryMixin,
+    LadderRepositoryMixin,
+):
     def __init__(self, db_path=None):
         self.db_path = Path(db_path) if db_path else DATABASE_FILE
         self._init_db()
@@ -453,18 +466,6 @@ class VideoDatabase:
             self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
             conn.commit()
 
-    def _ensure_column(self, cursor, table_name, column_name, column_type):
-        cursor.execute(f'PRAGMA table_info({table_name})')
-        existing_columns = {row[1] for row in cursor.fetchall()}
-        if column_name not in existing_columns:
-            cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}')
-
-    @staticmethod
-    def _ensure_index(cursor, index_name, table_name, columns_sql):
-        cursor.execute(
-            f'CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} ({columns_sql})'
-        )
-
     def _video_source_columns(self, source_key):
         source_key_text = str(source_key or '').strip()
         normalized_source = normalize_video_enrichment_source(source_key_text) if source_key_text else ''
@@ -637,7 +638,7 @@ class VideoDatabase:
             javtxt_release_date,
             javtxt_status,
         ) in cursor.fetchall():
-            if is_javtxt_eligible_movie(
+            if self._is_sanitized_javtxt_state_eligible(
                 {
                     'code': code,
                     'title': title,
@@ -785,7 +786,7 @@ class VideoDatabase:
             javtxt_release_date,
             javtxt_status,
         ) in cursor.fetchall():
-            if is_javtxt_eligible_movie(
+            if self._is_sanitized_javtxt_state_eligible(
                 {
                     'code': code,
                     'title': title,
@@ -928,6 +929,15 @@ class VideoDatabase:
             self.refresh_code_prefix_javtxt_statuses(prefixes)
         if actor_names:
             self.refresh_actor_javtxt_statuses(actor_names)
+
+    def _is_sanitized_javtxt_state_eligible(self, movie):
+        if not is_javtxt_eligible_movie(movie):
+            return False
+
+        category = normalize_video_category((movie or {}).get('video_category', ''))
+        if not category:
+            category = detect_video_category((movie or {}).get('javtxt_tags', ''), '')
+        return category != VIDEO_CATEGORY_COLLECTION
 
     def _clear_processed_video_javtxt_codes(self, cursor, codes):
         normalized_codes = []
@@ -1771,75 +1781,6 @@ class VideoDatabase:
     def _has_javtxt_author(movie):
         return bool(normalize_second_source_actor_text((movie or {}).get('author', '')))
 
-    def add_path(self, folder_path):
-        """写入一个路径库记录，已存在时保持一条记录。"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR IGNORE INTO path_library (path)
-                VALUES (?)
-            ''', (folder_path,))
-            conn.commit()
-
-        return self.get_path_by_value(folder_path)
-
-    def delete_path(self, path_id):
-        """按 id 删除路径库记录。"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('DELETE FROM path_library WHERE id = ?', (path_id,))
-            conn.commit()
-            return cursor.rowcount
-
-    def list_paths(self):
-        """读取路径库。"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT id, path, created_at, last_total_bytes, last_used_bytes,
-                       last_free_bytes, last_usage_percent, last_volume_type, last_checked_at
-                FROM path_library
-                ORDER BY created_at DESC, id DESC
-            ''')
-
-            return [
-                {
-                    'id': row[0],
-                    'path': row[1] or '',
-                    'created_at': row[2] or '',
-                    'last_total_bytes': row[3] or 0,
-                    'last_used_bytes': row[4] or 0,
-                    'last_free_bytes': row[5] or 0,
-                    'last_usage_percent': row[6] or 0,
-                    'last_volume_type': row[7] or '',
-                    'last_checked_at': row[8] or '',
-                }
-                for row in cursor.fetchall()
-            ]
-
-    def update_path_storage_info(self, path_id, storage_info):
-        """保存路径最后一次成功检测到的容量快照。"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE path_library
-                SET last_total_bytes = ?,
-                    last_used_bytes = ?,
-                    last_free_bytes = ?,
-                    last_usage_percent = ?,
-                    last_volume_type = ?,
-                    last_checked_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            ''', (
-                storage_info.get('total_bytes', 0),
-                storage_info.get('used_bytes', 0),
-                storage_info.get('free_bytes', 0),
-                storage_info.get('usage_percent', 0),
-                storage_info.get('volume_type', ''),
-                path_id,
-            ))
-            conn.commit()
-
     def list_code_prefix_enrichment_records(self):
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -1869,16 +1810,6 @@ class VideoDatabase:
                 }
                 for row in cursor.fetchall()
                 if row[0]
-            }
-
-    def list_hidden_code_prefixes(self):
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT prefix FROM hidden_code_prefixes ORDER BY prefix')
-            return {
-                str(row[0] or '').strip().upper()
-                for row in cursor.fetchall()
-                if str(row[0] or '').strip()
             }
 
     def save_code_prefix_enrichment(self, prefix, status, total_pages=0, total_videos=0, error='', source_key=AVFAN_VIDEO_SOURCE):
@@ -4479,154 +4410,3 @@ class VideoDatabase:
             conn.commit()
 
         return len(new_records)
-
-    def list_hidden_actors(self):
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT name FROM hidden_actors')
-            return {
-                str(row[0] or '').strip()
-                for row in cursor.fetchall()
-                if str(row[0] or '').strip()
-            }
-
-    def list_ladder_entries(self, board_key=None, entity_type=None):
-        normalized_board_key = normalize_ladder_board_key(board_key)
-        normalized_entity_type = normalize_ladder_entity_type(entity_type)
-        clauses = []
-        params = []
-        if normalized_board_key:
-            clauses.append('board_key = ?')
-            params.append(normalized_board_key)
-        if normalized_entity_type:
-            clauses.append('entity_type = ?')
-            params.append(normalized_entity_type)
-
-        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                f'''
-                SELECT board_key, entity_type, entity_name, tier, medal, created_at, updated_at
-                FROM ladder_entries
-                {where_sql}
-                ORDER BY updated_at DESC, entity_name
-                ''',
-                params,
-            )
-            return [
-                {
-                    'board_key': row[0] or '',
-                    'entity_type': row[1] or '',
-                    'entity_name': row[2] or '',
-                    'tier': row[3] or '',
-                    'medal': row[4] or '',
-                    'created_at': row[5] or '',
-                    'updated_at': row[6] or '',
-                }
-                for row in cursor.fetchall()
-            ]
-
-    def save_ladder_entry(self, board_key, entity_type, entity_name, tier):
-        normalized_board_key = normalize_ladder_board_key(board_key)
-        normalized_entity_type = normalize_ladder_entity_type(entity_type)
-        normalized_name = str(entity_name or '').strip()
-        normalized_tier = normalize_ladder_tier(tier)
-        if not normalized_entity_type:
-            raise ValueError('缺少榜单类型')
-        if not normalized_name:
-            raise ValueError('缺少榜单名称')
-        if not normalized_tier:
-            raise ValueError('缺少榜单等级')
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                INSERT OR IGNORE INTO ladder_entries (
-                    board_key, entity_type, entity_name, tier, medal, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ''',
-                (normalized_board_key, normalized_entity_type, normalized_name, normalized_tier),
-            )
-            cursor.execute(
-                '''
-                UPDATE ladder_entries
-                SET tier = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE board_key = ? AND entity_type = ? AND entity_name = ?
-                ''',
-                (normalized_tier, normalized_board_key, normalized_entity_type, normalized_name),
-            )
-            conn.commit()
-            return int(cursor.rowcount or 0)
-
-    def update_ladder_entry_medal(self, board_key, entity_type, entity_name, medal):
-        normalized_board_key = normalize_ladder_board_key(board_key)
-        normalized_entity_type = normalize_ladder_entity_type(entity_type)
-        normalized_name = str(entity_name or '').strip()
-        if not normalized_entity_type:
-            raise ValueError('缺少榜单类型')
-        if not normalized_name:
-            raise ValueError('缺少榜单名称')
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                '''
-                UPDATE ladder_entries
-                SET medal = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE board_key = ? AND entity_type = ? AND entity_name = ?
-                ''',
-                (str(medal or '').strip(), normalized_board_key, normalized_entity_type, normalized_name),
-            )
-            if int(cursor.rowcount or 0) <= 0:
-                raise ValueError('未找到对应入选者')
-            conn.commit()
-            return int(cursor.rowcount or 0)
-
-    def insert_missing_actors(self, actors):
-        hidden_actors = self.list_hidden_actors()
-        normalized_actors = []
-        seen = set()
-        for actor in actors or []:
-            name = str((actor or {}).get('name', '')).strip()
-            if (
-                not name
-                or is_ignored_actor_name(name)
-                or name in seen
-                or name in hidden_actors
-            ):
-                continue
-            seen.add(name)
-            normalized_actors.append(
-                {
-                    'name': name,
-                    'birthday': str((actor or {}).get('birthday', '') or '').strip(),
-                    'age': str((actor or {}).get('age', '') or '').strip(),
-                    'matched': 1 if bool((actor or {}).get('matched')) else 0,
-                }
-            )
-
-        if not normalized_actors:
-            return 0
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.executemany(
-                '''
-                INSERT OR IGNORE INTO actors (name, birthday, age, matched)
-                VALUES (?, ?, ?, ?)
-                ''',
-                [
-                    (
-                        actor['name'],
-                        actor['birthday'],
-                        actor['age'],
-                        actor['matched'],
-                    )
-                    for actor in normalized_actors
-                ],
-            )
-            conn.commit()
-            return int(cursor.rowcount or 0)

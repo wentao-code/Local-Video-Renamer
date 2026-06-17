@@ -1,3 +1,4 @@
+from app.core.ladder_board import LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_CODE_PREFIX
 from app.core.javtxt_video_state import (
     build_javtxt_library_status,
     is_javtxt_eligible_movie,
@@ -34,9 +35,11 @@ class CodePrefixDetailLibrary:
             [standardize_video_code((movie or {}).get('code', '')) for movie in movies]
         )
         movie_summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
+        ladder_entry = self.database.get_ladder_entry(LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_CODE_PREFIX, prefix)
 
         return {
             'prefix': prefix,
+            'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
             'video_count': len(local_videos),
             'eligible_video_count': len(eligible_movies),
             'eligible_enriched_video_count': movie_summary['enriched_count'],

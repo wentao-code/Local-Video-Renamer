@@ -1,5 +1,6 @@
 import re
 
+from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR
 from app.core.javtxt_video_state import (
     build_javtxt_library_status,
     is_javtxt_eligible_movie,
@@ -41,6 +42,7 @@ class ActorDetailLibrary:
         )
         web_summary = summarize_javtxt_movies(web_movies, cache_rows=cache_rows)
         birthday = actor_row.get('birthday', '')
+        ladder_entry = self.database.get_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, actor_name)
 
         return {
             'name': actor_name,
@@ -48,6 +50,7 @@ class ActorDetailLibrary:
             'age': normalize_actor_age_for_display(actor_row.get('age', ''), birthday),
             'matched': bool(actor_row.get('matched')),
             'actor_id': actor_row.get('actor_id', '') or web_record.get('actor_id', ''),
+            'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
             'local_video_count': len(local_videos),
             'local_prefix_distribution': self._build_prefix_distribution(local_videos),
             'local_year_distribution': self._build_year_distribution(local_videos),

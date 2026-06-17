@@ -40,6 +40,9 @@ class ActorDetailVideoCategorySummaryTest(unittest.TestCase):
             def list_actors(self, search_text=''):
                 return [{'name': '演员A', 'birthday': '', 'age': '', 'matched': True, 'actor_id': ''}]
 
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
+                return {}
+
             def list_videos(self):
                 return []
 
@@ -86,6 +89,9 @@ class CodePrefixDetailVideoCategorySummaryTest(unittest.TestCase):
     def test_prefix_detail_returns_video_category_distribution_for_eligible_movies(self):
         class FakeDatabase:
             def get_code_prefix_enrichment_record(self, prefix):
+                return {}
+
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
                 return {}
 
             def list_videos(self):

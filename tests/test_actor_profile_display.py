@@ -47,6 +47,9 @@ class ActorProfileDisplayTest(unittest.TestCase):
             def list_actors(self, search_text=''):
                 return [actor_row] if str(search_text or '').strip() in ('', '演员B') else []
 
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
+                return {'tier': 'S'} if entity_name == '演员B' else {}
+
             def list_videos(self):
                 return []
 
@@ -63,6 +66,7 @@ class ActorProfileDisplayTest(unittest.TestCase):
 
         self.assertEqual(detail['birthday'], '暂无')
         self.assertEqual(detail['age'], '未知')
+        self.assertEqual(detail['ladder_tier'], 'S')
 
 
 if __name__ == '__main__':

@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from threading import Event, Lock
 
 from app.core.backend_protocol import BACKEND_API_REVISION
 from app.core.combo_enrichment import get_combo_label, normalize_combo_key
@@ -19,6 +18,7 @@ from app.services.code_prefix_library import CodePrefixLibrary
 from app.services.code_prefix_video_category_bulk_service import CodePrefixVideoCategoryBulkService
 from app.services.data_center_service import DataCenterService
 from app.services.enrichment_progress_service import EnrichmentProgressService
+from app.services.enrichment_task_state import EnrichmentTaskState
 from app.services.library_admin_service import LibraryAdminService
 from app.services.library_enrichment_service import LibraryEnrichmentService
 from app.services.library_status_sync_service import LibraryStatusSyncService
@@ -55,11 +55,8 @@ class BackendService:
         self.path_library = PathLibrary()
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
+        self.enrichment_task_state = EnrichmentTaskState()
         self.database_loaded = False
-        self.enrichment_cancel_event = Event()
-        self.enrichment_lock = Lock()
-        self.enrichment_running = False
-        self.active_task_kind = ''
 
     def load_database(self):
         self.actor_library_sync_service.sync_from_video_library()
@@ -84,8 +81,8 @@ class BackendService:
             'project_root': str(self.base_dir),
             'database_loaded': self.database_loaded,
             'db_path': str(self.db.db_path),
-            'enrichment_running': self.enrichment_running,
-            'active_task_kind': self.active_task_kind,
+            'enrichment_running': self.enrichment_task_state.is_running,
+            'active_task_kind': self.enrichment_task_state.active_kind,
         }
 
     def scan(self, folder_path):
@@ -112,7 +109,7 @@ class BackendService:
         return {'summary': self.data_center_service.get_summary()}
 
     def get_enrichment_progress(self):
-        if self.active_task_kind == 'combo':
+        if self.enrichment_task_state.active_kind == 'combo':
             return {'progress': self.combo_progress.snapshot()}
         combo_snapshot = self.combo_progress.snapshot()
         if (
@@ -240,7 +237,7 @@ class BackendService:
                 self.db,
                 show_browser=show_browser,
                 cooldown_before_search=cooldown_before_search,
-                should_stop=self.enrichment_cancel_event.is_set,
+                should_stop=self.enrichment_task_state.cancel_event.is_set,
                 progress_tracker=self.enrichment_progress,
                 logger=logger,
                 video_candidate_filter=self.video_filter_service.build_pre_enrichment_filter(),
@@ -280,7 +277,7 @@ class BackendService:
                 self.db,
                 self.combo_progress,
                 logger,
-                should_stop=self.enrichment_cancel_event.is_set,
+                should_stop=self.enrichment_task_state.cancel_event.is_set,
             )
             result = combo_service.run(
                 normalized_combo_key,
@@ -299,20 +296,7 @@ class BackendService:
             self._end_enrichment_task()
 
     def cancel_enrichment(self):
-        if not self.enrichment_running:
-            return {
-                'cancel_requested': False,
-                'message': '当前没有正在运行的补全任务。',
-            }
-        self.enrichment_cancel_event.set()
-        if self.active_task_kind == 'combo':
-            self.combo_progress.set_message('已请求停止组合任务，等待当前条目处理完成。')
-        else:
-            self.enrichment_progress.set_message('已请求停止补全任务，等待当前条目处理完成。')
-        return {
-            'cancel_requested': True,
-            'message': '已请求停止补全任务，当前条目处理完成后会停止。',
-        }
+        return self.enrichment_task_state.request_cancel(self._set_cancel_message)
 
     def auto_login(self):
         return AutoLoginService().run()
@@ -322,24 +306,27 @@ class BackendService:
 
     def sync_library_statuses(self):
         self.ensure_database_loaded()
-        if self.enrichment_running:
+        if self.enrichment_task_state.is_running:
             raise RuntimeError('当前有补全任务正在运行，请稍后再执行状态同步。')
         return self.library_status_sync_service.sync()
 
     def _begin_enrichment_task(self, task_kind):
-        with self.enrichment_lock:
-            if self.enrichment_running:
-                raise RuntimeError('当前已有补全任务正在运行，请稍后再试。')
-            self.enrichment_running = True
-            self.active_task_kind = str(task_kind or '').strip()
-            self.enrichment_cancel_event.clear()
-            self.enrichment_progress.reset()
-            self.combo_progress.reset()
+        self.enrichment_task_state.begin(
+            task_kind,
+            reset_progress=lambda: (
+                self.enrichment_progress.reset(),
+                self.combo_progress.reset(),
+            ),
+        )
 
     def _end_enrichment_task(self):
-        self.enrichment_running = False
-        self.active_task_kind = ''
-        self.enrichment_cancel_event.clear()
+        self.enrichment_task_state.end()
+
+    def _set_cancel_message(self, task_kind):
+        if task_kind == 'combo':
+            self.combo_progress.set_message('已请求停止组合任务，等待当前条目处理完成。')
+            return
+        self.enrichment_progress.set_message('已请求停止补全任务，等待当前条目处理完成。')
 
     @staticmethod
     def _build_single_task_key(target_type, source_key):
