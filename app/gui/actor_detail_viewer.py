@@ -44,17 +44,25 @@ class ActorDetailViewerWindow(QDialog):
 
         basic_group = QGroupBox(tr('actor.detail.basic_group'))
         basic_layout = QVBoxLayout(basic_group)
-        self.basic_grid = DetailSummaryGrid(columns=2)
+        self.basic_grid = DetailSummaryGrid(columns=6)
         self.basic_grid.set_items(
             [
                 ('name', tr('actor.detail.name'), ''),
                 ('actor_id', tr('actor.detail.actor_id'), ''),
+                ('local_total', tr('actor.detail.local_total'), ''),
+                ('web_total', tr('actor.detail.web_total'), ''),
                 ('age', tr('actor.detail.age'), ''),
                 ('birthday', tr('actor.detail.birthday'), ''),
-                ('local_total', tr('actor.detail.local_total'), ''),
             ]
         )
         basic_layout.addWidget(self.basic_grid)
+        self.basic_status_grid = DetailSummaryGrid(columns=1)
+        self.basic_status_grid.set_items(
+            [
+                ('web_status', tr('actor.detail.web_status'), ''),
+            ]
+        )
+        basic_layout.addWidget(self.basic_status_grid)
 
         local_group = QGroupBox(tr('actor.detail.local_group'))
         local_layout = QVBoxLayout(local_group)
@@ -69,23 +77,44 @@ class ActorDetailViewerWindow(QDialog):
 
         web_group = QGroupBox(tr('actor.detail.web_group'))
         web_layout = QVBoxLayout(web_group)
-        self.web_grid = DetailSummaryGrid(columns=2)
+        self.web_grid = DetailSummaryGrid(columns=4)
         self.web_grid.set_items(
             [
-                ('web_status', tr('actor.detail.web_status'), ''),
-                ('web_total', tr('actor.detail.web_total'), ''),
-                ('web_pages', tr('actor.detail.web_pages'), ''),
                 ('eligible_video_count', tr('actor.detail.eligible_video_count'), ''),
                 ('web_earliest', tr('actor.detail.web_earliest'), ''),
                 ('web_latest', tr('actor.detail.web_latest'), ''),
                 ('eligible_enriched_video_count', tr('actor.detail.eligible_enriched_video_count'), ''),
-                ('web_last_enriched', tr('actor.detail.web_last_enriched'), ''),
-                ('web_prefix', tr('actor.detail.web_prefix'), ''),
-                ('web_year', tr('actor.detail.web_year'), ''),
-                ('web_video_categories', tr('actor.detail.web_video_categories'), ''),
             ]
         )
         web_layout.addWidget(self.web_grid)
+        self.web_last_enriched_grid = DetailSummaryGrid(columns=1)
+        self.web_last_enriched_grid.set_items(
+            [
+                ('web_last_enriched', tr('actor.detail.web_last_enriched'), ''),
+            ]
+        )
+        web_layout.addWidget(self.web_last_enriched_grid)
+        self.web_prefix_grid = DetailSummaryGrid(columns=1)
+        self.web_prefix_grid.set_items(
+            [
+                ('web_prefix', tr('actor.detail.web_prefix'), ''),
+            ]
+        )
+        web_layout.addWidget(self.web_prefix_grid)
+        self.web_year_grid = DetailSummaryGrid(columns=1)
+        self.web_year_grid.set_items(
+            [
+                ('web_year', tr('actor.detail.web_year'), ''),
+            ]
+        )
+        web_layout.addWidget(self.web_year_grid)
+        self.web_video_category_grid = DetailSummaryGrid(columns=1)
+        self.web_video_category_grid.set_items(
+            [
+                ('web_video_categories', tr('actor.detail.web_video_categories'), ''),
+            ]
+        )
+        web_layout.addWidget(self.web_video_category_grid)
 
         local_movie_group = QGroupBox(tr('actor.detail.local_movie_group'))
         local_movie_layout = QVBoxLayout(local_movie_group)
@@ -126,22 +155,21 @@ class ActorDetailViewerWindow(QDialog):
 
         self.basic_grid.set_value('name', self.detail.get('name', ''))
         self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or tr('common.empty'))
+        self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
+        self.basic_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
         self.basic_grid.set_value('age', self.detail.get('age', '') or tr('common.empty'))
         self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or tr('common.empty'))
-        self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
+        self.basic_status_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or tr('actor.detail.web_status_default'))
 
         self.local_grid.set_value(
             'local_prefix',
-            format_distribution_summary(self.detail.get('local_prefix_distribution', []), 'prefix', items_per_line=3),
+            format_distribution_summary(self.detail.get('local_prefix_distribution', []), 'prefix', items_per_line=10),
         )
         self.local_grid.set_value(
             'local_year',
-            format_distribution_summary(self.detail.get('local_year_distribution', []), 'year', items_per_line=3),
+            format_distribution_summary(self.detail.get('local_year_distribution', []), 'year', items_per_line=10),
         )
 
-        self.web_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or tr('actor.detail.web_status_default'))
-        self.web_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
-        self.web_grid.set_value('web_pages', str(self.detail.get('web_total_pages', 0)))
         self.web_grid.set_value('eligible_video_count', str(self.detail.get('eligible_video_count', 0)))
         self.web_grid.set_value('web_earliest', self.detail.get('web_earliest_release_date', '') or tr('common.empty'))
         self.web_grid.set_value('web_latest', self.detail.get('web_latest_release_date', '') or tr('common.empty'))
@@ -149,21 +177,24 @@ class ActorDetailViewerWindow(QDialog):
             'eligible_enriched_video_count',
             str(self.detail.get('eligible_enriched_video_count', 0)),
         )
-        self.web_grid.set_value('web_last_enriched', self.detail.get('web_last_enriched_at', '') or tr('common.empty'))
-        self.web_grid.set_value(
+        self.web_last_enriched_grid.set_value(
+            'web_last_enriched',
+            self.detail.get('web_last_enriched_at', '') or tr('common.empty'),
+        )
+        self.web_prefix_grid.set_value(
             'web_prefix',
-            format_distribution_summary(self.detail.get('web_prefix_distribution', []), 'prefix', items_per_line=3),
+            format_distribution_summary(self.detail.get('web_prefix_distribution', []), 'prefix', items_per_line=10),
         )
-        self.web_grid.set_value(
+        self.web_year_grid.set_value(
             'web_year',
-            format_distribution_summary(self.detail.get('web_year_distribution', []), 'year', items_per_line=3),
+            format_distribution_summary(self.detail.get('web_year_distribution', []), 'year', items_per_line=10),
         )
-        self.web_grid.set_value(
+        self.web_video_category_grid.set_value(
             'web_video_categories',
             format_distribution_summary(
                 self.detail.get('web_video_category_distribution', []),
                 'name',
-                items_per_line=2,
+                items_per_line=4,
             ),
         )
 
