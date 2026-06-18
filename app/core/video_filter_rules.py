@@ -2,7 +2,7 @@ import re
 
 from app.core.javtxt_video_state import COLLECTION_TITLE_KEYWORDS
 from app.core.enrichment_status import UNENRICHED_STATUS
-from app.services.video_category_service import COLLECTION_TAG_KEYWORDS
+from app.services.video import COLLECTION_TAG_KEYWORDS
 
 
 FILTER_FIELD_CODE = 'code'

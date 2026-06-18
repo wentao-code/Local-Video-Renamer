@@ -7,8 +7,8 @@ from pathlib import Path
 
 from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
 from app.data.database_handler import VideoDatabase
-from app.services.code_prefix_video_category_bulk_service import CodePrefixVideoCategoryBulkService
-from app.services.video_category_service import VIDEO_CATEGORY_CO_STAR
+from app.services.library import CodePrefixVideoCategoryBulkService
+from app.services.video import VIDEO_CATEGORY_CO_STAR
 
 
 class CodePrefixVideoCategoryBulkServiceTest(unittest.TestCase):

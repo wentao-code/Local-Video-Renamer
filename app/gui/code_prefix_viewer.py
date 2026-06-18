@@ -36,7 +36,7 @@ from app.gui.code_prefix_library_sorting import (
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
-from app.services.detail_quick_filter_service import CODE_PREFIX_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
+from app.services.detail import CODE_PREFIX_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
 
 
 class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):

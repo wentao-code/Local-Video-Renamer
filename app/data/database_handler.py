@@ -45,12 +45,12 @@ from app.data.repositories import (
     MigrationMixin,
     PathRepositoryMixin,
 )
-from app.services.actor_identifier import IGNORED_ACTOR_NAMES, is_ignored_actor_name, split_actor_names
-from app.services.code_prefix_library import extract_code_prefix
+from app.services.identity import IGNORED_ACTOR_NAMES, is_ignored_actor_name, split_actor_names
+from app.services.library import extract_code_prefix
 
 
 JAVTXT_INELIGIBLE_ERROR = 'JAVTXT 页面不满足补全条件'
-from app.services.video_category_service import (
+from app.services.video import (
     MANUAL_CATEGORY_TIER_FIRST,
     MANUAL_CATEGORY_TIER_SECOND,
     MANUAL_CATEGORY_TIER_THIRD,

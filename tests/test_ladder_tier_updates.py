@@ -14,8 +14,7 @@ from app.core.ladder_board import (
     normalize_ladder_tier,
 )
 from app.data.database_handler import VideoDatabase
-from app.services.actor_detail_library import ActorDetailLibrary
-from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
+from app.services.detail import ActorDetailLibrary, CodePrefixDetailLibrary
 
 
 class LadderTierUpdateTest(unittest.TestCase):

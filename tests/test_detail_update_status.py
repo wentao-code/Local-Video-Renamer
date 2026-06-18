@@ -1,9 +1,8 @@
 import unittest
 from datetime import date, timedelta
 
-from app.services.actor_detail_library import ActorDetailLibrary
-from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
-from app.services.video_category_service import (
+from app.services.detail import ActorDetailLibrary, CodePrefixDetailLibrary
+from app.services.video import (
     VIDEO_CATEGORY_COLLECTION,
     VIDEO_CATEGORY_CO_STAR,
     VIDEO_CATEGORY_SINGLE,

@@ -1,13 +1,16 @@
 import unittest
 
-from app.services.actor_detail_library import ActorDetailLibrary
-from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
-from app.services.video_category_service import (
+from app.services.detail import (
+    ActorDetailLibrary,
+    CodePrefixDetailLibrary,
+    UNCATEGORIZED_VIDEO_LABEL,
+    build_video_category_distribution,
+)
+from app.services.video import (
     VIDEO_CATEGORY_COLLECTION,
     VIDEO_CATEGORY_CO_STAR,
     VIDEO_CATEGORY_SINGLE,
 )
-from app.services.video_category_summary import UNCATEGORIZED_VIDEO_LABEL, build_video_category_distribution
 
 
 class VideoCategorySummaryTest(unittest.TestCase):

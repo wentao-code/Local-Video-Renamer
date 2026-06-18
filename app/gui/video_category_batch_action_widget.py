@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from app.gui.i18n import tr
-from app.services.video_category_service import (
+from app.services.video import (
     VIDEO_CATEGORY_COLLECTION,
     VIDEO_CATEGORY_CO_STAR,
     VIDEO_CATEGORY_SINGLE,

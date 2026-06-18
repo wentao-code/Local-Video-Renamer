@@ -11,7 +11,7 @@ from app.core.ladder_board import (
     LADDER_ENTITY_CODE_PREFIX,
 )
 from app.data.database_handler import VideoDatabase
-from app.services.video_ladder_tag_service import VideoLadderTagService
+from app.services.ladder import VideoLadderTagService
 
 
 class VideoLadderTagServiceTest(unittest.TestCase):

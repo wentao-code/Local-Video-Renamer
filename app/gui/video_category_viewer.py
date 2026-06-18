@@ -23,7 +23,7 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_events import video_filter_event_bus
-from app.services.video_category_service import (
+from app.services.video import (
     MANUAL_CATEGORY_TIER_FIRST,
     MANUAL_CATEGORY_TIER_SECOND,
     MANUAL_CATEGORY_TIER_THIRD,

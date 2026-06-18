@@ -2,8 +2,7 @@ import unittest
 from contextlib import contextmanager
 
 from app.core.enrichment_status import ENRICHED_STATUS
-from app.services.actor_javtxt_enrichment import ActorJavtxtEnrichmentService
-from app.services.code_prefix_javtxt_enrichment import CodePrefixJavtxtEnrichmentService
+from app.services.enrichment import ActorJavtxtEnrichmentService, CodePrefixJavtxtEnrichmentService
 
 
 class _ResolverWithSession:

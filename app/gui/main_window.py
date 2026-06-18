@@ -44,7 +44,7 @@ from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.gui.video_filter_dialog import VideoFilterDialog
-from app.services.network_guard_service import NetworkGuardService
+from app.services.system import NetworkGuardService
 
 
 class EnrichmentWorker(QObject):

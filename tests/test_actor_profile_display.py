@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from app.data.database_handler import VideoDatabase
-from app.services.actor_detail_library import ActorDetailLibrary
+from app.services.detail import ActorDetailLibrary
 
 
 class ActorProfileDisplayTest(unittest.TestCase):

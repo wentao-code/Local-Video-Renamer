@@ -12,7 +12,7 @@ from app.core.ladder_board import (
     split_ladder_medals,
 )
 from app.data.database_handler import VideoDatabase
-from app.services.ladder_board_service import LadderBoardService
+from app.services.ladder import LadderBoardService
 
 
 class LadderBoardServiceTest(unittest.TestCase):

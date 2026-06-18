@@ -12,9 +12,9 @@ from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javt
 from app.core.video_code import compact_video_code, has_supported_video_code, standardize_video_code
 from app.data.database_handler import VideoDatabase
 from app.scraper.javtxt_scraper import extract_page_code, is_not_found_detail_page
-from app.services.code_prefix_entry_parser import extract_code
-from app.services.movie_author_resolver import MovieAuthorResolver
-from app.services.video_category_service import (
+from app.services.parsers import extract_code
+from app.services.resolvers import MovieAuthorResolver
+from app.services.video import (
     MANUAL_CATEGORY_TIER_FIRST,
     MANUAL_CATEGORY_TIER_SECOND,
     MANUAL_CATEGORY_TIER_THIRD,

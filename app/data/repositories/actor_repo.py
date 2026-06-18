@@ -1,4 +1,4 @@
-from app.services.actor_identifier import is_ignored_actor_name
+from app.services.identity import is_ignored_actor_name
 
 
 class ActorRepositoryMixin:

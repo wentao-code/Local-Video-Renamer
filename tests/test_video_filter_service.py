@@ -9,7 +9,7 @@ from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import UNENRICHED_STATUS
 from app.core.video_filter_rules import DEFAULT_VIDEO_FILTER_SETTINGS, matches_filter_keywords
 from app.data.database_handler import VideoDatabase
-from app.services.video_filter_service import VideoFilterService
+from app.services.video import VideoFilterService
 
 
 class VideoFilterServiceTest(unittest.TestCase):

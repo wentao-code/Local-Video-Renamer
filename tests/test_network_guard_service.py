@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from app.services.network_guard_service import NetworkGuardService
+from app.services.system import NetworkGuardService
 
 
 class _FakeConnection:
@@ -27,7 +27,7 @@ class NetworkGuardServiceTest(unittest.TestCase):
                 return _FakeConnection()
             raise OSError('offline')
 
-        with patch('app.services.network_guard_service.socket.create_connection', side_effect=fake_create_connection):
+        with patch('app.services.system.network_guard_service.socket.create_connection', side_effect=fake_create_connection):
             result = service.probe()
 
         self.assertTrue(result['is_online'])
@@ -41,7 +41,7 @@ class NetworkGuardServiceTest(unittest.TestCase):
         ]
         service = NetworkGuardService(targets=targets, timeout_seconds=0.1, required_failures=2)
 
-        with patch('app.services.network_guard_service.socket.create_connection', side_effect=OSError('offline')):
+        with patch('app.services.system.network_guard_service.socket.create_connection', side_effect=OSError('offline')):
             result = service.probe()
 
         self.assertFalse(result['is_online'])

@@ -1,6 +1,6 @@
 import unittest
 
-from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
+from app.services.detail import CodePrefixDetailLibrary
 
 
 class CodePrefixDetailLibraryTest(unittest.TestCase):

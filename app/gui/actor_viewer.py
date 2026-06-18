@@ -33,8 +33,8 @@ from app.gui.actor_library_sorting import (
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
-from app.services.actor_profile_update_service import ActorProfileUpdateService
-from app.services.detail_quick_filter_service import ACTOR_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
+from app.services.detail import ACTOR_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
+from app.services.library import ActorProfileUpdateService
 
 
 class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):

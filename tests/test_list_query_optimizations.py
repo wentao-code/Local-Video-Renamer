@@ -3,10 +3,9 @@ from datetime import date, timedelta
 
 from app.backend.service import BackendService
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS
-from app.services.actor_detail_library import ActorDetailLibrary
-from app.services.code_prefix_library import CodePrefixLibrary
-from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
-from app.services.video_category_service import VIDEO_CATEGORY_SINGLE
+from app.services.detail import ActorDetailLibrary, CodePrefixDetailLibrary
+from app.services.library import CodePrefixLibrary
+from app.services.video import VIDEO_CATEGORY_SINGLE
 
 
 class BackendVideoListOptimizationTest(unittest.TestCase):

@@ -7,7 +7,7 @@ import sqlite3
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.data.database_handler import VideoDatabase
-from app.services.library_status_sync_service import LibraryStatusSyncService
+from app.services.library import LibraryStatusSyncService
 
 
 class LibraryStatusSyncServiceTest(unittest.TestCase):

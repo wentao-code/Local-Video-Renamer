@@ -8,8 +8,7 @@ from pathlib import Path
 
 from app.core.actor_profile_display import UNKNOWN_ACTOR_AGE_TEXT
 from app.data.database_handler import VideoDatabase
-from app.services.actor_profile_update_service import ActorProfileUpdateService
-from app.services.library_admin_service import LibraryAdminService
+from app.services.library import ActorProfileUpdateService, LibraryAdminService
 
 
 class ActorProfileUpdateServiceTest(unittest.TestCase):

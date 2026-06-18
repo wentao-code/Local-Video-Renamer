@@ -1,5 +1,5 @@
-from app.services.actor_identifier import split_actor_names
-from app.services.code_prefix_library import extract_code_prefix
+from app.services.identity import split_actor_names
+from app.services.library import extract_code_prefix
 
 
 def build_video_ladder_tags(code='', author='', actor_medal_map=None, prefix_medal_map=None):

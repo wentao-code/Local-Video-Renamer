@@ -8,8 +8,8 @@ from pathlib import Path
 from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS
 from app.data.database_handler import VideoDatabase
-from app.services.data_center_service import DataCenterService
-from app.services.video_filter_service import VideoFilterService
+from app.services.library import DataCenterService
+from app.services.video import VideoFilterService
 
 
 class DataCenterSummarySplitCountsTest(unittest.TestCase):

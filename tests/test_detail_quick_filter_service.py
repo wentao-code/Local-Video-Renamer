@@ -1,7 +1,7 @@
 import unittest
 
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
-from app.services.detail_quick_filter_service import (
+from app.services.detail import (
     DETAIL_FILTER_ACTIVE,
     DETAIL_FILTER_AVFAN_FAILED,
     DETAIL_FILTER_JAVTXT_PENDING,

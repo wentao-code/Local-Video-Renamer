@@ -12,29 +12,31 @@ from app.core.ladder_board import (
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.data.database_handler import VideoDatabase
 from app.scraper.avfan_scraper import reset_avfan_browser_profile
-from app.services.actor_detail_library import ActorDetailLibrary
-from app.services.actor_library_sync_service import ActorLibrarySyncService
-from app.services.auto_login_service import AutoLoginService
-from app.services.combo_enrichment_service import ComboEnrichmentService
-from app.services.combo_progress_service import ComboProgressService
-from app.services.combo_task_logger import ComboTaskLogger
-from app.services.code_prefix_detail_library import CodePrefixDetailLibrary
-from app.services.code_prefix_library import CodePrefixLibrary
-from app.services.code_prefix_video_category_bulk_service import CodePrefixVideoCategoryBulkService
-from app.services.data_center_service import DataCenterService
-from app.services.enrichment_progress_service import EnrichmentProgressService
-from app.services.enrichment_task_state import EnrichmentTaskState
-from app.services.library_admin_service import LibraryAdminService
-from app.services.library_enrichment_service import LibraryEnrichmentService
-from app.services.library_status_sync_service import LibraryStatusSyncService
-from app.services.actor_identifier import split_actor_names
-from app.services.detail_update_status_service import resolve_update_status
-from app.services.ladder_board_service import LadderBoardService
-from app.services.local_video_library_service import LocalVideoLibraryService
-from app.services.path_library import PathLibrary, summarize_paths
-from app.services.task_trace_logger import TaskTraceLogger
-from app.services.video_filter_service import VideoFilterService
-from app.services.video_ladder_tag_service import VideoLadderTagService
+from app.services.auth import AutoLoginService
+from app.services.detail import ActorDetailLibrary, CodePrefixDetailLibrary, resolve_update_status
+from app.services.enrichment import (
+    ComboEnrichmentService,
+    ComboProgressService,
+    ComboTaskLogger,
+    EnrichmentProgressService,
+    EnrichmentTaskState,
+    LibraryEnrichmentService,
+    TaskTraceLogger,
+)
+from app.services.identity import split_actor_names
+from app.services.ladder import LadderBoardService, VideoLadderTagService
+from app.services.library import (
+    ActorLibrarySyncService,
+    CodePrefixLibrary,
+    CodePrefixVideoCategoryBulkService,
+    DataCenterService,
+    LibraryAdminService,
+    LibraryStatusSyncService,
+    PathLibrary,
+    summarize_paths,
+)
+from app.services.local_video import LocalVideoLibraryService
+from app.services.video import VideoFilterService
 
 
 class BackendService:

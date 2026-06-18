@@ -4,13 +4,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.data.database_handler import VideoDatabase
-from app.services.local_video_import_service import LocalVideoImportService
-from app.services.local_video_media_info import (
+from app.services.local_video import (
     LocalVideoMediaInfo,
+    LocalVideoImportService,
+    LocalVideoScanService,
     format_duration_seconds,
     format_size_gb,
 )
-from app.services.local_video_scan_service import LocalVideoScanService
 
 
 class LocalVideoMediaImportTest(unittest.TestCase):
@@ -29,7 +29,7 @@ class LocalVideoMediaImportTest(unittest.TestCase):
             import_service = LocalVideoImportService(db)
 
             with patch(
-                'app.services.local_video_scan_service.read_local_video_media_info',
+                'app.services.local_video.local_video_scan_service.read_local_video_media_info',
                 return_value=LocalVideoMediaInfo(duration='1:02:03', size_gb='0.456'),
             ):
                 scan_result = scan_service.scan_folder(folder)
