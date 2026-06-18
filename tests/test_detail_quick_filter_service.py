@@ -13,6 +13,7 @@ from app.services.detail_quick_filter_service import (
     DETAIL_FILTER_PENDING,
     DETAIL_FILTER_SUSPECT,
     DETAIL_FILTER_TIER_A,
+    DETAIL_FILTER_TIER_D,
     DETAIL_FILTER_TIER_S,
     filter_library_rows,
 )
@@ -56,7 +57,16 @@ class DetailQuickFilterServiceTest(unittest.TestCase):
                 'ladder_tier': 'C',
                 'birthday': '1990-01-01',
                 'raw_age': '35',
-            }
+            },
+            {
+                'name': 'Tier D Actor',
+                'avfan_enrichment_status': ENRICHED_STATUS,
+                'javtxt_enrichment_status': ENRICHED_STATUS,
+                'update_status': 'inactive',
+                'ladder_tier': 'D',
+                'birthday': '1988-06-09',
+                'raw_age': '37',
+            },
         ]
 
     def test_pending_filter_matches_any_unenriched_source(self):
@@ -72,7 +82,7 @@ class DetailQuickFilterServiceTest(unittest.TestCase):
     def test_enriched_filter_requires_both_sources_completed(self):
         rows = filter_library_rows(self.rows, DETAIL_FILTER_ENRICHED)
 
-        self.assertEqual([row['name'] for row in rows], ['Full Actor'])
+        self.assertEqual([row['name'] for row in rows], ['Full Actor', 'Tier D Actor'])
 
     def test_update_status_filters_match_current_status(self):
         self.assertEqual(
@@ -85,7 +95,7 @@ class DetailQuickFilterServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             [row['name'] for row in filter_library_rows(self.rows, DETAIL_FILTER_INACTIVE)],
-            ['Done Actor', 'Full Actor'],
+            ['Done Actor', 'Full Actor', 'Tier D Actor'],
         )
 
     def test_source_specific_filters_match_individual_source_status(self):
@@ -106,6 +116,10 @@ class DetailQuickFilterServiceTest(unittest.TestCase):
         self.assertEqual(
             [row['name'] for row in filter_library_rows(self.rows, DETAIL_FILTER_TIER_A)],
             ['Failed Actor'],
+        )
+        self.assertEqual(
+            [row['name'] for row in filter_library_rows(self.rows, DETAIL_FILTER_TIER_D)],
+            ['Tier D Actor'],
         )
 
     def test_actor_profile_completeness_filters_match_missing_fields(self):
