@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 
 import '../database/database_status.dart';
+import 'actor_library_screen.dart';
+import 'code_prefix_library_screen.dart';
 import 'video_library_screen.dart';
 
 class AppShell extends StatefulWidget {
@@ -29,7 +32,7 @@ class _AppShellState extends State<AppShell> {
           IconButton(
             tooltip: '数据库状态',
             onPressed: () => _showDatabaseSheet(context),
-            icon: const Icon(Icons.storage_rounded),
+            icon: const Icon(LucideIcons.database, size: 20),
           ),
         ],
       ),
@@ -40,15 +43,13 @@ class _AppShellState extends State<AppShell> {
             databaseStatus: widget.databaseStatus,
             onRefreshDatabaseStatus: widget.onRefreshDatabaseStatus,
           ),
-          _ComingSoonScreen(
-            icon: Icons.people_alt_rounded,
-            title: '演员库',
-            description: '下一步会接入演员网格、作品数量统计和演员档案页。',
+          ActorLibraryScreen(
+            databaseStatus: widget.databaseStatus,
+            onRefreshDatabaseStatus: widget.onRefreshDatabaseStatus,
           ),
-          _ComingSoonScreen(
-            icon: Icons.grid_view_rounded,
-            title: '系列库',
-            description: '下一步会接入前缀分组、系列统计和系列详情页。',
+          CodePrefixLibraryScreen(
+            databaseStatus: widget.databaseStatus,
+            onRefreshDatabaseStatus: widget.onRefreshDatabaseStatus,
           ),
         ],
       ),
@@ -61,19 +62,19 @@ class _AppShellState extends State<AppShell> {
         },
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.video_library_outlined),
-            selectedIcon: Icon(Icons.video_library_rounded),
+            icon: Icon(LucideIcons.video, size: 20),
+            selectedIcon: Icon(LucideIcons.videotape, size: 20),
             label: '视频库',
           ),
           NavigationDestination(
-            icon: Icon(Icons.people_alt_outlined),
-            selectedIcon: Icon(Icons.people_alt_rounded),
+            icon: Icon(LucideIcons.user2, size: 20),
+            selectedIcon: Icon(LucideIcons.users, size: 20),
             label: '演员库',
           ),
           NavigationDestination(
-            icon: Icon(Icons.grid_view_outlined),
-            selectedIcon: Icon(Icons.grid_view_rounded),
-            label: '系列库',
+            icon: Icon(LucideIcons.grid, size: 20),
+            selectedIcon: Icon(LucideIcons.layoutGrid, size: 20),
+            label: '番号库',
           ),
         ],
       ),
@@ -85,7 +86,7 @@ class _AppShellState extends State<AppShell> {
       case 1:
         return '演员库';
       case 2:
-        return '系列库';
+        return '番号库';
       case 0:
       default:
         return '视频库';
@@ -123,89 +124,13 @@ class _AppShellState extends State<AppShell> {
                   Navigator.of(context).pop();
                   widget.onRefreshDatabaseStatus();
                 },
-                icon: const Icon(Icons.refresh),
+                icon: const Icon(LucideIcons.refreshCw, size: 18),
                 label: const Text('重新检查数据库'),
               ),
             ],
           ),
         );
       },
-    );
-  }
-}
-
-class _ComingSoonScreen extends StatelessWidget {
-  const _ComingSoonScreen({
-    required this.icon,
-    required this.title,
-    required this.description,
-  });
-
-  final IconData icon;
-  final String title;
-  final String description;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(28),
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF2A211F), Color(0xFF734738)],
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(icon, color: Colors.white, size: 34),
-              const SizedBox(height: 20),
-              Text(
-                title,
-                style: theme.textTheme.headlineMedium?.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                description,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  color: Colors.white.withValues(alpha: 0.9),
-                  height: 1.45,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '当前状态',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Text('视频库已经开始直接读取 SQLite。'),
-                const SizedBox(height: 8),
-                const Text('这个页面的查询与详情链路将在下一轮接上。'),
-              ],
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

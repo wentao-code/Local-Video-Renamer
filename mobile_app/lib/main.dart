@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 
 import 'src/database/database_status.dart';
 import 'src/database/database_storage.dart';
@@ -14,20 +16,81 @@ class LocalVideoApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF8E3B2E);
+    final baseTheme = ThemeData(
+      useMaterial3: true,
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: seed,
+        brightness: Brightness.light,
+      ),
+      scaffoldBackgroundColor: const Color(0xFFF5EFE7),
+      cardTheme: CardThemeData(
+        color: Colors.white,
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(28),
+        ),
+      ),
+    );
+    final textTheme = GoogleFonts.notoSansScTextTheme(baseTheme.textTheme);
     return MaterialApp(
       title: '私人视频库图鉴',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: seed,
-          brightness: Brightness.light,
-        ),
-        scaffoldBackgroundColor: const Color(0xFFF5EFE7),
-        cardTheme: const CardThemeData(
-          color: Colors.white,
+      theme: baseTheme.copyWith(
+        textTheme: textTheme,
+        primaryTextTheme: GoogleFonts.notoSansScTextTheme(baseTheme.primaryTextTheme),
+        appBarTheme: baseTheme.appBarTheme.copyWith(
+          backgroundColor: const Color(0xFFF5EFE7),
+          surfaceTintColor: Colors.transparent,
           elevation: 0,
-          margin: EdgeInsets.zero,
+          scrolledUnderElevation: 0,
+          titleTextStyle: GoogleFonts.notoSansSc(
+            fontSize: 22,
+            fontWeight: FontWeight.w800,
+            color: const Color(0xFF251D1A),
+          ),
+          iconTheme: const IconThemeData(
+            color: Color(0xFF432B24),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(20),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(20),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(20),
+            borderSide: const BorderSide(
+              color: Color(0xFF8E3B2E),
+              width: 1.4,
+            ),
+          ),
+        ),
+        navigationBarTheme: baseTheme.navigationBarTheme.copyWith(
+          backgroundColor: const Color(0xFFFBF7F2),
+          indicatorColor: const Color(0xFFEAD8CC),
+          labelTextStyle: WidgetStateProperty.resolveWith(
+            (states) => GoogleFonts.notoSansSc(
+              fontSize: 12,
+              fontWeight: states.contains(WidgetState.selected) ? FontWeight.w700 : FontWeight.w600,
+              color: states.contains(WidgetState.selected)
+                  ? const Color(0xFF432B24)
+                  : const Color(0xFF7D6A62),
+            ),
+          ),
+        ),
+        chipTheme: baseTheme.chipTheme.copyWith(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(999),
+          ),
+          side: BorderSide.none,
         ),
       ),
       home: const DatabaseBootstrapScreen(),
@@ -265,13 +328,13 @@ class DatabaseMissingScreen extends StatelessWidget {
                       children: [
                         FilledButton.icon(
                           onPressed: onRetry,
-                          icon: const Icon(Icons.refresh),
+                          icon: const Icon(LucideIcons.refreshCw, size: 18),
                           label: const Text('重新检查'),
                         ),
                         const SizedBox(width: 12),
                         OutlinedButton.icon(
                           onPressed: onRetry,
-                          icon: const Icon(Icons.folder_open),
+                          icon: const Icon(LucideIcons.folderOpen, size: 18),
                           label: const Text('我已经复制好了'),
                         ),
                       ],
@@ -319,9 +382,10 @@ class _MetaLine extends StatelessWidget {
         const SizedBox(height: 4),
         SelectableText(
           value,
-          style: theme.textTheme.bodyMedium?.copyWith(
-            fontFamily: 'monospace',
-            height: 1.45,
+          style: GoogleFonts.jetBrainsMono(
+            textStyle: theme.textTheme.bodyMedium?.copyWith(
+              height: 1.45,
+            ),
           ),
         ),
       ],

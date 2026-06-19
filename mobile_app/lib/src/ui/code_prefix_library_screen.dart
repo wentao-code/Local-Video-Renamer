@@ -3,15 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:lucide_icons/lucide_icons.dart';
 
+import '../database/code_prefix_library_repository.dart';
+import '../database/code_prefix_list_item.dart';
+import '../database/code_prefix_search_result.dart';
 import '../database/database_status.dart';
-import '../database/video_library_repository.dart';
-import '../database/video_search_result.dart';
 import 'detail_routes.dart';
 import 'widgets/animated_reveal.dart';
-import 'widgets/video_summary_card.dart';
 
-class VideoLibraryScreen extends StatefulWidget {
-  const VideoLibraryScreen({
+class CodePrefixLibraryScreen extends StatefulWidget {
+  const CodePrefixLibraryScreen({
     super.key,
     required this.databaseStatus,
     required this.onRefreshDatabaseStatus,
@@ -21,23 +21,23 @@ class VideoLibraryScreen extends StatefulWidget {
   final VoidCallback onRefreshDatabaseStatus;
 
   @override
-  State<VideoLibraryScreen> createState() => _VideoLibraryScreenState();
+  State<CodePrefixLibraryScreen> createState() => _CodePrefixLibraryScreenState();
 }
 
-class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
-  late final VideoLibraryRepository _repository;
+class _CodePrefixLibraryScreenState extends State<CodePrefixLibraryScreen> {
+  late final CodePrefixLibraryRepository _repository;
   final TextEditingController _searchController = TextEditingController();
   Timer? _searchDebounce;
-  late Future<VideoSearchResult> _resultFuture;
+  late Future<CodePrefixSearchResult> _resultFuture;
   String _query = '';
 
   @override
   void initState() {
     super.initState();
-    _repository = VideoLibraryRepository(
+    _repository = CodePrefixLibraryRepository(
       databasePath: widget.databaseStatus.databasePath,
     );
-    _resultFuture = _repository.searchVideos();
+    _resultFuture = _repository.searchPrefixes();
   }
 
   @override
@@ -51,7 +51,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
   Future<void> _reload() async {
     widget.onRefreshDatabaseStatus();
     setState(() {
-      _resultFuture = _repository.searchVideos(query: _query);
+      _resultFuture = _repository.searchPrefixes(query: _query);
     });
     await _resultFuture;
   }
@@ -68,7 +68,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
       }
       setState(() {
         _query = normalized;
-        _resultFuture = _repository.searchVideos(query: _query);
+        _resultFuture = _repository.searchPrefixes(query: _query);
       });
     });
   }
@@ -81,7 +81,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
     }
     setState(() {
       _query = '';
-      _resultFuture = _repository.searchVideos();
+      _resultFuture = _repository.searchPrefixes();
     });
   }
 
@@ -101,14 +101,14 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                 gradient: const LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [Color(0xFF2A211F), Color(0xFF734738)],
+                  colors: [Color(0xFF2B233A), Color(0xFF705C8D)],
                 ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '本地视频库',
+                    '本地番号库',
                     style: theme.textTheme.headlineMedium?.copyWith(
                       color: Colors.white,
                       fontWeight: FontWeight.w700,
@@ -116,7 +116,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    '直接读取 video_database.db 的 processed_videos。先完成编号搜索与只读卡片列表。',
+                    '直接读取 code_prefix_movies 与 code_prefix_enrichments。支持前缀、番号、标题、演员和分类搜索。',
                     style: theme.textTheme.bodyLarge?.copyWith(
                       color: Colors.white.withValues(alpha: 0.9),
                       height: 1.45,
@@ -128,7 +128,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                     onChanged: _handleSearchChanged,
                     textInputAction: TextInputAction.search,
                     decoration: InputDecoration(
-                      hintText: '搜索番号、标题、演员、存储位置',
+                      hintText: '搜索前缀、番号、标题、演员、分类',
                       prefixIcon: const Icon(LucideIcons.search, size: 18),
                       suffixIcon: _query.isEmpty
                           ? null
@@ -152,20 +152,20 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                   runSpacing: 10,
                   spacing: 10,
                   children: [
-                    _InfoChip(
+                    _PrefixInfoChip(
                       icon: LucideIcons.database,
-                      label: '数据库已连接',
-                      value: widget.databaseStatus.sizeLabel,
+                      label: '数据库状态',
+                      value: '已连接',
                     ),
-                    _InfoChip(
+                    _PrefixInfoChip(
                       icon: LucideIcons.search,
                       label: '当前搜索',
-                      value: _query.isEmpty ? '全部视频' : _query,
+                      value: _query.isEmpty ? '全部前缀' : _query,
                     ),
-                    _InfoChip(
-                      icon: LucideIcons.folderOpen,
-                      label: '存放位置',
-                      value: widget.databaseStatus.directoryLabel,
+                    _PrefixInfoChip(
+                      icon: LucideIcons.layoutGrid,
+                      label: '数据来源',
+                      value: 'code_prefix_*',
                     ),
                   ],
                 ),
@@ -189,7 +189,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                 ),
               );
             },
-            child: FutureBuilder<VideoSearchResult>(
+            child: FutureBuilder<CodePrefixSearchResult>(
               key: ValueKey<String>(_query),
               future: _resultFuture,
               builder: (context, snapshot) {
@@ -200,11 +200,11 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                   );
                 }
                 if (snapshot.hasError) {
-                  return _VideoLoadError(
+                  return _PrefixLoadError(
                     errorText: snapshot.error.toString(),
                     onRetry: () {
                       setState(() {
-                        _resultFuture = _repository.searchVideos(query: _query);
+                        _resultFuture = _repository.searchPrefixes(query: _query);
                       });
                     },
                   );
@@ -212,7 +212,7 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
 
                 final result = snapshot.data!;
                 return Column(
-                  key: ValueKey<String>('video-result-$_query-${result.totalCount}'),
+                  key: ValueKey<String>('prefix-result-$_query-${result.totalCount}'),
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Padding(
@@ -221,9 +221,9 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                         duration: const Duration(milliseconds: 220),
                         child: Text(
                           result.hasMore
-                              ? '共 ${result.totalCount} 条，当前展示前 ${result.items.length} 条'
-                              : '共 ${result.totalCount} 条',
-                          key: ValueKey<String>('video-count-${result.totalCount}-${result.items.length}'),
+                              ? '共 ${result.totalCount} 个前缀，当前展示前 ${result.items.length} 个'
+                              : '共 ${result.totalCount} 个前缀',
+                          key: ValueKey<String>('prefix-count-${result.totalCount}-${result.items.length}'),
                           style: theme.textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.w700,
                           ),
@@ -231,18 +231,18 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
                       ),
                     ),
                     if (result.items.isEmpty)
-                      const _EmptyVideoState()
+                      const _EmptyPrefixState()
                     else
                       for (var index = 0; index < result.items.length; index++) ...[
                         AnimatedReveal(
                           delay: Duration(milliseconds: 30 * (index.clamp(0, 8))),
-                          child: VideoSummaryCard(
+                          child: _PrefixCard(
                             item: result.items[index],
                             onTap: () {
-                              openVideoDetail(
+                              openCodePrefixDetail(
                                 context,
                                 databasePath: widget.databaseStatus.databasePath,
-                                code: result.items[index].code,
+                                prefix: result.items[index].prefix,
                               );
                             },
                           ),
@@ -260,8 +260,8 @@ class _VideoLibraryScreenState extends State<VideoLibraryScreen> {
   }
 }
 
-class _InfoChip extends StatelessWidget {
-  const _InfoChip({
+class _PrefixInfoChip extends StatelessWidget {
+  const _PrefixInfoChip({
     required this.icon,
     required this.label,
     required this.value,
@@ -276,13 +276,13 @@ class _InfoChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4ECE5),
+        color: const Color(0xFFEEE6F6),
         borderRadius: BorderRadius.circular(18),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 18, color: const Color(0xFF8E3B2E)),
+          Icon(icon, size: 18, color: const Color(0xFF5A3B84)),
           const SizedBox(width: 8),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -291,7 +291,7 @@ class _InfoChip extends StatelessWidget {
               Text(
                 label,
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: const Color(0xFF8E3B2E),
+                      color: const Color(0xFF5A3B84),
                       fontWeight: FontWeight.w700,
                     ),
               ),
@@ -305,8 +305,178 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
-class _EmptyVideoState extends StatelessWidget {
-  const _EmptyVideoState();
+class _PrefixCard extends StatelessWidget {
+  const _PrefixCard({
+    required this.item,
+    required this.onTap,
+  });
+
+  final CodePrefixListItem item;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final metaValues = <String>[
+      '作品 ${item.movieCount}',
+      if (item.indexedVideoCount > 0) '索引 ${item.indexedVideoCount}',
+      if (item.latestReleaseDate.isNotEmpty) '最近 ${item.latestReleaseDate}',
+    ];
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          item.prefix.isEmpty ? '未命名前缀' : item.prefix,
+                          style: theme.textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                        if (item.enrichmentStatus.isNotEmpty)
+                          _PrefixBadge(
+                            text: item.enrichmentStatus,
+                            foreground: const Color(0xFF5A3B84),
+                            background: const Color(0xFFE6DAF2),
+                          ),
+                        if (item.sampleCategory.isNotEmpty)
+                          _PrefixBadge(
+                            text: item.sampleCategory,
+                            foreground: const Color(0xFF2D5F50),
+                            background: const Color(0xFFDCEFE9),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 12, top: 2),
+                    child: Icon(
+                      LucideIcons.chevronRight,
+                      color: Color(0xFF9F8AB8),
+                      size: 18,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                metaValues.join('  ·  '),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF6A625C),
+                ),
+              ),
+              if (item.sampleCode.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                _PrefixDetailLine(
+                  label: '代表番号',
+                  value: item.sampleCode,
+                  highlight: true,
+                ),
+              ],
+              if (item.sampleTitle.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _PrefixDetailLine(label: '代表标题', value: item.sampleTitle),
+              ],
+              if (item.sampleAuthor.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _PrefixDetailLine(label: '代表演员', value: item.sampleAuthor),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PrefixDetailLine extends StatelessWidget {
+  const _PrefixDetailLine({
+    required this.label,
+    required this.value,
+    this.highlight = false,
+  });
+
+  final String label;
+  final String value;
+  final bool highlight;
+
+  @override
+  Widget build(BuildContext context) {
+    final valueColor = highlight ? const Color(0xFF5A3B84) : const Color(0xFF3E3935);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 66,
+          child: Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: const Color(0xFF8A7E75),
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: valueColor,
+                  fontWeight: highlight ? FontWeight.w700 : FontWeight.w500,
+                ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PrefixBadge extends StatelessWidget {
+  const _PrefixBadge({
+    required this.text,
+    required this.foreground,
+    required this.background,
+  });
+
+  final String text;
+  final Color foreground;
+  final Color background;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: foreground,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+}
+
+class _EmptyPrefixState extends StatelessWidget {
+  const _EmptyPrefixState();
 
   @override
   Widget build(BuildContext context) {
@@ -318,14 +488,14 @@ class _EmptyVideoState extends StatelessWidget {
             const Icon(LucideIcons.searchX, size: 30),
             const SizedBox(height: 12),
             Text(
-              '没有找到匹配的视频',
+              '没有找到匹配的番号前缀',
               style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
             ),
             const SizedBox(height: 8),
             const Text(
-              '可以尝试输入完整番号、部分标题、演员名或存储位置关键字。',
+              '可以尝试输入前缀、完整番号、作品标题、演员名或分类关键字。',
               textAlign: TextAlign.center,
             ),
           ],
@@ -335,8 +505,8 @@ class _EmptyVideoState extends StatelessWidget {
   }
 }
 
-class _VideoLoadError extends StatelessWidget {
-  const _VideoLoadError({
+class _PrefixLoadError extends StatelessWidget {
+  const _PrefixLoadError({
     required this.errorText,
     required this.onRetry,
   });
@@ -353,7 +523,7 @@ class _VideoLoadError extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '视频库读取失败',
+              '番号库读取失败',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
