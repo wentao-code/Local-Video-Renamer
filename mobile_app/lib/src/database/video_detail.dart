@@ -1,3 +1,8 @@
+enum VideoDetailSource {
+  local,
+  indexed,
+}
+
 class VideoDetail {
   const VideoDetail({
     required this.code,
@@ -15,6 +20,7 @@ class VideoDetail {
     required this.tags,
     required this.prefix,
     required this.actors,
+    required this.detailSource,
   });
 
   final String code;
@@ -32,6 +38,7 @@ class VideoDetail {
   final String tags;
   final String prefix;
   final List<String> actors;
+  final VideoDetailSource detailSource;
 
   List<String> get tagList => tags
       .split(RegExp(r'[\s,|，]+'))
@@ -42,6 +49,7 @@ class VideoDetail {
   factory VideoDetail.fromMap(
     Map<String, Object?> row, {
     required List<String> actors,
+    required VideoDetailSource detailSource,
   }) {
     String readString(String key) => (row[key] as String? ?? '').trim();
 
@@ -61,6 +69,7 @@ class VideoDetail {
       tags: readString('javtxt_tags'),
       prefix: readString('code_prefix'),
       actors: actors,
+      detailSource: detailSource,
     );
   }
 }

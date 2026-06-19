@@ -69,11 +69,16 @@ class CodePrefixLibraryRepository {
             ''
           )
         ) AS enrichment_status,
-        MAX(COALESCE(e.javtxt_total_videos, e.avfan_total_videos, 0)) AS indexed_video_count
+        MAX(COALESCE(e.javtxt_total_videos, e.avfan_total_videos, 0)) AS indexed_video_count,
+        COALESCE(NULLIF(le.tier, ''), '') AS ladder_tier
       FROM code_prefix_movies c
       LEFT JOIN code_prefix_enrichments e ON e.prefix = c.prefix
+      LEFT JOIN ladder_entries le
+        ON le.board_key = 'code_prefix'
+        AND le.entity_type = 'code_prefix'
+        AND UPPER(le.entity_name) = UPPER(c.prefix)
       WHERE $whereClause
-      GROUP BY c.prefix
+      GROUP BY c.prefix, le.tier
       ORDER BY movie_count DESC, c.prefix COLLATE NOCASE ASC
       LIMIT ?
       OFFSET ?

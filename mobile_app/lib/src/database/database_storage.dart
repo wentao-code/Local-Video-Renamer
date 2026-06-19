@@ -9,6 +9,7 @@ class DatabaseStorage {
   const DatabaseStorage();
 
   static const String databaseFileName = 'video_database.db';
+  static const String filterSettingsFileName = 'video_filter_settings.json';
 
   Future<DatabaseStatus> inspectStatus() async {
     final location = await _resolvePreferredDirectory();
@@ -31,6 +32,11 @@ class DatabaseStorage {
       sizeBytes: stat.size,
       modifiedAt: stat.modified,
     );
+  }
+
+  Future<String> resolveFilterSettingsPath() async {
+    final location = await _resolvePreferredDirectory();
+    return p.join(location.directory.path, filterSettingsFileName);
   }
 
   Future<_DatabaseDirectory> _resolvePreferredDirectory() async {

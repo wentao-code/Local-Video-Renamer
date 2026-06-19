@@ -8,6 +8,7 @@ class ActorDetail {
     required this.isMatched,
     required this.movieCount,
     required this.latestReleaseDate,
+    required this.ladderTier,
     required this.videos,
   });
 
@@ -17,6 +18,7 @@ class ActorDetail {
   final bool isMatched;
   final int movieCount;
   final String latestReleaseDate;
+  final String ladderTier;
   final List<VideoListItem> videos;
 
   factory ActorDetail.fromMap(
@@ -33,6 +35,7 @@ class ActorDetail {
       isMatched: readInt('matched') > 0,
       movieCount: readInt('movie_count'),
       latestReleaseDate: readString('latest_release_date'),
+      ladderTier: readString('ladder_tier'),
       videos: videos,
     );
   }

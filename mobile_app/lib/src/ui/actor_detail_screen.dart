@@ -122,6 +122,8 @@ class _ActorDetailScreenState extends State<ActorDetailScreen> {
                         runSpacing: 10,
                         children: [
                           _ActorFactChip(label: '作品数', value: '${detail.movieCount}'),
+                          if (detail.ladderTier.isNotEmpty)
+                            _ActorFactChip(label: 'Tier', value: detail.ladderTier),
                           if (detail.age.isNotEmpty) _ActorFactChip(label: '年龄', value: detail.age),
                           if (detail.birthday.isNotEmpty) _ActorFactChip(label: '生日', value: detail.birthday),
                           _ActorFactChip(label: '匹配状态', value: detail.isMatched ? '已匹配' : '未匹配'),

@@ -137,23 +137,20 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                                     ),
                                   ),
                                 ],
-                                if (detail.enrichmentStatus.isNotEmpty) ...[
-                                  const SizedBox(height: 12),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white.withValues(alpha: 0.14),
-                                      borderRadius: BorderRadius.circular(999),
+                                const SizedBox(height: 12),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    _HeaderBadge(
+                                      label: detail.detailSource == VideoDetailSource.local
+                                          ? 'Local'
+                                          : 'Indexed',
                                     ),
-                                    child: Text(
-                                      detail.enrichmentStatus,
-                                      style: theme.textTheme.labelLarge?.copyWith(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                                    if (detail.enrichmentStatus.isNotEmpty)
+                                      _HeaderBadge(label: detail.enrichmentStatus),
+                                  ],
+                                ),
                               ],
                             ),
                           ),
@@ -383,6 +380,32 @@ class _MetaLine extends StatelessWidget {
           ),
           Expanded(child: Text(value)),
         ],
+      ),
+    );
+  }
+}
+
+class _HeaderBadge extends StatelessWidget {
+  const _HeaderBadge({
+    required this.label,
+  });
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
       ),
     );
   }

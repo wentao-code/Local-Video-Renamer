@@ -279,6 +279,12 @@ class _ActorCard extends StatelessWidget {
                               ? const Color(0xFFDCEFE9)
                               : const Color(0xFFF4E2D8),
                         ),
+                        if (item.ladderTier.isNotEmpty)
+                          _ActorBadge(
+                            text: item.ladderTier,
+                            foreground: const Color(0xFF5A382F),
+                            background: const Color(0xFFF2E7D9),
+                          ),
                         if (item.sampleCategory.isNotEmpty)
                           _ActorBadge(
                             text: item.sampleCategory,

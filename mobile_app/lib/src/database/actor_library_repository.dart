@@ -63,11 +63,16 @@ class ActorLibraryRepository {
         MAX(COALESCE(NULLIF(am.javtxt_release_date, ''), NULLIF(am.release_date, ''), '')) AS latest_release_date,
         MAX(COALESCE(NULLIF(am.video_category, ''), '')) AS sample_category,
         MAX(COALESCE(NULLIF(am.code, ''), '')) AS sample_code,
-        MAX(COALESCE(NULLIF(am.title, ''), '')) AS sample_title
+        MAX(COALESCE(NULLIF(am.title, ''), '')) AS sample_title,
+        COALESCE(NULLIF(le.tier, ''), '') AS ladder_tier
       FROM actors a
       LEFT JOIN actor_movies am ON am.actor_name = a.name
+      LEFT JOIN ladder_entries le
+        ON le.board_key = 'actor'
+        AND le.entity_type = 'actor'
+        AND le.entity_name = a.name
       WHERE $whereClause
-      GROUP BY a.name, a.birthday, a.age, a.matched
+      GROUP BY a.name, a.birthday, a.age, a.matched, le.tier
       ORDER BY movie_count DESC, a.name COLLATE NOCASE ASC
       LIMIT ?
       OFFSET ?

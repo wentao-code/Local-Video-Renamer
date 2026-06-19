@@ -2,7 +2,9 @@ import 'package:sqflite/sqflite.dart';
 
 import 'actor_detail.dart';
 import 'code_prefix_detail.dart';
+import 'indexed_video_detail_row.dart';
 import 'video_detail.dart';
+import 'video_filter_service.dart';
 import 'video_list_item.dart';
 
 class LibraryDetailRepository {
@@ -12,6 +14,7 @@ class LibraryDetailRepository {
 
   final String databasePath;
   Future<Database>? _databaseFuture;
+  Future<VideoFilterService>? _filterServiceFuture;
 
   static const int defaultRelatedLimit = 40;
 
@@ -48,12 +51,93 @@ class LibraryDetailRepository {
       <Object?>[code],
     );
 
-    if (rows.isEmpty) {
+    if (rows.isNotEmpty) {
+      final actors = await _fetchVideoActors(database, code, fallbackAuthor: (rows.first['author'] as String? ?? '').trim());
+      return VideoDetail.fromMap(
+        rows.first,
+        actors: actors,
+        detailSource: VideoDetailSource.local,
+      );
+    }
+
+    final actorRows = await database.rawQuery(
+      '''
+      SELECT
+        actor_name,
+        code,
+        title,
+        author,
+        release_date,
+        javtxt_release_date,
+        javtxt_tags,
+        video_category
+      FROM actor_movies
+      WHERE code = ?
+      ORDER BY actor_name COLLATE NOCASE ASC
+      ''',
+      <Object?>[code],
+    );
+    final prefixRows = await database.rawQuery(
+      '''
+      SELECT
+        prefix,
+        code,
+        title,
+        author,
+        release_date,
+        javtxt_release_date,
+        javtxt_tags,
+        video_category
+      FROM code_prefix_movies
+      WHERE code = ?
+      ORDER BY prefix COLLATE NOCASE ASC
+      ''',
+      <Object?>[code],
+    );
+    if (actorRows.isEmpty && prefixRows.isEmpty) {
       return null;
     }
 
-    final actors = await _fetchVideoActors(database, code, fallbackAuthor: (rows.first['author'] as String? ?? '').trim());
-    return VideoDetail.fromMap(rows.first, actors: actors);
+    final prefix = prefixRows.isNotEmpty ? (prefixRows.first['prefix'] as String? ?? '').trim() : '';
+    Map<String, Object?>? enrichmentRow;
+    if (prefix.isNotEmpty) {
+      final enrichmentRows = await database.rawQuery(
+        '''
+        SELECT
+          enrichment_status,
+          avfan_enrichment_status,
+          javtxt_enrichment_status
+        FROM code_prefix_enrichments
+        WHERE prefix = ?
+        LIMIT 1
+        ''',
+        <Object?>[prefix],
+      );
+      if (enrichmentRows.isNotEmpty) {
+        enrichmentRow = enrichmentRows.first;
+      }
+    }
+
+    final indexedRow = buildIndexedVideoDetailRow(
+      code,
+      actorMovieRow: actorRows.isEmpty ? null : actorRows.first,
+      codePrefixMovieRow: prefixRows.isEmpty ? null : prefixRows.first,
+      codePrefixEnrichmentRow: enrichmentRow,
+    );
+    if (indexedRow == null) {
+      return null;
+    }
+
+    final actors = await _fetchVideoActors(
+      database,
+      code,
+      fallbackAuthor: (indexedRow['author'] as String? ?? '').trim(),
+    );
+    return VideoDetail.fromMap(
+      indexedRow,
+      actors: actors,
+      detailSource: VideoDetailSource.indexed,
+    );
   }
 
   Future<ActorDetail?> fetchActorDetail(
@@ -61,6 +145,7 @@ class LibraryDetailRepository {
     int relatedLimit = defaultRelatedLimit,
   }) async {
     final database = await _openDatabase();
+    final filterService = await _loadFilterService();
     final rows = await database.rawQuery(
       '''
       SELECT
@@ -69,11 +154,16 @@ class LibraryDetailRepository {
         COALESCE(NULLIF(a.age, ''), '') AS age,
         COALESCE(a.matched, 0) AS matched,
         COUNT(am.code) AS movie_count,
-        MAX(COALESCE(NULLIF(am.javtxt_release_date, ''), NULLIF(am.release_date, ''), '')) AS latest_release_date
+        MAX(COALESCE(NULLIF(am.javtxt_release_date, ''), NULLIF(am.release_date, ''), '')) AS latest_release_date,
+        COALESCE(NULLIF(le.tier, ''), '') AS ladder_tier
       FROM actors a
       LEFT JOIN actor_movies am ON am.actor_name = a.name
+      LEFT JOIN ladder_entries le
+        ON le.board_key = 'actor'
+        AND le.entity_type = 'actor'
+        AND le.entity_name = a.name
       WHERE a.name = ?
-      GROUP BY a.name, a.birthday, a.age, a.matched
+      GROUP BY a.name, a.birthday, a.age, a.matched, le.tier
       LIMIT 1
       ''',
       <Object?>[actorName],
@@ -102,7 +192,12 @@ class LibraryDetailRepository {
         COALESCE(NULLIF(pv.maker, ''), '') AS maker,
         COALESCE(NULLIF(pv.publisher, ''), '') AS publisher,
         COALESCE(NULLIF(pv.video_category, ''), NULLIF(am.video_category, ''), '') AS video_category,
-        COALESCE(NULLIF(pv.enrichment_status, ''), NULLIF(pv.javtxt_enrichment_status, ''), '') AS enrichment_status
+        COALESCE(NULLIF(pv.enrichment_status, ''), NULLIF(pv.javtxt_enrichment_status, ''), '') AS enrichment_status,
+        COALESCE(NULLIF(pv.javtxt_title, ''), NULLIF(am.title, ''), '') AS javtxt_title,
+        COALESCE(NULLIF(pv.javtxt_tags, ''), NULLIF(am.javtxt_tags, ''), '') AS javtxt_tags,
+        COALESCE(NULLIF(pv.javtxt_enrichment_status, ''), '') AS javtxt_enrichment_status,
+        COALESCE(NULLIF(pv.javtxt_movie_id, ''), '') AS javtxt_movie_id,
+        COALESCE(NULLIF(pv.javtxt_url, ''), '') AS javtxt_url
       FROM actor_movies am
       LEFT JOIN processed_videos pv ON pv.code = am.code
       WHERE am.actor_name = ?
@@ -130,10 +225,13 @@ class LibraryDetailRepository {
       ''',
       <Object?>[actorName, relatedLimit],
     );
+    final filteredVideos = filterService.filterRows(
+      videos.cast<Map<String, Object?>>(),
+    );
 
     return ActorDetail.fromMap(
       rows.first,
-      videos: videos.map(VideoListItem.fromMap).toList(growable: false),
+      videos: filteredVideos.map(VideoListItem.fromMap).toList(growable: false),
     );
   }
 
@@ -142,6 +240,7 @@ class LibraryDetailRepository {
     int relatedLimit = defaultRelatedLimit,
   }) async {
     final database = await _openDatabase();
+    final filterService = await _loadFilterService();
     final rows = await database.rawQuery(
       '''
       SELECT
@@ -157,11 +256,16 @@ class LibraryDetailRepository {
             ''
           )
         ) AS enrichment_status,
-        MAX(COALESCE(e.javtxt_total_videos, e.avfan_total_videos, 0)) AS indexed_video_count
+        MAX(COALESCE(e.javtxt_total_videos, e.avfan_total_videos, 0)) AS indexed_video_count,
+        COALESCE(NULLIF(le.tier, ''), '') AS ladder_tier
       FROM code_prefix_movies c
       LEFT JOIN code_prefix_enrichments e ON e.prefix = c.prefix
+      LEFT JOIN ladder_entries le
+        ON le.board_key = 'code_prefix'
+        AND le.entity_type = 'code_prefix'
+        AND UPPER(le.entity_name) = UPPER(c.prefix)
       WHERE c.prefix = ?
-      GROUP BY c.prefix
+      GROUP BY c.prefix, le.tier
       LIMIT 1
       ''',
       <Object?>[prefix],
@@ -190,7 +294,12 @@ class LibraryDetailRepository {
         COALESCE(NULLIF(pv.maker, ''), '') AS maker,
         COALESCE(NULLIF(pv.publisher, ''), '') AS publisher,
         COALESCE(NULLIF(pv.video_category, ''), NULLIF(c.video_category, ''), '') AS video_category,
-        COALESCE(NULLIF(pv.enrichment_status, ''), NULLIF(pv.javtxt_enrichment_status, ''), '') AS enrichment_status
+        COALESCE(NULLIF(pv.enrichment_status, ''), NULLIF(pv.javtxt_enrichment_status, ''), '') AS enrichment_status,
+        COALESCE(NULLIF(pv.javtxt_title, ''), NULLIF(c.title, ''), '') AS javtxt_title,
+        COALESCE(NULLIF(pv.javtxt_tags, ''), NULLIF(c.javtxt_tags, ''), '') AS javtxt_tags,
+        COALESCE(NULLIF(pv.javtxt_enrichment_status, ''), '') AS javtxt_enrichment_status,
+        COALESCE(NULLIF(pv.javtxt_movie_id, ''), '') AS javtxt_movie_id,
+        COALESCE(NULLIF(pv.javtxt_url, ''), '') AS javtxt_url
       FROM code_prefix_movies c
       LEFT JOIN processed_videos pv ON pv.code = c.code
       WHERE c.prefix = ?
@@ -218,10 +327,13 @@ class LibraryDetailRepository {
       ''',
       <Object?>[prefix, relatedLimit],
     );
+    final filteredVideos = filterService.filterRows(
+      videos.cast<Map<String, Object?>>(),
+    );
 
     return CodePrefixDetail.fromMap(
       rows.first,
-      videos: videos.map(VideoListItem.fromMap).toList(growable: false),
+      videos: filteredVideos.map(VideoListItem.fromMap).toList(growable: false),
     );
   }
 
@@ -240,6 +352,12 @@ class LibraryDetailRepository {
       databasePath,
       readOnly: true,
       singleInstance: false,
+    );
+  }
+
+  Future<VideoFilterService> _loadFilterService() {
+    return _filterServiceFuture ??= VideoFilterService.loadForDatabasePath(
+      databasePath,
     );
   }
 

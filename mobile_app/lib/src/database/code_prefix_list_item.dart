@@ -9,6 +9,7 @@ class CodePrefixListItem {
     required this.sampleAuthor,
     required this.enrichmentStatus,
     required this.indexedVideoCount,
+    required this.ladderTier,
   });
 
   final String prefix;
@@ -20,6 +21,7 @@ class CodePrefixListItem {
   final String sampleAuthor;
   final String enrichmentStatus;
   final int indexedVideoCount;
+  final String ladderTier;
 
   factory CodePrefixListItem.fromMap(Map<String, Object?> row) {
     String readString(String key) => (row[key] as String? ?? '').trim();
@@ -35,6 +37,7 @@ class CodePrefixListItem {
       sampleAuthor: readString('sample_author'),
       enrichmentStatus: readString('enrichment_status'),
       indexedVideoCount: readInt('indexed_video_count'),
+      ladderTier: readString('ladder_tier'),
     );
   }
 }

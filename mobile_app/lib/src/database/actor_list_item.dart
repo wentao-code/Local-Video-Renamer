@@ -9,6 +9,7 @@ class ActorListItem {
     required this.sampleCategory,
     required this.sampleCode,
     required this.sampleTitle,
+    required this.ladderTier,
   });
 
   final String name;
@@ -20,6 +21,7 @@ class ActorListItem {
   final String sampleCategory;
   final String sampleCode;
   final String sampleTitle;
+  final String ladderTier;
 
   factory ActorListItem.fromMap(Map<String, Object?> row) {
     String readString(String key) => (row[key] as String? ?? '').trim();
@@ -35,6 +37,7 @@ class ActorListItem {
       sampleCategory: readString('sample_category'),
       sampleCode: readString('sample_code'),
       sampleTitle: readString('sample_title'),
+      ladderTier: readString('ladder_tier'),
     );
   }
 }

@@ -105,6 +105,8 @@ class _CodePrefixDetailScreenState extends State<CodePrefixDetailScreen> {
                         runSpacing: 10,
                         children: [
                           _PrefixFactChip(label: '作品数', value: '${detail.movieCount}'),
+                          if (detail.ladderTier.isNotEmpty)
+                            _PrefixFactChip(label: 'Tier', value: detail.ladderTier),
                           if (detail.indexedVideoCount > 0)
                             _PrefixFactChip(label: '索引数', value: '${detail.indexedVideoCount}'),
                           if (detail.sampleCategory.isNotEmpty)

@@ -1,5 +1,6 @@
 import 'package:sqflite/sqflite.dart';
 
+import 'video_filter_service.dart';
 import 'video_list_item.dart';
 import 'video_search_result.dart';
 
@@ -19,6 +20,7 @@ class VideoLibraryRepository {
     int offset = 0,
   }) async {
     final database = await _openDatabase();
+    final filterService = await VideoFilterService.loadForDatabasePath(databasePath);
     final normalizedQuery = query.trim();
     final hasQuery = normalizedQuery.isNotEmpty;
     final pattern = '%$normalizedQuery%';
@@ -37,12 +39,6 @@ class VideoLibraryRepository {
         ? <Object?>[pattern, pattern, pattern, pattern, pattern]
         : <Object?>[];
 
-    final countRows = await database.rawQuery(
-      'SELECT COUNT(*) AS total_count FROM processed_videos WHERE $whereClause',
-      whereArgs,
-    );
-    final totalCount = (countRows.first['total_count'] as int?) ?? 0;
-
     final itemRows = await database.rawQuery(
       '''
       SELECT
@@ -56,7 +52,12 @@ class VideoLibraryRepository {
         COALESCE(NULLIF(maker, ''), '') AS maker,
         COALESCE(NULLIF(publisher, ''), '') AS publisher,
         COALESCE(NULLIF(video_category, ''), '') AS video_category,
-        COALESCE(NULLIF(enrichment_status, ''), '') AS enrichment_status
+        COALESCE(NULLIF(enrichment_status, ''), '') AS enrichment_status,
+        COALESCE(NULLIF(javtxt_title, ''), '') AS javtxt_title,
+        COALESCE(NULLIF(javtxt_tags, ''), '') AS javtxt_tags,
+        COALESCE(NULLIF(javtxt_enrichment_status, ''), '') AS javtxt_enrichment_status,
+        COALESCE(NULLIF(javtxt_movie_id, ''), '') AS javtxt_movie_id,
+        COALESCE(NULLIF(javtxt_url, ''), '') AS javtxt_url
       FROM processed_videos
       WHERE $whereClause
       ORDER BY
@@ -66,18 +67,18 @@ class VideoLibraryRepository {
         END,
         COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '') DESC,
         code DESC
-      LIMIT ?
-      OFFSET ?
       ''',
-      <Object?>[
-        ...whereArgs,
-        limit,
-        offset,
-      ],
+      whereArgs,
     );
 
+    final filteredRows = filterService.filterRows(
+      itemRows.cast<Map<String, Object?>>(),
+    );
+    final totalCount = filteredRows.length;
+    final pageRows = filteredRows.skip(offset).take(limit).toList(growable: false);
+
     return VideoSearchResult(
-      items: itemRows.map(VideoListItem.fromMap).toList(growable: false),
+      items: pageRows.map(VideoListItem.fromMap).toList(growable: false),
       totalCount: totalCount,
       limit: limit,
       offset: offset,

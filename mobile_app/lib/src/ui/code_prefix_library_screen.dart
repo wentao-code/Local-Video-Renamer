@@ -277,6 +277,12 @@ class _PrefixCard extends StatelessWidget {
                             foreground: const Color(0xFF5A3B84),
                             background: const Color(0xFFE6DAF2),
                           ),
+                        if (item.ladderTier.isNotEmpty)
+                          _PrefixBadge(
+                            text: item.ladderTier,
+                            foreground: const Color(0xFF5A382F),
+                            background: const Color(0xFFF2E7D9),
+                          ),
                         if (item.sampleCategory.isNotEmpty)
                           _PrefixBadge(
                             text: item.sampleCategory,
