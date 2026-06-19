@@ -37,6 +37,7 @@ from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
 from app.services.detail import CODE_PREFIX_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
+from app.services.library.library_admin_service import normalize_code_prefix
 
 
 class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
@@ -46,6 +47,8 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.all_rows = []
         self.rows = []
         self.detail_quick_filter_key = DETAIL_FILTER_ALL
+        self.adding_prefix = False
+        self.adding_row = None
         self.editing_prefix = None
         self.editing_row = None
         self.action_buttons = {}
@@ -93,6 +96,9 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_apply_sort.clicked.connect(self.apply_sort_settings)
         self.apply_sort_settings_to_controls()
 
+        self.btn_add = QPushButton(tr('code_prefix.viewer.add'))
+        self.btn_add.clicked.connect(self.handle_add_button)
+
         self.btn_reset_avfan = QPushButton(tr('code_prefix.viewer.reset_avfan'))
         self.btn_reset_avfan.clicked.connect(lambda: self.reset_selected_rows(AVFAN_VIDEO_SOURCE))
 
@@ -115,6 +121,7 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
         action_layout.addStretch()
         action_layout.addWidget(self.btn_apply_sort)
+        action_layout.addWidget(self.btn_add)
         action_layout.addWidget(self.btn_reset_avfan)
         action_layout.addWidget(self.btn_reset_javtxt)
         action_layout.addWidget(self.btn_refresh)
@@ -141,6 +148,7 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 self.sort_field_combo,
                 self.sort_order_combo,
                 self.btn_apply_sort,
+                self.btn_add,
                 self.btn_reset_avfan,
                 self.btn_reset_javtxt,
                 self.btn_refresh,
@@ -181,6 +189,8 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             prefix = row_data.get('prefix', '')
             self.table.setCellWidget(row_idx, 6, self.build_detail_button(prefix))
             self.table.setCellWidget(row_idx, 7, self.build_action_buttons(prefix))
+        if self.adding_prefix:
+            self.insert_add_row()
 
     def build_detail_button(self, prefix):
         button = QPushButton(tr('code_prefix.viewer.detail'))
@@ -214,11 +224,93 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         viewer = CodePrefixDetailViewerWindow(self.backend_client, prefix, self)
         viewer.exec_()
 
+    def handle_add_button(self):
+        if self.adding_prefix:
+            self.confirm_prefix_add()
+            return
+        if self.editing_prefix is not None:
+            QMessageBox.information(self, tr('code_prefix.viewer.editing_title'), tr('code_prefix.viewer.editing_message'))
+            return
+        self.start_prefix_add()
+
+    def start_prefix_add(self):
+        self.adding_prefix = True
+        self.btn_add.setText(tr('code_prefix.viewer.add_confirm'))
+        self.insert_add_row()
+
+    def insert_add_row(self):
+        self.table.insertRow(0)
+        for column in range(6):
+            item = QTableWidgetItem('')
+            item.setTextAlignment(Qt.AlignCenter)
+            if column == 0:
+                item.setFlags(item.flags() | Qt.ItemIsEditable)
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(0, column, item)
+        self.table.setCellWidget(0, 6, QWidget())
+        self.table.setCellWidget(0, 7, QWidget())
+        self.adding_row = 0
+        self.table.setEditTriggers(
+            QAbstractItemView.SelectedClicked
+            | QAbstractItemView.DoubleClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        item = self.table.item(0, 0)
+        if item is not None:
+            self.table.setCurrentCell(0, 0)
+            self.table.editItem(item)
+
+    def confirm_prefix_add(self):
+        if self.adding_row is None:
+            return
+        item = self.table.item(self.adding_row, 0)
+        if item is None:
+            return
+
+        raw_prefix = item.text().strip()
+        if not raw_prefix:
+            QMessageBox.warning(self, tr('common.prompt'), tr('code_prefix.viewer.prefix_required'))
+            return
+
+        try:
+            normalized_prefix = normalize_code_prefix(raw_prefix)
+        except Exception as exc:
+            QMessageBox.warning(self, tr('common.prompt'), str(exc))
+            return
+
+        if self.prefix_exists(normalized_prefix):
+            QMessageBox.warning(
+                self,
+                tr('common.prompt'),
+                tr('code_prefix.viewer.add_duplicate', prefix=normalized_prefix),
+            )
+            return
+
+        item.setText(normalized_prefix)
+        search_text = self.search_input.text().strip()
+        self.start_async_task(
+            lambda: self.reload_rows_after(
+                lambda: self.backend_client.add_code_prefix(normalized_prefix),
+                lambda: self.backend_client.list_code_prefixes(search_text),
+                prefix=normalized_prefix,
+            ),
+            self._on_add_finished,
+            tr('code_prefix.viewer.add_failed'),
+        )
+
     def filter_data(self, text):
         self.clear_edit_state()
         self.schedule_deferred_reload()
 
     def apply_sort_settings(self):
+        if self.adding_prefix:
+            QMessageBox.information(
+                self,
+                tr('code_prefix.viewer.adding_title'),
+                tr('code_prefix.viewer.adding_message'),
+            )
+            return
         if self.editing_prefix is not None:
             QMessageBox.information(
                 self,
@@ -264,10 +356,19 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.render_rows(self.rows)
 
     def clear_edit_state(self):
+        if self.editing_prefix is not None:
+            self.reset_row_button_text(self.editing_prefix)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.adding_prefix = False
+        self.adding_row = None
+        self.btn_add.setText(tr('code_prefix.viewer.add'))
         self.editing_prefix = None
         self.editing_row = None
 
     def handle_edit_button(self, prefix):
+        if self.adding_prefix:
+            QMessageBox.information(self, tr('code_prefix.viewer.adding_title'), tr('code_prefix.viewer.adding_message'))
+            return
         if self.editing_prefix is None:
             self.start_prefix_edit(prefix)
             return
@@ -335,6 +436,14 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             ),
         )
 
+    def _on_add_finished(self, result):
+        self._on_load_data_finished(result)
+        QMessageBox.information(
+            self,
+            tr('code_prefix.viewer.add_completed'),
+            tr('code_prefix.viewer.add_completed_message', prefix=result.get('prefix', '')),
+        )
+
     def reset_row_button_text(self, prefix):
         button = self.action_buttons.get(prefix, {}).get('edit')
         if button is not None:
@@ -358,6 +467,9 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         return -1
 
     def delete_prefix(self, prefix):
+        if self.adding_prefix:
+            QMessageBox.information(self, tr('code_prefix.viewer.adding_title'), tr('code_prefix.viewer.adding_message'))
+            return
         if self.editing_prefix is not None:
             QMessageBox.information(self, tr('code_prefix.viewer.editing_title'), tr('code_prefix.viewer.editing_message'))
             return
@@ -389,6 +501,9 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
 
     def reset_selected_rows(self, source_key):
+        if self.adding_prefix:
+            QMessageBox.information(self, tr('code_prefix.viewer.adding_title'), tr('code_prefix.viewer.adding_message'))
+            return
         prefixes = self.selected_prefixes()
         if not prefixes:
             QMessageBox.information(self, tr('common.no_selection'), tr('code_prefix.viewer.select_reset_rows'))
@@ -478,3 +593,12 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         row = self.find_row_by_prefix(prefix)
         if row >= 0:
             self.table.selectRow(row)
+
+    def prefix_exists(self, prefix):
+        target_prefix = str(prefix or '').strip().upper()
+        if not target_prefix:
+            return False
+        return any(
+            str((row_data or {}).get('prefix', '') or '').strip().upper() == target_prefix
+            for row_data in self.all_rows
+        )

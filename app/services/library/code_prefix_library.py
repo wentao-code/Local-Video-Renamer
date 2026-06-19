@@ -72,7 +72,13 @@ class CodePrefixLibrary:
             local_rows_by_prefix.setdefault(prefix, []).append(dict(row or {}))
 
         search = str(search_text or '').strip().upper()
-        prefixes = [prefix for prefix in sorted(grouped) if not search or search in prefix]
+        all_prefixes = set(grouped)
+        all_prefixes.update(
+            prefix
+            for prefix in enrichment_records
+            if str(prefix or '').strip().upper() and str(prefix or '').strip().upper() not in hidden_prefixes
+        )
+        prefixes = [prefix for prefix in sorted(all_prefixes) if not search or search in prefix]
         movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(prefixes)
 
         results = []
@@ -92,7 +98,7 @@ class CodePrefixLibrary:
             results.append({
                 'prefix': prefix,
                 'ladder_tier': ladder_tier_map.get(prefix, ''),
-                'video_count': grouped[prefix],
+                'video_count': grouped.get(prefix, 0),
                 'enrichment_status': enrichment_status,
                 'avfan_enrichment_status': str((enrichment or {}).get('avfan_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
                 'javtxt_enrichment_status': str((enrichment or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,

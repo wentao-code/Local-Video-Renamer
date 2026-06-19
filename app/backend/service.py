@@ -187,6 +187,10 @@ class BackendService:
         self.ensure_database_loaded()
         return {'actor': self.actor_detail_library.get_actor_detail(actor_name)}
 
+    def add_actor(self, actor_name, birthday='', age=''):
+        self.ensure_database_loaded()
+        return {'created_count': self.library_admin_service.add_actor(actor_name, birthday=birthday, age=age)}
+
     def reset_actor_enrichments(self, actor_names, source_key=None):
         self.ensure_database_loaded()
         return {'reset_count': self.db.reset_actor_enrichments(actor_names, source_key=source_key)}
@@ -204,6 +208,10 @@ class BackendService:
     def get_code_prefix_detail(self, prefix):
         self.ensure_database_loaded()
         return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(prefix)}
+
+    def add_code_prefix(self, prefix):
+        self.ensure_database_loaded()
+        return {'created_count': self.library_admin_service.add_code_prefix(prefix)}
 
     def update_code_prefix_uncategorized_video_category(self, prefix, category):
         self.ensure_database_loaded()

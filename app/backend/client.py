@@ -143,6 +143,12 @@ class BackendClient:
         query = '?' + urlencode({'name': actor_name})
         return self._get('/database/actors/detail' + query).get('actor', {})
 
+    def add_actor(self, actor_name, birthday='', age=''):
+        return self._post(
+            '/database/actors/add',
+            {'actor_name': actor_name, 'birthday': birthday, 'age': age},
+        ).get('created_count', 0)
+
     def reset_actor_enrichments(self, actor_names, source_key=None):
         return self._post('/database/actors/reset', {'actor_names': actor_names, 'source_key': source_key}).get('reset_count', 0)
 
@@ -164,6 +170,9 @@ class BackendClient:
     def get_code_prefix_detail(self, prefix):
         query = '?' + urlencode({'prefix': prefix})
         return self._get('/database/code-prefixes/detail' + query).get('prefix_detail', {})
+
+    def add_code_prefix(self, prefix):
+        return self._post('/database/code-prefixes/add', {'prefix': prefix}).get('created_count', 0)
 
     def update_code_prefix_uncategorized_video_category(self, prefix, category):
         return self._post(

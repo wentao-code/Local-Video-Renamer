@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.core.actor_profile_display import UNKNOWN_ACTOR_AGE_TEXT
 from app.data.database_handler import VideoDatabase
-from app.services.library import ActorProfileUpdateService, LibraryAdminService
+from app.services.library import ActorProfileUpdateService, CodePrefixLibrary, LibraryAdminService
 
 
 class ActorProfileUpdateServiceTest(unittest.TestCase):
@@ -91,6 +91,61 @@ class ActorLibraryAdminUpdateTest(unittest.TestCase):
             del rows
             del db
             gc.collect()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+class LibraryAdminAddTest(unittest.TestCase):
+    def test_add_actor_rejects_hidden_actor_name(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO hidden_actors (name) VALUES (?)",
+                    ('婕斿憳A',),
+                )
+                conn.commit()
+
+            with self.assertRaisesRegex(ValueError, '已被删除'):
+                LibraryAdminService(db).add_actor('婕斿憳A')
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_add_code_prefix_creates_visible_empty_library_row(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            created_count = LibraryAdminService(db).add_code_prefix('ipx')
+
+            self.assertEqual(created_count, 1)
+            rows = CodePrefixLibrary(db).list_prefixes()
+            self.assertEqual([row['prefix'] for row in rows], ['IPX'])
+            self.assertEqual(rows[0]['video_count'], 0)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_add_code_prefix_rejects_existing_visible_prefix(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.import_local_videos(
+                [
+                    {
+                        'code': 'ABC-001',
+                        'storage_location': 'D:/videos/ABC-001.mp4',
+                        'duration': '',
+                        'size': '',
+                    }
+                ]
+            )
+
+            with self.assertRaisesRegex(ValueError, '已存在'):
+                LibraryAdminService(db).add_code_prefix('ABC')
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

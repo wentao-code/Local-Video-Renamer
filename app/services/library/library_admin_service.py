@@ -14,6 +14,26 @@ class LibraryAdminService:
         self.code_prefix_library = CodePrefixLibrary(database)
         self.actor_profile_update_service = ActorProfileUpdateService()
 
+    def add_code_prefix(self, prefix):
+        normalized_prefix = normalize_code_prefix(prefix)
+        if not normalized_prefix:
+            raise ValueError('番号前缀不能为空')
+
+        visible_prefixes = {
+            str(row.get('prefix', '')).strip().upper()
+            for row in self.code_prefix_library.list_prefixes()
+        }
+        if normalized_prefix in visible_prefixes:
+            raise ValueError(f'番号前缀 {normalized_prefix} 已存在')
+
+        hidden_prefixes = set()
+        if hasattr(self.database, 'list_hidden_code_prefixes'):
+            hidden_prefixes = self.database.list_hidden_code_prefixes()
+        if normalized_prefix in hidden_prefixes:
+            raise ValueError(f'番号前缀 {normalized_prefix} 已被删除，请避免重复添加')
+
+        return self.database.add_code_prefix(normalized_prefix)
+
     def rename_code_prefix(self, old_prefix, new_prefix):
         normalized_old_prefix = normalize_code_prefix(old_prefix)
         normalized_new_prefix = normalize_code_prefix(new_prefix)
@@ -94,6 +114,29 @@ class LibraryAdminService:
             raise ValueError(f'未找到番号前缀：{normalized_prefix}')
 
         return self.database.delete_code_prefix(normalized_prefix)
+
+    def add_actor(self, actor_name, birthday='', age=''):
+        payload = self.actor_profile_update_service.normalize_payload(actor_name, birthday=birthday, age=age)
+        normalized_actor_name = payload['name']
+
+        actor_names = {
+            str(row.get('name', '')).strip()
+            for row in self.database.list_actors()
+        }
+        if normalized_actor_name in actor_names:
+            raise ValueError(f'演员 {normalized_actor_name} 已存在')
+
+        hidden_actor_names = set()
+        if hasattr(self.database, 'list_hidden_actors'):
+            hidden_actor_names = self.database.list_hidden_actors()
+        if normalized_actor_name in hidden_actor_names:
+            raise ValueError(f'演员 {normalized_actor_name} 已被删除，请避免重复添加')
+
+        return self.database.add_actor(
+            normalized_actor_name,
+            birthday=payload['birthday'],
+            age=payload['age'],
+        )
 
     def rename_actor(self, old_name, new_name, birthday='', age=''):
         normalized_old_name = normalize_actor_name(old_name)

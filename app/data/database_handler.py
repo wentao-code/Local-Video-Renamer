@@ -1698,6 +1698,33 @@ class VideoDatabase(
             )
         return results
 
+    def add_actor(self, actor_name, birthday='', age=''):
+        normalized_name = str(actor_name or '').strip()
+        normalized_birthday = str(birthday or '').strip()
+        normalized_age = str(age or '').strip()
+        if not normalized_name:
+            raise ValueError('演员名称不能为空')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM actors WHERE name = ?', (normalized_name,))
+            if cursor.fetchone():
+                raise ValueError(f'演员 {normalized_name} 已存在')
+
+            cursor.execute('SELECT 1 FROM hidden_actors WHERE name = ?', (normalized_name,))
+            if cursor.fetchone():
+                raise ValueError(f'演员 {normalized_name} 已被删除，请避免重复添加')
+
+            cursor.execute(
+                '''
+                INSERT INTO actors (name, birthday, age, matched)
+                VALUES (?, ?, ?, 0)
+                ''',
+                (normalized_name, normalized_birthday, normalized_age),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def _refresh_code_prefix_combined_status(self, cursor, prefix):
         cursor.execute(
             '''
@@ -1815,6 +1842,51 @@ class VideoDatabase(
                 for row in cursor.fetchall()
                 if row[0]
             }
+
+    def add_code_prefix(self, prefix):
+        normalized_prefix = str(prefix or '').strip().upper()
+        if not normalized_prefix:
+            raise ValueError('番号前缀不能为空')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT 1 FROM code_prefix_enrichments WHERE prefix = ?', (normalized_prefix,))
+            if cursor.fetchone():
+                raise ValueError(f'番号前缀 {normalized_prefix} 已存在')
+
+            cursor.execute('SELECT 1 FROM code_prefix_movies WHERE prefix = ?', (normalized_prefix,))
+            if cursor.fetchone():
+                raise ValueError(f'番号前缀 {normalized_prefix} 已存在网页作品记录')
+
+            cursor.execute('SELECT 1 FROM hidden_code_prefixes WHERE prefix = ?', (normalized_prefix,))
+            if cursor.fetchone():
+                raise ValueError(f'番号前缀 {normalized_prefix} 已被删除，请避免重复添加')
+
+            cursor.execute('SELECT code FROM processed_videos')
+            for row in cursor.fetchall():
+                if extract_code_prefix(row[0] or '') == normalized_prefix:
+                    raise ValueError(f'番号前缀 {normalized_prefix} 已存在')
+
+            cursor.execute(
+                '''
+                INSERT INTO code_prefix_enrichments (
+                    prefix,
+                    enrichment_status,
+                    avfan_enrichment_status,
+                    javtxt_enrichment_status
+                )
+                VALUES (?, ?, ?, ?)
+                ''',
+                (
+                    normalized_prefix,
+                    build_library_enrichment_status_text(UNENRICHED_STATUS, UNENRICHED_STATUS),
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def save_code_prefix_enrichment(self, prefix, status, total_pages=0, total_videos=0, error='', source_key=AVFAN_VIDEO_SOURCE):
         normalized_prefix = str(prefix or '').strip().upper()

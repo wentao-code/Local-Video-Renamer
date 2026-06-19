@@ -44,6 +44,8 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.all_rows = []
         self.rows = []
         self.detail_quick_filter_key = DETAIL_FILTER_ALL
+        self.adding_actor = False
+        self.adding_row = None
         self.editing_actor_name = None
         self.editing_row = None
         self.editing_actor_original = None
@@ -93,6 +95,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_apply_sort.clicked.connect(self.apply_sort_settings)
         self.apply_sort_settings_to_controls()
 
+        self.btn_add = QPushButton(tr('actor.viewer.add'))
+        self.btn_add.clicked.connect(self.handle_add_button)
+
         self.btn_reset_avfan = QPushButton(tr('actor.viewer.reset_avfan'))
         self.btn_reset_avfan.clicked.connect(lambda: self.reset_selected_rows(AVFAN_VIDEO_SOURCE))
 
@@ -115,6 +120,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
         action_layout.addStretch()
         action_layout.addWidget(self.btn_apply_sort)
+        action_layout.addWidget(self.btn_add)
         action_layout.addWidget(self.btn_reset_avfan)
         action_layout.addWidget(self.btn_reset_javtxt)
         action_layout.addWidget(self.btn_refresh)
@@ -141,6 +147,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 self.sort_field_combo,
                 self.sort_order_combo,
                 self.btn_apply_sort,
+                self.btn_add,
                 self.btn_reset_avfan,
                 self.btn_reset_javtxt,
                 self.btn_refresh,
@@ -181,6 +188,8 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             actor_name = row_data.get('name', '')
             self.table.setCellWidget(row_idx, 5, self.build_detail_button(actor_name))
             self.table.setCellWidget(row_idx, 6, self.build_action_buttons(actor_name))
+        if self.adding_actor:
+            self.insert_add_row()
 
     def build_detail_button(self, actor_name):
         button = QPushButton(tr('actor.viewer.detail'))
@@ -214,11 +223,96 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         viewer = ActorDetailViewerWindow(self.backend_client, actor_name, self)
         viewer.exec_()
 
+    def handle_add_button(self):
+        if self.adding_actor:
+            self.confirm_actor_add()
+            return
+        if self.editing_actor_name is not None:
+            QMessageBox.information(self, tr('actor.viewer.editing_title'), tr('actor.viewer.editing_message'))
+            return
+        self.start_actor_add()
+
+    def start_actor_add(self):
+        self.adding_actor = True
+        self.btn_add.setText(tr('actor.viewer.add_confirm'))
+        self.insert_add_row()
+
+    def insert_add_row(self):
+        self.table.insertRow(0)
+        for column in range(5):
+            item = QTableWidgetItem('')
+            if column in (1, 2, 3, 4):
+                item.setTextAlignment(Qt.AlignCenter)
+            if column in (0, 2, 3):
+                item.setFlags(item.flags() | Qt.ItemIsEditable)
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(0, column, item)
+        self.table.setCellWidget(0, 5, QWidget())
+        self.table.setCellWidget(0, 6, QWidget())
+        self.adding_row = 0
+        self.table.setEditTriggers(
+            QAbstractItemView.SelectedClicked
+            | QAbstractItemView.DoubleClicked
+            | QAbstractItemView.EditKeyPressed
+        )
+        item = self.table.item(0, 0)
+        if item is not None:
+            self.table.setCurrentCell(0, 0)
+            self.table.editItem(item)
+
+    def confirm_actor_add(self):
+        if self.adding_row is None:
+            return
+        actor_name = self._item_text(self.adding_row, 0)
+        birthday = self._item_text(self.adding_row, 2)
+        age = self._item_text(self.adding_row, 3)
+        if not actor_name:
+            QMessageBox.warning(self, tr('common.prompt'), tr('actor.viewer.name_required'))
+            return
+
+        try:
+            normalized_payload = self.actor_profile_update_service.normalize_payload(actor_name, birthday=birthday, age=age)
+        except Exception as exc:
+            QMessageBox.warning(self, tr('common.prompt'), str(exc))
+            return
+
+        normalized_name = normalized_payload.get('name', '')
+        if self.actor_exists(normalized_name):
+            QMessageBox.warning(
+                self,
+                tr('common.prompt'),
+                tr('actor.viewer.add_duplicate', actor_name=normalized_name),
+            )
+            return
+
+        self._set_item_text(self.adding_row, 0, normalized_name)
+        self._set_item_text(self.adding_row, 2, normalized_payload.get('birthday', ''))
+        self._set_item_text(self.adding_row, 3, normalized_payload.get('age', ''))
+
+        search_text = self.search_input.text().strip()
+        self.start_async_task(
+            lambda: self.reload_rows_after(
+                lambda: self.backend_client.add_actor(
+                    normalized_name,
+                    birthday=normalized_payload.get('birthday', ''),
+                    age=normalized_payload.get('age', ''),
+                ),
+                lambda: self.backend_client.list_actors(search_text),
+                actor_name=normalized_name,
+            ),
+            self._on_add_finished,
+            tr('actor.viewer.add_failed'),
+        )
+
     def filter_data(self, text):
         self.clear_edit_state()
         self.schedule_deferred_reload()
 
     def apply_sort_settings(self):
+        if self.adding_actor:
+            QMessageBox.information(self, tr('actor.viewer.adding_title'), tr('actor.viewer.adding_message'))
+            return
         if self.editing_actor_name is not None:
             QMessageBox.information(self, tr('actor.viewer.editing_title'), tr('actor.viewer.editing_message'))
             return
@@ -260,12 +354,20 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.render_rows(self.rows)
 
     def clear_edit_state(self):
+        if self.editing_actor_name is not None:
+            self.reset_row_button_text(self.editing_actor_name)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.adding_actor = False
+        self.adding_row = None
+        self.btn_add.setText(tr('actor.viewer.add'))
         self.editing_actor_name = None
         self.editing_row = None
         self.editing_actor_original = None
 
     def handle_edit_button(self, actor_name):
+        if self.adding_actor:
+            QMessageBox.information(self, tr('actor.viewer.adding_title'), tr('actor.viewer.adding_message'))
+            return
         if self.editing_actor_name is None:
             self.start_actor_edit(actor_name)
             return
@@ -362,6 +464,14 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             ),
         )
 
+    def _on_add_finished(self, result):
+        self._on_load_data_finished(result)
+        QMessageBox.information(
+            self,
+            tr('actor.viewer.add_completed'),
+            tr('actor.viewer.add_completed_message', actor_name=result.get('actor_name', '')),
+        )
+
     def reset_row_button_text(self, actor_name):
         button = self.action_buttons.get(actor_name, {}).get('edit')
         if button is not None:
@@ -418,6 +528,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         return -1
 
     def delete_actor(self, actor_name):
+        if self.adding_actor:
+            QMessageBox.information(self, tr('actor.viewer.adding_title'), tr('actor.viewer.adding_message'))
+            return
         if self.editing_actor_name is not None:
             QMessageBox.information(self, tr('actor.viewer.editing_title'), tr('actor.viewer.editing_message'))
             return
@@ -449,6 +562,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
 
     def reset_selected_rows(self, source_key):
+        if self.adding_actor:
+            QMessageBox.information(self, tr('actor.viewer.adding_title'), tr('actor.viewer.adding_message'))
+            return
         actor_names = self.selected_actor_names()
         if not actor_names:
             QMessageBox.information(self, tr('common.no_selection'), tr('actor.viewer.select_reset_rows'))
@@ -538,3 +654,12 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         row = self.find_row_by_actor_name(actor_name)
         if row >= 0:
             self.table.selectRow(row)
+
+    def actor_exists(self, actor_name):
+        target_name = str(actor_name or '').strip()
+        if not target_name:
+            return False
+        return any(
+            str((row_data or {}).get('name', '') or '').strip() == target_name
+            for row_data in self.all_rows
+        )

@@ -1,1 +1,1 @@
-BACKEND_API_REVISION = '2026-06-17-library-filter-metadata-1'
+BACKEND_API_REVISION = '2026-06-20-library-inline-add-1'
