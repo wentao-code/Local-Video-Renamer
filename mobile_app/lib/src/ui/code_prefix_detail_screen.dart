@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../database/code_prefix_detail.dart';
 import '../database/library_detail_repository.dart';
 import 'detail_routes.dart';
+import 'theme/app_design.dart';
 import 'theme/app_icons.dart';
 import 'video_detail_screen.dart' show DetailEmptyState, DetailErrorState;
 import 'widgets/animated_reveal.dart';
@@ -82,10 +83,10 @@ class _CodePrefixDetailScreenState extends State<CodePrefixDetailScreen> {
                   padding: const EdgeInsets.all(22),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(28),
-                    gradient: const LinearGradient(
+                    gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFF2B233A), Color(0xFF705C8D)],
+                      colors: AppDesign.heroGradient(LibraryTone.prefix),
                     ),
                   ),
                   child: Column(
@@ -106,7 +107,7 @@ class _CodePrefixDetailScreenState extends State<CodePrefixDetailScreen> {
                         children: [
                           _PrefixFactChip(label: '作品数', value: '${detail.movieCount}'),
                           if (detail.ladderTier.isNotEmpty)
-                            _PrefixFactChip(label: 'Tier', value: detail.ladderTier),
+                            _PrefixFactChip(label: '等级', value: detail.ladderTier),
                           if (detail.indexedVideoCount > 0)
                             _PrefixFactChip(label: '索引数', value: '${detail.indexedVideoCount}'),
                           if (detail.sampleCategory.isNotEmpty)
@@ -192,7 +193,8 @@ class _PrefixFactChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(AppDesign.chipRadius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

@@ -7,8 +7,10 @@ import '../database/code_prefix_list_item.dart';
 import '../database/code_prefix_search_result.dart';
 import '../database/database_status.dart';
 import 'detail_routes.dart';
+import 'theme/app_design.dart';
 import 'theme/app_icons.dart';
 import 'widgets/animated_reveal.dart';
+import 'widgets/design_badge.dart';
 import 'widgets/result_pagination_bar.dart';
 
 class CodePrefixLibraryScreen extends StatefulWidget {
@@ -272,22 +274,23 @@ class _PrefixCard extends StatelessWidget {
                           ),
                         ),
                         if (item.enrichmentStatus.isNotEmpty)
-                          _PrefixBadge(
+                          DesignBadge(
                             text: item.enrichmentStatus,
-                            foreground: const Color(0xFF5A3B84),
-                            background: const Color(0xFFE6DAF2),
+                            foreground: AppDesign.indigo,
+                            background: AppDesign.indigoSoft,
+                            borderColor: AppDesign.indigo.withValues(alpha: 0.12),
                           ),
                         if (item.ladderTier.isNotEmpty)
-                          _PrefixBadge(
+                          DesignBadge.tone(
                             text: item.ladderTier,
-                            foreground: const Color(0xFF5A382F),
-                            background: const Color(0xFFF2E7D9),
+                            tone: LibraryTone.prefix,
                           ),
                         if (item.sampleCategory.isNotEmpty)
-                          _PrefixBadge(
+                          DesignBadge(
                             text: item.sampleCategory,
-                            foreground: const Color(0xFF2D5F50),
-                            background: const Color(0xFFDCEFE9),
+                            foreground: AppDesign.teal,
+                            background: AppDesign.tealSoft,
+                            borderColor: AppDesign.teal.withValues(alpha: 0.12),
                           ),
                       ],
                     ),
@@ -370,36 +373,6 @@ class _PrefixDetailLine extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _PrefixBadge extends StatelessWidget {
-  const _PrefixBadge({
-    required this.text,
-    required this.foreground,
-    required this.background,
-  });
-
-  final String text;
-  final Color foreground;
-  final Color background;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: foreground,
-              fontWeight: FontWeight.w700,
-            ),
-      ),
     );
   }
 }

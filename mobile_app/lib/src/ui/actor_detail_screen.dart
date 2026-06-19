@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../database/actor_detail.dart';
 import '../database/library_detail_repository.dart';
 import 'detail_routes.dart';
+import 'theme/app_design.dart';
 import 'theme/app_icons.dart';
 import 'video_detail_screen.dart' show DetailEmptyState, DetailErrorState;
 import 'widgets/animated_reveal.dart';
@@ -82,10 +83,10 @@ class _ActorDetailScreenState extends State<ActorDetailScreen> {
                   padding: const EdgeInsets.all(22),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(28),
-                    gradient: const LinearGradient(
+                    gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFF243238), Color(0xFF4E7567)],
+                      colors: AppDesign.heroGradient(LibraryTone.actor),
                     ),
                   ),
                   child: Column(
@@ -97,6 +98,7 @@ class _ActorDetailScreenState extends State<ActorDetailScreen> {
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.16),
                           shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
                         ),
                         child: Text(
                           detail.name.isEmpty ? '?' : detail.name.characters.first,
@@ -123,7 +125,7 @@ class _ActorDetailScreenState extends State<ActorDetailScreen> {
                         children: [
                           _ActorFactChip(label: '作品数', value: '${detail.movieCount}'),
                           if (detail.ladderTier.isNotEmpty)
-                            _ActorFactChip(label: 'Tier', value: detail.ladderTier),
+                            _ActorFactChip(label: '等级', value: detail.ladderTier),
                           if (detail.age.isNotEmpty) _ActorFactChip(label: '年龄', value: detail.age),
                           if (detail.birthday.isNotEmpty) _ActorFactChip(label: '生日', value: detail.birthday),
                           _ActorFactChip(label: '匹配状态', value: detail.isMatched ? '已匹配' : '未匹配'),
@@ -206,7 +208,8 @@ class _ActorFactChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(AppDesign.chipRadius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

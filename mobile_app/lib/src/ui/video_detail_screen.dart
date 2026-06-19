@@ -6,8 +6,10 @@ import 'package:google_fonts/google_fonts.dart';
 import '../database/library_detail_repository.dart';
 import '../database/video_detail.dart';
 import 'detail_routes.dart';
+import 'theme/app_design.dart';
 import 'theme/app_icons.dart';
 import 'widgets/animated_reveal.dart';
+import 'widgets/design_badge.dart';
 import 'widgets/video_cover_thumbnail.dart';
 
 class VideoDetailScreen extends StatefulWidget {
@@ -82,10 +84,10 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                   padding: const EdgeInsets.all(22),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(28),
-                    gradient: const LinearGradient(
+                    gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [Color(0xFF2A211F), Color(0xFF734738)],
+                      colors: AppDesign.heroGradient(LibraryTone.video),
                     ),
                   ),
                   child: Column(
@@ -142,13 +144,13 @@ class _VideoDetailScreenState extends State<VideoDetailScreen> {
                                   spacing: 8,
                                   runSpacing: 8,
                                   children: [
-                                    _HeaderBadge(
-                                      label: detail.detailSource == VideoDetailSource.local
-                                          ? 'Local'
-                                          : 'Indexed',
+                                    DesignBadge.hero(
+                                      text: detail.detailSource == VideoDetailSource.local
+                                          ? '本地'
+                                          : '索引',
                                     ),
                                     if (detail.enrichmentStatus.isNotEmpty)
-                                      _HeaderBadge(label: detail.enrichmentStatus),
+                                      DesignBadge.hero(text: detail.enrichmentStatus),
                                   ],
                                 ),
                               ],
@@ -380,32 +382,6 @@ class _MetaLine extends StatelessWidget {
           ),
           Expanded(child: Text(value)),
         ],
-      ),
-    );
-  }
-}
-
-class _HeaderBadge extends StatelessWidget {
-  const _HeaderBadge({
-    required this.label,
-  });
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        label,
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-              color: Colors.white,
-              fontWeight: FontWeight.w700,
-            ),
       ),
     );
   }

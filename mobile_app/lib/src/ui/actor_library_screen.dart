@@ -7,8 +7,10 @@ import '../database/actor_list_item.dart';
 import '../database/actor_search_result.dart';
 import '../database/database_status.dart';
 import 'detail_routes.dart';
+import 'theme/app_design.dart';
 import 'theme/app_icons.dart';
 import 'widgets/animated_reveal.dart';
+import 'widgets/design_badge.dart';
 import 'widgets/result_pagination_bar.dart';
 
 class ActorLibraryScreen extends StatefulWidget {
@@ -270,26 +272,25 @@ class _ActorCard extends StatelessWidget {
                             fontWeight: FontWeight.w800,
                           ),
                         ),
-                        _ActorBadge(
+                        DesignBadge(
                           text: item.isMatched ? '已匹配' : '未匹配',
-                          foreground: item.isMatched
-                              ? const Color(0xFF2D5F50)
-                              : const Color(0xFF8E3B2E),
-                          background: item.isMatched
-                              ? const Color(0xFFDCEFE9)
-                              : const Color(0xFFF4E2D8),
+                          foreground: item.isMatched ? AppDesign.teal : AppDesign.amber,
+                          background: item.isMatched ? AppDesign.tealSoft : AppDesign.amberSoft,
+                          borderColor: item.isMatched
+                              ? AppDesign.teal.withValues(alpha: 0.12)
+                              : AppDesign.amber.withValues(alpha: 0.12),
                         ),
                         if (item.ladderTier.isNotEmpty)
-                          _ActorBadge(
+                          DesignBadge.tone(
                             text: item.ladderTier,
-                            foreground: const Color(0xFF5A382F),
-                            background: const Color(0xFFF2E7D9),
+                            tone: LibraryTone.actor,
                           ),
                         if (item.sampleCategory.isNotEmpty)
-                          _ActorBadge(
+                          DesignBadge(
                             text: item.sampleCategory,
-                            foreground: const Color(0xFF5A382F),
-                            background: const Color(0xFFEAD8CC),
+                            foreground: AppDesign.inkMuted,
+                            background: AppDesign.surfaceMuted,
+                            borderColor: AppDesign.border,
                           ),
                       ],
                     ),
@@ -377,36 +378,6 @@ class _ActorDetailLine extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ActorBadge extends StatelessWidget {
-  const _ActorBadge({
-    required this.text,
-    required this.foreground,
-    required this.background,
-  });
-
-  final String text;
-  final Color foreground;
-  final Color background;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.labelMedium?.copyWith(
-              color: foreground,
-              fontWeight: FontWeight.w700,
-            ),
-      ),
     );
   }
 }
