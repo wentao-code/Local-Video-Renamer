@@ -33,8 +33,10 @@ class ActorBackendStub:
             }
         ]
         self.added = []
+        self.list_calls = 0
 
     def list_actors(self, search_text=''):
+        self.list_calls += 1
         search = str(search_text or '').strip().lower()
         if not search:
             return [dict(row) for row in self.rows]
@@ -68,8 +70,10 @@ class CodePrefixBackendStub:
             }
         ]
         self.added = []
+        self.list_calls = 0
 
     def list_code_prefixes(self, search_text=''):
+        self.list_calls += 1
         search = str(search_text or '').strip().upper()
         if not search:
             return [dict(row) for row in self.rows]
@@ -96,6 +100,7 @@ class ViewerInlineAddTest(unittest.TestCase):
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = ActorViewerWindow(backend)
             try:
+                backend.list_calls = 0
                 window.handle_add_button()
 
                 self.assertEqual(window.table.rowCount(), 2)
@@ -107,6 +112,7 @@ class ViewerInlineAddTest(unittest.TestCase):
                     window.handle_add_button()
 
                 self.assertEqual(backend.added, [('Beta', '', '')])
+                self.assertEqual(backend.list_calls, 0)
                 self.assertIn('Beta', [window.table.item(row, 0).text() for row in range(window.table.rowCount())])
             finally:
                 window.hide()
@@ -125,6 +131,25 @@ class ViewerInlineAddTest(unittest.TestCase):
 
                 self.assertEqual(backend.added, [])
                 self.assertTrue(warning_mock.called)
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_code_prefix_viewer_adds_without_reloading_full_library(self):
+        backend = CodePrefixBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = CodePrefixViewerWindow(backend)
+            try:
+                backend.list_calls = 0
+                window.handle_add_button()
+                window.table.item(0, 0).setText('ipx')
+
+                with patch.object(QMessageBox, 'information'):
+                    window.handle_add_button()
+
+                self.assertEqual(backend.added, ['IPX'])
+                self.assertEqual(backend.list_calls, 0)
+                self.assertIn('IPX', [window.table.item(row, 0).text() for row in range(window.table.rowCount())])
             finally:
                 window.hide()
                 window.deleteLater()

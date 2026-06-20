@@ -36,6 +36,8 @@ from app.gui.code_prefix_library_sorting import (
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.core.enrichment_sources import build_library_enrichment_status_text
+from app.core.enrichment_status import UNENRICHED_STATUS
 from app.services.detail import CODE_PREFIX_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
 from app.services.library.library_admin_service import normalize_code_prefix
 
@@ -288,16 +290,64 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             return
 
         item.setText(normalized_prefix)
-        search_text = self.search_input.text().strip()
         self.start_async_task(
-            lambda: self.reload_rows_after(
-                lambda: self.backend_client.add_code_prefix(normalized_prefix),
-                lambda: self.backend_client.list_code_prefixes(search_text),
-                prefix=normalized_prefix,
-            ),
+            lambda: self._run_prefix_add_task(normalized_prefix),
             self._on_add_finished,
             tr('code_prefix.viewer.add_failed'),
         )
+
+    def _run_prefix_add_task(self, prefix):
+        self.backend_client.add_code_prefix(prefix)
+        return {
+            'prefix': prefix,
+            'row': self._build_added_prefix_row(prefix),
+        }
+
+    def _build_added_prefix_row(self, prefix):
+        normalized_prefix = str(prefix or '').strip().upper()
+        return {
+            'prefix': normalized_prefix,
+            'video_count': 0,
+            'enrichment_status': build_library_enrichment_status_text(UNENRICHED_STATUS, UNENRICHED_STATUS),
+            'avfan_enrichment_status': UNENRICHED_STATUS,
+            'javtxt_enrichment_status': UNENRICHED_STATUS,
+            'update_status': '',
+            'ladder_tier': '',
+            'avfan_total_pages': 0,
+            'avfan_total_videos': 0,
+            'earliest_release_date': '',
+            'latest_release_date': '',
+            'last_enriched_at': '',
+        }
+
+    def _prefix_row_matches_current_search(self, row_data):
+        search_text = self.search_input.text().strip().upper()
+        if not search_text:
+            return True
+        return search_text in str((row_data or {}).get('prefix', '') or '').strip().upper()
+
+    def _upsert_prefix_row_locally(self, row_data):
+        target_prefix = str((row_data or {}).get('prefix', '') or '').strip().upper()
+        if not target_prefix:
+            return False
+        for index, current_row in enumerate(self.all_rows):
+            if str((current_row or {}).get('prefix', '') or '').strip().upper() == target_prefix:
+                self.all_rows[index] = dict(row_data or {})
+                return True
+        if self._prefix_row_matches_current_search(row_data):
+            self.all_rows.append(dict(row_data or {}))
+            return True
+        return False
+
+    def _sync_local_prefix_add(self, result):
+        self.clear_edit_state()
+        row_data = dict((result or {}).get('row', {}) or {})
+        prefix = str((result or {}).get('prefix', '') or row_data.get('prefix', '') or '').strip().upper()
+        is_visible = self._upsert_prefix_row_locally(row_data)
+        self.rebuild_visible_rows()
+        if is_visible and prefix:
+            self.select_prefix_row(prefix)
+        return prefix
 
     def filter_data(self, text):
         self.clear_edit_state()
@@ -437,11 +487,11 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
 
     def _on_add_finished(self, result):
-        self._on_load_data_finished(result)
+        prefix = self._sync_local_prefix_add(result)
         QMessageBox.information(
             self,
             tr('code_prefix.viewer.add_completed'),
-            tr('code_prefix.viewer.add_completed_message', prefix=result.get('prefix', '')),
+            tr('code_prefix.viewer.add_completed_message', prefix=prefix),
         )
 
     def reset_row_button_text(self, prefix):

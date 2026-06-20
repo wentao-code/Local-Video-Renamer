@@ -1,1 +1,1 @@
-BACKEND_API_REVISION = '2026-06-20-library-inline-add-1'
+BACKEND_API_REVISION = '2026-06-20-binghuo-actor-birthday-1'

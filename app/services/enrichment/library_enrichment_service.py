@@ -1,10 +1,17 @@
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
+    DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+)
 from app.core.enrichment_targets import (
+    ACTOR_BIRTHDAY_TARGET,
     ACTOR_LIBRARY_TARGET,
     CODE_PREFIX_LIBRARY_TARGET,
     VIDEO_LIBRARY_TARGET,
 )
 from app.services.enrichment import (
+    ActorBinghuoEnrichmentService,
     ActorEnrichmentService,
     ActorJavtxtEnrichmentService,
     CodePrefixEnrichmentService,
@@ -102,6 +109,18 @@ class LibraryEnrichmentService:
                 )
             result = service.enrich_next_actors(limit)
             result.setdefault('source_key', source_key or AVFAN_VIDEO_SOURCE)
+            return result
+
+        if target_type == ACTOR_BIRTHDAY_TARGET:
+            service = ActorBinghuoEnrichmentService(
+                self.database,
+                show_browser=self.show_browser,
+                should_stop=self.should_stop,
+                progress_tracker=self.progress_tracker,
+                logger=self.logger,
+            )
+            result = service.enrich_next_actors(limit)
+            result.setdefault('source_key', BINGHUO_ACTOR_SOURCE)
             return result
 
         raise ValueError(f'未知补全目标: {target_type}')

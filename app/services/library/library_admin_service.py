@@ -116,7 +116,10 @@ class LibraryAdminService:
         return self.database.delete_code_prefix(normalized_prefix)
 
     def add_actor(self, actor_name, birthday='', age=''):
-        payload = self.actor_profile_update_service.normalize_payload(actor_name, birthday=birthday, age=age)
+        enrichment_record = self.database.get_actor_enrichment_record(actor_name)
+        merged_birthday = birthday or enrichment_record.get('binghuo_birthday', '')
+        merged_age = age or enrichment_record.get('binghuo_age', '')
+        payload = self.actor_profile_update_service.normalize_payload(actor_name, birthday=merged_birthday, age=merged_age)
         normalized_actor_name = payload['name']
 
         actor_names = {

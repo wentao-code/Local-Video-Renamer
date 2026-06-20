@@ -8,6 +8,7 @@ from importlib import import_module
 
 
 __all__ = [
+    'CanglanggeCandidateService',
     'ActorLibrarySyncService',
     'ActorProfileUpdateService',
     'CodePrefixLibrary',
@@ -23,6 +24,10 @@ __all__ = [
 ]
 
 _EXPORT_MAP = {
+    'CanglanggeCandidateService': (
+        'app.services.library.canglangge_candidate_service',
+        'CanglanggeCandidateService',
+    ),
     'ActorLibrarySyncService': ('app.services.library.actor_library_sync_service', 'ActorLibrarySyncService'),
     'ActorProfileUpdateService': ('app.services.library.actor_profile_update_service', 'ActorProfileUpdateService'),
     'CodePrefixLibrary': ('app.services.library.code_prefix_library', 'CodePrefixLibrary'),

@@ -82,6 +82,12 @@ def make_handler(service):
                     body.get('birthday', ''),
                     body.get('age', ''),
                 )
+            if method == 'GET' and path == '/canglangge/candidates':
+                return service.list_canglangge_candidates()
+            if method == 'POST' and path == '/canglangge/admit':
+                return service.admit_canglangge_candidates(body.get('actor_names', []))
+            if method == 'POST' and path == '/canglangge/delete':
+                return service.delete_canglangge_candidates(body.get('actor_names', []))
             if method == 'POST' and path == '/database/actors/reset':
                 return service.reset_actor_enrichments(body.get('actor_names', []), body.get('source_key'))
             if method == 'POST' and path == '/database/actors/rename':

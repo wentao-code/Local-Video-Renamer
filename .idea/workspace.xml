@@ -2,11 +2,23 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="563fbf47-c796-4a7a-859a-256c18b2517d" name="更改" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/core/javtxt_video_state.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/core/javtxt_video_state.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/backend/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/backend/client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/backend/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/backend/server.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/backend/service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/backend/service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/core/backend_protocol.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/core/backend_protocol.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/core/enrichment_sources.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/core/enrichment_sources.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/core/enrichment_targets.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/core/enrichment_targets.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app/data/database_handler.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/data/database_handler.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app/services/movie_author_resolver.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/movie_author_resolver.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tests/test_video_code.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_video_code.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/gui/actor_viewer.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/actor_viewer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/gui/code_prefix_viewer.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/code_prefix_viewer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/gui/enrichment_dialog.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/enrichment_dialog.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/gui/i18n_patch.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/i18n_patch.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/gui/main_window.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/enrichment/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/enrichment/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/enrichment/library_enrichment_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/enrichment/library_enrichment_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/library/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/library/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/app/services/library/library_admin_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/app/services/library/library_admin_service.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_library_inline_add_viewers.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_library_inline_add_viewers.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -24,16 +36,16 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.Local_Video_gui.executor": "Run",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "git-widget-placeholder": "main",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;Python.Local_Video_gui.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager">
     <configuration name="Local_Video_gui" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="Local-Video-Renamer" />

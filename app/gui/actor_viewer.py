@@ -33,6 +33,8 @@ from app.gui.actor_library_sorting import (
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.core.enrichment_sources import build_library_enrichment_status_text
+from app.core.enrichment_status import UNENRICHED_STATUS
 from app.services.detail import ACTOR_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
 from app.services.library import ActorProfileUpdateService
 
@@ -290,20 +292,76 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._set_item_text(self.adding_row, 2, normalized_payload.get('birthday', ''))
         self._set_item_text(self.adding_row, 3, normalized_payload.get('age', ''))
 
-        search_text = self.search_input.text().strip()
         self.start_async_task(
-            lambda: self.reload_rows_after(
-                lambda: self.backend_client.add_actor(
-                    normalized_name,
-                    birthday=normalized_payload.get('birthday', ''),
-                    age=normalized_payload.get('age', ''),
-                ),
-                lambda: self.backend_client.list_actors(search_text),
-                actor_name=normalized_name,
+            lambda: self._run_actor_add_task(
+                normalized_name,
+                normalized_payload.get('birthday', ''),
+                normalized_payload.get('age', ''),
             ),
             self._on_add_finished,
             tr('actor.viewer.add_failed'),
         )
+
+    def _run_actor_add_task(self, actor_name, birthday='', age=''):
+        self.backend_client.add_actor(
+            actor_name,
+            birthday=birthday,
+            age=age,
+        )
+        return {
+            'actor_name': actor_name,
+            'row': self._build_added_actor_row(actor_name, birthday=birthday, age=age),
+        }
+
+    def _build_added_actor_row(self, actor_name, birthday='', age=''):
+        normalized_birthday = str(birthday or '').strip()
+        normalized_age = str(age or '').strip()
+        return {
+            'name': str(actor_name or '').strip(),
+            'birthday': normalized_birthday,
+            'raw_age': normalized_age,
+            'age': normalized_age,
+            'matched': False,
+            'actor_id': '',
+            'avfan_enrichment_status': UNENRICHED_STATUS,
+            'javtxt_enrichment_status': UNENRICHED_STATUS,
+            'enrichment_status': build_library_enrichment_status_text(UNENRICHED_STATUS, UNENRICHED_STATUS),
+            'ladder_tier': '',
+            'update_status': '',
+        }
+
+    def _actor_row_matches_current_search(self, row_data):
+        search_text = self.search_input.text().strip().lower()
+        if not search_text:
+            return True
+        haystack = ' '.join(
+            str((row_data or {}).get(field, '') or '').strip().lower()
+            for field in ('name', 'actor_id', 'birthday', 'age', 'enrichment_status')
+        )
+        return search_text in haystack
+
+    def _upsert_actor_row_locally(self, row_data):
+        target_name = str((row_data or {}).get('name', '') or '').strip()
+        if not target_name:
+            return False
+        for index, current_row in enumerate(self.all_rows):
+            if str((current_row or {}).get('name', '') or '').strip() == target_name:
+                self.all_rows[index] = dict(row_data or {})
+                return True
+        if self._actor_row_matches_current_search(row_data):
+            self.all_rows.append(dict(row_data or {}))
+            return True
+        return False
+
+    def _sync_local_actor_add(self, result):
+        self.clear_edit_state()
+        row_data = dict((result or {}).get('row', {}) or {})
+        actor_name = str((result or {}).get('actor_name', '') or row_data.get('name', '') or '').strip()
+        is_visible = self._upsert_actor_row_locally(row_data)
+        self.rebuild_visible_rows()
+        if is_visible and actor_name:
+            self.select_actor_row(actor_name)
+        return actor_name
 
     def filter_data(self, text):
         self.clear_edit_state()
@@ -465,11 +523,11 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
 
     def _on_add_finished(self, result):
-        self._on_load_data_finished(result)
+        actor_name = self._sync_local_actor_add(result)
         QMessageBox.information(
             self,
             tr('actor.viewer.add_completed'),
-            tr('actor.viewer.add_completed_message', actor_name=result.get('actor_name', '')),
+            tr('actor.viewer.add_completed_message', actor_name=actor_name),
         )
 
     def reset_row_button_text(self, actor_name):

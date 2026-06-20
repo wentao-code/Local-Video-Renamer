@@ -35,7 +35,7 @@ class BackendClient:
         source_key=None,
     ):
         cooldown_seconds = 180 if cooldown_before_search else 0
-        if target_type in ('code_prefix_library', 'actor_library'):
+        if target_type in ('code_prefix_library', 'actor_library', 'actor_birthday'):
             timeout = max(self.timeout, int(limit or 1) * 240 + 60 + cooldown_seconds)
         else:
             timeout = max(self.timeout, int(limit or 1) * 90 + 60 + cooldown_seconds)
@@ -148,6 +148,16 @@ class BackendClient:
             '/database/actors/add',
             {'actor_name': actor_name, 'birthday': birthday, 'age': age},
         ).get('created_count', 0)
+
+    def list_canglangge_candidates(self):
+        timeout = max(self.timeout, 120)
+        return self._get('/canglangge/candidates', timeout=timeout).get('candidates', [])
+
+    def admit_canglangge_candidates(self, actor_names):
+        return self._post('/canglangge/admit', {'actor_names': actor_names}).get('admitted_count', 0)
+
+    def delete_canglangge_candidates(self, actor_names):
+        return self._post('/canglangge/delete', {'actor_names': actor_names}).get('deleted_count', 0)
 
     def reset_actor_enrichments(self, actor_names, source_key=None):
         return self._post('/database/actors/reset', {'actor_names': actor_names, 'source_key': source_key}).get('reset_count', 0)

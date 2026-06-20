@@ -33,6 +33,7 @@ from app.core.project_paths import PROJECT_ROOT
 from app.core.runtime_config import get_backend_port
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.canglangge_viewer import CanglanggeViewerWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.db_viewer import DatabaseViewerWindow
@@ -404,6 +405,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_view_code_prefixes = QPushButton(tr('main.code_prefix_library'))
         self.btn_view_code_prefixes.clicked.connect(self.show_code_prefix_viewer)
 
+        self.btn_canglangge = QPushButton(tr('main.canglangge'))
+        self.btn_canglangge.clicked.connect(self.show_canglangge_viewer)
+
         self.btn_tianji = QPushButton(tr('main.video_category'))
         self.btn_tianji.clicked.connect(self.show_video_category_viewer)
 
@@ -444,6 +448,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_database)
         top_button_row.addWidget(self.btn_view_actors)
         top_button_row.addWidget(self.btn_view_code_prefixes)
+        top_button_row.addWidget(self.btn_canglangge)
         top_button_row.addWidget(self.btn_tianji)
         top_button_row.addWidget(self.btn_ladder_board)
         top_button_row.addWidget(self.btn_video_filter)
@@ -1437,6 +1442,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def show_code_prefix_viewer(self):
         viewer = CodePrefixViewerWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
+    def show_canglangge_viewer(self):
+        viewer = CanglanggeViewerWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
     def show_video_category_viewer(self):

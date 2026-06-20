@@ -24,11 +24,13 @@ from app.core.combo_enrichment import (
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
     DEFAULT_VIDEO_ENRICHMENT_SOURCE,
     JAVTXT_VIDEO_SOURCE,
     normalize_video_enrichment_source,
 )
 from app.core.enrichment_targets import (
+    ACTOR_BIRTHDAY_TARGET,
     ACTOR_LIBRARY_TARGET,
     CODE_PREFIX_LIBRARY_TARGET,
     VIDEO_LIBRARY_TARGET,
@@ -40,12 +42,14 @@ from app.gui.i18n import tr
 SUPPORTED_SOURCE_KEYS = (
     AVFAN_VIDEO_SOURCE,
     JAVTXT_VIDEO_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
 )
 
 DEFAULT_SOURCE_BY_TARGET = {
     VIDEO_LIBRARY_TARGET: DEFAULT_VIDEO_ENRICHMENT_SOURCE,
     CODE_PREFIX_LIBRARY_TARGET: AVFAN_VIDEO_SOURCE,
     ACTOR_LIBRARY_TARGET: AVFAN_VIDEO_SOURCE,
+    ACTOR_BIRTHDAY_TARGET: BINGHUO_ACTOR_SOURCE,
 }
 
 DEFAULT_COMBINATION_SETTINGS = {
@@ -72,6 +76,7 @@ DEFAULT_TARGET_SETTINGS = {
         VIDEO_LIBRARY_TARGET,
         CODE_PREFIX_LIBRARY_TARGET,
         ACTOR_LIBRARY_TARGET,
+        ACTOR_BIRTHDAY_TARGET,
     )
 }
 
@@ -95,6 +100,12 @@ def clone_default_target_settings():
 
 def clone_default_selected_sources():
     return dict(DEFAULT_SOURCE_BY_TARGET)
+
+
+def supported_source_keys_for_target(target_type):
+    if target_type == ACTOR_BIRTHDAY_TARGET:
+        return (BINGHUO_ACTOR_SOURCE,)
+    return SUPPORTED_SOURCE_KEYS
 
 
 def is_flat_settings_payload(payload):
@@ -139,7 +150,10 @@ def normalize_target_settings(payload):
             continue
 
         if is_flat_settings_payload(loaded_values):
+            default_source_key = DEFAULT_SOURCE_BY_TARGET[target_type]
             source_key = normalize_video_enrichment_source(loaded_values.get('source_key'))
+            if source_key not in supported_source_keys_for_target(target_type):
+                source_key = default_source_key
             merge_combination_settings(default_source_settings[source_key], loaded_values, source_key)
             continue
 
@@ -156,9 +170,12 @@ def normalize_selected_sources(payload):
     loaded_selected_sources = payload.get('selected_source_by_target', {})
     if 'selected_source_by_target' in payload and isinstance(loaded_selected_sources, dict):
         for target_type, default_source_key in selected_sources.items():
-            selected_sources[target_type] = normalize_video_enrichment_source(
+            candidate_source_key = normalize_video_enrichment_source(
                 loaded_selected_sources.get(target_type, default_source_key)
             )
+            if candidate_source_key not in supported_source_keys_for_target(target_type):
+                candidate_source_key = default_source_key
+            selected_sources[target_type] = candidate_source_key
         return selected_sources
 
     loaded_target_settings = payload.get('target_settings', {})
@@ -166,9 +183,12 @@ def normalize_selected_sources(payload):
         for target_type, default_source_key in selected_sources.items():
             loaded_values = loaded_target_settings.get(target_type, {})
             if is_flat_settings_payload(loaded_values):
-                selected_sources[target_type] = normalize_video_enrichment_source(
+                candidate_source_key = normalize_video_enrichment_source(
                     loaded_values.get('source_key', default_source_key)
                 )
+                if candidate_source_key not in supported_source_keys_for_target(target_type):
+                    candidate_source_key = default_source_key
+                selected_sources[target_type] = candidate_source_key
     return selected_sources
 
 
@@ -234,32 +254,38 @@ class EnrichmentDialog(QDialog):
         self.video_target_button = QRadioButton(tr('enrichment.dialog.video_library'))
         self.code_prefix_target_button = QRadioButton(tr('enrichment.dialog.code_prefix_library'))
         self.actor_target_button = QRadioButton(tr('enrichment.dialog.actor_library'))
+        self.actor_birthday_target_button = QRadioButton(tr('enrichment.dialog.actor_birthday'))
 
         self.target_button_group.addButton(self.video_target_button)
         self.target_button_group.addButton(self.code_prefix_target_button)
         self.target_button_group.addButton(self.actor_target_button)
+        self.target_button_group.addButton(self.actor_birthday_target_button)
 
         target_layout.addWidget(self.video_target_button)
         target_layout.addWidget(self.code_prefix_target_button)
         target_layout.addWidget(self.actor_target_button)
+        target_layout.addWidget(self.actor_birthday_target_button)
         target_layout.addStretch()
         target_group.setLayout(target_layout)
 
-        source_group = QGroupBox(tr('enrichment.dialog.source_group'))
+        self.source_group = QGroupBox(tr('enrichment.dialog.source_group'))
         source_layout = QHBoxLayout()
         self.source_button_group = QButtonGroup(self)
         self.source_button_group.setExclusive(True)
         self.avfan_source_button = QRadioButton(tr('enrichment.dialog.avfan_source'))
         self.javtxt_source_button = QRadioButton(tr('enrichment.dialog.javtxt_source'))
+        self.binghuo_source_button = QRadioButton(tr('enrichment.dialog.binghuo_source'))
         self.javtxt_source_button.setToolTip(tr('enrichment.dialog.javtxt_tooltip'))
         self.source_button_group.addButton(self.avfan_source_button)
         self.source_button_group.addButton(self.javtxt_source_button)
+        self.source_button_group.addButton(self.binghuo_source_button)
         source_layout.addWidget(self.avfan_source_button)
         source_layout.addWidget(self.javtxt_source_button)
+        source_layout.addWidget(self.binghuo_source_button)
         source_layout.addStretch()
-        source_group.setLayout(source_layout)
+        self.source_group.setLayout(source_layout)
 
-        combo_group = QGroupBox(tr('enrichment.dialog.combo_group'))
+        self.combo_group = QGroupBox(tr('enrichment.dialog.combo_group'))
         combo_layout = QHBoxLayout()
         self.combo_button_group = QButtonGroup(self)
         self.combo_button_group.setExclusive(True)
@@ -270,13 +296,16 @@ class EnrichmentDialog(QDialog):
         combo_layout.addWidget(self.kan_shui_button)
         combo_layout.addWidget(self.fu_shui_button)
         combo_layout.addStretch()
-        combo_group.setLayout(combo_layout)
+        self.combo_group.setLayout(combo_layout)
 
         self.avfan_source_button.toggled.connect(
             lambda checked: self.on_source_button_toggled(AVFAN_VIDEO_SOURCE, checked)
         )
         self.javtxt_source_button.toggled.connect(
             lambda checked: self.on_source_button_toggled(JAVTXT_VIDEO_SOURCE, checked)
+        )
+        self.binghuo_source_button.toggled.connect(
+            lambda checked: self.on_source_button_toggled(BINGHUO_ACTOR_SOURCE, checked)
         )
         self.kan_shui_button.toggled.connect(
             lambda checked: self.on_combo_button_toggled(KAN_SHUI_COMBO, checked)
@@ -293,6 +322,9 @@ class EnrichmentDialog(QDialog):
         )
         self.actor_target_button.toggled.connect(
             lambda checked: self.on_target_button_toggled(ACTOR_LIBRARY_TARGET, checked)
+        )
+        self.actor_birthday_target_button.toggled.connect(
+            lambda checked: self.on_target_button_toggled(ACTOR_BIRTHDAY_TARGET, checked)
         )
 
         self.limit_input = QSpinBox()
@@ -336,8 +368,8 @@ class EnrichmentDialog(QDialog):
         self.save_button.clicked.connect(self.save_settings)
 
         layout.addWidget(target_group)
-        layout.addWidget(source_group)
-        layout.addWidget(combo_group)
+        layout.addWidget(self.source_group)
+        layout.addWidget(self.combo_group)
         layout.addLayout(form_layout)
         layout.addWidget(buttons)
         self.setLayout(layout)
@@ -357,10 +389,16 @@ class EnrichmentDialog(QDialog):
             DEFAULT_SOURCE_BY_TARGET[target_type],
         )
 
-        with QSignalBlocker(self.video_target_button), QSignalBlocker(self.code_prefix_target_button), QSignalBlocker(self.actor_target_button):
+        with (
+            QSignalBlocker(self.video_target_button),
+            QSignalBlocker(self.code_prefix_target_button),
+            QSignalBlocker(self.actor_target_button),
+            QSignalBlocker(self.actor_birthday_target_button),
+        ):
             self.video_target_button.setChecked(target_type == VIDEO_LIBRARY_TARGET)
             self.code_prefix_target_button.setChecked(target_type == CODE_PREFIX_LIBRARY_TARGET)
             self.actor_target_button.setChecked(target_type == ACTOR_LIBRARY_TARGET)
+            self.actor_birthday_target_button.setChecked(target_type == ACTOR_BIRTHDAY_TARGET)
 
         with QSignalBlocker(self.kan_shui_button), QSignalBlocker(self.fu_shui_button):
             self.kan_shui_button.setChecked(self.current_combo_key == KAN_SHUI_COMBO)
@@ -370,6 +408,7 @@ class EnrichmentDialog(QDialog):
             self.video_target_button,
             self.code_prefix_target_button,
             self.actor_target_button,
+            self.actor_birthday_target_button,
         )):
             self.video_target_button.setChecked(True)
             self.current_target_type = VIDEO_LIBRARY_TARGET
@@ -393,10 +432,14 @@ class EnrichmentDialog(QDialog):
             target_type,
             DEFAULT_SOURCE_BY_TARGET[target_type],
         )
+        if self.current_source_key not in supported_source_keys_for_target(target_type):
+            self.current_source_key = DEFAULT_SOURCE_BY_TARGET[target_type]
         self.apply_combination_settings(target_type, self.current_source_key)
 
     def on_source_button_toggled(self, source_key, checked):
         if not checked:
+            return
+        if source_key not in supported_source_keys_for_target(self.current_target_type):
             return
         self.store_current_target_settings()
         self.current_source_key = source_key
@@ -409,6 +452,8 @@ class EnrichmentDialog(QDialog):
         self.current_combo_key = normalize_combo_key(combo_key)
 
     def apply_combination_settings(self, target_type, source_key):
+        if source_key not in supported_source_keys_for_target(target_type):
+            source_key = DEFAULT_SOURCE_BY_TARGET[target_type]
         settings = dict(
             self.target_settings.get(target_type, {}).get(
                 source_key,
@@ -446,9 +491,14 @@ class EnrichmentDialog(QDialog):
         self.current_source_key = source_key
         self.selected_source_by_target[target_type] = source_key
 
-        with QSignalBlocker(self.avfan_source_button), QSignalBlocker(self.javtxt_source_button):
+        with (
+            QSignalBlocker(self.avfan_source_button),
+            QSignalBlocker(self.javtxt_source_button),
+            QSignalBlocker(self.binghuo_source_button),
+        ):
             self.avfan_source_button.setChecked(source_key == AVFAN_VIDEO_SOURCE)
             self.javtxt_source_button.setChecked(source_key == JAVTXT_VIDEO_SOURCE)
+            self.binghuo_source_button.setChecked(source_key == BINGHUO_ACTOR_SOURCE)
         self.update_source_controls()
 
     def store_current_target_settings(self):
@@ -482,7 +532,10 @@ class EnrichmentDialog(QDialog):
         current_settings['target_type'] = self.selected_target_type()
         current_settings['source_key'] = self.selected_source_key()
         current_settings['combo_key'] = self.selected_combo_key()
-        current_settings['combo_task_settings'] = self.build_combo_task_settings(self.selected_combo_key())
+        if self.selected_target_type() == ACTOR_BIRTHDAY_TARGET:
+            current_settings['combo_task_settings'] = {}
+        else:
+            current_settings['combo_task_settings'] = self.build_combo_task_settings(self.selected_combo_key())
         return current_settings
 
     def build_combo_task_settings(self, combo_key):
@@ -529,7 +582,15 @@ class EnrichmentDialog(QDialog):
         return combo_task_settings
 
     def update_source_controls(self):
-        is_avfan_source = self.selected_source_key() == AVFAN_VIDEO_SOURCE
+        is_actor_birthday_target = self.selected_target_type() == ACTOR_BIRTHDAY_TARGET
+        is_avfan_source = self.selected_source_key() == AVFAN_VIDEO_SOURCE and not is_actor_birthday_target
+        self.avfan_source_button.setEnabled(not is_actor_birthday_target)
+        self.javtxt_source_button.setEnabled(not is_actor_birthday_target)
+        self.binghuo_source_button.setEnabled(is_actor_birthday_target)
+        self.combo_group.setVisible(not is_actor_birthday_target)
+        self.combo_single_button.setVisible(not is_actor_birthday_target)
+        self.combo_batch_button.setVisible(not is_actor_birthday_target)
+        self.cooldown_checkbox.setVisible(not is_actor_birthday_target)
         self.cooldown_checkbox.setEnabled(is_avfan_source)
         if not is_avfan_source:
             self.cooldown_checkbox.setChecked(False)

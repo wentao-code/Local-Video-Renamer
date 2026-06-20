@@ -27,6 +27,7 @@ from app.services.identity import split_actor_names
 from app.services.ladder import LadderBoardService, VideoLadderTagService
 from app.services.library import (
     ActorLibrarySyncService,
+    CanglanggeCandidateService,
     CodePrefixLibrary,
     CodePrefixVideoCategoryBulkService,
     DataCenterService,
@@ -57,6 +58,7 @@ class BackendService:
         )
         self.code_prefix_library = CodePrefixLibrary(self.db, self.video_filter_service)
         self.code_prefix_video_category_bulk_service = CodePrefixVideoCategoryBulkService(self.db)
+        self.canglangge_candidate_service = CanglanggeCandidateService(self.db)
         self.data_center_service = DataCenterService(self.db, self.video_filter_service)
         self.library_admin_service = LibraryAdminService(self.db)
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
@@ -190,6 +192,24 @@ class BackendService:
     def add_actor(self, actor_name, birthday='', age=''):
         self.ensure_database_loaded()
         return {'created_count': self.library_admin_service.add_actor(actor_name, birthday=birthday, age=age)}
+
+    def list_canglangge_candidates(self):
+        self.ensure_database_loaded()
+        return {'candidates': self.canglangge_candidate_service.list_candidates()}
+
+    def admit_canglangge_candidates(self, actor_names):
+        self.ensure_database_loaded()
+        admitted_count = 0
+        for actor_name in actor_names or []:
+            admitted_count += int(self.library_admin_service.add_actor(actor_name, birthday='', age='') or 0)
+        return {'admitted_count': admitted_count}
+
+    def delete_canglangge_candidates(self, actor_names):
+        self.ensure_database_loaded()
+        deleted_count = 0
+        for actor_name in actor_names or []:
+            deleted_count += int(self.db.hide_actor(actor_name) or 0)
+        return {'deleted_count': deleted_count}
 
     def reset_actor_enrichments(self, actor_names, source_key=None):
         self.ensure_database_loaded()

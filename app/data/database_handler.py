@@ -13,6 +13,7 @@ from app.core.enrichment_status import (
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
     DEFAULT_VIDEO_ENRICHMENT_SOURCE,
     JAVTXT_VIDEO_SOURCE,
     build_library_enrichment_status_text,
@@ -294,6 +295,16 @@ class VideoDatabase(
             self._ensure_column(cursor, 'actor_enrichments', 'javtxt_total_videos', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'actor_enrichments', 'javtxt_last_error', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_enrichments', 'javtxt_last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_person_id', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_birthday', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_age', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_height', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_bust', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_waist', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'binghuo_hip', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_movies', 'title', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'author', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'release_date', 'TEXT')
@@ -1691,6 +1702,14 @@ class VideoDatabase(
                     'age': normalize_actor_age_for_display(row[2] or '', row[1] or ''),
                     'matched': bool(row[3]),
                     'actor_id': row[4] or '',
+                    'binghuo_person_id': str((record or {}).get('binghuo_person_id', '') or '').strip(),
+                    'binghuo_birthday': str((record or {}).get('binghuo_birthday', '') or '').strip(),
+                    'binghuo_age': str((record or {}).get('binghuo_age', '') or '').strip(),
+                    'binghuo_height': str((record or {}).get('binghuo_height', '') or '').strip(),
+                    'binghuo_bust': str((record or {}).get('binghuo_bust', '') or '').strip(),
+                    'binghuo_waist': str((record or {}).get('binghuo_waist', '') or '').strip(),
+                    'binghuo_hip': str((record or {}).get('binghuo_hip', '') or '').strip(),
+                    'binghuo_enrichment_status': str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
                     'avfan_enrichment_status': str((record or {}).get('avfan_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
                     'javtxt_enrichment_status': str((record or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
                     'enrichment_status': enrichment_status or UNENRICHED_STATUS,
@@ -1721,6 +1740,20 @@ class VideoDatabase(
                 VALUES (?, ?, ?, 0)
                 ''',
                 (normalized_name, normalized_birthday, normalized_age),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def hide_actor(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            raise ValueError('婕斿憳鍚嶇О涓嶈兘涓虹┖')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT OR IGNORE INTO hidden_actors (name) VALUES (?)',
+                (normalized_name,),
             )
             conn.commit()
             return int(cursor.rowcount or 0)
@@ -2163,7 +2196,10 @@ class VideoDatabase(
                 SELECT actor_name, actor_id, enrichment_status, avfan_total_pages, avfan_total_videos,
                        last_error, last_enriched_at, avfan_enrichment_status, avfan_last_error,
                        avfan_last_enriched_at, javtxt_enrichment_status, javtxt_total_videos,
-                       javtxt_last_error, javtxt_last_enriched_at
+                       javtxt_last_error, javtxt_last_enriched_at, binghuo_person_id,
+                       binghuo_enrichment_status, binghuo_last_error, binghuo_last_enriched_at,
+                       binghuo_birthday, binghuo_age, binghuo_height, binghuo_bust,
+                       binghuo_waist, binghuo_hip
                 FROM actor_enrichments
             ''')
 
@@ -2183,6 +2219,16 @@ class VideoDatabase(
                     'javtxt_total_videos': int(row[11] or 0),
                     'javtxt_last_error': row[12] or '',
                     'javtxt_last_enriched_at': row[13] or '',
+                    'binghuo_person_id': row[14] or '',
+                    'binghuo_enrichment_status': row[15] or UNENRICHED_STATUS,
+                    'binghuo_last_error': row[16] or '',
+                    'binghuo_last_enriched_at': row[17] or '',
+                    'binghuo_birthday': row[18] or '',
+                    'binghuo_age': row[19] or '',
+                    'binghuo_height': row[20] or '',
+                    'binghuo_bust': row[21] or '',
+                    'binghuo_waist': row[22] or '',
+                    'binghuo_hip': row[23] or '',
                 }
                 for row in cursor.fetchall()
                 if row[0]
@@ -2191,6 +2237,8 @@ class VideoDatabase(
     def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error='', actor_id='', source_key=AVFAN_VIDEO_SOURCE):
         normalized_name = str(actor_name or '').strip()
         normalized_source = normalize_video_enrichment_source(source_key)
+        if normalized_source == BINGHUO_ACTOR_SOURCE:
+            raise ValueError('Use save_binghuo_actor_profile for Binghuo actor data')
         status_column, error_column, at_column = self._library_source_columns(normalized_source)
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -2241,6 +2289,86 @@ class VideoDatabase(
                 )
             self._refresh_actor_combined_status(cursor, normalized_name)
             conn.commit()
+
+    def save_binghuo_actor_profile(
+        self,
+        actor_name,
+        status,
+        person_id='',
+        birthday='',
+        age='',
+        height='',
+        bust='',
+        waist='',
+        hip='',
+        error='',
+    ):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return 0
+
+        normalized_person_id = str(person_id or '').strip()
+        normalized_birthday = str(birthday or '').strip()
+        normalized_age = str(age or '').strip()
+        normalized_height = str(height or '').strip()
+        normalized_bust = str(bust or '').strip()
+        normalized_waist = str(waist or '').strip()
+        normalized_hip = str(hip or '').strip()
+        normalized_error = str(error or '').strip()
+        normalized_status = str(status or '').strip() or UNENRICHED_STATUS
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO actor_enrichments (actor_name)
+                VALUES (?)
+                ''',
+                (normalized_name,),
+            )
+            cursor.execute(
+                '''
+                UPDATE actor_enrichments
+                SET binghuo_person_id = COALESCE(NULLIF(?, ''), binghuo_person_id),
+                    binghuo_enrichment_status = ?,
+                    binghuo_last_error = ?,
+                    binghuo_last_enriched_at = CURRENT_TIMESTAMP,
+                    binghuo_birthday = COALESCE(NULLIF(?, ''), binghuo_birthday),
+                    binghuo_age = COALESCE(NULLIF(?, ''), binghuo_age),
+                    binghuo_height = COALESCE(NULLIF(?, ''), binghuo_height),
+                    binghuo_bust = COALESCE(NULLIF(?, ''), binghuo_bust),
+                    binghuo_waist = COALESCE(NULLIF(?, ''), binghuo_waist),
+                    binghuo_hip = COALESCE(NULLIF(?, ''), binghuo_hip)
+                WHERE actor_name = ?
+                ''',
+                (
+                    normalized_person_id,
+                    normalized_status,
+                    normalized_error,
+                    normalized_birthday,
+                    normalized_age,
+                    normalized_height,
+                    normalized_bust,
+                    normalized_waist,
+                    normalized_hip,
+                    normalized_name,
+                ),
+            )
+            cursor.execute(
+                '''
+                UPDATE actors
+                SET birthday = COALESCE(NULLIF(?, ''), birthday),
+                    age = COALESCE(NULLIF(?, ''), age)
+                WHERE name = ?
+                ''',
+                (
+                    normalized_birthday,
+                    normalized_age,
+                    normalized_name,
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
 
     def replace_actor_movies(self, actor_name, movies):
         normalized_name = str(actor_name or '').strip()
@@ -2339,6 +2467,16 @@ class VideoDatabase(
             'javtxt_total_videos': 0,
             'javtxt_last_error': '',
             'javtxt_last_enriched_at': '',
+            'binghuo_person_id': '',
+            'binghuo_enrichment_status': UNENRICHED_STATUS,
+            'binghuo_last_error': '',
+            'binghuo_last_enriched_at': '',
+            'binghuo_birthday': '',
+            'binghuo_age': '',
+            'binghuo_height': '',
+            'binghuo_bust': '',
+            'binghuo_waist': '',
+            'binghuo_hip': '',
         })
 
     def list_actor_movies(self, actor_name):
