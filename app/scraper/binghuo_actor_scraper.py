@@ -121,14 +121,17 @@ class BinghuoActorScraper:
 
     def parse_profile(self, page):
         body_text = str(page.locator('body').inner_text(timeout=10000) or '').strip()
+        measurements = _extract_measurements(body_text)
         return {
             'person_id': self.extract_person_id(page.url or ''),
-            'birthday': _extract_first(body_text, [r'生日[:：]\s*([0-9]{4}-[0-9]{2}-[0-9]{2})']),
+            'birthday': _normalize_date_text(
+                _extract_first(body_text, [r'生日[:：]\s*([0-9]{4}-[0-9]{1,2}-[0-9]{1,2})'])
+            ),
             'age': _extract_first(body_text, [r'年龄[:：]\s*([0-9]{1,3})']),
             'height': _normalize_height(_extract_first(body_text, [r'身高[:：]\s*([0-9]{2,3}\s*cm?)'])),
-            'bust': _extract_measurement(body_text, 'B'),
-            'waist': _extract_measurement(body_text, 'W'),
-            'hip': _extract_measurement(body_text, 'H'),
+            'bust': measurements['bust'],
+            'waist': measurements['waist'],
+            'hip': measurements['hip'],
         }
 
     @staticmethod
@@ -164,9 +167,20 @@ def _normalize_height(text):
     return normalized
 
 
+def _normalize_date_text(text):
+    normalized = str(text or '').strip()
+    if not normalized:
+        return ''
+    match = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})', normalized)
+    if not match:
+        return normalized
+    year, month, day = match.groups()
+    return f'{year}-{int(month):02d}-{int(day):02d}'
+
+
 def _extract_measurement(text, axis):
     normalized_text = str(text or '').strip()
-    axis_pattern = rf'{re.escape(axis)}\s*([0-9]{{2,3}})'
+    axis_pattern = rf'{re.escape(axis)}\s*[:：]?\s*([0-9]{{2,3}})'
     match = re.search(axis_pattern, normalized_text, re.IGNORECASE)
     if match:
         return str(match.group(1) or '').strip()
@@ -176,6 +190,32 @@ def _extract_measurement(text, axis):
             rf'{re.escape(_axis_label(axis))}[:：]\s*([0-9]{{2,3}})',
         ],
     )
+
+
+def _extract_measurements(text):
+    normalized_text = str(text or '').strip()
+    explicit_measurements = {
+        'bust': _extract_measurement(normalized_text, 'B'),
+        'waist': _extract_measurement(normalized_text, 'W'),
+        'hip': _extract_measurement(normalized_text, 'H'),
+    }
+    if any(explicit_measurements.values()):
+        return explicit_measurements
+
+    match = re.search(
+        r'(?<!\d)([0-9]{2,3})\s*[-/／]\s*([0-9]{2,3})\s*[-/／]\s*([0-9]{2,3})(?:\s*\(\s*cm\s*\))?(?!\d)',
+        normalized_text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return explicit_measurements
+
+    bust, waist, hip = match.groups()
+    return {
+        'bust': str(bust or '').strip(),
+        'waist': str(waist or '').strip(),
+        'hip': str(hip or '').strip(),
+    }
 
 
 def _axis_label(axis):
