@@ -5,7 +5,7 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.data.database_handler import VideoDatabase
 from app.services.enrichment.actor_binghuo_enrichment import ActorBinghuoEnrichmentService
 
@@ -51,6 +51,20 @@ class FakeCanglanggeCandidateService:
 
     def list_candidates(self):
         return [dict(row) for row in self.rows]
+
+
+class FakeLogger:
+    def __init__(self):
+        self.records = []
+
+    def log(self, level, message, **fields):
+        self.records.append(
+            {
+                'level': level,
+                'message': message,
+                'fields': dict(fields),
+            }
+        )
 
 
 class ActorBinghuoEnrichmentServiceTest(unittest.TestCase):
@@ -192,6 +206,86 @@ class ActorBinghuoEnrichmentServiceTest(unittest.TestCase):
         self.assertEqual(scraper.opened_targets, ['8888'])
         self.assertEqual(self.db.get_actor_enrichment_record('演员Y')['binghuo_birthday'], '2001-01-01')
 
+    def test_missing_birthday_keeps_actor_retryable_and_marks_unenriched(self):
+        actor_name = 'Actor Missing Birthday'
+        self._insert_actor(actor_name, birthday='', age='')
+        scraper = FakeBinghuoScraper(
+            search_results={
+                actor_name: [
+                    {
+                        'title': actor_name,
+                        'href': 'https://www.fouroursonsinc.com/person/36413',
+                    }
+                ]
+            },
+            profiles={
+                '36413': {
+                    'person_id': '36413',
+                    'birthday': '',
+                    'age': '30',
+                    'height': '175',
+                    'bust': '108',
+                    'waist': '62',
+                    'hip': '91',
+                }
+            },
+        )
+        service = ActorBinghuoEnrichmentService(
+            self.db,
+            scraper=scraper,
+            candidate_service=FakeCanglanggeCandidateService([]),
+        )
+
+        result = service.enrich_next_actors(1)
+
+        self.assertEqual(result['results'][0]['status'], UNENRICHED_STATUS)
+        self.assertEqual(result['success_count'], 0)
+        record = self.db.get_actor_enrichment_record(actor_name)
+        self.assertEqual(record['binghuo_person_id'], '36413')
+        self.assertEqual(record['binghuo_enrichment_status'], UNENRICHED_STATUS)
+        self.assertEqual(record['binghuo_birthday'], '')
+        self.assertEqual(record['binghuo_height'], '175')
+        actor_row = self.db.list_actors(actor_name)[0]
+        self.assertEqual(actor_row['birthday'], '')
+        self.assertEqual(actor_row['raw_age'], '30')
+        self.assertIn(actor_name, [row['actor_name'] for row in service._candidate_actors()])
+
+    def test_logs_actor_level_result_fields_for_partial_binghuo_profile(self):
+        actor_name = 'Actor Logged'
+        self._insert_actor(actor_name, birthday='', age='')
+        scraper = FakeBinghuoScraper(
+            search_results={
+                actor_name: [
+                    {
+                        'title': actor_name,
+                        'href': 'https://www.fouroursonsinc.com/person/5001',
+                    }
+                ]
+            },
+            profiles={
+                '5001': {
+                    'person_id': '5001',
+                    'birthday': '',
+                    'age': '29',
+                    'height': '168',
+                }
+            },
+        )
+        logger = FakeLogger()
+        service = ActorBinghuoEnrichmentService(
+            self.db,
+            scraper=scraper,
+            candidate_service=FakeCanglanggeCandidateService([]),
+            logger=logger,
+        )
+
+        service.enrich_next_actors(1)
+
+        actor_result_logs = [entry for entry in logger.records if entry['fields'].get('actor_name') == actor_name]
+        self.assertTrue(actor_result_logs)
+        self.assertEqual(actor_result_logs[-1]['fields']['person_id'], '5001')
+        self.assertFalse(actor_result_logs[-1]['fields']['birthday_found'])
+        self.assertEqual(actor_result_logs[-1]['fields']['status_written'], UNENRICHED_STATUS)
 
     def test_existing_person_id_with_missing_birthday_is_retried(self):
         actor_name = '\u307f\u306a\u307f\u7fbd\u7409'

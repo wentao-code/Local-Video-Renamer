@@ -36,6 +36,7 @@ BASE_GUI_TEXTS = {
     'actor.viewer.search_placeholder': '输入演员、作者ID、生日、年龄或补全状态实时筛选...',
     'actor.viewer.reset_avfan': '天陨重置',
     'actor.viewer.reset_javtxt': '辛聚重置',
+    'actor.viewer.reset_binghuo': '并火重置',
     'actor.viewer.add': '添加',
     'actor.viewer.add_confirm': '确认',
     'actor.viewer.headers': ['演员', '作者 ID', '生日', '年龄', '补全状态', '详情', '操作'],

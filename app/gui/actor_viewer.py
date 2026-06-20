@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
 
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
     JAVTXT_VIDEO_SOURCE,
     get_video_enrichment_source_label,
 )
@@ -114,6 +115,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_reset_javtxt = QPushButton(tr('actor.viewer.reset_javtxt'))
         self.btn_reset_javtxt.clicked.connect(lambda: self.reset_selected_rows(JAVTXT_VIDEO_SOURCE))
 
+        self.btn_reset_binghuo = QPushButton(tr('actor.viewer.reset_binghuo'))
+        self.btn_reset_binghuo.clicked.connect(lambda: self.reset_selected_rows(BINGHUO_ACTOR_SOURCE))
+
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(self.load_data)
 
@@ -133,6 +137,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         action_layout.addWidget(self.btn_add)
         action_layout.addWidget(self.btn_reset_avfan)
         action_layout.addWidget(self.btn_reset_javtxt)
+        action_layout.addWidget(self.btn_reset_binghuo)
         action_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
@@ -160,6 +165,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 self.btn_add,
                 self.btn_reset_avfan,
                 self.btn_reset_javtxt,
+                self.btn_reset_binghuo,
                 self.btn_refresh,
                 self.table,
             ]

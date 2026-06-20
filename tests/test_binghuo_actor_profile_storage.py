@@ -52,6 +52,36 @@ class BinghuoActorProfileStorageTest(unittest.TestCase):
         self.assertEqual(actor_row['birthday'], '2003-09-04')
         self.assertEqual(actor_row['raw_age'], '22')
 
+    def test_save_partial_binghuo_profile_updates_age_without_filling_missing_birthday(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO actors (name, birthday, age, matched) VALUES (?, ?, ?, 1)",
+                ('演员Partial', '', ''),
+            )
+            conn.commit()
+
+        self.db.save_binghuo_actor_profile(
+            '演员Partial',
+            UNENRICHED_STATUS,
+            person_id='7001',
+            birthday='',
+            age='29',
+            height='168',
+            bust='86',
+            waist='59',
+            hip='88',
+        )
+
+        record = self.db.get_actor_enrichment_record('演员Partial')
+        actor_row = self.db.list_actors('演员Partial')[0]
+
+        self.assertEqual(record['binghuo_person_id'], '7001')
+        self.assertEqual(record['binghuo_enrichment_status'], UNENRICHED_STATUS)
+        self.assertEqual(record['binghuo_birthday'], '')
+        self.assertEqual(record['binghuo_age'], '29')
+        self.assertEqual(actor_row['birthday'], '')
+        self.assertEqual(actor_row['raw_age'], '29')
+
     def test_library_admin_add_actor_reuses_saved_binghuo_birthday_and_age(self):
         self.db.save_binghuo_actor_profile(
             '演员B',

@@ -7,6 +7,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
+from app.core.enrichment_sources import BINGHUO_ACTOR_SOURCE
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
@@ -52,6 +53,7 @@ class ActorBackendStub:
         ]
         self.added = []
         self.list_calls = 0
+        self.reset_calls = []
 
     def list_actors(self, search_text=''):
         self.list_calls += 1
@@ -74,6 +76,10 @@ class ActorBackendStub:
         )
         return 1
 
+    def reset_actor_enrichments(self, actor_names, source_key=None):
+        self.reset_calls.append((list(actor_names or []), source_key))
+        return len(actor_names or [])
+
 
 class CodePrefixBackendStub:
     def __init__(self):
@@ -89,6 +95,7 @@ class CodePrefixBackendStub:
         ]
         self.added = []
         self.list_calls = 0
+        self.reset_calls = []
 
     def list_code_prefixes(self, search_text=''):
         self.list_calls += 1
@@ -110,6 +117,10 @@ class CodePrefixBackendStub:
             }
         )
         return 1
+
+    def reset_code_prefix_enrichments(self, prefixes, source_key=None):
+        self.reset_calls.append((list(prefixes or []), source_key))
+        return len(prefixes or [])
 
 
 class ViewerInlineAddTest(unittest.TestCase):
@@ -136,6 +147,7 @@ class ViewerInlineAddTest(unittest.TestCase):
                     window.btn_add,
                     window.btn_reset_avfan,
                     window.btn_reset_javtxt,
+                    window.btn_reset_binghuo,
                     window.btn_refresh,
                 )
 
@@ -161,9 +173,26 @@ class ViewerInlineAddTest(unittest.TestCase):
                         window.btn_add,
                         window.btn_reset_avfan,
                         window.btn_reset_javtxt,
+                        window.btn_reset_binghuo,
                         window.btn_refresh,
                     ],
                 )
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_actor_viewer_binghuo_reset_uses_selected_rows(self):
+        backend = ActorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = ActorViewerWindow(backend)
+            try:
+                window.table.selectRow(0)
+                with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes), patch.object(
+                    QMessageBox, 'information'
+                ):
+                    window.btn_reset_binghuo.click()
+
+                self.assertEqual(backend.reset_calls, [(['Alpha'], BINGHUO_ACTOR_SOURCE)])
             finally:
                 window.hide()
                 window.deleteLater()
@@ -257,7 +286,6 @@ class ViewerInlineAddTest(unittest.TestCase):
             finally:
                 window.hide()
                 window.deleteLater()
-
 
 if __name__ == '__main__':
     unittest.main()

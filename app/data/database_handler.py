@@ -2681,6 +2681,26 @@ class VideoDatabase(
                 )
                 for actor_name in normalized_names:
                     self._refresh_actor_combined_status(cursor, actor_name)
+            elif normalized_source == BINGHUO_ACTOR_SOURCE:
+                cursor.execute(
+                    f'''
+                    UPDATE actor_enrichments
+                    SET binghuo_person_id = '',
+                        binghuo_enrichment_status = ?,
+                        binghuo_last_error = '',
+                        binghuo_last_enriched_at = NULL,
+                        binghuo_birthday = '',
+                        binghuo_age = '',
+                        binghuo_height = '',
+                        binghuo_bust = '',
+                        binghuo_waist = '',
+                        binghuo_hip = ''
+                    WHERE actor_name IN ({placeholders})
+                    ''',
+                    [UNENRICHED_STATUS, *normalized_names],
+                )
+                for actor_name in normalized_names:
+                    self._refresh_actor_combined_status(cursor, actor_name)
             else:
                 cursor.execute(f'''
                     DELETE FROM actor_movies

@@ -94,6 +94,7 @@ class ActorBinghuoEnrichmentService:
                         success_count += 1
                     else:
                         failed_count += 1
+                self._log_actor_result(actor_name, result)
                 results.append(result)
                 self._update_progress(len(results), success_count, failed_count, actor_name)
 
@@ -150,15 +151,15 @@ class ActorBinghuoEnrichmentService:
             if not birthday:
                 if not self._should_process_missing_birthday(record):
                     continue
-                candidates.append({'actor_name': actor_name, 'priority': 2})
+                candidates.append({'actor_name': actor_name, 'priority': self._missing_birthday_priority(record)})
                 seen.add(actor_name)
                 continue
 
             if self._should_process_profile_only(record):
-                candidates.append({'actor_name': actor_name, 'priority': 3})
+                candidates.append({'actor_name': actor_name, 'priority': 4})
                 seen.add(actor_name)
 
-        return candidates
+        return sorted(candidates, key=lambda item: item['priority'])
 
     def _remaining_actor_count(self):
         return len(self._candidate_actors())
@@ -169,6 +170,15 @@ class ActorBinghuoEnrichmentService:
         if status == NO_SEARCH_RESULTS_STATUS:
             return False
         return True
+
+    @staticmethod
+    def _missing_birthday_priority(record):
+        person_id = str((record or {}).get('binghuo_person_id', '') or '').strip()
+        has_profile_data = any(
+            str((record or {}).get(field, '') or '').strip()
+            for field in ('binghuo_age', 'binghuo_height', 'binghuo_bust', 'binghuo_waist', 'binghuo_hip')
+        )
+        return 2 if person_id or has_profile_data else 3
 
     @staticmethod
     def _should_process_profile_only(record):
@@ -202,34 +212,41 @@ class ActorBinghuoEnrichmentService:
             current_url = self.scraper.open_person_page(page, url=target_result.get('href', ''))
 
         profile = self.scraper.parse_profile(page)
+        birthday = str((profile or {}).get('birthday', '') or '').strip()
+        age = str((profile or {}).get('age', '') or '').strip()
+        height = str((profile or {}).get('height', '') or '').strip()
+        bust = str((profile or {}).get('bust', '') or '').strip()
+        waist = str((profile or {}).get('waist', '') or '').strip()
+        hip = str((profile or {}).get('hip', '') or '').strip()
         resolved_person_id = (
             str((profile or {}).get('person_id', '') or '').strip()
             or str((target_result or {}).get('person_id', '') or '').strip()
             or str(person_id or '').strip()
             or self.scraper.extract_person_id(current_url)
         )
+        resolved_status = ENRICHED_STATUS if birthday else UNENRICHED_STATUS
         self.database.save_binghuo_actor_profile(
             actor_name,
-            ENRICHED_STATUS,
+            resolved_status,
             person_id=resolved_person_id,
-            birthday=str((profile or {}).get('birthday', '') or '').strip(),
-            age=str((profile or {}).get('age', '') or '').strip(),
-            height=str((profile or {}).get('height', '') or '').strip(),
-            bust=str((profile or {}).get('bust', '') or '').strip(),
-            waist=str((profile or {}).get('waist', '') or '').strip(),
-            hip=str((profile or {}).get('hip', '') or '').strip(),
+            birthday=birthday,
+            age=age,
+            height=height,
+            bust=bust,
+            waist=waist,
+            hip=hip,
             error='',
         )
         return {
             'actor_name': actor_name,
-            'status': ENRICHED_STATUS,
+            'status': resolved_status,
             'person_id': resolved_person_id,
-            'birthday': str((profile or {}).get('birthday', '') or '').strip(),
-            'age': str((profile or {}).get('age', '') or '').strip(),
-            'height': str((profile or {}).get('height', '') or '').strip(),
-            'bust': str((profile or {}).get('bust', '') or '').strip(),
-            'waist': str((profile or {}).get('waist', '') or '').strip(),
-            'hip': str((profile or {}).get('hip', '') or '').strip(),
+            'birthday': birthday,
+            'age': age,
+            'height': height,
+            'bust': bust,
+            'waist': waist,
+            'hip': hip,
         }
 
     @classmethod
@@ -269,3 +286,13 @@ class ActorBinghuoEnrichmentService:
     def _log(self, level, message, **fields):
         if self.logger is not None:
             self.logger.log(level, message, service='actor_binghuo_enrichment', **fields)
+
+    def _log_actor_result(self, actor_name, result):
+        self._log(
+            'INFO',
+            '演员生日/并火补全结果',
+            actor_name=actor_name,
+            person_id=str((result or {}).get('person_id', '') or '').strip(),
+            birthday_found=bool(str((result or {}).get('birthday', '') or '').strip()),
+            status_written=str((result or {}).get('status', '') or '').strip(),
+        )

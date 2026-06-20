@@ -178,21 +178,18 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.check_network_guard()
 
     def ensure_backend_running(self):
-        self.backend_instance_token = uuid.uuid4().hex
-        self.owns_backend_process = False
         health = self.get_backend_health()
-        if self.is_reusable_backend_instance(health):
-            self.backend_instance_token = str((health or {}).get('backend_instance_token') or self.backend_instance_token)
+        if self._adopt_reusable_backend(health):
             return
         if health is not None:
             self.stop_backend_on_port(health=health)
             health = self.get_backend_health()
-            if self.is_reusable_backend_instance(health):
-                self.backend_instance_token = str((health or {}).get('backend_instance_token') or self.backend_instance_token)
+            if self._adopt_reusable_backend(health):
                 return
             if health is not None:
                 raise RuntimeError(tr('main.backend_port_in_use', port=get_backend_port()))
 
+        self.backend_instance_token = uuid.uuid4().hex
         backend_script = PROJECT_ROOT / 'backend_server.py'
         creation_flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
         self.backend_process = subprocess.Popen(
@@ -222,6 +219,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if health is not None:
             raise RuntimeError(tr('main.backend_port_in_use', port=get_backend_port()))
         raise RuntimeError(tr('main.backend_start_timeout'))
+
+    def _adopt_reusable_backend(self, health):
+        if not self.is_reusable_backend_instance(health):
+            return False
+        if self.is_expected_backend_instance(health):
+            return True
+        self.backend_instance_token = str((health or {}).get('backend_instance_token') or self.backend_instance_token)
+        self.backend_process = None
+        self.owns_backend_process = False
+        return True
 
     @staticmethod
     def _get_backend_python_executable():
@@ -922,6 +929,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.update_network_status_label()
 
     def check_network_guard(self):
+        try:
+            self.ensure_backend_running()
+        except Exception:
+            pass
         try:
             probe_result = self.network_guard_service.probe()
         except Exception:

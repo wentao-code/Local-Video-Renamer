@@ -6,8 +6,13 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.core.filename_rules import extract_code_from_filename
-from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
-from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_sources import BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_status import (
+    ENRICHED_STATUS,
+    NO_SEARCH_RESULTS_STATUS,
+    NO_VIDEO_DETAIL_STATUS,
+    UNENRICHED_STATUS,
+)
 from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
 from app.core.video_code import compact_video_code, has_supported_video_code, standardize_video_code
 from app.data.database_handler import VideoDatabase
@@ -1279,6 +1284,39 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
             record = db.get_code_prefix_enrichment_record('AARM')
 
         self.assertEqual(record['javtxt_enrichment_status'], UNENRICHED_STATUS)
+
+    def test_reset_actor_enrichments_binghuo_clears_only_binghuo_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.save_actor_enrichment('Actor Binghuo', ENRICHED_STATUS, actor_id='actor-1')
+            db.save_binghuo_actor_profile(
+                'Actor Binghuo',
+                ENRICHED_STATUS,
+                person_id='bh-1',
+                birthday='1990-01-01',
+                age='35',
+                height='168',
+                bust='88',
+                waist='60',
+                hip='90',
+                error='old error',
+            )
+
+            reset_count = db.reset_actor_enrichments(['Actor Binghuo'], source_key=BINGHUO_ACTOR_SOURCE)
+            record = db.get_actor_enrichment_record('Actor Binghuo')
+
+        self.assertEqual(reset_count, 1)
+        self.assertEqual(record['actor_id'], 'actor-1')
+        self.assertEqual(record['avfan_enrichment_status'], ENRICHED_STATUS)
+        self.assertEqual(record['binghuo_enrichment_status'], UNENRICHED_STATUS)
+        self.assertEqual(record['binghuo_person_id'], '')
+        self.assertEqual(record['binghuo_birthday'], '')
+        self.assertEqual(record['binghuo_age'], '')
+        self.assertEqual(record['binghuo_height'], '')
+        self.assertEqual(record['binghuo_bust'], '')
+        self.assertEqual(record['binghuo_waist'], '')
+        self.assertEqual(record['binghuo_hip'], '')
 
     def test_sanitize_ineligible_javtxt_state_converts_processed_video_state_to_terminal_no_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
