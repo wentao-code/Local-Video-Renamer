@@ -6,6 +6,12 @@ from app.gui.main_window import VidNormApp
 
 
 class BackendReuseDecisionTest(unittest.TestCase):
+    def test_backend_revision_marks_actor_library_status_payload_change(self):
+        self.assertIn('actor-library-status', BACKEND_API_REVISION)
+
+    def test_backend_revision_marks_actor_detail_payload_change(self):
+        self.assertIn('actor-detail', BACKEND_API_REVISION)
+
     def test_reuses_same_project_compatible_backend(self):
         health = {
             'backend_revision': BACKEND_API_REVISION,

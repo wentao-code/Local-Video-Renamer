@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -37,6 +37,14 @@ from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
 from app.services.detail import ACTOR_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
 from app.services.library import ActorProfileUpdateService
+
+
+ACTOR_COLUMN_NAME = 0
+ACTOR_COLUMN_BIRTHDAY = 1
+ACTOR_COLUMN_AGE = 2
+ACTOR_COLUMN_STATUS = 3
+ACTOR_COLUMN_DETAIL = 4
+ACTOR_COLUMN_ACTIONS = 5
 
 
 class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
@@ -111,28 +119,27 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
         filter_layout.addWidget(QLabel(tr('common.filter_realtime')))
         filter_layout.addWidget(self.search_input)
-        filter_layout.addWidget(QLabel(tr('detail.quick_filter_label')))
-        filter_layout.addWidget(self.detail_filter_combo)
-        filter_layout.addWidget(self.btn_apply_detail_filter)
         filter_layout.addWidget(QLabel(tr('common.sort_field_label')))
         filter_layout.addWidget(self.sort_field_combo)
         filter_layout.addWidget(QLabel(tr('common.sort_order_label')))
         filter_layout.addWidget(self.sort_order_combo)
+        filter_layout.addWidget(self.btn_apply_sort)
         filter_layout.addStretch()
 
+        action_layout.addWidget(QLabel(tr('detail.quick_filter_label')))
+        action_layout.addWidget(self.detail_filter_combo)
+        action_layout.addWidget(self.btn_apply_detail_filter)
         action_layout.addStretch()
-        action_layout.addWidget(self.btn_apply_sort)
         action_layout.addWidget(self.btn_add)
         action_layout.addWidget(self.btn_reset_avfan)
         action_layout.addWidget(self.btn_reset_javtxt)
         action_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
+        self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(tr('actor.viewer.headers'))
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for index in range(1, 7):
-            self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeToContents)
+        for index in range(self.table.columnCount()):
+            self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Fixed)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -141,6 +148,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         layout.addLayout(action_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
+        self._apply_table_column_widths()
         self.set_async_busy_widgets(
             [
                 self.search_input,
@@ -156,6 +164,35 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 self.table,
             ]
         )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_table_column_widths()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._apply_table_column_widths)
+
+    def _apply_table_column_widths(self):
+        viewport_width = max(self.table.viewport().width(), 980)
+        actor_width = max(120, viewport_width // 7)
+        birthday_width = 120
+        age_width = 72
+        detail_width = 104
+        base_status_width = max(320, int(viewport_width * 0.3))
+        base_action_width = max(
+            188,
+            viewport_width - actor_width - birthday_width - age_width - base_status_width - detail_width,
+        )
+        action_width = max(188, int(base_action_width * (2 / 3)))
+        status_width = base_status_width + (base_action_width - action_width)
+
+        self.table.setColumnWidth(ACTOR_COLUMN_NAME, actor_width)
+        self.table.setColumnWidth(ACTOR_COLUMN_BIRTHDAY, birthday_width)
+        self.table.setColumnWidth(ACTOR_COLUMN_AGE, age_width)
+        self.table.setColumnWidth(ACTOR_COLUMN_STATUS, status_width)
+        self.table.setColumnWidth(ACTOR_COLUMN_DETAIL, detail_width)
+        self.table.setColumnWidth(ACTOR_COLUMN_ACTIONS, action_width)
 
     def load_data(self):
         if self.is_async_task_running():
@@ -175,21 +212,20 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             self.table.insertRow(row_idx)
             values = (
                 row_data.get('name', ''),
-                row_data.get('actor_id', ''),
                 row_data.get('birthday', ''),
                 row_data.get('age', ''),
                 row_data.get('enrichment_status', ''),
             )
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
-                if col_idx in (1, 2, 3, 4):
+                if col_idx in (ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
                     item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_idx, col_idx, item)
 
             actor_name = row_data.get('name', '')
-            self.table.setCellWidget(row_idx, 5, self.build_detail_button(actor_name))
-            self.table.setCellWidget(row_idx, 6, self.build_action_buttons(actor_name))
+            self.table.setCellWidget(row_idx, ACTOR_COLUMN_DETAIL, self.build_detail_button(actor_name))
+            self.table.setCellWidget(row_idx, ACTOR_COLUMN_ACTIONS, self.build_action_buttons(actor_name))
         if self.adding_actor:
             self.insert_add_row()
 
@@ -241,34 +277,34 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
     def insert_add_row(self):
         self.table.insertRow(0)
-        for column in range(5):
+        for column in range(ACTOR_COLUMN_STATUS + 1):
             item = QTableWidgetItem('')
-            if column in (1, 2, 3, 4):
+            if column in (ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
                 item.setTextAlignment(Qt.AlignCenter)
-            if column in (0, 2, 3):
+            if column in (ACTOR_COLUMN_NAME, ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
                 item.setFlags(item.flags() | Qt.ItemIsEditable)
             else:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(0, column, item)
-        self.table.setCellWidget(0, 5, QWidget())
-        self.table.setCellWidget(0, 6, QWidget())
+        self.table.setCellWidget(0, ACTOR_COLUMN_DETAIL, QWidget())
+        self.table.setCellWidget(0, ACTOR_COLUMN_ACTIONS, QWidget())
         self.adding_row = 0
         self.table.setEditTriggers(
             QAbstractItemView.SelectedClicked
             | QAbstractItemView.DoubleClicked
             | QAbstractItemView.EditKeyPressed
         )
-        item = self.table.item(0, 0)
+        item = self.table.item(0, ACTOR_COLUMN_NAME)
         if item is not None:
-            self.table.setCurrentCell(0, 0)
+            self.table.setCurrentCell(0, ACTOR_COLUMN_NAME)
             self.table.editItem(item)
 
     def confirm_actor_add(self):
         if self.adding_row is None:
             return
-        actor_name = self._item_text(self.adding_row, 0)
-        birthday = self._item_text(self.adding_row, 2)
-        age = self._item_text(self.adding_row, 3)
+        actor_name = self._item_text(self.adding_row, ACTOR_COLUMN_NAME)
+        birthday = self._item_text(self.adding_row, ACTOR_COLUMN_BIRTHDAY)
+        age = self._item_text(self.adding_row, ACTOR_COLUMN_AGE)
         if not actor_name:
             QMessageBox.warning(self, tr('common.prompt'), tr('actor.viewer.name_required'))
             return
@@ -288,9 +324,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             )
             return
 
-        self._set_item_text(self.adding_row, 0, normalized_name)
-        self._set_item_text(self.adding_row, 2, normalized_payload.get('birthday', ''))
-        self._set_item_text(self.adding_row, 3, normalized_payload.get('age', ''))
+        self._set_item_text(self.adding_row, ACTOR_COLUMN_NAME, normalized_name)
+        self._set_item_text(self.adding_row, ACTOR_COLUMN_BIRTHDAY, normalized_payload.get('birthday', ''))
+        self._set_item_text(self.adding_row, ACTOR_COLUMN_AGE, normalized_payload.get('age', ''))
 
         self.start_async_task(
             lambda: self._run_actor_add_task(
@@ -325,7 +361,12 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             'actor_id': '',
             'avfan_enrichment_status': UNENRICHED_STATUS,
             'javtxt_enrichment_status': UNENRICHED_STATUS,
-            'enrichment_status': build_library_enrichment_status_text(UNENRICHED_STATUS, UNENRICHED_STATUS),
+            'binghuo_enrichment_status': UNENRICHED_STATUS,
+            'enrichment_status': build_library_enrichment_status_text(
+                UNENRICHED_STATUS,
+                UNENRICHED_STATUS,
+                UNENRICHED_STATUS,
+            ),
             'ladder_tier': '',
             'update_status': '',
         }
@@ -442,9 +483,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.editing_actor_name = actor_name
         self.editing_row = row
         self.editing_actor_original = {
-            'name': self._item_text(row, 0),
-            'birthday': self._item_text(row, 2),
-            'age': self._item_text(row, 3),
+            'name': self._item_text(row, ACTOR_COLUMN_NAME),
+            'birthday': self._item_text(row, ACTOR_COLUMN_BIRTHDAY),
+            'age': self._item_text(row, ACTOR_COLUMN_AGE),
             'raw_birthday': self._row_data_value(actor_name, 'birthday'),
             'raw_age': self._row_data_value(actor_name, 'raw_age'),
         }
@@ -457,9 +498,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         button = self.action_buttons.get(actor_name, {}).get('edit')
         if button is not None:
             button.setText(tr('common.ok'))
-        item = self.table.item(row, 0)
+        item = self.table.item(row, ACTOR_COLUMN_NAME)
         if item is not None:
-            self.table.setCurrentCell(row, 0)
+            self.table.setCurrentCell(row, ACTOR_COLUMN_NAME)
             self.table.editItem(item)
 
     def confirm_actor_edit(self):
@@ -471,9 +512,17 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             self.clear_edit_state()
             return
 
-        new_name = self._item_text(self.editing_row, 0)
-        birthday = self._edited_value_or_original_raw(2, original.get('birthday', ''), original.get('raw_birthday', ''))
-        age = self._edited_value_or_original_raw(3, original.get('age', ''), original.get('raw_age', ''))
+        new_name = self._item_text(self.editing_row, ACTOR_COLUMN_NAME)
+        birthday = self._edited_value_or_original_raw(
+            ACTOR_COLUMN_BIRTHDAY,
+            original.get('birthday', ''),
+            original.get('raw_birthday', ''),
+        )
+        age = self._edited_value_or_original_raw(
+            ACTOR_COLUMN_AGE,
+            original.get('age', ''),
+            original.get('raw_age', ''),
+        )
         if not new_name:
             self.set_actor_row_editable(self.editing_row, False)
             self.restore_editing_row_values(original)
@@ -488,9 +537,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             QMessageBox.warning(self, tr('common.prompt'), str(exc))
             return
 
-        self._set_item_text(self.editing_row, 0, normalized_payload.get('name', ''))
-        self._set_item_text(self.editing_row, 2, normalized_payload.get('birthday', ''))
-        self._set_item_text(self.editing_row, 3, normalized_payload.get('age', ''))
+        self._set_item_text(self.editing_row, ACTOR_COLUMN_NAME, normalized_payload.get('name', ''))
+        self._set_item_text(self.editing_row, ACTOR_COLUMN_BIRTHDAY, normalized_payload.get('birthday', ''))
+        self._set_item_text(self.editing_row, ACTOR_COLUMN_AGE, normalized_payload.get('age', ''))
         self.set_actor_row_editable(self.editing_row, False)
 
         self.clear_edit_state()
@@ -536,7 +585,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             button.setText(tr('actor.viewer.edit'))
 
     def set_actor_row_editable(self, row, editable):
-        for column in (0, 2, 3):
+        for column in (ACTOR_COLUMN_NAME, ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
             item = self.table.item(row, column)
             if item is None:
                 continue
@@ -548,9 +597,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def restore_editing_row_values(self, values):
         if self.editing_row is None:
             return
-        self._set_item_text(self.editing_row, 0, values.get('name', ''))
-        self._set_item_text(self.editing_row, 2, values.get('birthday', ''))
-        self._set_item_text(self.editing_row, 3, values.get('age', ''))
+        self._set_item_text(self.editing_row, ACTOR_COLUMN_NAME, values.get('name', ''))
+        self._set_item_text(self.editing_row, ACTOR_COLUMN_BIRTHDAY, values.get('birthday', ''))
+        self._set_item_text(self.editing_row, ACTOR_COLUMN_AGE, values.get('age', ''))
 
     def _item_text(self, row, column):
         item = self.table.item(row, column)
@@ -580,7 +629,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def find_row_by_actor_name(self, actor_name):
         target = str(actor_name or '').strip()
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
+            item = self.table.item(row, ACTOR_COLUMN_NAME)
             if item and item.text().strip() == target:
                 return row
         return -1
@@ -651,7 +700,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         selected_rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         actor_names = []
         for row in selected_rows:
-            item = self.table.item(row, 0)
+            item = self.table.item(row, ACTOR_COLUMN_NAME)
             if item and item.text().strip():
                 actor_names.append(item.text().strip())
         return actor_names

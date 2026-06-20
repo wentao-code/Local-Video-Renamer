@@ -38,13 +38,17 @@ def build_video_enrichment_status_text(avfan_status, javtxt_status):
     )
 
 
-def build_library_enrichment_status_text(avfan_status, javtxt_status):
+def build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status=None):
     normalized_avfan = normalize_video_enrichment_status(avfan_status)
     normalized_javtxt = normalize_video_enrichment_status(javtxt_status)
-    return (
-        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {normalized_avfan} | '
-        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {normalized_javtxt}'
-    )
+    parts = [
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {normalized_avfan}',
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {normalized_javtxt}',
+    ]
+    if binghuo_status is not None:
+        normalized_binghuo = normalize_video_enrichment_status(binghuo_status)
+        parts.append(f'{VIDEO_ENRICHMENT_SOURCE_LABELS[BINGHUO_ACTOR_SOURCE]}: {normalized_binghuo}')
+    return ' | '.join(parts)
 
 
 def normalize_video_enrichment_status(status):

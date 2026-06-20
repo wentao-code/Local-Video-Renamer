@@ -193,5 +193,47 @@ class ActorBinghuoEnrichmentServiceTest(unittest.TestCase):
         self.assertEqual(self.db.get_actor_enrichment_record('演员Y')['binghuo_birthday'], '2001-01-01')
 
 
+    def test_existing_person_id_with_missing_birthday_is_retried(self):
+        actor_name = '\u307f\u306a\u307f\u7fbd\u7409'
+        self._insert_actor(actor_name, birthday='', age='30')
+        self.db.save_binghuo_actor_profile(
+            actor_name,
+            ENRICHED_STATUS,
+            person_id='36413',
+            birthday='',
+            age='30',
+            height='175',
+            bust='108',
+            waist='62',
+            hip='91',
+        )
+        scraper = FakeBinghuoScraper(
+            profiles={
+                '36413': {
+                    'person_id': '36413',
+                    'birthday': '1996-06-09',
+                    'age': '30',
+                    'height': '175',
+                    'bust': '108',
+                    'waist': '62',
+                    'hip': '91',
+                }
+            }
+        )
+        service = ActorBinghuoEnrichmentService(
+            self.db,
+            scraper=scraper,
+            candidate_service=FakeCanglanggeCandidateService([]),
+        )
+
+        result = service.enrich_next_actors(1)
+
+        self.assertEqual([row['actor_name'] for row in result['results']], [actor_name])
+        actor_row = self.db.list_actors(actor_name)[0]
+        self.assertEqual(actor_row['birthday'], '1996-06-09')
+        record = self.db.get_actor_enrichment_record(actor_name)
+        self.assertEqual(record['binghuo_birthday'], '1996-06-09')
+
+
 if __name__ == '__main__':
     unittest.main()

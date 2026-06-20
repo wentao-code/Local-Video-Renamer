@@ -20,6 +20,24 @@ def _run_sync_async_task(self, task, success_handler, error_title=None):
     return True
 
 
+def _layout_widgets(layout):
+    widgets = []
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget = item.widget()
+        if widget is not None:
+            widgets.append(widget)
+    return widgets
+
+
+def _tracked_layout_widgets(layout, *tracked_widgets):
+    widgets = []
+    for widget in _layout_widgets(layout):
+        if any(widget is tracked for tracked in tracked_widgets):
+            widgets.append(widget)
+    return widgets
+
+
 class ActorBackendStub:
     def __init__(self):
         self.rows = [
@@ -95,6 +113,92 @@ class CodePrefixBackendStub:
 
 
 class ViewerInlineAddTest(unittest.TestCase):
+    def test_actor_viewer_uses_two_row_toolbar_and_hides_actor_id_column(self):
+        backend = ActorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = ActorViewerWindow(backend)
+            try:
+                root_layout = window.layout()
+                first_row = root_layout.itemAt(0).layout()
+                second_row = root_layout.itemAt(1).layout()
+
+                first_row_widgets = _tracked_layout_widgets(
+                    first_row,
+                    window.search_input,
+                    window.sort_field_combo,
+                    window.sort_order_combo,
+                    window.btn_apply_sort,
+                )
+                second_row_widgets = _tracked_layout_widgets(
+                    second_row,
+                    window.detail_filter_combo,
+                    window.btn_apply_detail_filter,
+                    window.btn_add,
+                    window.btn_reset_avfan,
+                    window.btn_reset_javtxt,
+                    window.btn_refresh,
+                )
+
+                self.assertEqual(window.table.columnCount(), 6)
+                self.assertEqual(
+                    [window.table.horizontalHeaderItem(index).text() for index in range(window.table.columnCount())],
+                    ['演员', '生日', '年龄', '补全状态', '详情', '操作'],
+                )
+                self.assertEqual(
+                    first_row_widgets,
+                    [
+                        window.search_input,
+                        window.sort_field_combo,
+                        window.sort_order_combo,
+                        window.btn_apply_sort,
+                    ],
+                )
+                self.assertEqual(
+                    second_row_widgets,
+                    [
+                        window.detail_filter_combo,
+                        window.btn_apply_detail_filter,
+                        window.btn_add,
+                        window.btn_reset_avfan,
+                        window.btn_reset_javtxt,
+                        window.btn_refresh,
+                    ],
+                )
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_actor_viewer_scales_actor_and_status_columns_for_new_layout(self):
+        backend = ActorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = ActorViewerWindow(backend)
+            try:
+                window.resize(1220, 540)
+                window.show()
+                _APP.processEvents()
+
+                viewport_width = window.table.viewport().width()
+                actor_width = max(120, viewport_width // 7)
+                birthday_width = 120
+                age_width = 72
+                detail_width = 104
+                base_status_width = max(320, int(viewport_width * 0.3))
+                base_action_width = max(
+                    188,
+                    viewport_width - actor_width - birthday_width - age_width - base_status_width - detail_width,
+                )
+                expected_action_width = max(188, int(base_action_width * (2 / 3)))
+                expected_status_width = base_status_width + (base_action_width - expected_action_width)
+
+                self.assertAlmostEqual(window.table.columnWidth(0), viewport_width // 7, delta=16)
+                self.assertEqual(window.table.columnWidth(3), expected_status_width)
+                self.assertEqual(window.table.columnWidth(5), expected_action_width)
+                self.assertGreater(window.table.columnWidth(3), window.table.columnWidth(0))
+                self.assertLess(window.table.columnWidth(5), base_action_width)
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_actor_viewer_adds_top_inline_row_and_confirms(self):
         backend = ActorBackendStub()
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):

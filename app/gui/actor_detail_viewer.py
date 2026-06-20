@@ -89,20 +89,31 @@ class ActorDetailViewerWindow(QDialog):
 
         basic_group = QGroupBox(tr('actor.detail.basic_group'))
         basic_layout = QVBoxLayout(basic_group)
-        self.basic_grid = DetailSummaryGrid(columns=6)
+        self.basic_grid = DetailSummaryGrid(columns=4)
         self.basic_grid.set_items(
             [
                 ('name', tr('actor.detail.name'), ''),
                 ('actor_id', tr('actor.detail.actor_id'), ''),
+                ('binghuo_person_id', tr('actor.detail.binghuo_id'), ''),
                 ('ladder_tier', tr('actor.detail.ladder_tier'), ''),
                 ('update_status', tr('actor.detail.update_status'), ''),
-                ('local_total', tr('actor.detail.local_total'), ''),
-                ('web_total', tr('actor.detail.web_total'), ''),
                 ('age', tr('actor.detail.age'), ''),
                 ('birthday', tr('actor.detail.birthday'), ''),
+                ('binghuo_height', tr('actor.detail.height'), ''),
+                ('local_total', tr('actor.detail.local_total'), ''),
+                ('web_total', tr('actor.detail.web_total'), ''),
+                ('appearance_code_count', tr('actor.detail.appearance_code_count'), ''),
+                ('code_prefix_library_count', tr('actor.detail.code_prefix_library_count'), ''),
             ]
         )
         basic_layout.addWidget(self.basic_grid)
+        self.basic_measurements_grid = DetailSummaryGrid(columns=1)
+        self.basic_measurements_grid.set_items(
+            [
+                ('measurements', tr('actor.detail.measurements'), ''),
+            ]
+        )
+        basic_layout.addWidget(self.basic_measurements_grid)
         self.basic_status_grid = DetailSummaryGrid(columns=1)
         self.basic_status_grid.set_items(
             [
@@ -203,15 +214,27 @@ class ActorDetailViewerWindow(QDialog):
 
         self.basic_grid.set_value('name', self.detail.get('name', ''))
         self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or tr('common.empty'))
+        self.basic_grid.set_value('binghuo_person_id', self.detail.get('binghuo_person_id', '') or tr('common.empty'))
         self.basic_grid.set_value('ladder_tier', self.detail.get('ladder_tier', '') or tr('common.empty'))
         self.basic_grid.set_value(
             'update_status',
             tr(f"detail.update_status.{self.detail.get('update_status', 'inactive')}"),
         )
-        self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
-        self.basic_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
         self.basic_grid.set_value('age', self.detail.get('age', '') or tr('common.empty'))
         self.basic_grid.set_value('birthday', self.detail.get('birthday', '') or tr('common.empty'))
+        self.basic_grid.set_value('binghuo_height', self._format_height(self.detail.get('binghuo_height', '')))
+        self.basic_grid.set_value('local_total', str(self.detail.get('local_video_count', 0)))
+        self.basic_grid.set_value('web_total', str(self.detail.get('web_total_videos', 0)))
+        self.basic_grid.set_value('appearance_code_count', str(self.detail.get('appearance_code_count', 0)))
+        self.basic_grid.set_value('code_prefix_library_count', str(self.detail.get('code_prefix_library_count', 0)))
+        self.basic_measurements_grid.set_value(
+            'measurements',
+            self._format_measurements(
+                self.detail.get('binghuo_bust', ''),
+                self.detail.get('binghuo_waist', ''),
+                self.detail.get('binghuo_hip', ''),
+            ),
+        )
         self.basic_status_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or tr('actor.detail.web_status_default'))
 
         self.local_grid.set_value(
@@ -375,8 +398,42 @@ class ActorDetailViewerWindow(QDialog):
 
     def _refresh_parent_after_tier_update(self):
         parent = self.parent()
-        if hasattr(parent, 'load_board'):
-            parent.load_board()
-            return
-        if hasattr(parent, 'load_data'):
-            parent.load_data()
+        try:
+            if hasattr(parent, 'load_board'):
+                parent.load_board()
+                return
+            if hasattr(parent, 'load_data'):
+                parent.load_data()
+        except Exception as exc:
+            QMessageBox.warning(self, tr('common.operation_failed'), str(exc))
+
+    @staticmethod
+    def _format_height(height_text):
+        normalized = str(height_text or '').strip()
+        if not normalized:
+            return tr('common.empty')
+        if normalized.lower().endswith('cm'):
+            return normalized
+        return f'{normalized} cm'
+
+    @staticmethod
+    def _format_measurements(bust_text, waist_text, hip_text):
+        normalized_bust = str(bust_text or '').strip()
+        normalized_waist = str(waist_text or '').strip()
+        normalized_hip = str(hip_text or '').strip()
+        if not any((normalized_bust, normalized_waist, normalized_hip)):
+            return tr('common.empty')
+        return (
+            f'胸围：{ActorDetailViewerWindow._format_measurement_value(normalized_bust)} '
+            f'腰围：{ActorDetailViewerWindow._format_measurement_value(normalized_waist)} '
+            f'臀围：{ActorDetailViewerWindow._format_measurement_value(normalized_hip)}'
+        )
+
+    @staticmethod
+    def _format_measurement_value(value):
+        normalized = str(value or '').strip()
+        if not normalized:
+            return tr('common.empty')
+        if normalized.lower().endswith('cm'):
+            return normalized
+        return f'{normalized} cm'

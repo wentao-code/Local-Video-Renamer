@@ -31,7 +31,8 @@ class ActorDetailLibrary:
 
         actor_row = self._find_actor(actor_name)
         medal_maps = self._load_medal_maps()
-        local_videos = self._filter_visible_movies(self._find_local_actor_videos(actor_name, medal_maps=medal_maps))
+        raw_local_videos = self._find_local_actor_videos(actor_name, medal_maps=medal_maps)
+        local_videos = self._filter_visible_movies(raw_local_videos)
         raw_web_movies = self._enrich_rows(self.database.list_actor_movies(actor_name), medal_maps=medal_maps)
         web_movies = self._filter_visible_movies(self._filter_eligible_movies(raw_web_movies))
         eligible_web_movies = list(web_movies)
@@ -45,16 +46,24 @@ class ActorDetailLibrary:
         ladder_entry = self.database.get_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, actor_name)
 
         actor_id = actor_row.get('actor_id', '') or web_record.get('actor_id', '')
+        appearance_prefixes = self._collect_unique_prefixes(local_videos + eligible_web_movies)
         return {
             'name': actor_name,
             'birthday': birthday,
             'age': normalize_actor_age_for_display(actor_row.get('age', ''), birthday),
             'matched': bool(actor_row.get('matched')),
             'actor_id': actor_id,
+            'binghuo_person_id': str((web_record or {}).get('binghuo_person_id', '') or '').strip(),
+            'binghuo_height': str((web_record or {}).get('binghuo_height', '') or '').strip(),
+            'binghuo_bust': str((web_record or {}).get('binghuo_bust', '') or '').strip(),
+            'binghuo_waist': str((web_record or {}).get('binghuo_waist', '') or '').strip(),
+            'binghuo_hip': str((web_record or {}).get('binghuo_hip', '') or '').strip(),
             'web_url': build_actor_detail_web_url(actor_name, actor_id=actor_id),
             'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
             'update_status': resolve_update_status(local_videos + eligible_web_movies),
             'local_video_count': len(local_videos),
+            'appearance_code_count': len(appearance_prefixes),
+            'code_prefix_library_count': self._count_prefixes_in_library(appearance_prefixes),
             'local_prefix_distribution': self._build_prefix_distribution(local_videos),
             'local_year_distribution': self._build_year_distribution(local_videos),
             'web_enrichment_status': self._build_live_web_enrichment_status(web_record, web_movies, cache_rows),
@@ -124,8 +133,9 @@ class ActorDetailLibrary:
         javtxt_record_status = str((enrichment or {}).get('javtxt_enrichment_status', '')).strip() or UNENRICHED_STATUS
         summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
         javtxt_status = javtxt_record_status if summary['total_count'] <= 0 else build_javtxt_library_status(movies, cache_rows=cache_rows)
+        binghuo_status = str((enrichment or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
 
-        return build_library_enrichment_status_text(avfan_status, javtxt_status)
+        return build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status)
 
     def _build_prefix_distribution(self, rows):
         grouped = {}
@@ -171,3 +181,24 @@ class ActorDetailLibrary:
     @staticmethod
     def _is_eligible_movie(movie):
         return is_javtxt_eligible_movie(movie)
+
+    @staticmethod
+    def _collect_unique_prefixes(rows):
+        return {
+            normalized_prefix
+            for normalized_prefix in (
+                extract_code_prefix(standardize_video_code((row or {}).get('code', '')))
+                for row in (rows or [])
+            )
+            if normalized_prefix
+        }
+
+    def _count_prefixes_in_library(self, prefixes):
+        if not hasattr(self.database, 'list_code_prefix_enrichment_records'):
+            return 0
+        available_prefixes = {
+            str(prefix or '').strip().upper()
+            for prefix in (self.database.list_code_prefix_enrichment_records() or {}).keys()
+            if str(prefix or '').strip()
+        }
+        return sum(1 for prefix in (prefixes or set()) if prefix in available_prefixes)

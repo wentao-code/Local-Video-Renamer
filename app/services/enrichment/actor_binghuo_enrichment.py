@@ -166,10 +166,7 @@ class ActorBinghuoEnrichmentService:
     @staticmethod
     def _should_process_missing_birthday(record):
         status = str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
-        person_id = str((record or {}).get('binghuo_person_id', '') or '').strip()
         if status == NO_SEARCH_RESULTS_STATUS:
-            return False
-        if status == ENRICHED_STATUS and person_id:
             return False
         return True
 

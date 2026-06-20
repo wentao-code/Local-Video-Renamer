@@ -1688,12 +1688,14 @@ class VideoDatabase(
             if is_ignored_actor_name(actor_name):
                 continue
             record = enrichment_records.get(actor_name, {})
-            enrichment_status = str((record or {}).get('enrichment_status', '') or row[5] or '').strip()
-            if not enrichment_status:
-                enrichment_status = build_library_enrichment_status_text(
-                    (record or {}).get('avfan_enrichment_status', ''),
-                    (record or {}).get('javtxt_enrichment_status', ''),
-                )
+            avfan_enrichment_status = str((record or {}).get('avfan_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+            javtxt_enrichment_status = str((record or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+            binghuo_enrichment_status = str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+            enrichment_status = build_library_enrichment_status_text(
+                avfan_enrichment_status,
+                javtxt_enrichment_status,
+                binghuo_enrichment_status,
+            )
             results.append(
                 {
                     'name': actor_name,
@@ -1709,9 +1711,9 @@ class VideoDatabase(
                     'binghuo_bust': str((record or {}).get('binghuo_bust', '') or '').strip(),
                     'binghuo_waist': str((record or {}).get('binghuo_waist', '') or '').strip(),
                     'binghuo_hip': str((record or {}).get('binghuo_hip', '') or '').strip(),
-                    'binghuo_enrichment_status': str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-                    'avfan_enrichment_status': str((record or {}).get('avfan_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-                    'javtxt_enrichment_status': str((record or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
+                    'binghuo_enrichment_status': binghuo_enrichment_status,
+                    'avfan_enrichment_status': avfan_enrichment_status,
+                    'javtxt_enrichment_status': javtxt_enrichment_status,
                     'enrichment_status': enrichment_status or UNENRICHED_STATUS,
                 }
             )
@@ -1795,9 +1797,9 @@ class VideoDatabase(
     def _refresh_actor_combined_status(self, cursor, actor_name):
         cursor.execute(
             '''
-            SELECT avfan_enrichment_status, javtxt_enrichment_status,
-                   avfan_last_error, javtxt_last_error,
-                   avfan_last_enriched_at, javtxt_last_enriched_at
+            SELECT avfan_enrichment_status, javtxt_enrichment_status, binghuo_enrichment_status,
+                   avfan_last_error, javtxt_last_error, binghuo_last_error,
+                   avfan_last_enriched_at, javtxt_last_enriched_at, binghuo_last_enriched_at
             FROM actor_enrichments
             WHERE actor_name = ?
             ''',
@@ -1806,15 +1808,28 @@ class VideoDatabase(
         row = cursor.fetchone() or (
             UNENRICHED_STATUS,
             UNENRICHED_STATUS,
+            UNENRICHED_STATUS,
+            '',
+            '',
             '',
             '',
             '',
             '',
         )
-        avfan_status, javtxt_status, avfan_error, javtxt_error, avfan_at, javtxt_at = row
-        combined_status = build_library_enrichment_status_text(avfan_status, javtxt_status)
-        latest_error = str(javtxt_error or avfan_error or '')
-        latest_at = str(javtxt_at or avfan_at or '')
+        (
+            avfan_status,
+            javtxt_status,
+            binghuo_status,
+            avfan_error,
+            javtxt_error,
+            binghuo_error,
+            avfan_at,
+            javtxt_at,
+            binghuo_at,
+        ) = row
+        combined_status = build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status)
+        latest_error = str(binghuo_error or javtxt_error or avfan_error or '')
+        latest_at = str(binghuo_at or javtxt_at or avfan_at or '')
         cursor.execute(
             '''
             UPDATE actor_enrichments
@@ -1838,8 +1853,9 @@ class VideoDatabase(
             )
         summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
         javtxt_status = javtxt_record_status if summary['total_count'] <= 0 else build_javtxt_library_status(movies, cache_rows=cache_rows)
+        binghuo_status = str((enrichment or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
 
-        return build_library_enrichment_status_text(avfan_status, javtxt_status)
+        return build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status)
 
     @staticmethod
     def _has_javtxt_author(movie):
