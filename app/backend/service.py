@@ -131,9 +131,13 @@ class BackendService:
     def get_video_enrichment_summary(self):
         return {'summary': self.db.get_video_enrichment_summary()}
 
-    def get_data_center_summary(self):
+    def get_data_center_summary(self, force_refresh=False):
         self.ensure_database_loaded()
-        return {'summary': self.data_center_service.get_summary()}
+        return self.data_center_service.get_summary_snapshot(force_refresh=force_refresh)
+
+    def get_actor_metric_analysis(self, metric_key, force_refresh=False):
+        self.ensure_database_loaded()
+        return self.data_center_service.get_actor_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)
 
     def get_enrichment_progress(self):
         if self.enrichment_task_state.active_kind == 'combo':

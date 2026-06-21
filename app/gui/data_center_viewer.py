@@ -1,38 +1,48 @@
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QVBoxLayout
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
-from app.backend.client import BackendClient
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
-from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_targets import (
+    ACTOR_BIRTHDAY_TARGET,
+    ACTOR_LIBRARY_TARGET,
+    CODE_PREFIX_LIBRARY_TARGET,
+    VIDEO_LIBRARY_TARGET,
+)
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.data_center_analysis_viewer import ActorDataAnalysisWindow, _build_refresh_client
 from app.gui.enrichment_summary_widgets import SummaryCard
 from app.gui.i18n import tr
 
 
 class DataCenterWindow(AsyncTaskHostMixin, QDialog):
-    REFRESH_INTERVAL_MS = 5000
-
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
-        self.refresh_client = BackendClient(
-            base_url=backend_client.base_url,
-            timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), 90),
-        )
+        self.refresh_client = _build_refresh_client(backend_client)
         self._pending_close = False
+        self.analysis_window = None
         self._init_async_task_host()
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.setSingleShot(True)
-        self.refresh_timer.timeout.connect(self.load_data)
         self.init_ui()
         self.load_data()
 
     def init_ui(self):
         self.setWindowTitle(tr('data_center.title'))
-        self.resize(1240, 520)
+        self.resize(1240, 640)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
+        top_layout = QHBoxLayout()
+        self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
+        self.btn_analysis = QPushButton(tr('data_center.analysis.entry'))
+        self.btn_analysis.clicked.connect(self.show_analysis_window)
+        self.btn_refresh = QPushButton(tr('common.refresh'))
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
+        top_layout.addWidget(self.last_refreshed_label)
+        top_layout.addStretch()
+        top_layout.addWidget(self.btn_analysis)
+        top_layout.addWidget(self.btn_refresh)
+        layout.addLayout(top_layout)
+
         summary_group = QGroupBox(tr('data_center.progress_group'))
         summary_layout = QGridLayout(summary_group)
         summary_layout.setContentsMargins(12, 12, 12, 12)
@@ -45,6 +55,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.code_prefix_javtxt_card = SummaryCard(tr('data_center.code_prefix_javtxt'))
         self.actor_avfan_card = SummaryCard(tr('data_center.actor_avfan'))
         self.actor_javtxt_card = SummaryCard(tr('data_center.actor_javtxt'))
+        self.actor_binghuo_card = SummaryCard(tr('data_center.actor_binghuo'))
 
         summary_layout.addWidget(self.video_avfan_card, 0, 0)
         summary_layout.addWidget(self.video_javtxt_card, 0, 1)
@@ -52,20 +63,23 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         summary_layout.addWidget(self.code_prefix_javtxt_card, 1, 1)
         summary_layout.addWidget(self.actor_avfan_card, 2, 0)
         summary_layout.addWidget(self.actor_javtxt_card, 2, 1)
+        summary_layout.addWidget(self.actor_binghuo_card, 3, 0)
 
         layout.addWidget(summary_group)
         self.setLayout(layout)
+        self.set_async_busy_widgets([self.btn_refresh, self.btn_analysis])
 
-    def load_data(self):
+    def load_data(self, force_refresh=False):
         if self._pending_close or self.is_async_task_running():
             return
 
         self.start_async_task(
             lambda: {
-                'summary': self.refresh_client.get_data_center_summary() or {},
+                **dict(self.refresh_client.get_data_center_summary(force_refresh=force_refresh) or {}),
                 'progress': self.refresh_client.get_enrichment_progress() or {},
             },
             self._on_load_data_finished,
+            tr('common.read_failed'),
         )
 
     def _on_load_data_finished(self, result):
@@ -73,11 +87,13 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         if self._pending_close:
             return
         summary = result.get('summary', {}) or {}
+        refreshed_at = str(result.get('refreshed_at', '') or '').strip() or tr('common.empty')
         progress = result.get('progress', {}) or {}
         live_progress_map = self._build_live_progress_map(progress)
         video_summary = summary.get('video_library', {}).get('sources', {})
         code_prefix_summary = summary.get('code_prefix_library', {}).get('sources', {})
         actor_summary = summary.get('actor_library', {}).get('sources', {})
+        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
 
         self.video_avfan_card.set_summary(
             video_summary.get(AVFAN_VIDEO_SOURCE, {}),
@@ -105,31 +121,31 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             actor_summary.get(JAVTXT_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
         )
-        self._schedule_next_refresh()
+        self.actor_binghuo_card.set_summary(
+            actor_summary.get(BINGHUO_ACTOR_SOURCE, {}),
+            live_progress=live_progress_map.get((ACTOR_BIRTHDAY_TARGET, BINGHUO_ACTOR_SOURCE)),
+        )
 
     def _handle_async_task_failed(self, message):
         if self._pending_close:
             return
         print(tr('data_center.read_failed', error=message))
-        self._schedule_next_refresh()
 
     def _cleanup_async_task_thread(self):
         super()._cleanup_async_task_thread()
         if self._pending_close:
-            QTimer.singleShot(0, self.accept)
-
-    def _schedule_next_refresh(self):
-        if self._pending_close:
-            return
-        self.refresh_timer.start(self.REFRESH_INTERVAL_MS)
+            self.accept()
 
     def closeEvent(self, event):
         self._pending_close = True
-        self.refresh_timer.stop()
         if self.is_async_task_running():
             event.ignore()
             return
         super().closeEvent(event)
+
+    def show_analysis_window(self):
+        self.analysis_window = ActorDataAnalysisWindow(self.backend_client, self)
+        self.analysis_window.show()
 
     def _build_live_progress_map(self, progress):
         live_progress_map = {}

@@ -109,8 +109,15 @@ class BackendClient:
     def get_video_enrichment_summary(self):
         return self._get('/database/videos/summary').get('summary', {})
 
-    def get_data_center_summary(self):
-        return self._get('/data-center/summary').get('summary', {})
+    def get_data_center_summary(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        return self._get('/data-center/summary' + query)
+
+    def get_actor_metric_analysis(self, metric_key, force_refresh=False):
+        params = {'metric': metric_key}
+        if force_refresh:
+            params['refresh'] = '1'
+        return self._get('/data-center/analysis?' + urlencode(params))
 
     def get_enrichment_progress(self):
         return self._get('/database/enrich/progress').get('progress', {})

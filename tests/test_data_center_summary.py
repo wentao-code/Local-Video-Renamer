@@ -3,10 +3,17 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE
-from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_status import (
+    ENRICHED_STATUS,
+    FAILED_STATUS,
+    NO_SEARCH_RESULTS_STATUS,
+    NO_VIDEO_DETAIL_STATUS,
+    UNENRICHED_STATUS,
+)
 from app.data.database_handler import VideoDatabase
 from app.services.library import DataCenterService
 from app.services.video import VideoFilterService
@@ -219,6 +226,156 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             del summary
             del db
             gc.collect()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_actor_binghuo_summary_uses_task_result_status_and_any_profile_data(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    [
+                        ("Actor Success",),
+                        ("Actor Partial",),
+                        ("Actor No Search",),
+                        ("Actor Failed",),
+                        ("Actor Pending",),
+                    ],
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO actor_enrichments (
+                        actor_name,
+                        binghuo_enrichment_status,
+                        binghuo_person_id,
+                        binghuo_height
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [
+                        ("Actor Success", ENRICHED_STATUS, "1001", ""),
+                        ("Actor Partial", UNENRICHED_STATUS, "", "170"),
+                        ("Actor No Search", NO_SEARCH_RESULTS_STATUS, "", ""),
+                        ("Actor Failed", FAILED_STATUS, "", ""),
+                    ],
+                )
+                conn.commit()
+
+            summary = DataCenterService(db).get_summary_snapshot()["summary"]
+            binghuo_summary = summary["actor_library"]["sources"][BINGHUO_ACTOR_SOURCE]
+
+            self.assertEqual(binghuo_summary["total_count"], 5)
+            self.assertEqual(binghuo_summary["success_count"], 2)
+            self.assertEqual(binghuo_summary["no_search_count"], 1)
+            self.assertEqual(binghuo_summary["failed_count"], 1)
+            self.assertEqual(binghuo_summary["pending_count"], 1)
+            self.assertEqual(binghuo_summary["enriched_count"], 3)
+            self.assertEqual(binghuo_summary["progress_percent"], 60.0)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_summary_cache_only_rebuilds_on_manual_refresh(self):
+        service = DataCenterService(database=None)
+        built_values = [{"version": 1}, {"version": 2}]
+
+        with patch.object(service, "_load_filter_settings", return_value=None), patch.object(
+            service,
+            "_build_summary",
+            side_effect=built_values,
+        ) as build_summary_mock, patch.object(
+            service,
+            "_current_cache_timestamp",
+            side_effect=["2026-06-21 10:00:00", "2026-06-21 10:05:00"],
+        ):
+            first = service.get_summary_snapshot()
+            second = service.get_summary_snapshot()
+            refreshed = service.get_summary_snapshot(force_refresh=True)
+
+        self.assertEqual(build_summary_mock.call_count, 2)
+        self.assertEqual(first["summary"]["version"], 1)
+        self.assertEqual(second["summary"]["version"], 1)
+        self.assertEqual(refreshed["summary"]["version"], 2)
+        self.assertEqual(first["refreshed_at"], "2026-06-21 10:00:00")
+        self.assertEqual(second["refreshed_at"], "2026-06-21 10:00:00")
+        self.assertEqual(refreshed["refreshed_at"], "2026-06-21 10:05:00")
+
+    def test_actor_metric_analysis_builds_distribution_and_top_rankings(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', ?, 0)",
+                    [
+                        ("Actor A", "70"),
+                        ("Actor B", "69"),
+                        ("Actor C", ""),
+                        ("Actor D", "70"),
+                    ],
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO actor_enrichments (
+                        actor_name,
+                        binghuo_height,
+                        binghuo_bust,
+                        binghuo_waist,
+                        binghuo_hip
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        ("Actor A", "179", "90", "60", "92"),
+                        ("Actor B", "168", "84", "58", "88"),
+                        ("Actor D", "175", "", "", ""),
+                    ],
+                )
+                conn.commit()
+
+            service = DataCenterService(db)
+
+            age_analysis = service.get_actor_metric_analysis_snapshot("age")
+            self.assertEqual(
+                age_analysis["analysis"]["distribution_rows"],
+                [
+                    {"label": "70岁", "count": 2},
+                    {"label": "69岁", "count": 1},
+                    {"label": "无数据", "count": 1},
+                ],
+            )
+            self.assertEqual(
+                age_analysis["analysis"]["ranking_rows"][:3],
+                [
+                    {"actor_name": "Actor A", "display_value": "70岁", "numeric_value": 70},
+                    {"actor_name": "Actor D", "display_value": "70岁", "numeric_value": 70},
+                    {"actor_name": "Actor B", "display_value": "69岁", "numeric_value": 69},
+                ],
+            )
+
+            height_analysis = service.get_actor_metric_analysis_snapshot("height")
+            self.assertEqual(
+                height_analysis["analysis"]["distribution_rows"],
+                [
+                    {"label": "179 cm", "count": 1},
+                    {"label": "175 cm", "count": 1},
+                    {"label": "168 cm", "count": 1},
+                    {"label": "无数据", "count": 1},
+                ],
+            )
+            self.assertEqual(
+                height_analysis["analysis"]["ranking_rows"][:3],
+                [
+                    {"actor_name": "Actor A", "display_value": "179 cm", "numeric_value": 179},
+                    {"actor_name": "Actor D", "display_value": "175 cm", "numeric_value": 175},
+                    {"actor_name": "Actor B", "display_value": "168 cm", "numeric_value": 168},
+                ],
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

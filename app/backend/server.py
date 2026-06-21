@@ -9,6 +9,9 @@ from app.core.runtime_config import get_backend_host, get_backend_port
 
 
 def make_handler(service):
+    def _is_truthy_query_value(query, key):
+        return str((query.get(key, [''])[0] or '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
     class VideoBackendHandler(BaseHTTPRequestHandler):
         server_version = 'LocalVideoRenamerBackend/1.0'
 
@@ -57,7 +60,12 @@ def make_handler(service):
             if method == 'GET' and path == '/database/videos/summary':
                 return service.get_video_enrichment_summary()
             if method == 'GET' and path == '/data-center/summary':
-                return service.get_data_center_summary()
+                return service.get_data_center_summary(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'GET' and path == '/data-center/analysis':
+                return service.get_actor_metric_analysis(
+                    query.get('metric', [''])[0],
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
             if method == 'POST' and path == '/database/videos/reset':
                 return service.reset_video_enrichments(body.get('codes', []), body.get('source_key'))
             if method == 'GET' and path == '/database/videos/manual-category':

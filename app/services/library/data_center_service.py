@@ -1,7 +1,14 @@
+import re
+from datetime import datetime
 from threading import Lock
-from time import monotonic
 
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, get_video_enrichment_source_label
+from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRIC_MAP
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    get_video_enrichment_source_label,
+)
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
@@ -24,41 +31,53 @@ PENDING_VIDEO_LABEL = '\u5f85\u8865\u5168\u89c6\u9891'
 
 
 class DataCenterService:
-    SUMMARY_CACHE_TTL_SECONDS = 5.0
-
     def __init__(self, database, video_filter_service=None):
         self.database = database
         self.code_prefix_library = CodePrefixLibrary(database)
         self.video_filter_service = video_filter_service or VideoFilterService()
         self._summary_cache = None
-        self._summary_cache_filter_settings = None
-        self._summary_cache_expires_at = 0.0
+        self._summary_cache_refreshed_at = ''
         self._summary_cache_lock = Lock()
+        self._analysis_cache = {}
+        self._analysis_cache_lock = Lock()
 
-    def get_summary(self):
-        filter_settings = self._load_filter_settings()
-        now = monotonic()
-        if self._is_cache_valid(now, filter_settings):
-            return self._summary_cache
+    def get_summary(self, force_refresh=False):
+        return self.get_summary_snapshot(force_refresh=force_refresh)['summary']
 
+    def get_summary_snapshot(self, force_refresh=False):
         with self._summary_cache_lock:
-            filter_settings = self._load_filter_settings()
-            now = monotonic()
-            if self._is_cache_valid(now, filter_settings):
-                return self._summary_cache
+            if self._summary_cache is not None and not force_refresh:
+                return {
+                    'summary': self._summary_cache,
+                    'refreshed_at': self._summary_cache_refreshed_at,
+                }
 
+            filter_settings = self._load_filter_settings()
             summary = self._build_summary(filter_settings=filter_settings)
             self._summary_cache = summary
-            self._summary_cache_filter_settings = filter_settings
-            self._summary_cache_expires_at = now + self.SUMMARY_CACHE_TTL_SECONDS
-            return summary
+            self._summary_cache_refreshed_at = self._current_cache_timestamp()
+            return {
+                'summary': summary,
+                'refreshed_at': self._summary_cache_refreshed_at,
+            }
 
-    def _is_cache_valid(self, now, filter_settings):
-        return (
-            self._summary_cache is not None
-            and now < self._summary_cache_expires_at
-            and self._summary_cache_filter_settings == filter_settings
-        )
+    def get_actor_metric_analysis(self, metric_key, force_refresh=False):
+        return self.get_actor_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)['analysis']
+
+    def get_actor_metric_analysis_snapshot(self, metric_key, force_refresh=False):
+        config = self._get_actor_metric_config(metric_key)
+        metric_key = config['key']
+        with self._analysis_cache_lock:
+            cached = self._analysis_cache.get(metric_key)
+            if cached is not None and not force_refresh:
+                return dict(cached)
+
+            payload = {
+                'analysis': self._build_actor_metric_analysis(config),
+                'refreshed_at': self._current_cache_timestamp(),
+            }
+            self._analysis_cache[metric_key] = payload
+            return dict(payload)
 
     def _build_summary(self, filter_settings=None):
         return {
@@ -97,6 +116,10 @@ class DataCenterService:
                     ),
                     JAVTXT_VIDEO_SOURCE: self._build_actor_source_summary(
                         JAVTXT_VIDEO_SOURCE,
+                        filter_settings=filter_settings,
+                    ),
+                    BINGHUO_ACTOR_SOURCE: self._build_actor_source_summary(
+                        BINGHUO_ACTOR_SOURCE,
                         filter_settings=filter_settings,
                     ),
                 },
@@ -150,6 +173,8 @@ class DataCenterService:
         return self._build_status_summary(self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key), statuses)
 
     def _build_actor_source_summary(self, source_key, filter_settings=None):
+        if source_key == BINGHUO_ACTOR_SOURCE:
+            return self._build_actor_binghuo_source_summary()
         if source_key == JAVTXT_VIDEO_SOURCE:
             actor_names = [
                 str(row.get('name', '')).strip()
@@ -169,6 +194,45 @@ class DataCenterService:
             if str(row.get('name', '')).strip()
         ]
         return self._build_status_summary(self._build_source_label(ACTOR_LIBRARY_LABEL, source_key), statuses)
+
+    def _build_actor_binghuo_source_summary(self):
+        records = self.database.list_actor_enrichment_records()
+        total_count = 0
+        success_count = 0
+        failed_count = 0
+        no_search_count = 0
+        no_detail_count = 0
+
+        for row in self.database.list_actors():
+            actor_name = str((row or {}).get('name', '') or '').strip()
+            if not actor_name:
+                continue
+            total_count += 1
+            record = records.get(actor_name, {})
+            status = str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+            if self._has_binghuo_actor_data(record):
+                success_count += 1
+            elif status == NO_SEARCH_RESULTS_STATUS:
+                no_search_count += 1
+            elif status == NO_VIDEO_DETAIL_STATUS:
+                no_detail_count += 1
+            elif status == FAILED_STATUS:
+                failed_count += 1
+
+        enriched_count = success_count + no_search_count + no_detail_count
+        pending_count = max(total_count - enriched_count - failed_count, 0)
+        return {
+            'label': self._build_source_label(ACTOR_LIBRARY_LABEL, BINGHUO_ACTOR_SOURCE),
+            'total_count': total_count,
+            'enriched_count': enriched_count,
+            'success_count': success_count,
+            'pending_count': pending_count,
+            'failed_count': failed_count,
+            'no_search_count': no_search_count,
+            'no_detail_count': no_detail_count,
+            'progress_percent': _build_progress_percent(enriched_count, total_count),
+            'count_label': COMPLETED_LABEL,
+        }
 
     def _build_status_summary(self, label, statuses):
         total_count = len(statuses)
@@ -223,6 +287,101 @@ class DataCenterService:
         if self.video_filter_service is None:
             return None
         return self.video_filter_service.load_settings()
+
+    def _build_actor_metric_analysis(self, config):
+        distribution_counts = {}
+        ranking_rows = []
+        unknown_count = 0
+        enrichment_records = self.database.list_actor_enrichment_records()
+
+        for actor_row in self.database.list_actors():
+            actor_name = str((actor_row or {}).get('name', '') or '').strip()
+            if not actor_name:
+                continue
+            numeric_value, display_value = self._resolve_actor_metric_value(
+                config,
+                actor_row,
+                enrichment_records.get(actor_name, {}),
+            )
+            if numeric_value is None:
+                unknown_count += 1
+                continue
+            distribution_counts[display_value] = distribution_counts.get(display_value, 0) + 1
+            ranking_rows.append(
+                {
+                    'actor_name': actor_name,
+                    'display_value': display_value,
+                    'numeric_value': numeric_value,
+                }
+            )
+
+        distribution_rows = [
+            {'label': label, 'count': count}
+            for label, count in sorted(
+                distribution_counts.items(),
+                key=lambda item: (-self._parse_metric_number(item[0]), item[0]),
+            )
+        ]
+        if unknown_count > 0:
+            distribution_rows.append({'label': '无数据', 'count': unknown_count})
+
+        ranking_rows.sort(key=lambda item: (-item['numeric_value'], item['actor_name']))
+        return {
+            'metric_key': config['key'],
+            'distribution_rows': distribution_rows,
+            'ranking_rows': ranking_rows[:50],
+        }
+
+    @staticmethod
+    def _resolve_actor_metric_value(config, actor_row, enrichment_record):
+        source_name = str(config.get('source', '') or '').strip()
+        field_name = str(config.get('field', '') or '').strip()
+        suffix = str(config.get('suffix', '') or '')
+        if source_name == 'enrichment':
+            raw_value = str((enrichment_record or {}).get(field_name, '') or '').strip()
+        else:
+            raw_value = str(
+                (actor_row or {}).get(f'raw_{field_name}', (actor_row or {}).get(field_name, '')) or ''
+            ).strip()
+        numeric_value = DataCenterService._parse_metric_number(raw_value)
+        if numeric_value is None:
+            return None, ''
+        return numeric_value, f'{numeric_value}{suffix}'
+
+    @staticmethod
+    def _parse_metric_number(value):
+        match = re.search(r'\d+', str(value or '').strip())
+        if not match:
+            return None
+        return int(match.group(0))
+
+    @staticmethod
+    def _has_binghuo_actor_data(record):
+        current = dict(record or {})
+        return any(
+            str(current.get(field_name, '') or '').strip()
+            for field_name in (
+                'binghuo_person_id',
+                'binghuo_birthday',
+                'binghuo_age',
+                'binghuo_height',
+                'binghuo_bust',
+                'binghuo_waist',
+                'binghuo_hip',
+            )
+        )
+
+    @staticmethod
+    def _current_cache_timestamp():
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    @staticmethod
+    def _get_actor_metric_config(metric_key):
+        normalized_key = str(metric_key or '').strip()
+        config = ACTOR_ANALYSIS_METRIC_MAP.get(normalized_key)
+        if config is None:
+            raise ValueError(f'Unknown actor analysis metric: {normalized_key}')
+        return dict(config)
 
     def _list_visible_video_summary_rows(self, filter_settings=None):
         return self._filter_visible_movies(
