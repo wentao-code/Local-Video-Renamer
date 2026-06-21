@@ -1,5 +1,16 @@
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.gui.i18n import tr
 
@@ -94,12 +105,24 @@ class SummaryCard(QFrame):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
         self.setObjectName('summaryCard')
+        self.issue_groups = []
+        self.list_kind = ''
+        self.issue_dialog = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
 
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
         self.title_label = QLabel(title)
+        self.list_button = QPushButton(tr('enrichment.summary.list_button'))
+        self.list_button.setEnabled(False)
+        self.list_button.clicked.connect(self._show_issue_dialog)
+        header_layout.addWidget(self.title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.list_button)
         self.count_label = QLabel(
             tr(
                 'enrichment.summary.count',
@@ -123,7 +146,7 @@ class SummaryCard(QFrame):
         self.live_label.hide()
         self.progress_bar = SegmentedSummaryProgressBar()
 
-        layout.addWidget(self.title_label)
+        layout.addLayout(header_layout)
         layout.addWidget(self.count_label)
         layout.addWidget(self.detail_label)
         layout.addWidget(self.live_label)
@@ -137,9 +160,15 @@ class SummaryCard(QFrame):
         failed_count = int(summary.get('failed_count', 0) or 0)
         no_search_count = int(summary.get('no_search_count', 0) or 0)
         no_detail_count = int(summary.get('no_detail_count', 0) or 0)
+        missing_age_count = int(summary.get('missing_age_count', 0) or 0)
+        missing_measurements_count = int(summary.get('missing_measurements_count', 0) or 0)
+        missing_height_count = int(summary.get('missing_height_count', 0) or 0)
         progress_percent = float(summary.get('progress_percent', 0) or 0)
         count_label = str(summary.get('count_label', '') or tr('enrichment.summary.count_default'))
         pending_label = str(summary.get('pending_label', '') or tr('enrichment.summary.pending_default'))
+        self.issue_groups = [dict(group or {}) for group in summary.get('issue_groups', []) or []]
+        self.list_kind = str(summary.get('list_kind', '') or '').strip()
+        self.list_button.setEnabled(bool(self.issue_groups) and bool(self.list_kind))
         terminal_percent = 0.0
         if total_count > 0:
             terminal_percent = round(((no_search_count + no_detail_count) / total_count) * 100.0, 1)
@@ -154,17 +183,35 @@ class SummaryCard(QFrame):
             )
         )
         if show_terminal_details:
-            self.detail_label.setText(
-                tr(
-                    'enrichment.summary.detail_full',
-                    pending_label=pending_label,
-                    pending_count=pending_count,
-                    success_count=success_count,
-                    failed_count=failed_count,
-                    no_search_count=no_search_count,
-                    no_detail_count=no_detail_count,
+            if any(
+                count > 0
+                for count in (missing_age_count, missing_measurements_count, missing_height_count)
+            ):
+                self.detail_label.setText(
+                    tr(
+                        'enrichment.summary.detail_binghuo_split',
+                        pending_label=pending_label,
+                        pending_count=pending_count,
+                        success_count=success_count,
+                        failed_count=failed_count,
+                        no_search_count=no_search_count,
+                        missing_age_count=missing_age_count,
+                        missing_measurements_count=missing_measurements_count,
+                        missing_height_count=missing_height_count,
+                    )
                 )
-            )
+            else:
+                self.detail_label.setText(
+                    tr(
+                        'enrichment.summary.detail_full',
+                        pending_label=pending_label,
+                        pending_count=pending_count,
+                        success_count=success_count,
+                        failed_count=failed_count,
+                        no_search_count=no_search_count,
+                        no_detail_count=no_detail_count,
+                    )
+                )
         else:
             self.detail_label.setText(
                 tr(
@@ -209,3 +256,68 @@ class SummaryCard(QFrame):
             self.live_label.setText('')
 
         self.progress_bar.set_progress(display_percent, terminal_percent)
+
+    def _show_issue_dialog(self):
+        if not self.issue_groups or not self.list_kind:
+            return
+        self.issue_dialog = SummaryIssueDialog(
+            str(self.title_label.text() or ''),
+            self.list_kind,
+            self.issue_groups,
+            self,
+        )
+        self.issue_dialog.show()
+        self.issue_dialog.raise_()
+        self.issue_dialog.activateWindow()
+
+
+class SummaryIssueDialog(QDialog):
+    def __init__(self, title, list_kind, issue_groups, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr('enrichment.summary.list_title', title=title))
+        self.resize(760, 480)
+        self.tab_widget = QTabWidget(self)
+        self.tables_by_key = {}
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.tab_widget)
+
+        for group in issue_groups or []:
+            current_group = dict(group or {})
+            items = [dict(item or {}) for item in current_group.get('items', []) or []]
+            if not items:
+                continue
+            table = self._build_table(str(list_kind or '').strip(), items)
+            self.tables_by_key[str(current_group.get('key', '') or '').strip()] = table
+            self.tab_widget.addTab(table, str(current_group.get('label', '') or '').strip())
+
+    @staticmethod
+    def _column_specs_for_kind(list_kind):
+        normalized_kind = str(list_kind or '').strip()
+        if normalized_kind == 'video':
+            return [
+                ('code', tr('enrichment.summary.headers.video_code')),
+                ('title', tr('enrichment.summary.headers.video_title')),
+                ('author', tr('enrichment.summary.headers.video_author')),
+            ]
+        if normalized_kind == 'code_prefix':
+            return [('prefix', tr('enrichment.summary.headers.code_prefix'))]
+        return [('name', tr('enrichment.summary.headers.actor_name'))]
+
+    @classmethod
+    def _build_table(cls, list_kind, items):
+        table = QTableWidget()
+        column_specs = cls._column_specs_for_kind(list_kind)
+        table.setColumnCount(len(column_specs))
+        table.setHorizontalHeaderLabels([label for _, label in column_specs])
+        table.setRowCount(len(items))
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectRows)
+        for row_index, item in enumerate(items):
+            current_item = dict(item or {})
+            for column_index, (field_name, _) in enumerate(column_specs):
+                table_item = QTableWidgetItem(str(current_item.get(field_name, '') or ''))
+                table.setItem(row_index, column_index, table_item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        return table

@@ -28,6 +28,11 @@ ACTOR_LIBRARY_LABEL = '\u6f14\u5458\u5e93'
 COMPLETED_LABEL = '\u5df2\u5b8c\u6210'
 COMPLETED_VIDEO_LABEL = '\u5df2\u5b8c\u6210\u89c6\u9891'
 PENDING_VIDEO_LABEL = '\u5f85\u8865\u5168\u89c6\u9891'
+NO_SEARCH_LABEL = '\u65e0\u7ed3\u679c'
+NO_DETAIL_LABEL = '\u65e0\u8be6\u60c5'
+MISSING_AGE_LABEL = '\u65e0\u5e74\u9f84'
+MISSING_MEASUREMENTS_LABEL = '\u65e0\u4e09\u56f4'
+MISSING_HEIGHT_LABEL = '\u65e0\u8eab\u9ad8'
 
 
 class DataCenterService:
@@ -142,6 +147,8 @@ class DataCenterService:
                 'failed_count': summary['failed_count'],
                 'no_search_count': summary['no_search_count'],
                 'no_detail_count': summary['no_detail_count'],
+                'list_kind': 'video',
+                'issue_groups': self._build_javtxt_video_issue_groups(visible_rows),
             }
         return self._build_video_status_summary(label, visible_rows, 'avfan_enrichment_status')
 
@@ -149,6 +156,12 @@ class DataCenterService:
         statuses = [str((row or {}).get(status_field, '') or '').strip() or UNENRICHED_STATUS for row in rows or []]
         summary = self._build_status_summary(label, statuses)
         summary['count_label'] = COMPLETED_LABEL
+        summary['list_kind'] = 'video'
+        summary['issue_groups'] = self._build_status_issue_groups(
+            rows,
+            lambda row: self._build_video_issue_item(row),
+            lambda row: str((row or {}).get(status_field, '') or '').strip() or UNENRICHED_STATUS,
+        )
         return summary
 
     def _build_code_prefix_source_summary(self, source_key, filter_settings=None):
@@ -162,15 +175,23 @@ class DataCenterService:
                 self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key),
                 self.database.list_code_prefix_movies_by_prefixes(prefixes),
                 filter_settings=filter_settings,
+                list_kind='video',
             )
 
         records = self.database.list_code_prefix_enrichment_records()
+        prefix_rows = [row for row in self.code_prefix_library.list_prefixes() if row.get('prefix')]
         statuses = [
             self._get_source_status(records.get(row.get('prefix', ''), {}), source_key)
-            for row in self.code_prefix_library.list_prefixes()
-            if row.get('prefix')
+            for row in prefix_rows
         ]
-        return self._build_status_summary(self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key), statuses)
+        summary = self._build_status_summary(self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key), statuses)
+        summary['list_kind'] = 'code_prefix'
+        summary['issue_groups'] = self._build_status_issue_groups(
+            prefix_rows,
+            lambda row: self._build_code_prefix_issue_item(row.get('prefix', '')),
+            lambda row: self._get_source_status(records.get(row.get('prefix', ''), {}), source_key),
+        )
+        return summary
 
     def _build_actor_source_summary(self, source_key, filter_settings=None):
         if source_key == BINGHUO_ACTOR_SOURCE:
@@ -185,15 +206,23 @@ class DataCenterService:
                 self._build_source_label(ACTOR_LIBRARY_LABEL, source_key),
                 self.database.list_actor_movies_by_names(actor_names),
                 filter_settings=filter_settings,
+                list_kind='video',
             )
 
         records = self.database.list_actor_enrichment_records()
+        actor_rows = [row for row in self.database.list_actors() if str(row.get('name', '')).strip()]
         statuses = [
             self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key)
-            for row in self.database.list_actors()
-            if str(row.get('name', '')).strip()
+            for row in actor_rows
         ]
-        return self._build_status_summary(self._build_source_label(ACTOR_LIBRARY_LABEL, source_key), statuses)
+        summary = self._build_status_summary(self._build_source_label(ACTOR_LIBRARY_LABEL, source_key), statuses)
+        summary['list_kind'] = 'actor'
+        summary['issue_groups'] = self._build_status_issue_groups(
+            actor_rows,
+            lambda row: self._build_actor_issue_item(row.get('name', '')),
+            lambda row: self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key),
+        )
+        return summary
 
     def _build_actor_binghuo_source_summary(self):
         records = self.database.list_actor_enrichment_records()
@@ -202,6 +231,13 @@ class DataCenterService:
         failed_count = 0
         no_search_count = 0
         no_detail_count = 0
+        missing_age_count = 0
+        missing_measurements_count = 0
+        missing_height_count = 0
+        no_search_items = []
+        missing_age_items = []
+        missing_measurements_items = []
+        missing_height_items = []
 
         for row in self.database.list_actors():
             actor_name = str((row or {}).get('name', '') or '').strip()
@@ -210,12 +246,22 @@ class DataCenterService:
             total_count += 1
             record = records.get(actor_name, {})
             status = str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
-            if self._is_complete_binghuo_profile(record):
-                success_count += 1
-            elif status == NO_SEARCH_RESULTS_STATUS:
+            if status == NO_SEARCH_RESULTS_STATUS:
                 no_search_count += 1
+                no_search_items.append(self._build_actor_issue_item(actor_name))
             elif status == NO_VIDEO_DETAIL_STATUS or self._is_incomplete_binghuo_profile(record):
                 no_detail_count += 1
+                if self._is_missing_binghuo_age(record):
+                    missing_age_count += 1
+                    missing_age_items.append(self._build_actor_issue_item(actor_name))
+                if self._is_missing_binghuo_measurements(record):
+                    missing_measurements_count += 1
+                    missing_measurements_items.append(self._build_actor_issue_item(actor_name))
+                if self._is_missing_binghuo_height(record):
+                    missing_height_count += 1
+                    missing_height_items.append(self._build_actor_issue_item(actor_name))
+            elif self._is_complete_binghuo_profile(record):
+                success_count += 1
             elif status == FAILED_STATUS:
                 failed_count += 1
 
@@ -230,8 +276,24 @@ class DataCenterService:
             'failed_count': failed_count,
             'no_search_count': no_search_count,
             'no_detail_count': no_detail_count,
+            'missing_age_count': missing_age_count,
+            'missing_measurements_count': missing_measurements_count,
+            'missing_height_count': missing_height_count,
             'progress_percent': _build_progress_percent(enriched_count, total_count),
             'count_label': COMPLETED_LABEL,
+            'list_kind': 'actor',
+            'issue_groups': self._compact_issue_groups(
+                [
+                    self._build_issue_group('no_search', NO_SEARCH_LABEL, no_search_items),
+                    self._build_issue_group('missing_age', MISSING_AGE_LABEL, missing_age_items),
+                    self._build_issue_group(
+                        'missing_measurements',
+                        MISSING_MEASUREMENTS_LABEL,
+                        missing_measurements_items,
+                    ),
+                    self._build_issue_group('missing_height', MISSING_HEIGHT_LABEL, missing_height_items),
+                ]
+            ),
         }
 
     def _build_status_summary(self, label, statuses):
@@ -255,7 +317,7 @@ class DataCenterService:
             'count_label': COMPLETED_LABEL,
         }
 
-    def _build_javtxt_library_video_summary(self, label, movies_by_group, filter_settings=None):
+    def _build_javtxt_library_video_summary(self, label, movies_by_group, filter_settings=None, list_kind='video'):
         visible_movies = self._filter_visible_movies(
             [
                 movie
@@ -281,6 +343,12 @@ class DataCenterService:
             'progress_percent': _build_progress_percent(summary['enriched_count'], summary['total_count']),
             'count_label': COMPLETED_VIDEO_LABEL,
             'pending_label': PENDING_VIDEO_LABEL,
+            'list_kind': list_kind,
+            'issue_groups': self._build_javtxt_issue_groups_by_kind(
+                movies_by_group,
+                filter_settings=filter_settings,
+                list_kind=list_kind,
+            ),
         }
 
     def _load_filter_settings(self):
@@ -363,6 +431,24 @@ class DataCenterService:
             for field_name in ('binghuo_height', 'binghuo_bust', 'binghuo_waist', 'binghuo_hip')
         )
 
+    @staticmethod
+    def _is_missing_binghuo_age(record):
+        current = dict(record or {})
+        return not str(current.get('binghuo_age', '') or '').strip()
+
+    @staticmethod
+    def _is_missing_binghuo_height(record):
+        current = dict(record or {})
+        return not str(current.get('binghuo_height', '') or '').strip()
+
+    @staticmethod
+    def _is_missing_binghuo_measurements(record):
+        current = dict(record or {})
+        return any(
+            not str(current.get(field_name, '') or '').strip()
+            for field_name in ('binghuo_bust', 'binghuo_waist', 'binghuo_hip')
+        )
+
     @classmethod
     def _is_complete_binghuo_profile(cls, record):
         current = dict(record or {})
@@ -434,6 +520,170 @@ class DataCenterService:
     def _get_source_status(record, source_key):
         key = 'javtxt_enrichment_status' if source_key == JAVTXT_VIDEO_SOURCE else 'avfan_enrichment_status'
         return str((record or {}).get(key, '') or '').strip() or UNENRICHED_STATUS
+
+    @staticmethod
+    def _build_issue_group(key, label, items):
+        normalized_items = [dict(item or {}) for item in items or [] if dict(item or {})]
+        if not normalized_items:
+            return {}
+        return {
+            'key': str(key or '').strip(),
+            'label': str(label or '').strip(),
+            'items': normalized_items,
+        }
+
+    @classmethod
+    def _compact_issue_groups(cls, groups):
+        return [group for group in (groups or []) if dict(group or {}).get('items')]
+
+    @staticmethod
+    def _build_video_issue_item(row):
+        current = dict(row or {})
+        return {
+            'code': str(current.get('code', '') or '').strip(),
+            'title': str(current.get('title', '') or '').strip(),
+            'author': str(
+                current.get('author', '')
+                or current.get('local_author', '')
+                or current.get('author_raw', '')
+                or ''
+            ).strip(),
+        }
+
+    @staticmethod
+    def _build_code_prefix_issue_item(prefix):
+        normalized_prefix = str(prefix or '').strip().upper()
+        if not normalized_prefix:
+            return {}
+        return {'prefix': normalized_prefix}
+
+    @staticmethod
+    def _build_actor_issue_item(actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return {}
+        return {'name': normalized_name}
+
+    @classmethod
+    def _build_status_issue_groups(cls, rows, item_builder, status_builder):
+        no_search_items = []
+        no_detail_items = []
+        for row in rows or []:
+            status = str(status_builder(row) or '').strip() or UNENRICHED_STATUS
+            item = dict(item_builder(row) or {})
+            if not item:
+                continue
+            if status == NO_SEARCH_RESULTS_STATUS:
+                no_search_items.append(item)
+            elif status == NO_VIDEO_DETAIL_STATUS:
+                no_detail_items.append(item)
+        return cls._compact_issue_groups(
+            [
+                cls._build_issue_group('no_search', NO_SEARCH_LABEL, no_search_items),
+                cls._build_issue_group('no_detail', NO_DETAIL_LABEL, no_detail_items),
+            ]
+        )
+
+    def _build_javtxt_video_issue_groups(self, movies, filter_settings=None):
+        issue_items = {
+            'no_search': [],
+            'no_detail': [],
+        }
+        local_rows_by_code = {
+            standardize_video_code((row or {}).get('code', '')): dict(row or {})
+            for row in self._list_visible_video_summary_rows(filter_settings=filter_settings)
+            if standardize_video_code((row or {}).get('code', ''))
+        }
+        visible_movies = self._filter_visible_movies(movies or [], filter_settings=filter_settings)
+        for movie in self._merge_movies_by_code(visible_movies):
+            if not self._is_javtxt_issue_movie(movie):
+                continue
+            issue_key = self._resolve_javtxt_issue_key(movie)
+            if not issue_key:
+                continue
+            issue_items[issue_key].append(
+                self._build_video_issue_item(
+                    self._merge_issue_movie_with_local_row(
+                        movie,
+                        local_rows_by_code.get(standardize_video_code((movie or {}).get('code', '')), {}),
+                    )
+                )
+            )
+        return self._compact_issue_groups(
+            [
+                self._build_issue_group('no_search', NO_SEARCH_LABEL, issue_items['no_search']),
+                self._build_issue_group('no_detail', NO_DETAIL_LABEL, issue_items['no_detail']),
+            ]
+        )
+
+    def _build_javtxt_issue_groups_by_kind(self, movies_by_group, filter_settings=None, list_kind='video'):
+        if str(list_kind or '').strip() == 'video':
+            flat_movies = [
+                movie
+                for movies in (movies_by_group or {}).values()
+                for movie in (movies or [])
+            ]
+            return self._build_javtxt_video_issue_groups(flat_movies, filter_settings=filter_settings)
+
+        no_search_items = []
+        no_detail_items = []
+        for group_key, movies in (movies_by_group or {}).items():
+            visible_movies = self._filter_visible_movies(movies or [], filter_settings=filter_settings)
+            if not visible_movies:
+                continue
+            has_no_search = False
+            has_no_detail = False
+            for movie in visible_movies:
+                if not self._is_javtxt_issue_movie(movie):
+                    continue
+                issue_key = self._resolve_javtxt_issue_key(movie)
+                if issue_key == 'no_search':
+                    has_no_search = True
+                elif issue_key == 'no_detail':
+                    has_no_detail = True
+            if str(list_kind or '').strip() == 'code_prefix':
+                item = self._build_code_prefix_issue_item(group_key)
+            else:
+                item = self._build_actor_issue_item(group_key)
+            if not item:
+                continue
+            if has_no_search:
+                no_search_items.append(item)
+            if has_no_detail:
+                no_detail_items.append(item)
+
+        return self._compact_issue_groups(
+            [
+                self._build_issue_group('no_search', NO_SEARCH_LABEL, no_search_items),
+                self._build_issue_group('no_detail', NO_DETAIL_LABEL, no_detail_items),
+            ]
+        )
+
+    @staticmethod
+    def _is_javtxt_issue_movie(movie):
+        if not summarize_javtxt_movies([movie]).get('total_count', 0):
+            return False
+        status = str((movie or {}).get('javtxt_enrichment_status', '') or '').strip()
+        return status in (NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS)
+
+    @staticmethod
+    def _resolve_javtxt_issue_key(movie):
+        status = str((movie or {}).get('javtxt_enrichment_status', '') or '').strip()
+        if status == NO_SEARCH_RESULTS_STATUS:
+            return 'no_search'
+        if status == NO_VIDEO_DETAIL_STATUS:
+            return 'no_detail'
+        return ''
+
+    @staticmethod
+    def _merge_issue_movie_with_local_row(movie, local_row):
+        merged_movie = dict(movie or {})
+        current_local_row = dict(local_row or {})
+        for field_name in ('title', 'author', 'author_raw', 'local_author'):
+            if str(merged_movie.get(field_name, '') or '').strip():
+                continue
+            merged_movie[field_name] = current_local_row.get(field_name, '')
+        return merged_movie
 
 
 def _build_progress_percent(enriched_count, total_count):

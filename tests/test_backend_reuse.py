@@ -26,6 +26,9 @@ class BackendReuseDecisionTest(unittest.TestCase):
         self.assertIn('manual-snapshot', BACKEND_API_REVISION)
         self.assertIn('paged-query', BACKEND_API_REVISION)
 
+    def test_backend_revision_marks_data_center_issue_list_payload_change(self):
+        self.assertIn('issue-list', BACKEND_API_REVISION)
+
     def test_reuses_same_project_compatible_backend(self):
         health = {
             'backend_revision': BACKEND_API_REVISION,

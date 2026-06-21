@@ -3403,7 +3403,7 @@ class VideoDatabase(
                 SELECT code, title, release_date,
                        avfan_enrichment_status, javtxt_enrichment_status,
                        javtxt_movie_id, javtxt_url, javtxt_title,
-                       javtxt_actors, javtxt_actors_raw, javtxt_tags, javtxt_release_date
+                       javtxt_actors, javtxt_actors_raw, javtxt_tags, javtxt_release_date, author
                 FROM processed_videos
                 ORDER BY code
                 '''
@@ -3424,6 +3424,7 @@ class VideoDatabase(
                 'author_raw': self._normalize_actor_raw_text(row[9] or row[8] or ''),
                 'javtxt_tags': row[10] or '',
                 'javtxt_release_date': row[11] or '',
+                'local_author': sanitize_actor_text(row[12] or ''),
             }
             for row in rows
         ]

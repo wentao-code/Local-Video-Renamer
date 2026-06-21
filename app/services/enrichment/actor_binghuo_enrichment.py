@@ -143,16 +143,22 @@ class ActorBinghuoEnrichmentService:
                 continue
             record = enrichment_records.get(actor_name, {})
             birthday = str((row or {}).get('birthday', '') or record.get('binghuo_birthday', '') or '').strip()
-            if birthday or not self._should_process_missing_birthday(record):
+            if not birthday:
+                if not self._should_process_missing_birthday(record):
+                    continue
+                candidates.append({'actor_name': actor_name, 'priority': 1})
+                seen.add(actor_name)
                 continue
-            candidates.append({'actor_name': actor_name, 'priority': 1})
-            seen.add(actor_name)
+
+            if self._should_process_profile_only(record, birthday=birthday):
+                candidates.append({'actor_name': actor_name, 'priority': 2})
+                seen.add(actor_name)
 
         for row in actor_rows:
             actor_name = str((row or {}).get('name', '') or '').strip()
             if not actor_name or actor_name in seen:
                 continue
-            record = enrichment_records.get(actor_name, {})
+            record = self._normalize_empty_profile_status(actor_name, row, enrichment_records.get(actor_name, {}))
             birthday = str((row or {}).get('birthday', '') or record.get('binghuo_birthday', '') or '').strip()
             if not birthday:
                 if not self._should_process_missing_birthday(record):
@@ -161,7 +167,7 @@ class ActorBinghuoEnrichmentService:
                 seen.add(actor_name)
                 continue
 
-            if self._should_process_profile_only(record):
+            if self._should_process_profile_only(record, birthday=birthday):
                 candidates.append({'actor_name': actor_name, 'priority': 4})
                 seen.add(actor_name)
 
@@ -189,10 +195,17 @@ class ActorBinghuoEnrichmentService:
         return 2 if person_id or has_profile_data else 3
 
     @staticmethod
-    def _should_process_profile_only(record):
+    def _should_process_profile_only(record, birthday=''):
         status = str((record or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
         person_id = str((record or {}).get('binghuo_person_id', '') or '').strip()
-        return not person_id and status not in (NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS)
+        normalized_birthday = str(birthday or (record or {}).get('binghuo_birthday', '') or '').strip()
+        if status in (NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS):
+            return False
+        if not person_id:
+            return True
+        if normalized_birthday and not ActorBinghuoEnrichmentService._has_binghuo_physical_data(record):
+            return True
+        return not ActorBinghuoEnrichmentService._has_saved_binghuo_profile_data(record)
 
     def _enrich_single_actor(self, page, actor_name):
         record = self.database.get_actor_enrichment_record(actor_name)
@@ -263,6 +276,32 @@ class ActorBinghuoEnrichmentService:
             str((record or {}).get(field_name, '') or '').strip()
             for field_name in ('height', 'bust', 'waist', 'hip', 'binghuo_height', 'binghuo_bust', 'binghuo_waist', 'binghuo_hip')
         )
+
+    @staticmethod
+    def _has_saved_binghuo_profile_data(record):
+        return any(
+            str((record or {}).get(field_name, '') or '').strip()
+            for field_name in (
+                'binghuo_birthday',
+                'binghuo_age',
+                'binghuo_height',
+                'binghuo_bust',
+                'binghuo_waist',
+                'binghuo_hip',
+            )
+        )
+
+    def _normalize_empty_profile_status(self, actor_name, actor_row, record):
+        actor_birthday = str((actor_row or {}).get('birthday', '') or '').strip()
+        current = dict(record or {})
+        status = str((current or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+        if not actor_birthday or status != ENRICHED_STATUS or self._has_saved_binghuo_profile_data(current):
+            return current
+
+        person_id = str((current or {}).get('binghuo_person_id', '') or '').strip()
+        self.database.save_binghuo_actor_profile(actor_name, UNENRICHED_STATUS, person_id=person_id)
+        current['binghuo_enrichment_status'] = UNENRICHED_STATUS
+        return current
 
     @classmethod
     def _is_complete_binghuo_profile(cls, record):

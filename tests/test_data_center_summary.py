@@ -85,16 +85,100 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             self.assertEqual(video_summary["success_count"], 1)
             self.assertEqual(video_summary["no_search_count"], 1)
             self.assertEqual(video_summary["no_detail_count"], 1)
+            self.assertEqual(video_summary["list_kind"], "video")
+            self.assertEqual(
+                video_summary["issue_groups"],
+                [
+                    {
+                        "key": "no_search",
+                        "label": "无结果",
+                        "items": [
+                            {
+                                "code": "AAA-002",
+                                "title": "No Search Video",
+                                "author": "Actor A",
+                            }
+                        ],
+                    },
+                    {
+                        "key": "no_detail",
+                        "label": "无详情",
+                        "items": [
+                            {
+                                "code": "AAA-003",
+                                "title": "No Detail Video",
+                                "author": "Actor A",
+                            }
+                        ],
+                    },
+                ],
+            )
 
             code_prefix_summary = summary["code_prefix_library"]["sources"][JAVTXT_VIDEO_SOURCE]
             self.assertEqual(code_prefix_summary["success_count"], 1)
             self.assertEqual(code_prefix_summary["no_search_count"], 1)
             self.assertEqual(code_prefix_summary["no_detail_count"], 1)
+            self.assertEqual(code_prefix_summary["list_kind"], "video")
+            self.assertEqual(
+                code_prefix_summary["issue_groups"],
+                [
+                    {
+                        "key": "no_search",
+                        "label": "无结果",
+                        "items": [
+                            {
+                                "code": "AAA-002",
+                                "title": "No Search Video",
+                                "author": "Actor A",
+                            }
+                        ],
+                    },
+                    {
+                        "key": "no_detail",
+                        "label": "无详情",
+                        "items": [
+                            {
+                                "code": "AAA-003",
+                                "title": "No Detail Video",
+                                "author": "Actor A",
+                            }
+                        ],
+                    },
+                ],
+            )
 
             actor_summary = summary["actor_library"]["sources"][JAVTXT_VIDEO_SOURCE]
             self.assertEqual(actor_summary["success_count"], 1)
             self.assertEqual(actor_summary["no_search_count"], 1)
             self.assertEqual(actor_summary["no_detail_count"], 1)
+            self.assertEqual(actor_summary["list_kind"], "video")
+            self.assertEqual(
+                actor_summary["issue_groups"],
+                [
+                    {
+                        "key": "no_search",
+                        "label": "无结果",
+                        "items": [
+                            {
+                                "code": "AAA-002",
+                                "title": "No Search Video",
+                                "author": "Actor A",
+                            }
+                        ],
+                    },
+                    {
+                        "key": "no_detail",
+                        "label": "无详情",
+                        "items": [
+                            {
+                                "code": "AAA-003",
+                                "title": "No Detail Video",
+                                "author": "Actor A",
+                            }
+                        ],
+                    },
+                ],
+            )
 
             del summary
             del service
@@ -277,6 +361,85 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             self.assertEqual(binghuo_summary["pending_count"], 1)
             self.assertEqual(binghuo_summary["enriched_count"], 3)
             self.assertEqual(binghuo_summary["progress_percent"], 60.0)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_actor_binghuo_summary_splits_missing_fields_and_builds_issue_groups(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, ?, ?, 0)",
+                    [
+                        ("Actor No Search", "", ""),
+                        ("Actor Missing Age", "1990-01-01", "35"),
+                        ("Actor Missing Measurements", "1991-02-02", "34"),
+                        ("Actor Missing Height And Measurements", "1992-03-03", "33"),
+                    ],
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO actor_enrichments (
+                        actor_name,
+                        binghuo_enrichment_status,
+                        binghuo_person_id,
+                        binghuo_birthday,
+                        binghuo_age,
+                        binghuo_height,
+                        binghuo_bust,
+                        binghuo_waist,
+                        binghuo_hip
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        ("Actor No Search", NO_SEARCH_RESULTS_STATUS, "", "", "", "", "", "", ""),
+                        ("Actor Missing Age", NO_VIDEO_DETAIL_STATUS, "1001", "1990-01-01", "", "168", "86", "58", "88"),
+                        ("Actor Missing Measurements", NO_VIDEO_DETAIL_STATUS, "1002", "1991-02-02", "34", "170", "", "", ""),
+                        ("Actor Missing Height And Measurements", NO_VIDEO_DETAIL_STATUS, "1003", "1992-03-03", "33", "", "90", "", "91"),
+                    ],
+                )
+                conn.commit()
+
+            summary = DataCenterService(db).get_summary_snapshot()["summary"]
+            binghuo_summary = summary["actor_library"]["sources"][BINGHUO_ACTOR_SOURCE]
+
+            self.assertEqual(binghuo_summary["list_kind"], "actor")
+            self.assertEqual(binghuo_summary["no_search_count"], 1)
+            self.assertEqual(binghuo_summary["missing_age_count"], 1)
+            self.assertEqual(binghuo_summary["missing_measurements_count"], 2)
+            self.assertEqual(binghuo_summary["missing_height_count"], 1)
+            self.assertEqual(
+                binghuo_summary["issue_groups"],
+                [
+                    {
+                        "key": "no_search",
+                        "label": "无结果",
+                        "items": [{"name": "Actor No Search"}],
+                    },
+                    {
+                        "key": "missing_age",
+                        "label": "无年龄",
+                        "items": [{"name": "Actor Missing Age"}],
+                    },
+                    {
+                        "key": "missing_measurements",
+                        "label": "无三围",
+                        "items": [
+                            {"name": "Actor Missing Height And Measurements"},
+                            {"name": "Actor Missing Measurements"},
+                        ],
+                    },
+                    {
+                        "key": "missing_height",
+                        "label": "无身高",
+                        "items": [{"name": "Actor Missing Height And Measurements"}],
+                    },
+                ],
+            )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
