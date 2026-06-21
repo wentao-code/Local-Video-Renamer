@@ -218,11 +218,29 @@ class BackendClient:
     def delete_actor(self, actor_name):
         return self._post('/database/actors/delete', {'actor_name': actor_name}).get('deleted_count', 0)
 
-    def list_code_prefixes(self, search_text=''):
-        query = ''
+    def list_code_prefixes(self, search_text='', sort_field=None, sort_order=None, limit=None, offset=0):
+        return self.list_code_prefixes_page(
+            search_text=search_text,
+            sort_field=sort_field,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+        ).get('prefixes', [])
+
+    def list_code_prefixes_page(self, search_text='', sort_field=None, sort_order=None, limit=None, offset=0):
+        params = {}
         if search_text:
-            query = '?' + urlencode({'q': search_text})
-        return self._get('/database/code-prefixes' + query).get('prefixes', [])
+            params['q'] = search_text
+        if sort_field:
+            params['sort_field'] = sort_field
+        if sort_order:
+            params['sort_order'] = sort_order
+        if limit is not None:
+            params['limit'] = int(limit)
+        if int(offset or 0) > 0:
+            params['offset'] = int(offset or 0)
+        query = ('?' + urlencode(params)) if params else ''
+        return self._get('/database/code-prefixes' + query)
 
     def get_code_prefix_detail(self, prefix):
         query = '?' + urlencode({'prefix': prefix})

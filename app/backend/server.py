@@ -127,7 +127,13 @@ def make_handler(service):
                 return service.delete_actor(body.get('actor_name'))
             if method == 'GET' and path == '/database/code-prefixes':
                 search_text = query.get('q', [''])[0]
-                return service.list_code_prefixes(search_text)
+                return service.list_code_prefixes(
+                    search_text,
+                    sort_field=query.get('sort_field', [''])[0],
+                    sort_order=query.get('sort_order', [''])[0],
+                    limit=_int_query_value(query, 'limit', default=None),
+                    offset=_int_query_value(query, 'offset', default=0),
+                )
             if method == 'GET' and path == '/database/code-prefixes/detail':
                 prefix = query.get('prefix', [''])[0]
                 return service.get_code_prefix_detail(prefix)

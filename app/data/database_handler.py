@@ -326,10 +326,25 @@ class VideoDatabase(
             self._ensure_column(cursor, 'ladder_entries', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_column(cursor, 'ladder_entries', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_index(cursor, 'idx_processed_videos_manual_category', 'processed_videos', 'javtxt_enrichment_status, video_category, code')
+            self._ensure_index(cursor, 'idx_processed_videos_release_date', 'processed_videos', 'release_date, code')
             self._ensure_index(cursor, 'idx_code_prefix_movies_code', 'code_prefix_movies', 'code')
             self._ensure_index(cursor, 'idx_code_prefix_movies_category_code', 'code_prefix_movies', 'video_category, code')
+            self._ensure_index(cursor, 'idx_code_prefix_movies_prefix_release', 'code_prefix_movies', 'prefix, release_date, code')
             self._ensure_index(cursor, 'idx_actor_movies_code', 'actor_movies', 'code')
             self._ensure_index(cursor, 'idx_actor_movies_category_code', 'actor_movies', 'video_category, code')
+            self._ensure_index(cursor, 'idx_actor_movies_actor_release', 'actor_movies', 'actor_name, release_date, code')
+            self._ensure_index(
+                cursor,
+                'idx_actor_enrichments_status',
+                'actor_enrichments',
+                'avfan_enrichment_status, javtxt_enrichment_status, binghuo_enrichment_status, actor_name',
+            )
+            self._ensure_index(
+                cursor,
+                'idx_code_prefix_enrichments_status',
+                'code_prefix_enrichments',
+                'avfan_enrichment_status, javtxt_enrichment_status, prefix',
+            )
             self._ensure_index(cursor, 'idx_ladder_entries_board', 'ladder_entries', 'board_key, entity_type, tier, entity_name')
             cursor.execute(
                 '''
@@ -1760,6 +1775,168 @@ class VideoDatabase(
                 SELECT COUNT(*)
                 FROM actors a
                 LEFT JOIN actor_enrichments e ON e.actor_name = a.name
+                {where_sql}
+                ''',
+                tuple(parameters),
+            )
+            row = cursor.fetchone()
+        return int((row or [0])[0] or 0)
+
+    @staticmethod
+    def _code_prefix_expression_sql(code_field='code'):
+        return (
+            "UPPER(CASE WHEN instr({field}, '-') > 0 "
+            "THEN substr({field}, 1, instr({field}, '-') - 1) "
+            "ELSE {field} END)"
+        ).format(field=code_field)
+
+    @classmethod
+    def _code_prefix_order_by_sql(cls, sort_field='prefix', sort_order='asc'):
+        direction = cls._normalize_list_sort_order(sort_order)
+        order_sql_map = {
+            'prefix': f'combined.prefix {direction}',
+            'video_count': f'COALESCE(local.video_count, 0) {direction}, combined.prefix {direction}',
+            'avfan_total_videos': (
+                f'COALESCE(enrich.avfan_total_videos, 0) {direction}, '
+                f'COALESCE(local.video_count, 0) {direction}, combined.prefix {direction}'
+            ),
+            'earliest_release_date': (
+                f"COALESCE(NULLIF(web.earliest_release_date, ''), '') {direction}, combined.prefix {direction}"
+            ),
+            'latest_release_date': (
+                f"COALESCE(NULLIF(web.latest_release_date, ''), '') {direction}, combined.prefix {direction}"
+            ),
+        }
+        return order_sql_map.get(str(sort_field or '').strip(), order_sql_map['prefix'])
+
+    @staticmethod
+    def _code_prefix_search_where_sql(search_text=''):
+        normalized_search = str(search_text or '').strip().upper()
+        if not normalized_search:
+            return 'WHERE hidden.prefix IS NULL', ()
+        return 'WHERE hidden.prefix IS NULL AND combined.prefix LIKE ?', (f'%{normalized_search}%',)
+
+    def list_code_prefix_summaries(self, search_text='', sort_field='prefix', sort_order='asc', limit=None, offset=0):
+        prefix_sql = self._code_prefix_expression_sql('code')
+        where_sql, parameters = self._code_prefix_search_where_sql(search_text)
+        order_by_sql = self._code_prefix_order_by_sql(sort_field, sort_order)
+        normalized_limit, normalized_offset = self._normalize_limit_offset(limit, offset)
+        limit_sql = ''
+        query_parameters = list(parameters)
+        if normalized_limit is not None:
+            limit_sql = ' LIMIT ? OFFSET ?'
+            query_parameters.extend([normalized_limit, normalized_offset])
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                WITH local AS (
+                    SELECT
+                        {prefix_sql} AS prefix,
+                        COUNT(*) AS video_count
+                    FROM processed_videos
+                    WHERE TRIM(COALESCE(code, '')) <> ''
+                      AND {prefix_sql} GLOB '*[A-Z]*'
+                    GROUP BY {prefix_sql}
+                ),
+                enrich AS (
+                    SELECT
+                        UPPER(prefix) AS prefix,
+                        COALESCE(avfan_enrichment_status, ?) AS avfan_enrichment_status,
+                        COALESCE(javtxt_enrichment_status, ?) AS javtxt_enrichment_status,
+                        COALESCE(avfan_total_pages, 0) AS avfan_total_pages,
+                        COALESCE(avfan_total_videos, 0) AS avfan_total_videos,
+                        COALESCE(last_enriched_at, '') AS last_enriched_at
+                    FROM code_prefix_enrichments
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                ),
+                web AS (
+                    SELECT
+                        UPPER(prefix) AS prefix,
+                        MIN(CASE WHEN TRIM(COALESCE(release_date, '')) <> '' THEN release_date END) AS earliest_release_date,
+                        MAX(CASE WHEN TRIM(COALESCE(release_date, '')) <> '' THEN release_date END) AS latest_release_date
+                    FROM code_prefix_movies
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                    GROUP BY UPPER(prefix)
+                ),
+                combined AS (
+                    SELECT prefix FROM local
+                    UNION
+                    SELECT prefix FROM enrich
+                )
+                SELECT
+                    combined.prefix,
+                    COALESCE(local.video_count, 0) AS video_count,
+                    COALESCE(enrich.avfan_enrichment_status, ?) AS avfan_enrichment_status,
+                    COALESCE(enrich.javtxt_enrichment_status, ?) AS javtxt_enrichment_status,
+                    COALESCE(enrich.avfan_total_pages, 0) AS avfan_total_pages,
+                    COALESCE(enrich.avfan_total_videos, 0) AS avfan_total_videos,
+                    COALESCE(web.earliest_release_date, '') AS earliest_release_date,
+                    COALESCE(web.latest_release_date, '') AS latest_release_date,
+                    COALESCE(enrich.last_enriched_at, '') AS last_enriched_at
+                FROM combined
+                LEFT JOIN local ON local.prefix = combined.prefix
+                LEFT JOIN enrich ON enrich.prefix = combined.prefix
+                LEFT JOIN web ON web.prefix = combined.prefix
+                LEFT JOIN hidden_code_prefixes hidden ON UPPER(hidden.prefix) = combined.prefix
+                {where_sql}
+                ORDER BY {order_by_sql}
+                {limit_sql}
+                ''',
+                (
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    *query_parameters,
+                ),
+            )
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'prefix': row[0] or '',
+                'video_count': int(row[1] or 0),
+                'avfan_enrichment_status': row[2] or UNENRICHED_STATUS,
+                'javtxt_enrichment_status': row[3] or UNENRICHED_STATUS,
+                'avfan_total_pages': int(row[4] or 0),
+                'avfan_total_videos': int(row[5] or 0),
+                'earliest_release_date': row[6] or '',
+                'latest_release_date': row[7] or '',
+                'last_enriched_at': row[8] or '',
+            }
+            for row in rows
+            if row[0]
+        ]
+
+    def count_code_prefixes(self, search_text=''):
+        prefix_sql = self._code_prefix_expression_sql('code')
+        where_sql, parameters = self._code_prefix_search_where_sql(search_text)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                WITH local AS (
+                    SELECT {prefix_sql} AS prefix
+                    FROM processed_videos
+                    WHERE TRIM(COALESCE(code, '')) <> ''
+                      AND {prefix_sql} GLOB '*[A-Z]*'
+                    GROUP BY {prefix_sql}
+                ),
+                enrich AS (
+                    SELECT UPPER(prefix) AS prefix
+                    FROM code_prefix_enrichments
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                ),
+                combined AS (
+                    SELECT prefix FROM local
+                    UNION
+                    SELECT prefix FROM enrich
+                )
+                SELECT COUNT(*)
+                FROM combined
+                LEFT JOIN hidden_code_prefixes hidden ON UPPER(hidden.prefix) = combined.prefix
                 {where_sql}
                 ''',
                 tuple(parameters),

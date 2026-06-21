@@ -291,9 +291,27 @@ class BackendService:
     def delete_actor(self, actor_name):
         return {'deleted_count': self.library_admin_service.delete_actor(actor_name)}
 
-    def list_code_prefixes(self, search_text=''):
+    def list_code_prefixes(self, search_text='', sort_field='prefix', sort_order='asc', limit=None, offset=0):
         self.ensure_database_loaded()
-        return {'prefixes': self.code_prefix_library.list_prefixes(search_text)}
+        normalized_limit = self._normalize_list_limit(limit)
+        normalized_offset = self._normalize_list_offset(offset)
+        normalized_sort_field = self._normalize_code_prefix_sort_field(sort_field)
+        normalized_sort_order = self._normalize_sort_order(sort_order)
+        rows = list(
+            self._list_code_prefix_query(
+                search_text,
+                sort_field=normalized_sort_field,
+                sort_order=normalized_sort_order,
+                limit=normalized_limit,
+                offset=normalized_offset,
+            )
+        )
+        return {
+            'prefixes': rows,
+            'total_count': self._count_code_prefixes_for_listing(search_text, fallback_rows=rows),
+            'offset': normalized_offset,
+            'limit': normalized_limit,
+        }
 
     def get_code_prefix_detail(self, prefix):
         self.ensure_database_loaded()
@@ -376,6 +394,15 @@ class BackendService:
         return normalized if normalized in ('name', 'birthday', 'age') else 'name'
 
     @staticmethod
+    def _normalize_code_prefix_sort_field(sort_field):
+        normalized = str(sort_field or '').strip()
+        return (
+            normalized
+            if normalized in ('prefix', 'video_count', 'avfan_total_videos', 'earliest_release_date', 'latest_release_date')
+            else 'prefix'
+        )
+
+    @staticmethod
     def _normalize_list_limit(limit):
         if limit is None:
             return None
@@ -419,6 +446,18 @@ class BackendService:
         except TypeError:
             return self.db.list_actors(search_text)
 
+    def _list_code_prefix_query(self, search_text='', sort_field='prefix', sort_order='asc', limit=None, offset=0):
+        try:
+            return self.code_prefix_library.list_prefixes(
+                search_text,
+                sort_field=sort_field,
+                sort_order=sort_order,
+                limit=limit,
+                offset=offset,
+            )
+        except TypeError:
+            return self.code_prefix_library.list_prefixes(search_text)
+
     def _sort_video_rows_for_listing(self, rows, sort_field, sort_order):
         reverse = self._normalize_sort_order(sort_order) == 'desc'
 
@@ -444,6 +483,11 @@ class BackendService:
     def _count_actors_for_listing(self, search_text='', fallback_rows=None):
         if hasattr(self.db, 'count_actors'):
             return int(self.db.count_actors(search_text) or 0)
+        return len(list(fallback_rows or []))
+
+    def _count_code_prefixes_for_listing(self, search_text='', fallback_rows=None):
+        if hasattr(self.code_prefix_library, 'count_prefixes'):
+            return int(self.code_prefix_library.count_prefixes(search_text) or 0)
         return len(list(fallback_rows or []))
 
     @staticmethod

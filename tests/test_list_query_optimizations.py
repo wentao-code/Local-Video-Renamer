@@ -331,6 +331,41 @@ class LibraryListMetadataTest(unittest.TestCase):
         self.assertEqual(rows[0]['javtxt_enrichment_status'], FAILED_STATUS)
         self.assertEqual(rows[0]['update_status'], 'active')
 
+    def test_list_code_prefixes_passes_sort_and_pagination_to_library(self):
+        class FakeCodePrefixLibrary:
+            def __init__(self):
+                self.calls = []
+
+            def list_prefixes(self, search_text='', sort_field='prefix', sort_order='asc', limit=None, offset=0):
+                self.calls.append((search_text, sort_field, sort_order, limit, offset))
+                return [{'prefix': 'NEM'}]
+
+            def count_prefixes(self, search_text=''):
+                self.count_search = search_text
+                return 88
+
+        service = BackendService.__new__(BackendService)
+        service.code_prefix_library = FakeCodePrefixLibrary()
+        service.ensure_database_loaded = lambda: None
+
+        result = BackendService.list_code_prefixes(
+            service,
+            'NE',
+            sort_field='avfan_total_videos',
+            sort_order='desc',
+            limit=40,
+            offset=80,
+        )
+
+        self.assertEqual(
+            service.code_prefix_library.calls,
+            [('NE', 'avfan_total_videos', 'desc', 40, 80)],
+        )
+        self.assertEqual(service.code_prefix_library.count_search, 'NE')
+        self.assertEqual(result['total_count'], 88)
+        self.assertEqual(result['offset'], 80)
+        self.assertEqual(result['limit'], 40)
+
 
 class _PassThroughFilterService:
     @staticmethod
@@ -421,5 +456,57 @@ class DatabaseQueryPushdownIntegrationTest(unittest.TestCase):
 
             self.assertEqual([row['name'] for row in rows], ['Actor C', 'Actor A'])
             self.assertEqual(db.count_actors(), 3)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_video_database_list_code_prefix_summaries_supports_sql_sort_limit_and_offset(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    '''
+                    INSERT INTO processed_videos (
+                        code, title, author, duration, size, storage_location,
+                        release_date, maker, publisher,
+                        avfan_enrichment_status, javtxt_enrichment_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    [
+                        ('NEM-001', 'A', 'Actor A', '', '', '', '2024-01-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
+                        ('NEM-002', 'B', 'Actor B', '', '', '', '2024-01-02', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
+                        ('IPX-001', 'C', 'Actor C', '', '', '', '2024-02-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
+                    ],
+                )
+                conn.executemany(
+                    '''
+                    INSERT INTO code_prefix_enrichments (
+                        prefix, avfan_enrichment_status, javtxt_enrichment_status, avfan_total_videos
+                    ) VALUES (?, ?, ?, ?)
+                    ''',
+                    [
+                        ('NEM', ENRICHED_STATUS, ENRICHED_STATUS, 3),
+                        ('IPX', ENRICHED_STATUS, ENRICHED_STATUS, 9),
+                        ('ROE', ENRICHED_STATUS, ENRICHED_STATUS, 5),
+                    ],
+                )
+                conn.executemany(
+                    '''
+                    INSERT INTO code_prefix_movies (prefix, code, release_date)
+                    VALUES (?, ?, ?)
+                    ''',
+                    [
+                        ('NEM', 'NEM-001', '2024-01-01'),
+                        ('IPX', 'IPX-001', '2024-02-01'),
+                        ('ROE', 'ROE-001', '2024-03-01'),
+                    ],
+                )
+                conn.commit()
+
+            rows = db.list_code_prefix_summaries(sort_field='avfan_total_videos', sort_order='desc', limit=2, offset=1)
+
+            self.assertEqual([row['prefix'] for row in rows], ['ROE', 'NEM'])
+            self.assertEqual(db.count_code_prefixes(), 3)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
