@@ -74,7 +74,8 @@ def make_handler(service):
             if method == 'GET' and path == '/data-center/summary':
                 return service.get_data_center_summary(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'GET' and path == '/data-center/analysis':
-                return service.get_actor_metric_analysis(
+                return service.get_metric_analysis(
+                    query.get('analysis_type', ['actor'])[0],
                     query.get('metric', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )

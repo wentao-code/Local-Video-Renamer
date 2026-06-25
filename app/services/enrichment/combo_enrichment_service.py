@@ -155,7 +155,7 @@ class ComboEnrichmentService:
                 self.internal_stop_event.set()
                 break
 
-            if self._should_stop() or result.get('stopped'):
+            if self._should_stop() or result.get('stopped') or int(result.get('remaining_count', 0) or 0) <= 0:
                 break
 
             self.logger.log(

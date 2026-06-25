@@ -16,6 +16,7 @@ from app.core.enrichment_status import (
 )
 from app.data.database_handler import VideoDatabase
 from app.services.library import DataCenterService
+from app.services.video import VIDEO_CATEGORY_COLLECTION
 from app.services.video import VideoFilterService
 
 
@@ -544,6 +545,276 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_code_prefix_metric_analysis_builds_ratio_distribution_and_top_rankings(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            db.replace_code_prefix_movies(
+                "AAA",
+                [
+                    self._build_library_movie("AAA-001", "AAA Collection", "Actor A", "2024-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_COLLECTION),
+                    self._build_library_movie("AAA-002", "AAA Single", "Actor A", "2024-01-02", ENRICHED_STATUS),
+                ],
+            )
+            db.replace_code_prefix_movies(
+                "BBB",
+                [
+                    self._build_library_movie("BBB-001", "BBB Collection 1", "Actor B", "2024-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_COLLECTION),
+                    self._build_library_movie("BBB-002", "BBB Collection 2", "Actor B", "2024-01-02", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_COLLECTION),
+                    self._build_library_movie("BBB-003", "BBB Single", "Actor B", "2024-01-03", ENRICHED_STATUS),
+                ],
+            )
+            db.replace_code_prefix_movies(
+                "CCC",
+                [
+                    self._build_library_movie("CCC-001", "CCC Collection", "Actor C", "2024-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_COLLECTION),
+                ],
+            )
+            db.replace_code_prefix_movies(
+                "DDD",
+                [
+                    self._build_library_movie("DDD-001", "DDD Single 1", "Actor D", "2024-01-01", ENRICHED_STATUS),
+                    self._build_library_movie("DDD-002", "DDD Single 2", "Actor D", "2024-01-02", ENRICHED_STATUS),
+                ],
+            )
+
+            analysis = DataCenterService(db).get_code_prefix_metric_analysis_snapshot("collection_ratio")
+
+            distribution_rows = analysis["analysis"]["distribution_rows"]
+            self.assertEqual(len(distribution_rows), 100)
+            self.assertEqual(distribution_rows[0], {"label": "1%", "count": 0})
+            self.assertEqual(distribution_rows[49], {"label": "50%", "count": 1})
+            self.assertEqual(distribution_rows[66], {"label": "67%", "count": 1})
+            self.assertEqual(distribution_rows[99], {"label": "100%", "count": 1})
+            self.assertEqual(analysis["analysis"]["distribution_items_per_line"], 6)
+            self.assertEqual(analysis["analysis"]["ranking_items_per_line"], 6)
+            self.assertEqual(
+                analysis["analysis"]["ranking_rows"][:4],
+                [
+                    {
+                        "prefix": "CCC",
+                        "label": "CCC",
+                        "display_value": "100.0% (1/1)",
+                        "numeric_value": 100.0,
+                        "collection_count": 1,
+                        "total_count": 1,
+                    },
+                    {
+                        "prefix": "BBB",
+                        "label": "BBB",
+                        "display_value": "66.7% (2/3)",
+                        "numeric_value": 66.7,
+                        "collection_count": 2,
+                        "total_count": 3,
+                    },
+                    {
+                        "prefix": "AAA",
+                        "label": "AAA",
+                        "display_value": "50.0% (1/2)",
+                        "numeric_value": 50.0,
+                        "collection_count": 1,
+                        "total_count": 2,
+                    },
+                    {
+                        "prefix": "DDD",
+                        "label": "DDD",
+                        "display_value": "0.0% (0/2)",
+                        "numeric_value": 0.0,
+                        "collection_count": 0,
+                        "total_count": 2,
+                    },
+                ],
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_code_prefix_metric_analysis_excludes_filtered_videos_before_counting_ratios(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            db.replace_code_prefix_movies(
+                "AAA",
+                [
+                    self._build_library_movie(
+                        "AAA-001",
+                        "Visible Collection",
+                        "Actor A",
+                        "2024-01-01",
+                        ENRICHED_STATUS,
+                        movie_id="m1",
+                        url="https://example.com/1",
+                        video_category=VIDEO_CATEGORY_COLLECTION,
+                    ),
+                    self._build_library_movie(
+                        "AAA-002",
+                        "Filtered Collection",
+                        "Actor A",
+                        "2024-01-02",
+                        ENRICHED_STATUS,
+                        movie_id="m2",
+                        url="https://example.com/2",
+                        video_category=VIDEO_CATEGORY_COLLECTION,
+                    ),
+                    self._build_library_movie(
+                        "AAA-003",
+                        "Visible Single",
+                        "Actor A",
+                        "2024-01-03",
+                        ENRICHED_STATUS,
+                        movie_id="m3",
+                        url="https://example.com/3",
+                    ),
+                ],
+            )
+
+            filter_service = VideoFilterService(
+                settings_loader=lambda: {
+                    "rules": {
+                        "code": [],
+                        "title": ["Filtered"],
+                        "javtxt_tags": [],
+                    }
+                }
+            )
+
+            analysis = DataCenterService(db, video_filter_service=filter_service).get_code_prefix_metric_analysis_snapshot(
+                "collection_ratio"
+            )
+
+            self.assertEqual(
+                analysis["analysis"]["ranking_rows"],
+                [
+                    {
+                        "prefix": "AAA",
+                        "label": "AAA",
+                        "display_value": "50.0% (1/2)",
+                        "numeric_value": 50.0,
+                        "collection_count": 1,
+                        "total_count": 2,
+                    }
+                ],
+            )
+            self.assertEqual(analysis["analysis"]["distribution_rows"][49], {"label": "50%", "count": 1})
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_code_prefix_metric_analysis_merges_code_prefix_and_actor_libraries_then_deduplicates_codes(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            db.replace_code_prefix_movies(
+                "AAA",
+                [
+                    self._build_library_movie(
+                        "AAA-001",
+                        "AAA Shared Collection",
+                        "Actor A",
+                        "2024-01-01",
+                        ENRICHED_STATUS,
+                        movie_id="m1",
+                        url="https://example.com/1",
+                        video_category=VIDEO_CATEGORY_COLLECTION,
+                    ),
+                    self._build_library_movie(
+                        "AAA-002",
+                        "AAA Single",
+                        "Actor A",
+                        "2024-01-02",
+                        ENRICHED_STATUS,
+                        movie_id="m2",
+                        url="https://example.com/2",
+                    ),
+                ],
+            )
+
+            db.replace_actor_movies(
+                "Actor A",
+                [
+                    self._build_library_movie(
+                        "AAA-001",
+                        "AAA Shared Collection",
+                        "Actor A",
+                        "2024-01-01",
+                        ENRICHED_STATUS,
+                        movie_id="m1",
+                        url="https://example.com/1",
+                        video_category=VIDEO_CATEGORY_COLLECTION,
+                    ),
+                    self._build_library_movie(
+                        "AAA-003",
+                        "AAA Actor-Only Collection",
+                        "Actor A",
+                        "2024-01-03",
+                        ENRICHED_STATUS,
+                        movie_id="m3",
+                        url="https://example.com/3",
+                        video_category=VIDEO_CATEGORY_COLLECTION,
+                    ),
+                ],
+            )
+            db.replace_actor_movies(
+                "Actor B",
+                [
+                    self._build_library_movie(
+                        "ZZZ-001",
+                        "ZZZ Shared Single",
+                        "Actor B",
+                        "2024-02-01",
+                        ENRICHED_STATUS,
+                        movie_id="m4",
+                        url="https://example.com/4",
+                    ),
+                ],
+            )
+            db.replace_actor_movies(
+                "Actor C",
+                [
+                    self._build_library_movie(
+                        "ZZZ-001",
+                        "ZZZ Shared Single",
+                        "Actor C",
+                        "2024-02-01",
+                        ENRICHED_STATUS,
+                        movie_id="m4",
+                        url="https://example.com/4",
+                    ),
+                ],
+            )
+
+            analysis = DataCenterService(db).get_code_prefix_metric_analysis_snapshot("collection_ratio")
+
+            self.assertEqual(
+                analysis["analysis"]["ranking_rows"][:2],
+                [
+                    {
+                        "prefix": "AAA",
+                        "label": "AAA",
+                        "display_value": "66.7% (2/3)",
+                        "numeric_value": 66.7,
+                        "collection_count": 2,
+                        "total_count": 3,
+                    },
+                    {
+                        "prefix": "ZZZ",
+                        "label": "ZZZ",
+                        "display_value": "0.0% (0/1)",
+                        "numeric_value": 0.0,
+                        "collection_count": 0,
+                        "total_count": 1,
+                    },
+                ],
+            )
+            self.assertEqual(analysis["analysis"]["distribution_rows"][66], {"label": "67%", "count": 1})
+            self.assertEqual(analysis["analysis"]["distribution_rows"][0], {"label": "1%", "count": 0})
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     @staticmethod
     def _seed_processed_video(
         db_path,
@@ -597,7 +868,7 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             conn.commit()
 
     @staticmethod
-    def _build_library_movie(code, title, author, release_date, status, movie_id="", url=""):
+    def _build_library_movie(code, title, author, release_date, status, movie_id="", url="", video_category=""):
         return {
             "code": code,
             "title": title,
@@ -611,7 +882,7 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             "javtxt_url": url,
             "javtxt_tags": "",
             "javtxt_release_date": release_date,
-            "video_category": "",
+            "video_category": video_category,
         }
 
 

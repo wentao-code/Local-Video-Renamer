@@ -1,10 +1,12 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.backend.service import BackendService
 from app.core.backend_protocol import BACKEND_API_REVISION
 from app.core.enrichment_status import ENRICHED_STATUS
 from app.core.project_paths import PROJECT_ROOT
+from app.gui.i18n import tr
 from app.gui.main_window import VidNormApp
 from app.services.video import VIDEO_CATEGORY_SINGLE
 
@@ -28,6 +30,12 @@ class BackendReuseDecisionTest(unittest.TestCase):
 
     def test_backend_revision_marks_data_center_issue_list_payload_change(self):
         self.assertIn('issue-list', BACKEND_API_REVISION)
+
+    def test_backend_revision_marks_batch_auto_stop_change(self):
+        self.assertIn('batch-auto-stop', BACKEND_API_REVISION)
+
+    def test_backend_revision_marks_code_prefix_analysis_change(self):
+        self.assertIn('code-prefix-analysis', BACKEND_API_REVISION)
 
     def test_reuses_same_project_compatible_backend(self):
         health = {
@@ -86,6 +94,33 @@ class BackendReuseDecisionTest(unittest.TestCase):
         self.assertEqual(stub.network_guard_failure_count, 0)
         self.assertFalse(stub.network_stop_requested)
         self.assertTrue(stub.network_last_probe_online)
+
+    def test_batch_plan_stops_when_remaining_count_reaches_zero(self):
+        calls = []
+        stub = SimpleNamespace(
+            enrichment_mode='batch',
+            batch_enrichment_active=True,
+            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
+            build_enrichment_summary=lambda result: 'summary',
+            stop_batch_enrichment=lambda message=None: calls.append(('stop_batch', message)),
+            schedule_next_batch_enrichment=lambda last_result=None: calls.append(('schedule', last_result)),
+        )
+
+        with patch('app.gui.main_window.QMessageBox.information') as info_mock:
+            VidNormApp.on_enrichment_finished(
+                stub,
+                {
+                    'entity_label': '视频库',
+                    'remaining_count': 0,
+                    'stopped': False,
+                    'requires_manual_verification': False,
+                    'message': '',
+                },
+            )
+
+        self.assertIn(('stop_batch', tr('main.batch_completed')), calls)
+        self.assertNotIn(('schedule', unittest.mock.ANY), calls)
+        self.assertTrue(info_mock.called)
 
     def test_attach_actor_update_status_loads_filter_settings_once(self):
         class FakeDatabase:

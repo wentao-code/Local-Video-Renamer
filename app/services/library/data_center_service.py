@@ -1,8 +1,10 @@
 import re
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 from threading import Lock
 
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRIC_MAP
+from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRIC_MAP
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
     BINGHUO_ACTOR_SOURCE,
@@ -18,8 +20,8 @@ from app.core.enrichment_status import (
 )
 from app.core.javtxt_video_state import summarize_javtxt_movies
 from app.core.video_code import standardize_video_code
-from app.services.library import CodePrefixLibrary, build_merged_movie_snapshot
-from app.services.video import VideoFilterService
+from app.services.library import CodePrefixLibrary, build_merged_movie_snapshot, extract_code_prefix
+from app.services.video import VIDEO_CATEGORY_COLLECTION, VideoFilterService
 
 
 VIDEO_LIBRARY_LABEL = '\u89c6\u9891\u5e93'
@@ -71,9 +73,9 @@ class DataCenterService:
 
     def get_actor_metric_analysis_snapshot(self, metric_key, force_refresh=False):
         config = self._get_actor_metric_config(metric_key)
-        metric_key = config['key']
+        cache_key = self._build_analysis_cache_key('actor', config['key'])
         with self._analysis_cache_lock:
-            cached = self._analysis_cache.get(metric_key)
+            cached = self._analysis_cache.get(cache_key)
             if cached is not None and not force_refresh:
                 return dict(cached)
 
@@ -81,7 +83,25 @@ class DataCenterService:
                 'analysis': self._build_actor_metric_analysis(config),
                 'refreshed_at': self._current_cache_timestamp(),
             }
-            self._analysis_cache[metric_key] = payload
+            self._analysis_cache[cache_key] = payload
+            return dict(payload)
+
+    def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
+        return self.get_code_prefix_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)['analysis']
+
+    def get_code_prefix_metric_analysis_snapshot(self, metric_key, force_refresh=False):
+        config = self._get_code_prefix_metric_config(metric_key)
+        cache_key = self._build_analysis_cache_key('code_prefix', config['key'])
+        with self._analysis_cache_lock:
+            cached = self._analysis_cache.get(cache_key)
+            if cached is not None and not force_refresh:
+                return dict(cached)
+
+            payload = {
+                'analysis': self._build_code_prefix_metric_analysis(config),
+                'refreshed_at': self._current_cache_timestamp(),
+            }
+            self._analysis_cache[cache_key] = payload
             return dict(payload)
 
     def _build_summary(self, filter_settings=None):
@@ -400,6 +420,72 @@ class DataCenterService:
             'ranking_rows': ranking_rows[:50],
         }
 
+    def _build_code_prefix_metric_analysis(self, config):
+        if config.get('key') != 'collection_ratio':
+            raise ValueError(f"Unknown code prefix analysis metric: {config.get('key', '')}")
+
+        filter_settings = self._load_filter_settings()
+        code_prefixes = [
+            str((row or {}).get('prefix', '') or '').strip().upper()
+            for row in self.code_prefix_library.list_prefixes()
+            if str((row or {}).get('prefix', '') or '').strip()
+        ]
+        code_prefix_movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(code_prefixes) if code_prefixes else {}
+        actor_movies_by_prefix = self._group_actor_movies_for_code_prefix_analysis()
+        prefixes = sorted(set(code_prefixes) | set(actor_movies_by_prefix))
+        distribution_counts = {percent: 0 for percent in range(1, 101)}
+        ranking_rows = []
+
+        for prefix in prefixes:
+            merged_movies = self._merge_movies_by_code(
+                [
+                    *list(code_prefix_movies_by_prefix.get(prefix, []) or []),
+                    *list(actor_movies_by_prefix.get(prefix, []) or []),
+                ]
+            )
+            visible_movies = self._filter_visible_movies(merged_movies, filter_settings=filter_settings)
+            total_count = len(visible_movies)
+            if total_count <= 0:
+                continue
+
+            collection_count = sum(
+                1
+                for movie in visible_movies
+                if str((movie or {}).get('video_category', '') or '').strip() == VIDEO_CATEGORY_COLLECTION
+            )
+            ratio_percent = self._round_half_up((float(collection_count) / float(total_count)) * 100.0, digits=1)
+            rounded_percent = int(self._round_half_up(ratio_percent, digits=0))
+            if rounded_percent >= 1:
+                distribution_counts[min(rounded_percent, 100)] += 1
+            ranking_rows.append(
+                {
+                    'prefix': prefix,
+                    'label': prefix,
+                    'display_value': f'{ratio_percent:.1f}% ({collection_count}/{total_count})',
+                    'numeric_value': ratio_percent,
+                    'collection_count': collection_count,
+                    'total_count': total_count,
+                }
+            )
+
+        ranking_rows.sort(
+            key=lambda item: (
+                -float(item.get('numeric_value', 0.0) or 0.0),
+                -int(item.get('collection_count', 0) or 0),
+                str(item.get('prefix', '') or ''),
+            )
+        )
+        return {
+            'metric_key': config['key'],
+            'distribution_rows': [
+                {'label': f'{percent}%', 'count': distribution_counts[percent]}
+                for percent in range(1, 101)
+            ],
+            'ranking_rows': ranking_rows[:50],
+            'distribution_items_per_line': 6,
+            'ranking_items_per_line': 6,
+        }
+
     @staticmethod
     def _resolve_actor_metric_value(config, actor_row, enrichment_record):
         source_name = str(config.get('source', '') or '').strip()
@@ -483,6 +569,18 @@ class DataCenterService:
             raise ValueError(f'Unknown actor analysis metric: {normalized_key}')
         return dict(config)
 
+    @staticmethod
+    def _get_code_prefix_metric_config(metric_key):
+        normalized_key = str(metric_key or '').strip()
+        config = CODE_PREFIX_ANALYSIS_METRIC_MAP.get(normalized_key)
+        if config is None:
+            raise ValueError(f'Unknown code prefix analysis metric: {normalized_key}')
+        return dict(config)
+
+    @staticmethod
+    def _build_analysis_cache_key(analysis_type, metric_key):
+        return f'{str(analysis_type or "").strip()}:{str(metric_key or "").strip()}'
+
     def _list_visible_video_summary_rows(self, filter_settings=None):
         return self._filter_visible_movies(
             self.database.list_video_summary_rows(),
@@ -493,6 +591,17 @@ class DataCenterService:
         if self.video_filter_service is None:
             return list(rows or [])
         return self.video_filter_service.filter_video_rows(rows, settings=filter_settings)
+
+    def _group_actor_movies_for_code_prefix_analysis(self):
+        if not hasattr(self.database, 'list_all_actor_movies'):
+            return {}
+        grouped_movies = {}
+        for row in self.database.list_all_actor_movies():
+            prefix = extract_code_prefix((row or {}).get('code', ''))
+            if not prefix:
+                continue
+            grouped_movies.setdefault(prefix, []).append(dict(row or {}))
+        return grouped_movies
 
     @staticmethod
     def _build_source_label(library_label, source_key):
@@ -684,6 +793,11 @@ class DataCenterService:
                 continue
             merged_movie[field_name] = current_local_row.get(field_name, '')
         return merged_movie
+
+    @staticmethod
+    def _round_half_up(value, digits=0):
+        exponent = '1' if int(digits or 0) <= 0 else '1.' + ('0' * int(digits or 0))
+        return float(Decimal(str(value)).quantize(Decimal(exponent), rounding=ROUND_HALF_UP))
 
 
 def _build_progress_percent(enriched_count, total_count):

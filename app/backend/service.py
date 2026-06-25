@@ -180,6 +180,18 @@ class BackendService:
         self.ensure_database_loaded()
         return self.data_center_service.get_actor_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)
 
+    def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
+        self.ensure_database_loaded()
+        return self.data_center_service.get_code_prefix_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)
+
+    def get_metric_analysis(self, analysis_type, metric_key, force_refresh=False):
+        normalized_type = str(analysis_type or 'actor').strip().lower() or 'actor'
+        if normalized_type == 'actor':
+            return self.get_actor_metric_analysis(metric_key, force_refresh=force_refresh)
+        if normalized_type == 'code_prefix':
+            return self.get_code_prefix_metric_analysis(metric_key, force_refresh=force_refresh)
+        raise ValueError(f'Unknown analysis type: {normalized_type}')
+
     def get_enrichment_progress(self):
         if self.enrichment_task_state.active_kind == 'combo':
             return {'progress': self.combo_progress.snapshot()}

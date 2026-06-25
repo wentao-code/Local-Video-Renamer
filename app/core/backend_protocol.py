@@ -1,1 +1,1 @@
-BACKEND_API_REVISION = '2026-06-21-actor-library-status-actor-detail-birthday-display-binghuo-prefix-count-actor-reset-backend-guard-actor-update-status-data-center-analysis-cache-binghuo-no-detail-manual-snapshot-paged-query-issue-list-javtxt-video-issue-count-4'
+BACKEND_API_REVISION = '2026-06-25-actor-library-status-actor-detail-birthday-display-binghuo-prefix-count-actor-reset-backend-guard-actor-update-status-data-center-analysis-cache-binghuo-no-detail-manual-snapshot-paged-query-issue-list-javtxt-video-issue-count-batch-auto-stop-code-prefix-analysis-1'

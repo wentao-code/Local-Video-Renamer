@@ -56,6 +56,31 @@ class DataCenterViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_show_analysis_window_opens_data_analysis_entry_dialog(self):
+        backend = _BackendStub()
+        created = {}
+
+        class FakeAnalysisWindow:
+            def __init__(self, backend_client, parent=None):
+                created['backend_client'] = backend_client
+                created['parent'] = parent
+
+            def show(self):
+                created['opened'] = True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = DataCenterWindow(backend)
+            try:
+                with patch('app.gui.data_center_viewer.DataAnalysisWindow', FakeAnalysisWindow):
+                    window.show_analysis_window()
+            finally:
+                window.hide()
+                window.deleteLater()
+
+        self.assertIs(created.get('backend_client'), backend)
+        self.assertIs(created.get('parent'), window)
+        self.assertTrue(created.get('opened'))
+
 
 if __name__ == '__main__':
     unittest.main()

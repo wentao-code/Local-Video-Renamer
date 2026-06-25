@@ -9,7 +9,7 @@ from app.core.enrichment_targets import (
     VIDEO_LIBRARY_TARGET,
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
-from app.gui.data_center_analysis_viewer import ActorDataAnalysisWindow, _build_refresh_client
+from app.gui.data_center_analysis_viewer import DataAnalysisWindow, _build_refresh_client
 from app.gui.enrichment_summary_widgets import SummaryCard
 from app.gui.i18n import tr
 
@@ -144,7 +144,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         super().closeEvent(event)
 
     def show_analysis_window(self):
-        self.analysis_window = ActorDataAnalysisWindow(self.backend_client, self)
+        self.analysis_window = DataAnalysisWindow(self.backend_client, self)
         self.analysis_window.show()
 
     def _build_live_progress_map(self, progress):

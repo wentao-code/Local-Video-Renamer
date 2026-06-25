@@ -1219,6 +1219,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 QMessageBox.information(self, tr('main.batch_stopped_title'), summary)
                 return
 
+            if int(result.get('remaining_count', 0) or 0) <= 0:
+                self.stop_batch_enrichment(tr('main.batch_completed'))
+                QMessageBox.information(self, tr('main.enrichment_completed_title'), summary)
+                return
+
             self.schedule_next_batch_enrichment(last_result=result)
             return
 
