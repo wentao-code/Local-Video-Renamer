@@ -6,7 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication
 
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE, BAOMU_ACTOR_SOURCE
 from app.core.enrichment_targets import ACTOR_BIRTHDAY_TARGET, ACTOR_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 from app.gui.enrichment_dialog import DEFAULT_SETTINGS_PAYLOAD, EnrichmentDialog
 
@@ -36,7 +36,7 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.addCleanup(dialog.deleteLater)
         return dialog
 
-    def test_actor_birthday_target_forces_binghuo_and_hides_combo_controls(self):
+    def test_actor_birthday_target_allows_actor_profile_sources_and_hides_combo_controls(self):
         dialog = self._create_dialog()
 
         dialog.actor_birthday_target_button.setChecked(True)
@@ -47,6 +47,7 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertFalse(dialog.avfan_source_button.isEnabled())
         self.assertFalse(dialog.javtxt_source_button.isEnabled())
         self.assertTrue(dialog.binghuo_source_button.isEnabled())
+        self.assertTrue(dialog.baomu_source_button.isEnabled())
         self.assertTrue(dialog.combo_group.isHidden())
         self.assertTrue(dialog.combo_single_button.isHidden())
         self.assertTrue(dialog.combo_batch_button.isHidden())
@@ -56,6 +57,18 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertEqual(values['source_key'], BINGHUO_ACTOR_SOURCE)
         self.assertEqual(values['target_type'], ACTOR_BIRTHDAY_TARGET)
         self.assertEqual(values['combo_task_settings'], {})
+
+    def test_actor_birthday_target_can_switch_between_binghuo_and_baomu(self):
+        dialog = self._create_dialog()
+
+        dialog.actor_birthday_target_button.setChecked(True)
+        dialog.baomu_source_button.setChecked(True)
+
+        self.assertEqual(dialog.selected_target_type(), ACTOR_BIRTHDAY_TARGET)
+        self.assertEqual(dialog.selected_source_key(), BAOMU_ACTOR_SOURCE)
+        values = dialog.values()
+        self.assertEqual(values['source_key'], BAOMU_ACTOR_SOURCE)
+        self.assertEqual(values['target_type'], ACTOR_BIRTHDAY_TARGET)
 
     def test_switching_back_restores_regular_source_controls(self):
         dialog = self._create_dialog()
@@ -73,7 +86,7 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertFalse(dialog.combo_single_button.isHidden())
         self.assertFalse(dialog.combo_batch_button.isHidden())
 
-    def test_invalid_saved_source_for_actor_birthday_falls_back_to_binghuo(self):
+    def test_invalid_saved_source_for_actor_birthday_falls_back_to_first_actor_profile_source(self):
         payload = build_default_payload()
         payload['target_type'] = ACTOR_BIRTHDAY_TARGET
         payload['selected_source_by_target'][ACTOR_BIRTHDAY_TARGET] = AVFAN_VIDEO_SOURCE
@@ -83,6 +96,17 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
 
         self.assertEqual(dialog.selected_target_type(), ACTOR_BIRTHDAY_TARGET)
         self.assertEqual(dialog.selected_source_key(), BINGHUO_ACTOR_SOURCE)
+
+    def test_saved_baomu_source_for_actor_birthday_is_restored(self):
+        payload = build_default_payload()
+        payload['target_type'] = ACTOR_BIRTHDAY_TARGET
+        payload['selected_source_by_target'][ACTOR_BIRTHDAY_TARGET] = BAOMU_ACTOR_SOURCE
+
+        dialog = self._create_dialog(payload)
+
+        self.assertEqual(dialog.selected_target_type(), ACTOR_BIRTHDAY_TARGET)
+        self.assertEqual(dialog.selected_source_key(), BAOMU_ACTOR_SOURCE)
+        self.assertTrue(dialog.baomu_source_button.isChecked())
 
 
 if __name__ == '__main__':

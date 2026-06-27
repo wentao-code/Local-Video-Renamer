@@ -24,6 +24,7 @@ from app.core.combo_enrichment import (
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
+    BAOMU_ACTOR_SOURCE,
     BINGHUO_ACTOR_SOURCE,
     DEFAULT_VIDEO_ENRICHMENT_SOURCE,
     JAVTXT_VIDEO_SOURCE,
@@ -43,6 +44,7 @@ SUPPORTED_SOURCE_KEYS = (
     AVFAN_VIDEO_SOURCE,
     JAVTXT_VIDEO_SOURCE,
     BINGHUO_ACTOR_SOURCE,
+    BAOMU_ACTOR_SOURCE,
 )
 
 DEFAULT_SOURCE_BY_TARGET = {
@@ -104,7 +106,7 @@ def clone_default_selected_sources():
 
 def supported_source_keys_for_target(target_type):
     if target_type == ACTOR_BIRTHDAY_TARGET:
-        return (BINGHUO_ACTOR_SOURCE,)
+        return (BINGHUO_ACTOR_SOURCE, BAOMU_ACTOR_SOURCE)
     return SUPPORTED_SOURCE_KEYS
 
 
@@ -275,13 +277,16 @@ class EnrichmentDialog(QDialog):
         self.avfan_source_button = QRadioButton(tr('enrichment.dialog.avfan_source'))
         self.javtxt_source_button = QRadioButton(tr('enrichment.dialog.javtxt_source'))
         self.binghuo_source_button = QRadioButton(tr('enrichment.dialog.binghuo_source'))
+        self.baomu_source_button = QRadioButton(tr('enrichment.dialog.baomu_source'))
         self.javtxt_source_button.setToolTip(tr('enrichment.dialog.javtxt_tooltip'))
         self.source_button_group.addButton(self.avfan_source_button)
         self.source_button_group.addButton(self.javtxt_source_button)
         self.source_button_group.addButton(self.binghuo_source_button)
+        self.source_button_group.addButton(self.baomu_source_button)
         source_layout.addWidget(self.avfan_source_button)
         source_layout.addWidget(self.javtxt_source_button)
         source_layout.addWidget(self.binghuo_source_button)
+        source_layout.addWidget(self.baomu_source_button)
         source_layout.addStretch()
         self.source_group.setLayout(source_layout)
 
@@ -306,6 +311,9 @@ class EnrichmentDialog(QDialog):
         )
         self.binghuo_source_button.toggled.connect(
             lambda checked: self.on_source_button_toggled(BINGHUO_ACTOR_SOURCE, checked)
+        )
+        self.baomu_source_button.toggled.connect(
+            lambda checked: self.on_source_button_toggled(BAOMU_ACTOR_SOURCE, checked)
         )
         self.kan_shui_button.toggled.connect(
             lambda checked: self.on_combo_button_toggled(KAN_SHUI_COMBO, checked)
@@ -495,10 +503,12 @@ class EnrichmentDialog(QDialog):
             QSignalBlocker(self.avfan_source_button),
             QSignalBlocker(self.javtxt_source_button),
             QSignalBlocker(self.binghuo_source_button),
+            QSignalBlocker(self.baomu_source_button),
         ):
             self.avfan_source_button.setChecked(source_key == AVFAN_VIDEO_SOURCE)
             self.javtxt_source_button.setChecked(source_key == JAVTXT_VIDEO_SOURCE)
             self.binghuo_source_button.setChecked(source_key == BINGHUO_ACTOR_SOURCE)
+            self.baomu_source_button.setChecked(source_key == BAOMU_ACTOR_SOURCE)
         self.update_source_controls()
 
     def store_current_target_settings(self):
@@ -587,6 +597,7 @@ class EnrichmentDialog(QDialog):
         self.avfan_source_button.setEnabled(not is_actor_birthday_target)
         self.javtxt_source_button.setEnabled(not is_actor_birthday_target)
         self.binghuo_source_button.setEnabled(is_actor_birthday_target)
+        self.baomu_source_button.setEnabled(is_actor_birthday_target)
         self.combo_group.setVisible(not is_actor_birthday_target)
         self.combo_single_button.setVisible(not is_actor_birthday_target)
         self.combo_batch_button.setVisible(not is_actor_birthday_target)

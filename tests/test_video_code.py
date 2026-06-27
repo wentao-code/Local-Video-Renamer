@@ -6,9 +6,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.core.filename_rules import extract_code_from_filename
-from app.core.enrichment_sources import BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_sources import BAOMU_ACTOR_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
+    FAILED_STATUS,
     NO_SEARCH_RESULTS_STATUS,
     NO_VIDEO_DETAIL_STATUS,
     UNENRICHED_STATUS,
@@ -1317,6 +1318,81 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
         self.assertEqual(record['binghuo_bust'], '')
         self.assertEqual(record['binghuo_waist'], '')
         self.assertEqual(record['binghuo_hip'], '')
+
+    def test_reset_actor_enrichments_baomu_clears_only_baomu_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.save_actor_enrichment('Actor Baomu', ENRICHED_STATUS, actor_id='actor-1')
+            db.save_binghuo_actor_profile(
+                'Actor Baomu',
+                ENRICHED_STATUS,
+                person_id='bh-1',
+                birthday='1990-01-01',
+                age='35',
+                height='168',
+                bust='88',
+                waist='60',
+                hip='90',
+            )
+            db.save_baomu_actor_profile(
+                'Actor Baomu',
+                FAILED_STATUS,
+                birthday='1991-02-03',
+                height='169',
+                bust='89',
+                waist='61',
+                hip='91',
+                error='old error',
+            )
+
+            reset_count = db.reset_actor_enrichments(['Actor Baomu'], source_key=BAOMU_ACTOR_SOURCE)
+            record = db.get_actor_enrichment_record('Actor Baomu')
+
+        self.assertEqual(reset_count, 1)
+        self.assertEqual(record['actor_id'], 'actor-1')
+        self.assertEqual(record['binghuo_enrichment_status'], ENRICHED_STATUS)
+        self.assertEqual(record['binghuo_height'], '168')
+        self.assertEqual(record['baomu_enrichment_status'], UNENRICHED_STATUS)
+        self.assertEqual(record['baomu_last_error'], '')
+        self.assertEqual(record['baomu_birthday'], '')
+        self.assertEqual(record['baomu_height'], '')
+        self.assertEqual(record['baomu_bust'], '')
+        self.assertEqual(record['baomu_waist'], '')
+        self.assertEqual(record['baomu_hip'], '')
+
+    def test_reopen_database_sanitizes_legacy_actor_avfan_status_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO actor_enrichments (
+                        actor_name,
+                        enrichment_status,
+                        avfan_enrichment_status,
+                        javtxt_enrichment_status,
+                        binghuo_enrichment_status
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        'Actor Legacy',
+                        '天陨阁: 未补全 | 辛聚阁: 未补全 | 并火: 无视频详情',
+                        '天陨阁: 未补全 | 辛聚阁: 未补全',
+                        UNENRICHED_STATUS,
+                        NO_VIDEO_DETAIL_STATUS,
+                    ),
+                )
+                conn.commit()
+
+            reopened = VideoDatabase(db_path)
+            record = reopened.get_actor_enrichment_record('Actor Legacy')
+
+        self.assertEqual(record['avfan_enrichment_status'], UNENRICHED_STATUS)
+        self.assertEqual(record['javtxt_enrichment_status'], UNENRICHED_STATUS)
+        self.assertEqual(record['binghuo_enrichment_status'], NO_VIDEO_DETAIL_STATUS)
 
     def test_sanitize_ineligible_javtxt_state_converts_processed_video_state_to_terminal_no_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:

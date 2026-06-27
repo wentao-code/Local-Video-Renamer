@@ -10,6 +10,7 @@ from importlib import import_module
 __all__ = [
     'ActorEnrichmentService',
     'ActorBinghuoEnrichmentService',
+    'ActorBaomuEnrichmentService',
     'ActorJavtxtEnrichmentService',
     'CodePrefixEnrichmentService',
     'CodePrefixJavtxtEnrichmentService',
@@ -31,6 +32,10 @@ _EXPORT_MAP = {
     'ActorBinghuoEnrichmentService': (
         'app.services.enrichment.actor_binghuo_enrichment',
         'ActorBinghuoEnrichmentService',
+    ),
+    'ActorBaomuEnrichmentService': (
+        'app.services.enrichment.actor_baomu_enrichment',
+        'ActorBaomuEnrichmentService',
     ),
     'ActorJavtxtEnrichmentService': ('app.services.enrichment.actor_javtxt_enrichment', 'ActorJavtxtEnrichmentService'),
     'CodePrefixEnrichmentService': ('app.services.enrichment.code_prefix_enrichment', 'CodePrefixEnrichmentService'),

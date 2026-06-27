@@ -13,12 +13,14 @@ from app.core.enrichment_status import (
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
+    BAOMU_ACTOR_SOURCE,
     BINGHUO_ACTOR_SOURCE,
     DEFAULT_VIDEO_ENRICHMENT_SOURCE,
     JAVTXT_VIDEO_SOURCE,
     build_library_enrichment_status_text,
     build_video_enrichment_status_text,
     is_effective_video_pending_status,
+    normalize_source_enrichment_status,
     normalize_video_enrichment_source,
 )
 from app.core.video_code import standardize_video_code
@@ -309,6 +311,14 @@ class VideoDatabase(
             self._ensure_column(cursor, 'actor_enrichments', 'binghuo_bust', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_enrichments', 'binghuo_waist', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_enrichments', 'binghuo_hip', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_enrichment_status', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_last_error', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_last_enriched_at', 'TEXT')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_birthday', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_height', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_bust', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_waist', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'actor_enrichments', 'baomu_hip', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_movies', 'title', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'author', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'release_date', 'TEXT')
@@ -337,7 +347,7 @@ class VideoDatabase(
                 cursor,
                 'idx_actor_enrichments_status',
                 'actor_enrichments',
-                'avfan_enrichment_status, javtxt_enrichment_status, binghuo_enrichment_status, actor_name',
+                'avfan_enrichment_status, javtxt_enrichment_status, binghuo_enrichment_status, baomu_enrichment_status, actor_name',
             )
             self._ensure_index(
                 cursor,
@@ -495,6 +505,7 @@ class VideoDatabase(
             self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'actor_movies')
             self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
             self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
+            self._sanitize_legacy_actor_source_status_columns(cursor)
             conn.commit()
 
     def _video_source_columns(self, source_key):
@@ -509,6 +520,48 @@ class VideoDatabase(
         if normalized_source == JAVTXT_VIDEO_SOURCE:
             return 'javtxt_enrichment_status', 'javtxt_last_error', 'javtxt_last_enriched_at'
         return 'avfan_enrichment_status', 'avfan_last_error', 'avfan_last_enriched_at'
+
+    def _sanitize_legacy_actor_source_status_columns(self, cursor):
+        cursor.execute(
+            '''
+            SELECT actor_name, avfan_enrichment_status, javtxt_enrichment_status,
+                   binghuo_enrichment_status, baomu_enrichment_status
+            FROM actor_enrichments
+            '''
+        )
+        rows = cursor.fetchall()
+        changed_actor_names = []
+        for actor_name, avfan_status, javtxt_status, binghuo_status, baomu_status in rows:
+            normalized_name = str(actor_name or '').strip()
+            if not normalized_name:
+                continue
+            cleaned_avfan = normalize_source_enrichment_status(avfan_status, AVFAN_VIDEO_SOURCE)
+            cleaned_javtxt = normalize_source_enrichment_status(javtxt_status, JAVTXT_VIDEO_SOURCE)
+            cleaned_binghuo = normalize_source_enrichment_status(binghuo_status, BINGHUO_ACTOR_SOURCE)
+            cleaned_baomu = normalize_source_enrichment_status(baomu_status, BAOMU_ACTOR_SOURCE)
+            current_values = (
+                str(avfan_status or '').strip() or UNENRICHED_STATUS,
+                str(javtxt_status or '').strip() or UNENRICHED_STATUS,
+                str(binghuo_status or '').strip() or UNENRICHED_STATUS,
+                str(baomu_status or '').strip() or UNENRICHED_STATUS,
+            )
+            cleaned_values = (cleaned_avfan, cleaned_javtxt, cleaned_binghuo, cleaned_baomu)
+            if cleaned_values == current_values:
+                continue
+            cursor.execute(
+                '''
+                UPDATE actor_enrichments
+                SET avfan_enrichment_status = ?,
+                    javtxt_enrichment_status = ?,
+                    binghuo_enrichment_status = ?,
+                    baomu_enrichment_status = ?
+                WHERE actor_name = ?
+                ''',
+                (*cleaned_values, normalized_name),
+            )
+            changed_actor_names.append(normalized_name)
+        for actor_name in changed_actor_names:
+            self._refresh_actor_combined_status(cursor, actor_name)
 
     @staticmethod
     def _normalize_video_category_fields(tags_text, actors_text):
@@ -1699,9 +1752,9 @@ class VideoDatabase(
     def _build_actor_list_row(row):
         actor_name = row[0] or ''
         display_birthday = normalize_actor_birthday_for_display(row[1] or '')
-        avfan_enrichment_status = row[5] or UNENRICHED_STATUS
-        javtxt_enrichment_status = row[6] or UNENRICHED_STATUS
-        binghuo_enrichment_status = row[7] or UNENRICHED_STATUS
+        avfan_enrichment_status = normalize_source_enrichment_status(row[5] or UNENRICHED_STATUS, AVFAN_VIDEO_SOURCE)
+        javtxt_enrichment_status = normalize_source_enrichment_status(row[6] or UNENRICHED_STATUS, JAVTXT_VIDEO_SOURCE)
+        binghuo_enrichment_status = normalize_source_enrichment_status(row[7] or UNENRICHED_STATUS, BINGHUO_ACTOR_SOURCE)
         enrichment_status = build_library_enrichment_status_text(
             avfan_enrichment_status,
             javtxt_enrichment_status,
@@ -2440,12 +2493,21 @@ class VideoDatabase(
                        javtxt_last_error, javtxt_last_enriched_at, binghuo_person_id,
                        binghuo_enrichment_status, binghuo_last_error, binghuo_last_enriched_at,
                        binghuo_birthday, binghuo_age, binghuo_height, binghuo_bust,
-                       binghuo_waist, binghuo_hip
+                       binghuo_waist, binghuo_hip, baomu_enrichment_status, baomu_last_error,
+                       baomu_last_enriched_at, baomu_birthday, baomu_height, baomu_bust,
+                       baomu_waist, baomu_hip
                 FROM actor_enrichments
             ''')
 
-            return {
-                (row[0] or ''): {
+            records = {}
+            for row in cursor.fetchall():
+                if not row[0]:
+                    continue
+                avfan_status = normalize_source_enrichment_status(row[7] or UNENRICHED_STATUS, AVFAN_VIDEO_SOURCE)
+                javtxt_status = normalize_source_enrichment_status(row[10] or UNENRICHED_STATUS, JAVTXT_VIDEO_SOURCE)
+                binghuo_status = normalize_source_enrichment_status(row[15] or UNENRICHED_STATUS, BINGHUO_ACTOR_SOURCE)
+                baomu_status = normalize_source_enrichment_status(row[24] or UNENRICHED_STATUS, BAOMU_ACTOR_SOURCE)
+                records[row[0] or ''] = {
                     'actor_name': row[0] or '',
                     'actor_id': row[1] or '',
                     'enrichment_status': row[2] or '',
@@ -2453,15 +2515,15 @@ class VideoDatabase(
                     'avfan_total_videos': int(row[4] or 0),
                     'last_error': row[5] or '',
                     'last_enriched_at': row[6] or '',
-                    'avfan_enrichment_status': row[7] or UNENRICHED_STATUS,
+                    'avfan_enrichment_status': avfan_status,
                     'avfan_last_error': row[8] or '',
                     'avfan_last_enriched_at': row[9] or '',
-                    'javtxt_enrichment_status': row[10] or UNENRICHED_STATUS,
+                    'javtxt_enrichment_status': javtxt_status,
                     'javtxt_total_videos': int(row[11] or 0),
                     'javtxt_last_error': row[12] or '',
                     'javtxt_last_enriched_at': row[13] or '',
                     'binghuo_person_id': row[14] or '',
-                    'binghuo_enrichment_status': row[15] or UNENRICHED_STATUS,
+                    'binghuo_enrichment_status': binghuo_status,
                     'binghuo_last_error': row[16] or '',
                     'binghuo_last_enriched_at': row[17] or '',
                     'binghuo_birthday': row[18] or '',
@@ -2470,10 +2532,16 @@ class VideoDatabase(
                     'binghuo_bust': row[21] or '',
                     'binghuo_waist': row[22] or '',
                     'binghuo_hip': row[23] or '',
+                    'baomu_enrichment_status': baomu_status,
+                    'baomu_last_error': row[25] or '',
+                    'baomu_last_enriched_at': row[26] or '',
+                    'baomu_birthday': row[27] or '',
+                    'baomu_height': row[28] or '',
+                    'baomu_bust': row[29] or '',
+                    'baomu_waist': row[30] or '',
+                    'baomu_hip': row[31] or '',
                 }
-                for row in cursor.fetchall()
-                if row[0]
-            }
+            return records
 
     def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error='', actor_id='', source_key=AVFAN_VIDEO_SOURCE):
         normalized_name = str(actor_name or '').strip()
@@ -2611,6 +2679,65 @@ class VideoDatabase(
             conn.commit()
             return int(cursor.rowcount or 0)
 
+    def save_baomu_actor_profile(
+        self,
+        actor_name,
+        status,
+        birthday='',
+        height='',
+        bust='',
+        waist='',
+        hip='',
+        error='',
+    ):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return 0
+
+        normalized_birthday = normalize_actor_birthday_for_storage(birthday)
+        normalized_height = str(height or '').strip()
+        normalized_bust = str(bust or '').strip()
+        normalized_waist = str(waist or '').strip()
+        normalized_hip = str(hip or '').strip()
+        normalized_error = str(error or '').strip()
+        normalized_status = str(status or '').strip() or UNENRICHED_STATUS
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO actor_enrichments (actor_name)
+                VALUES (?)
+                ''',
+                (normalized_name,),
+            )
+            cursor.execute(
+                '''
+                UPDATE actor_enrichments
+                SET baomu_enrichment_status = ?,
+                    baomu_last_error = ?,
+                    baomu_last_enriched_at = CURRENT_TIMESTAMP,
+                    baomu_birthday = COALESCE(NULLIF(?, ''), baomu_birthday),
+                    baomu_height = COALESCE(NULLIF(?, ''), baomu_height),
+                    baomu_bust = COALESCE(NULLIF(?, ''), baomu_bust),
+                    baomu_waist = COALESCE(NULLIF(?, ''), baomu_waist),
+                    baomu_hip = COALESCE(NULLIF(?, ''), baomu_hip)
+                WHERE actor_name = ?
+                ''',
+                (
+                    normalized_status,
+                    normalized_error,
+                    normalized_birthday,
+                    normalized_height,
+                    normalized_bust,
+                    normalized_waist,
+                    normalized_hip,
+                    normalized_name,
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def replace_actor_movies(self, actor_name, movies):
         normalized_name = str(actor_name or '').strip()
         normalized_movies = []
@@ -2718,6 +2845,14 @@ class VideoDatabase(
             'binghuo_bust': '',
             'binghuo_waist': '',
             'binghuo_hip': '',
+            'baomu_enrichment_status': UNENRICHED_STATUS,
+            'baomu_last_error': '',
+            'baomu_last_enriched_at': '',
+            'baomu_birthday': '',
+            'baomu_height': '',
+            'baomu_bust': '',
+            'baomu_waist': '',
+            'baomu_hip': '',
         })
 
     def list_actor_movies(self, actor_name):
@@ -2920,6 +3055,24 @@ class VideoDatabase(
                         binghuo_bust = '',
                         binghuo_waist = '',
                         binghuo_hip = ''
+                    WHERE actor_name IN ({placeholders})
+                    ''',
+                    [UNENRICHED_STATUS, *normalized_names],
+                )
+                for actor_name in normalized_names:
+                    self._refresh_actor_combined_status(cursor, actor_name)
+            elif normalized_source == BAOMU_ACTOR_SOURCE:
+                cursor.execute(
+                    f'''
+                    UPDATE actor_enrichments
+                    SET baomu_enrichment_status = ?,
+                        baomu_last_error = '',
+                        baomu_last_enriched_at = NULL,
+                        baomu_birthday = '',
+                        baomu_height = '',
+                        baomu_bust = '',
+                        baomu_waist = '',
+                        baomu_hip = ''
                     WHERE actor_name IN ({placeholders})
                     ''',
                     [UNENRICHED_STATUS, *normalized_names],

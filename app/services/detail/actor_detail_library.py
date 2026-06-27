@@ -42,7 +42,8 @@ class ActorDetailLibrary:
             [standardize_video_code((movie or {}).get('code', '')) for movie in web_movies]
         )
         web_summary = summarize_javtxt_movies(web_movies, cache_rows=cache_rows)
-        birthday = normalize_actor_birthday_for_display(actor_row.get('birthday', ''))
+        merged_birthday = self._merge_actor_birthday(actor_row, web_record)
+        birthday = normalize_actor_birthday_for_display(merged_birthday)
         ladder_entry = self.database.get_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, actor_name)
 
         actor_id = actor_row.get('actor_id', '') or web_record.get('actor_id', '')
@@ -54,10 +55,16 @@ class ActorDetailLibrary:
             'matched': bool(actor_row.get('matched')),
             'actor_id': actor_id,
             'binghuo_person_id': str((web_record or {}).get('binghuo_person_id', '') or '').strip(),
-            'binghuo_height': str((web_record or {}).get('binghuo_height', '') or '').strip(),
-            'binghuo_bust': str((web_record or {}).get('binghuo_bust', '') or '').strip(),
-            'binghuo_waist': str((web_record or {}).get('binghuo_waist', '') or '').strip(),
-            'binghuo_hip': str((web_record or {}).get('binghuo_hip', '') or '').strip(),
+            'binghuo_height': self._merged_profile_value(web_record, 'binghuo_height', 'baomu_height'),
+            'binghuo_bust': self._merged_profile_value(web_record, 'binghuo_bust', 'baomu_bust'),
+            'binghuo_waist': self._merged_profile_value(web_record, 'binghuo_waist', 'baomu_waist'),
+            'binghuo_hip': self._merged_profile_value(web_record, 'binghuo_hip', 'baomu_hip'),
+            'baomu_birthday': str((web_record or {}).get('baomu_birthday', '') or '').strip(),
+            'baomu_height': str((web_record or {}).get('baomu_height', '') or '').strip(),
+            'baomu_bust': str((web_record or {}).get('baomu_bust', '') or '').strip(),
+            'baomu_waist': str((web_record or {}).get('baomu_waist', '') or '').strip(),
+            'baomu_hip': str((web_record or {}).get('baomu_hip', '') or '').strip(),
+            'baomu_enrichment_status': str((web_record or {}).get('baomu_enrichment_status', '') or '').strip(),
             'web_url': build_actor_detail_web_url(actor_name, actor_id=actor_id),
             'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
             'update_status': resolve_update_status(local_videos + eligible_web_movies),
@@ -134,8 +141,22 @@ class ActorDetailLibrary:
         summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
         javtxt_status = javtxt_record_status if summary['total_count'] <= 0 else build_javtxt_library_status(movies, cache_rows=cache_rows)
         binghuo_status = str((enrichment or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+        baomu_status = str((enrichment or {}).get('baomu_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
 
-        return build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status)
+        return build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status, baomu_status)
+
+    @staticmethod
+    def _merge_actor_birthday(actor_row, web_record):
+        return str(
+            (actor_row or {}).get('birthday', '')
+            or (web_record or {}).get('binghuo_birthday', '')
+            or (web_record or {}).get('baomu_birthday', '')
+            or ''
+        ).strip()
+
+    @staticmethod
+    def _merged_profile_value(web_record, primary_key, fallback_key):
+        return str((web_record or {}).get(primary_key, '') or (web_record or {}).get(fallback_key, '') or '').strip()
 
     def _build_prefix_distribution(self, rows):
         grouped = {}
