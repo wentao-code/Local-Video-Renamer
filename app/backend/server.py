@@ -79,6 +79,12 @@ def make_handler(service):
                     query.get('metric', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
+            if method == 'GET' and path == '/data-center/analysis/actors':
+                return service.get_actor_metric_bucket(
+                    query.get('metric', [''])[0],
+                    _int_query_value(query, 'value', default=None),
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
             if method == 'POST' and path == '/database/videos/reset':
                 return service.reset_video_enrichments(body.get('codes', []), body.get('source_key'))
             if method == 'GET' and path == '/database/videos/manual-category':

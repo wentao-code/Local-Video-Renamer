@@ -815,6 +815,82 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_actor_metric_analysis_builds_distribution_and_top_rankings(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', ?, 0)",
+                    [
+                        ("Actor A", "70"),
+                        ("Actor B", "69"),
+                        ("Actor C", ""),
+                        ("Actor D", "70"),
+                    ],
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO actor_enrichments (
+                        actor_name,
+                        binghuo_height,
+                        binghuo_bust,
+                        binghuo_waist,
+                        binghuo_hip
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        ("Actor A", "179", "90", "60", "92"),
+                        ("Actor B", "168", "84", "58", "88"),
+                        ("Actor D", "175", "", "", ""),
+                    ],
+                )
+                conn.commit()
+
+            service = DataCenterService(db)
+
+            age_analysis = service.get_actor_metric_analysis_snapshot("age")
+            self.assertEqual(
+                age_analysis["analysis"]["distribution_rows"],
+                [
+                    {"label": "70\u5c81", "count": 2, "bucket_value": 70},
+                    {"label": "69\u5c81", "count": 1, "bucket_value": 69},
+                    {"label": "\u65e0\u6570\u636e", "count": 1},
+                ],
+            )
+            self.assertEqual(
+                age_analysis["analysis"]["ranking_rows"][:3],
+                [
+                    {"actor_name": "Actor A", "display_value": "70\u5c81", "numeric_value": 70},
+                    {"actor_name": "Actor D", "display_value": "70\u5c81", "numeric_value": 70},
+                    {"actor_name": "Actor B", "display_value": "69\u5c81", "numeric_value": 69},
+                ],
+            )
+
+            height_analysis = service.get_actor_metric_analysis_snapshot("height")
+            self.assertEqual(
+                height_analysis["analysis"]["distribution_rows"],
+                [
+                    {"label": "179 cm", "count": 1, "bucket_value": 179},
+                    {"label": "175 cm", "count": 1, "bucket_value": 175},
+                    {"label": "168 cm", "count": 1, "bucket_value": 168},
+                    {"label": "\u65e0\u6570\u636e", "count": 1},
+                ],
+            )
+            self.assertEqual(
+                height_analysis["analysis"]["ranking_rows"][:3],
+                [
+                    {"actor_name": "Actor A", "display_value": "179 cm", "numeric_value": 179},
+                    {"actor_name": "Actor D", "display_value": "175 cm", "numeric_value": 175},
+                    {"actor_name": "Actor B", "display_value": "168 cm", "numeric_value": 168},
+                ],
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     @staticmethod
     def _seed_processed_video(
         db_path,

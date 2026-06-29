@@ -196,6 +196,8 @@ BASE_GUI_TEXTS = {
     'db.viewer.confirm_reset_message': '确定要重置选中的 {count} 个视频的{source_label}补全状态吗？',
     'db.viewer.reset_completed_message': '已重置 {count} 个视频的{source_label}补全状态。',
     'detail.distribution_item': '{name}: {count}',
+    'data_center.analysis.actor_bucket_title': '\u6f14\u5458\u5217\u8868 - {metric_label} {bucket_label}',
+    'data_center.analysis.actor_bucket_count': '\u5171 {count} \u4f4d\u6f14\u5458',
     'enrichment.summary.count_default': '已完成',
     'enrichment.summary.pending_default': '待补全',
     'enrichment.summary.count': '{count_label} {enriched_count} / {total_count}',

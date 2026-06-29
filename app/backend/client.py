@@ -134,6 +134,15 @@ class BackendClient:
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
         return self.get_metric_analysis('actor', metric_key, force_refresh=force_refresh)
 
+    def get_actor_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
+        params = {
+            'metric': metric_key,
+            'value': int(bucket_value),
+        }
+        if force_refresh:
+            params['refresh'] = '1'
+        return self._get('/data-center/analysis/actors?' + urlencode(params))
+
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
         return self.get_metric_analysis('code_prefix', metric_key, force_refresh=force_refresh)
 

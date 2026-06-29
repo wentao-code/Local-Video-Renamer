@@ -10,7 +10,8 @@ BACKEND_API_REVISION = (
     'manual-snapshot-paged-query-issue-list-'
     'batch-auto-stop-code-prefix-analysis-'
     'actor-library-baomu-age-co-star-code-filter-'
-    'actor-detail-refresh-guard-1'
+    'actor-detail-refresh-guard-'
+    'actor-metric-clickthrough-1'
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -181,6 +181,14 @@ class BackendService:
         self.ensure_database_loaded()
         return self.data_center_service.get_actor_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)
 
+    def get_actor_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
+        self.ensure_database_loaded()
+        return self.data_center_service.get_actor_metric_bucket_snapshot(
+            metric_key,
+            bucket_value,
+            force_refresh=force_refresh,
+        )
+
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
         self.ensure_database_loaded()
         return self.data_center_service.get_code_prefix_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)

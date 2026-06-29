@@ -86,6 +86,31 @@ class DataCenterService:
             self._analysis_cache[cache_key] = payload
             return dict(payload)
 
+    def get_actor_metric_bucket_snapshot(self, metric_key, bucket_value, force_refresh=False):
+        config = self._get_actor_metric_config(metric_key)
+        normalized_bucket_value = self._parse_metric_number(bucket_value)
+        if normalized_bucket_value is None:
+            raise ValueError(f'Unknown actor metric bucket value: {bucket_value}')
+
+        cache_key = self._build_analysis_cache_key(
+            'actor_bucket',
+            f'{config["key"]}:{normalized_bucket_value}',
+        )
+        with self._analysis_cache_lock:
+            cached = self._analysis_cache.get(cache_key)
+            if cached is not None and not force_refresh:
+                return dict(cached)
+
+            payload = {
+                'metric_key': config['key'],
+                'bucket_value': normalized_bucket_value,
+                'bucket_label': f'{normalized_bucket_value}{str(config.get("suffix", "") or "")}',
+                'actors': self._build_actor_metric_bucket(config, normalized_bucket_value),
+                'refreshed_at': self._current_cache_timestamp(),
+            }
+            self._analysis_cache[cache_key] = payload
+            return dict(payload)
+
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
         return self.get_code_prefix_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)['analysis']
 
@@ -485,6 +510,79 @@ class DataCenterService:
             'distribution_items_per_line': 6,
             'ranking_items_per_line': 6,
         }
+
+    def _build_actor_metric_analysis(self, config):
+        metric_rows, unknown_count = self._collect_actor_metric_rows(config)
+        distribution_by_value = {}
+        for row in metric_rows:
+            numeric_value = int(row.get('numeric_value', 0) or 0)
+            if numeric_value not in distribution_by_value:
+                distribution_by_value[numeric_value] = {
+                    'label': str(row.get('display_value', '') or '').strip(),
+                    'count': 0,
+                    'bucket_value': numeric_value,
+                }
+            distribution_by_value[numeric_value]['count'] += 1
+
+        distribution_rows = [
+            distribution_by_value[numeric_value]
+            for numeric_value in sorted(distribution_by_value.keys(), reverse=True)
+        ]
+        if unknown_count > 0:
+            distribution_rows.append({'label': '\u65e0\u6570\u636e', 'count': unknown_count})
+
+        ranking_rows = sorted(
+            metric_rows,
+            key=lambda item: (-item['numeric_value'], item['actor_name']),
+        )
+        return {
+            'metric_key': config['key'],
+            'distribution_rows': distribution_rows,
+            'ranking_rows': ranking_rows[:50],
+        }
+
+    def _build_actor_metric_bucket(self, config, bucket_value):
+        metric_rows, _unknown_count = self._collect_actor_metric_rows(config)
+        normalized_bucket_value = int(bucket_value or 0)
+        return [
+            {
+                'actor_name': str(row.get('actor_name', '') or '').strip(),
+                'display_value': str(row.get('display_value', '') or '').strip(),
+                'numeric_value': int(row.get('numeric_value', 0) or 0),
+            }
+            for row in sorted(
+                metric_rows,
+                key=lambda item: (item.get('numeric_value', 0), item.get('actor_name', '')),
+            )
+            if int(row.get('numeric_value', 0) or 0) == normalized_bucket_value
+        ]
+
+    def _collect_actor_metric_rows(self, config):
+        metric_rows = []
+        unknown_count = 0
+        enrichment_records = self.database.list_actor_enrichment_records()
+
+        for actor_row in self.database.list_actors():
+            actor_name = str((actor_row or {}).get('name', '') or '').strip()
+            if not actor_name:
+                continue
+            numeric_value, display_value = self._resolve_actor_metric_value(
+                config,
+                actor_row,
+                enrichment_records.get(actor_name, {}),
+            )
+            if numeric_value is None:
+                unknown_count += 1
+                continue
+            metric_rows.append(
+                {
+                    'actor_name': actor_name,
+                    'display_value': display_value,
+                    'numeric_value': numeric_value,
+                }
+            )
+
+        return metric_rows, unknown_count
 
     @staticmethod
     def _resolve_actor_metric_value(config, actor_row, enrichment_record):

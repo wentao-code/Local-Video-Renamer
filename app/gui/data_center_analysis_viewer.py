@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 from app.backend.client import BackendClient
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRICS
 from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
+from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 
@@ -34,6 +35,17 @@ def _join_items_by_line(items, items_per_line=10):
     for start in range(0, len(items), items_per_line):
         grouped_lines.append('    '.join(items[start:start + items_per_line]))
     return '\n'.join(grouped_lines)
+
+
+def _clear_layout(layout):
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child_layout = item.layout()
+        if widget is not None:
+            widget.deleteLater()
+        elif child_layout is not None:
+            _clear_layout(child_layout)
 
 
 class DataAnalysisWindow(QDialog):
@@ -163,6 +175,146 @@ class CodePrefixDataAnalysisWindow(MetricSelectionWindow):
         )
 
 
+class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
+    def __init__(self, backend_client, metric_config, bucket_value, bucket_label, parent=None):
+        super().__init__(parent)
+        self.backend_client = backend_client
+        self.refresh_client = _build_refresh_client(backend_client)
+        self.metric_config = dict(metric_config or {})
+        self.metric_key = str(self.metric_config.get('key', '') or '').strip()
+        self.bucket_value = int(bucket_value or 0)
+        self.bucket_label = str(bucket_label or '').strip()
+        self.actor_rows = []
+        self.detail_windows = []
+        self._init_async_task_host()
+        self.init_ui()
+        self.load_data()
+
+    def init_ui(self):
+        metric_label = tr(self.metric_config.get('label_key', ''))
+        self.setWindowTitle(
+            tr(
+                'data_center.analysis.actor_bucket_title',
+                metric_label=metric_label,
+                bucket_label=self.bucket_label,
+            )
+        )
+        self.resize(760, 620)
+        self.setWindowModality(Qt.WindowModal)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setSpacing(12)
+
+        top_layout = QHBoxLayout()
+        self.summary_label = QLabel(tr('data_center.analysis.actor_bucket_count', count=0))
+        self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
+        self.btn_refresh = QPushButton(tr('common.refresh'))
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
+        top_layout.addWidget(self.summary_label)
+        top_layout.addStretch()
+        top_layout.addWidget(self.last_refreshed_label)
+        top_layout.addWidget(self.btn_refresh)
+        root_layout.addLayout(top_layout)
+
+        scroll_area = QScrollArea(self)
+        scroll_area.setWidgetResizable(True)
+        root_layout.addWidget(scroll_area)
+
+        self.content_widget = QWidget()
+        self.rows_layout = QVBoxLayout(self.content_widget)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.setSpacing(8)
+        scroll_area.setWidget(self.content_widget)
+
+        self.set_async_busy_widgets([self.btn_refresh])
+
+    def load_data(self, force_refresh=False):
+        if self.is_async_task_running():
+            return
+        self.start_async_task(
+            lambda: self.refresh_client.get_actor_metric_bucket(
+                self.metric_key,
+                self.bucket_value,
+                force_refresh=force_refresh,
+            ),
+            self._on_load_data_finished,
+            tr('common.read_failed'),
+        )
+
+    def _on_load_data_finished(self, result):
+        payload = dict(result or {})
+        self.actor_rows = list(payload.get('actors', []) or [])
+        refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
+        self.summary_label.setText(
+            tr('data_center.analysis.actor_bucket_count', count=len(self.actor_rows))
+        )
+        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
+        self._render_rows()
+
+    def _render_rows(self):
+        _clear_layout(self.rows_layout)
+        if not self.actor_rows:
+            empty_label = QLabel(tr('common.no_data'))
+            empty_label.setWordWrap(True)
+            self.rows_layout.addWidget(empty_label)
+            self.rows_layout.addStretch()
+            return
+
+        for row in self.actor_rows:
+            actor_name = str(row.get('actor_name', '') or '').strip()
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(10)
+
+            name_label = QLabel(actor_name or tr('common.unknown'))
+            name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            row_layout.addWidget(name_label)
+            row_layout.addStretch()
+
+            detail_button = QPushButton(tr('actor.detail.detail'))
+            detail_button.setMinimumWidth(92)
+            detail_button.clicked.connect(lambda _checked=False, name=actor_name: self.show_actor_detail(name))
+            row_layout.addWidget(detail_button)
+
+            self.rows_layout.addWidget(row_widget)
+
+        self.rows_layout.addStretch()
+
+    def show_actor_detail(self, actor_name):
+        if not actor_name:
+            return
+        viewer = ActorDetailViewerWindow(self.backend_client, actor_name, self)
+        self.detail_windows.append(viewer)
+        if hasattr(viewer, 'finished'):
+            viewer.finished.connect(lambda _result, current=viewer: self._forget_detail_window(current))
+        viewer.show()
+
+    def _forget_detail_window(self, window):
+        self.detail_windows = [item for item in self.detail_windows if item is not window]
+
+    def detail_navigation_keys(self):
+        return [
+            str((row or {}).get('actor_name', '') or '').strip()
+            for row in self.actor_rows
+            if str((row or {}).get('actor_name', '') or '').strip()
+        ]
+
+    def neighbor_detail_key(self, current_name, offset):
+        names = self.detail_navigation_keys()
+        target_name = str(current_name or '').strip()
+        if target_name not in names:
+            return ''
+        index = names.index(target_name) + int(offset or 0)
+        if index < 0 or index >= len(names):
+            return ''
+        return names[index]
+
+    def select_actor_row(self, actor_name):
+        return actor_name
+
+
 class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, analysis_type, metric_config, parent=None):
         super().__init__(parent)
@@ -171,6 +323,8 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.analysis_type = str(analysis_type or '').strip()
         self.metric_config = dict(metric_config or {})
         self.metric_key = str(self.metric_config.get('key', '') or '').strip()
+        self.bucket_windows = []
+        self.distribution_buttons = []
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -209,6 +363,12 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
 
         distribution_group = QGroupBox(tr('data_center.analysis.distribution_group'))
         distribution_layout = QVBoxLayout(distribution_group)
+        self.distribution_button_widget = QWidget()
+        self.distribution_button_layout = QGridLayout(self.distribution_button_widget)
+        self.distribution_button_layout.setContentsMargins(0, 0, 0, 0)
+        self.distribution_button_layout.setHorizontalSpacing(8)
+        self.distribution_button_layout.setVerticalSpacing(8)
+        distribution_layout.addWidget(self.distribution_button_widget)
         self.distribution_label = QLabel(tr('common.no_data'))
         self.distribution_label.setWordWrap(True)
         self.distribution_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -250,10 +410,6 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         distribution_items_per_line = int(analysis.get('distribution_items_per_line', 10) or 10)
         ranking_items_per_line = int(analysis.get('ranking_items_per_line', 10) or 10)
 
-        distribution_items = [
-            tr('detail.distribution_item', name=row.get('label', tr('common.unknown')), count=row.get('count', 0))
-            for row in distribution_rows
-        ]
         ranking_items = [
             tr(
                 'data_center.analysis.ranking_item',
@@ -265,16 +421,85 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         ]
 
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
-        self.distribution_label.setText(
-            _join_items_by_line(distribution_items, items_per_line=distribution_items_per_line)
-            if distribution_items
-            else tr('common.no_data')
-        )
+        self._render_distribution_rows(distribution_rows, distribution_items_per_line)
         self.ranking_label.setText(
             _join_items_by_line(ranking_items, items_per_line=ranking_items_per_line)
             if ranking_items
             else tr('common.no_data')
         )
+
+    def _render_distribution_rows(self, distribution_rows, items_per_line):
+        clickable_rows = [
+            row for row in distribution_rows
+            if self._is_clickable_distribution_row(row)
+        ]
+        fallback_rows = [
+            row for row in distribution_rows
+            if not self._is_clickable_distribution_row(row)
+        ]
+
+        self.distribution_buttons = []
+        _clear_layout(self.distribution_button_layout)
+
+        if clickable_rows:
+            for index, row in enumerate(clickable_rows):
+                button = QPushButton(self._build_distribution_item_text(row))
+                button.setMinimumHeight(32)
+                button.clicked.connect(
+                    lambda _checked=False,
+                    bucket_value=int(row.get('bucket_value', 0) or 0),
+                    bucket_label=str(row.get('label', '') or '').strip(): self.open_actor_metric_bucket_window(
+                        bucket_value,
+                        bucket_label,
+                    )
+                )
+                self.distribution_button_layout.addWidget(
+                    button,
+                    index // max(1, items_per_line),
+                    index % max(1, items_per_line),
+                )
+                self.distribution_buttons.append(button)
+            self.distribution_button_widget.show()
+        else:
+            self.distribution_button_widget.hide()
+
+        label_rows = fallback_rows if clickable_rows else distribution_rows
+        label_items = [self._build_distribution_item_text(row) for row in label_rows]
+        label_text = (
+            _join_items_by_line(label_items, items_per_line=items_per_line)
+            if label_items
+            else tr('common.no_data')
+        )
+        self.distribution_label.setText(label_text)
+        self.distribution_label.setVisible(bool(label_text))
+
+    def _is_clickable_distribution_row(self, row):
+        return self.analysis_type == 'actor' and row.get('bucket_value') is not None
+
+    def _build_distribution_item_text(self, row):
+        current = dict(row or {})
+        return tr(
+            'detail.distribution_item',
+            name=current.get('label', tr('common.unknown')),
+            count=current.get('count', 0),
+        )
+
+    def open_actor_metric_bucket_window(self, bucket_value, bucket_label):
+        if self.analysis_type != 'actor':
+            return
+        window = ActorMetricBucketWindow(
+            self.backend_client,
+            self.metric_config,
+            bucket_value,
+            bucket_label,
+            self,
+        )
+        self.bucket_windows.append(window)
+        window.finished.connect(lambda _result, current=window: self._forget_bucket_window(current))
+        window.show()
+
+    def _forget_bucket_window(self, window):
+        self.bucket_windows = [item for item in self.bucket_windows if item is not window]
 
     @staticmethod
     def _resolve_ranking_row_label(row):
