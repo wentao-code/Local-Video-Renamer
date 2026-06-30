@@ -18,7 +18,8 @@ from app.core.enrichment_status import (
     NO_VIDEO_DETAIL_STATUS,
     UNENRICHED_STATUS,
 )
-from app.core.javtxt_video_state import summarize_javtxt_movies
+from app.core.javtxt_entry_state import JAVTXT_SEARCH_STATE_NO_RESULT, classify_search_state
+from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
 from app.core.video_code import standardize_video_code
 from app.services.library import CodePrefixLibrary, build_merged_movie_snapshot, extract_code_prefix
 from app.services.video import VIDEO_CATEGORY_COLLECTION, VideoFilterService
@@ -363,14 +364,15 @@ class DataCenterService:
         }
 
     def _build_javtxt_library_video_summary(self, label, movies_by_group, filter_settings=None, list_kind='video'):
-        visible_movies = self._filter_visible_movies(
-            [
-                movie
-                for movies in (movies_by_group or {}).values()
-                for movie in (movies or [])
-            ],
+        filtered_movies_by_group = self._filter_grouped_movies(
+            movies_by_group,
             filter_settings=filter_settings,
         )
+        visible_movies = [
+            movie
+            for movies in filtered_movies_by_group.values()
+            for movie in (movies or [])
+        ]
         merged_movies = self._merge_movies_by_code(visible_movies)
         cache_rows = self.database.get_javtxt_actor_cache_by_codes(
             [standardize_video_code((movie or {}).get('code', '')) for movie in merged_movies]
@@ -390,9 +392,10 @@ class DataCenterService:
             'pending_label': PENDING_VIDEO_LABEL,
             'list_kind': list_kind,
             'issue_groups': self._build_javtxt_issue_groups_by_kind(
-                movies_by_group,
+                filtered_movies_by_group,
                 filter_settings=filter_settings,
                 list_kind=list_kind,
+                movies_already_filtered=True,
             ),
         }
 
@@ -686,9 +689,19 @@ class DataCenterService:
         )
 
     def _filter_visible_movies(self, rows, filter_settings=None):
+        if not rows:
+            return []
         if self.video_filter_service is None:
             return list(rows or [])
         return self.video_filter_service.filter_video_rows(rows, settings=filter_settings)
+
+    def _filter_grouped_movies(self, movies_by_group, filter_settings=None):
+        filtered_movies_by_group = {}
+        for group_key, movies in (movies_by_group or {}).items():
+            visible_movies = self._filter_visible_movies(movies or [], filter_settings=filter_settings)
+            if visible_movies:
+                filtered_movies_by_group[group_key] = visible_movies
+        return filtered_movies_by_group
 
     def _group_actor_movies_for_code_prefix_analysis(self):
         if not hasattr(self.database, 'list_all_actor_movies'):
@@ -791,7 +804,7 @@ class DataCenterService:
             ]
         )
 
-    def _build_javtxt_video_issue_groups(self, movies, filter_settings=None):
+    def _build_javtxt_video_issue_groups(self, movies, filter_settings=None, movies_already_filtered=False):
         issue_items = {
             'no_search': [],
             'no_detail': [],
@@ -801,11 +814,12 @@ class DataCenterService:
             for row in self._list_visible_video_summary_rows(filter_settings=filter_settings)
             if standardize_video_code((row or {}).get('code', ''))
         }
-        visible_movies = self._filter_visible_movies(movies or [], filter_settings=filter_settings)
+        visible_movies = list(movies or []) if movies_already_filtered else self._filter_visible_movies(
+            movies or [],
+            filter_settings=filter_settings,
+        )
         for movie in self._merge_movies_by_code(visible_movies):
-            if not self._is_javtxt_issue_movie(movie):
-                continue
-            issue_key = self._resolve_javtxt_issue_key(movie)
+            issue_key = self._classify_javtxt_issue_key(movie)
             if not issue_key:
                 continue
             issue_items[issue_key].append(
@@ -823,40 +837,45 @@ class DataCenterService:
             ]
         )
 
-    def _build_javtxt_issue_groups_by_kind(self, movies_by_group, filter_settings=None, list_kind='video'):
+    def _build_javtxt_issue_groups_by_kind(
+        self,
+        movies_by_group,
+        filter_settings=None,
+        list_kind='video',
+        movies_already_filtered=False,
+    ):
         if str(list_kind or '').strip() == 'video':
             flat_movies = [
                 movie
                 for movies in (movies_by_group or {}).values()
                 for movie in (movies or [])
             ]
-            return self._build_javtxt_video_issue_groups(flat_movies, filter_settings=filter_settings)
+            return self._build_javtxt_video_issue_groups(
+                flat_movies,
+                filter_settings=filter_settings,
+                movies_already_filtered=movies_already_filtered,
+            )
 
         no_search_items = []
         no_detail_items = []
         for group_key, movies in (movies_by_group or {}).items():
-            visible_movies = self._filter_visible_movies(movies or [], filter_settings=filter_settings)
-            if not visible_movies:
+            visible_movies = list(movies or []) if movies_already_filtered else self._filter_visible_movies(
+                movies or [],
+                filter_settings=filter_settings,
+            )
+            merged_visible_movies = self._merge_movies_by_code(visible_movies)
+            if not merged_visible_movies:
                 continue
-            has_no_search = False
-            has_no_detail = False
-            for movie in visible_movies:
-                if not self._is_javtxt_issue_movie(movie):
-                    continue
-                issue_key = self._resolve_javtxt_issue_key(movie)
-                if issue_key == 'no_search':
-                    has_no_search = True
-                elif issue_key == 'no_detail':
-                    has_no_detail = True
+            issue_keys = {self._classify_javtxt_issue_key(movie) for movie in merged_visible_movies}
             if str(list_kind or '').strip() == 'code_prefix':
                 item = self._build_code_prefix_issue_item(group_key)
             else:
                 item = self._build_actor_issue_item(group_key)
             if not item:
                 continue
-            if has_no_search:
+            if 'no_search' in issue_keys:
                 no_search_items.append(item)
-            if has_no_detail:
+            if 'no_detail' in issue_keys:
                 no_detail_items.append(item)
 
         return self._compact_issue_groups(
@@ -867,20 +886,17 @@ class DataCenterService:
         )
 
     @staticmethod
-    def _is_javtxt_issue_movie(movie):
-        if not summarize_javtxt_movies([movie]).get('total_count', 0):
-            return False
+    def _classify_javtxt_issue_key(movie):
+        if not is_javtxt_eligible_movie(movie):
+            return ''
+        if classify_search_state(movie) != JAVTXT_SEARCH_STATE_NO_RESULT:
+            return ''
         status = str((movie or {}).get('javtxt_enrichment_status', '') or '').strip()
-        return status in (NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS)
-
-    @staticmethod
-    def _resolve_javtxt_issue_key(movie):
-        status = str((movie or {}).get('javtxt_enrichment_status', '') or '').strip()
-        if status == NO_SEARCH_RESULTS_STATUS:
-            return 'no_search'
         if status == NO_VIDEO_DETAIL_STATUS:
             return 'no_detail'
-        return ''
+        if status == NO_SEARCH_RESULTS_STATUS:
+            return 'no_search'
+        return 'no_search'
 
     @staticmethod
     def _merge_issue_movie_with_local_row(movie, local_row):

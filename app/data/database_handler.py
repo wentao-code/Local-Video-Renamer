@@ -84,6 +84,10 @@ def sanitize_actor_text(value):
     return normalize_second_source_actor_text(value)
 
 
+STARTUP_MAINTENANCE_META_KEY = 'startup_maintenance_version'
+STARTUP_MAINTENANCE_VERSION = '2026-06-30-1'
+
+
 class VideoDatabase(
     MigrationMixin,
     PathRepositoryMixin,
@@ -267,6 +271,14 @@ class VideoDatabase(
                 )
                 '''
             )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS app_runtime_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                )
+                '''
+            )
             self._ensure_column(cursor, 'path_library', 'last_total_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_used_bytes', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_free_bytes', 'INTEGER DEFAULT 0')
@@ -379,9 +391,43 @@ class VideoDatabase(
                 return
             with self._connect() as conn:
                 cursor = conn.cursor()
+                if self._is_startup_maintenance_current(cursor):
+                    self._startup_maintenance_completed = True
+                    return
                 self._run_startup_maintenance(cursor)
+                self._set_runtime_meta(cursor, STARTUP_MAINTENANCE_META_KEY, STARTUP_MAINTENANCE_VERSION)
                 conn.commit()
             self._startup_maintenance_completed = True
+
+    @staticmethod
+    def _get_runtime_meta(cursor, key):
+        cursor.execute(
+            '''
+            SELECT value
+            FROM app_runtime_meta
+            WHERE key = ?
+            ''',
+            (str(key or '').strip(),),
+        )
+        row = cursor.fetchone()
+        return str((row or [''])[0] or '').strip()
+
+    @classmethod
+    def _is_startup_maintenance_current(cls, cursor):
+        return cls._get_runtime_meta(cursor, STARTUP_MAINTENANCE_META_KEY) == STARTUP_MAINTENANCE_VERSION
+
+    @staticmethod
+    def _set_runtime_meta(cursor, key, value):
+        cursor.execute(
+            '''
+            INSERT OR REPLACE INTO app_runtime_meta (key, value)
+            VALUES (?, ?)
+            ''',
+            (
+                str(key or '').strip(),
+                str(value or '').strip(),
+            ),
+        )
 
     def _run_startup_maintenance(self, cursor):
         cursor.execute(
@@ -534,6 +580,7 @@ class VideoDatabase(
         self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
         self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
         self._sanitize_legacy_actor_source_status_columns(cursor)
+        self._sanitize_ineligible_javtxt_state(cursor)
 
     def _video_source_columns(self, source_key):
         source_key_text = str(source_key or '').strip()
@@ -1054,49 +1101,53 @@ class VideoDatabase(
     def sanitize_ineligible_javtxt_state(self):
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                SELECT prefix FROM code_prefix_movies
-                UNION
-                SELECT prefix FROM code_prefix_enrichments
-                '''
-            )
-            prefixes = [str((row or [''])[0] or '').strip().upper() for row in cursor.fetchall()]
-            cursor.execute(
-                '''
-                SELECT actor_name FROM actor_movies
-                UNION
-                SELECT actor_name FROM actor_enrichments
-                '''
-            )
-            actor_names = [str((row or [''])[0] or '').strip() for row in cursor.fetchall()]
-            cursor.execute(
-                '''
-                SELECT code FROM code_prefix_movies
-                UNION
-                SELECT code FROM actor_movies
-                '''
-            )
-            shared_codes = [
-                standardize_video_code((row or [''])[0])
-                for row in cursor.fetchall()
-                if standardize_video_code((row or [''])[0])
-            ]
-            self._clear_processed_video_javtxt_state_without_detail_reference(cursor)
-            self._clear_ineligible_processed_video_javtxt_state(cursor)
-            self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'code_prefix_movies')
-            self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'actor_movies')
-            self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'code_prefix_movies')
-            self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'actor_movies')
-            self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
-            self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
-            self._propagate_processed_video_javtxt_state_for_codes(cursor, shared_codes)
+            prefixes, actor_names = self._sanitize_ineligible_javtxt_state(cursor)
             conn.commit()
-
         if prefixes:
             self.refresh_code_prefix_javtxt_statuses(prefixes)
         if actor_names:
             self.refresh_actor_javtxt_statuses(actor_names)
+
+    def _sanitize_ineligible_javtxt_state(self, cursor):
+        cursor.execute(
+            '''
+            SELECT prefix FROM code_prefix_movies
+            UNION
+            SELECT prefix FROM code_prefix_enrichments
+            '''
+        )
+        prefixes = [str((row or [''])[0] or '').strip().upper() for row in cursor.fetchall()]
+        cursor.execute(
+            '''
+            SELECT actor_name FROM actor_movies
+            UNION
+            SELECT actor_name FROM actor_enrichments
+            '''
+        )
+        actor_names = [str((row or [''])[0] or '').strip() for row in cursor.fetchall()]
+        cursor.execute(
+            '''
+            SELECT code FROM code_prefix_movies
+            UNION
+            SELECT code FROM actor_movies
+            '''
+        )
+        shared_codes = [
+            standardize_video_code((row or [''])[0])
+            for row in cursor.fetchall()
+            if standardize_video_code((row or [''])[0])
+        ]
+        self._clear_processed_video_javtxt_state_without_detail_reference(cursor)
+        self._clear_ineligible_processed_video_javtxt_state(cursor)
+        self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'code_prefix_movies')
+        self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'actor_movies')
+        self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'code_prefix_movies')
+        self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'actor_movies')
+        self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
+        self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
+        self._propagate_processed_video_javtxt_state_for_codes(cursor, shared_codes)
+
+        return prefixes, actor_names
 
     def _is_sanitized_javtxt_state_eligible(self, movie):
         if not is_javtxt_eligible_movie(movie):
@@ -3657,6 +3708,7 @@ class VideoDatabase(
             order_by_sql=self._video_order_by_sql(sort_field, sort_order),
             limit=limit,
             offset=offset,
+            refresh_categories=False,
         )
 
     def count_videos(self, search_text=''):
@@ -3697,15 +3749,25 @@ class VideoDatabase(
         if not normalized_names:
             return []
 
-        rows = self._fetch_processed_video_rows(
-            'WHERE ' + ' OR '.join('author LIKE ?' for _ in normalized_names),
-            [f'%{actor_name}%' for actor_name in normalized_names],
-            refresh_categories=refresh_categories,
-        )
+        rows = []
+        chunk_size = 50
+        for start_index in range(0, len(normalized_names), chunk_size):
+            chunk = normalized_names[start_index:start_index + chunk_size]
+            rows.extend(
+                self._fetch_processed_video_rows(
+                    'WHERE ' + ' OR '.join('author LIKE ?' for _ in chunk),
+                    [f'%{actor_name}%' for actor_name in chunk],
+                    refresh_categories=refresh_categories and start_index == 0,
+                )
+            )
         target_names = set(normalized_names)
+        deduplicated_rows = {}
+        for row in rows:
+            normalized_code = standardize_video_code((row or {}).get('code', ''))
+            deduplicated_rows[normalized_code or str(len(deduplicated_rows))] = dict(row or {})
         return [
             row
-            for row in rows
+            for row in deduplicated_rows.values()
             if target_names.intersection(split_actor_names(row.get('author', '')))
         ]
 

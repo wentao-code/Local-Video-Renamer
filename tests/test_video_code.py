@@ -17,7 +17,7 @@ from app.core.enrichment_status import (
 )
 from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
 from app.core.video_code import compact_video_code, has_supported_video_code, standardize_video_code
-from app.data.database_handler import VideoDatabase
+from app.data.database_handler import STARTUP_MAINTENANCE_META_KEY, VideoDatabase
 from app.scraper.javtxt_scraper import extract_page_code, is_not_found_detail_page
 from app.services.parsers import extract_code
 from app.services.resolvers import MovieAuthorResolver
@@ -164,10 +164,19 @@ class VideoCodeStandardizationTest(unittest.TestCase):
 
 
 class VideoCodeDatabaseMigrationTest(unittest.TestCase):
+    @staticmethod
+    def _run_startup_maintenance(db_path):
+        db = VideoDatabase(db_path)
+        with closing(sqlite3.connect(db_path)) as conn:
+            conn.execute('DELETE FROM app_runtime_meta WHERE key = ?', (STARTUP_MAINTENANCE_META_KEY,))
+            conn.commit()
+        db.ensure_startup_maintenance()
+        return db
+
     def test_database_init_normalizes_existing_actor_movie_codes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -181,7 +190,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -197,7 +206,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_removes_duplicate_numeric_prefixed_actor_movie(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.executemany(
                     '''
@@ -214,7 +223,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -231,7 +240,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_clears_numeric_only_web_lookup_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -245,7 +254,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -261,7 +270,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_converts_ineligible_processed_video_javtxt_state_to_terminal_no_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -288,7 +297,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -304,7 +313,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_clears_legacy_web_movie_javtxt_state_without_trusted_release_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -328,7 +337,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -344,7 +353,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_preserves_web_movie_no_result_without_javtxt_release_date(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -407,7 +416,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_converts_ineligible_web_movie_state_to_terminal_no_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -463,7 +472,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -512,7 +521,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_clears_web_movie_actor_state_without_javtxt_detail_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -538,7 +547,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -554,7 +563,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_clears_processed_video_actor_state_without_javtxt_detail_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -580,7 +589,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     '''
@@ -596,7 +605,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_database_init_propagates_existing_web_movie_javtxt_state_by_code(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            VideoDatabase(db_path)
+            self._run_startup_maintenance(db_path)
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
@@ -631,8 +640,8 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
-            VideoDatabase(db_path)
-            movie = VideoDatabase(db_path).list_actor_movies('Actor A')[0]
+            self._run_startup_maintenance(db_path)
+            movie = self._run_startup_maintenance(db_path).list_actor_movies('Actor A')[0]
 
         self.assertEqual(movie['avfan_url'], 'https://avfan.example/actor/agmx-151')
         self.assertEqual(movie['javtxt_movie_id'], '151')
@@ -643,7 +652,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
     def test_javtxt_video_library_candidates_skip_ineligible_old_videos(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            db = VideoDatabase(db_path)
+            db = self._run_startup_maintenance(db_path)
             db.import_local_videos(
                 [
                     {'code': 'SQTE-241', 'storage_location': 'D:\\videos', 'size': '1GB'},
@@ -745,6 +754,7 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                 )
                 conn.commit()
 
+            db = self._run_startup_maintenance(db_path)
             rows = db.list_videos_requiring_manual_category()['videos']
             with closing(sqlite3.connect(db_path)) as conn:
                 processed_row = conn.execute(
@@ -764,8 +774,8 @@ class VideoCodeDatabaseMigrationTest(unittest.TestCase):
                     ('NSPS', 'NSPS-648'),
                 ).fetchone()
 
-        self.assertEqual([row['code'] for row in rows], ['ABP-123', 'MIDV-001'])
-        self.assertEqual(processed_row, (UNENRICHED_STATUS, ''))
+        self.assertEqual([row['code'] for row in rows], ['ABP-123'])
+        self.assertEqual(processed_row, (NO_SEARCH_RESULTS_STATUS, ''))
         self.assertEqual(prefix_row, (UNENRICHED_STATUS, ''))
 
     def test_manual_category_candidates_include_manual_tiers(self):

@@ -4,10 +4,11 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import UNENRICHED_STATUS
-from app.core.video_filter_rules import DEFAULT_VIDEO_FILTER_SETTINGS, matches_filter_keywords
+from app.core.video_filter_rules import DEFAULT_VIDEO_FILTER_SETTINGS, matches_filter_keywords, should_hide_video_from_library
 from app.data.database_handler import VideoDatabase
 from app.services.video import VideoFilterService
 
@@ -78,6 +79,31 @@ class VideoFilterServiceTest(unittest.TestCase):
         )
 
         self.assertEqual([row['code'] for row in visible_rows], ['SKIP-001'])
+
+    def test_should_hide_video_reuses_pre_normalized_filter_settings(self):
+        normalized_settings = {
+            'rules': {
+                'code': [],
+                'title': ['skip'],
+                'javtxt_tags': [],
+                'co_star_code': [],
+            }
+        }
+
+        with patch(
+            'app.core.video_filter_rules.normalize_video_filter_settings',
+            side_effect=AssertionError('unexpected re-normalization'),
+        ):
+            should_hide = should_hide_video_from_library(
+                {
+                    'code': 'AAA-001',
+                    'title': 'skip this title',
+                    'javtxt_url': 'https://example.com/1',
+                },
+                normalized_settings,
+            )
+
+        self.assertTrue(should_hide)
 
     def test_default_filter_settings_include_legacy_title_and_tag_keywords(self):
         self.assertIn('VR', DEFAULT_VIDEO_FILTER_SETTINGS['rules']['title'])

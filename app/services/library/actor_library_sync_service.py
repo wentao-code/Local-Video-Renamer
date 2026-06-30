@@ -10,7 +10,7 @@ class ActorLibrarySyncService:
         actors = []
         seen = set()
 
-        for row in self.database.list_videos():
+        for row in self.database.list_video_summary_rows():
             author_text = str(row.get('author', '')).strip()
             if not author_text:
                 continue

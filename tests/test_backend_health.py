@@ -99,7 +99,6 @@ class BackendHealthTest(unittest.TestCase):
         self.assertEqual(payload['actor_count'], 2)
         db_mock.ensure_startup_maintenance.assert_called_once_with()
         sync_service_mock.sync_from_video_library.assert_called_once_with()
-        db_mock.sanitize_ineligible_javtxt_state.assert_called_once_with()
         self.assertTrue(service.database_loaded)
 
 

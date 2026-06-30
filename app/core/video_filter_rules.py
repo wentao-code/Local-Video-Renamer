@@ -79,8 +79,7 @@ def matches_filter_keywords(value, keywords):
 
 
 def should_skip_video_before_enrichment(video, settings):
-    normalized = normalize_video_filter_settings(settings)
-    rules = normalized.get('rules', {})
+    rules = _get_normalized_rules(settings)
     return any(
         matches_filter_keywords((video or {}).get(field_name, ''), rules.get(field_name, []))
         for field_name in PRE_ENRICHMENT_FILTER_FIELDS
@@ -90,8 +89,7 @@ def should_skip_video_before_enrichment(video, settings):
 def should_hide_video_from_library(video, settings):
     if not is_post_enrichment_video(video):
         return False
-    normalized = normalize_video_filter_settings(settings)
-    rules = normalized.get('rules', {})
+    rules = _get_normalized_rules(settings)
     return any(
         matches_filter_keywords((video or {}).get(field_name, ''), rules.get(field_name, []))
         for field_name in LIBRARY_HIDDEN_FILTER_FIELDS
@@ -116,6 +114,18 @@ def _normalize_keyword_list(values):
         seen.add(lowered)
         normalized.append(keyword)
     return normalized
+
+
+def _get_normalized_rules(settings):
+    if isinstance(settings, dict):
+        rules = settings.get('rules', settings)
+        if (
+            isinstance(rules, dict)
+            and all(field_name in rules for field_name in FILTER_FIELDS)
+            and all(isinstance(rules.get(field_name, []), list) for field_name in FILTER_FIELDS)
+        ):
+            return rules
+    return normalize_video_filter_settings(settings).get('rules', {})
 
 
 def _matches_single_keyword(raw_value, normalized_value, keyword):
