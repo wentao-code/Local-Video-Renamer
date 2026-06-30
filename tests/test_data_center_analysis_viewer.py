@@ -19,7 +19,12 @@ def _run_sync_async_task(self, task, success_handler, error_title=None):
 
 
 class _BackendStub:
+    def __init__(self):
+        self.metric_refresh_flags = []
+        self.bucket_refresh_flags = []
+
     def get_metric_analysis(self, analysis_type, metric_key, force_refresh=False):
+        self.metric_refresh_flags.append(bool(force_refresh))
         return {
             "analysis": {
                 "distribution_rows": [
@@ -37,10 +42,11 @@ class _BackendStub:
                 "distribution_items_per_line": 10,
                 "ranking_items_per_line": 6,
             },
-            "refreshed_at": "2026-06-29 22:00:00",
+            "refreshed_at": "2026-06-29 22:05:00" if force_refresh else "2026-06-29 22:00:00",
         }
 
     def get_actor_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
+        self.bucket_refresh_flags.append(bool(force_refresh))
         return {
             "metric_key": metric_key,
             "bucket_value": bucket_value,
@@ -48,11 +54,24 @@ class _BackendStub:
                 {"actor_name": "Actor A", "display_value": "70\u5c81", "numeric_value": 70},
                 {"actor_name": "Actor D", "display_value": "70\u5c81", "numeric_value": 70},
             ],
-            "refreshed_at": "2026-06-29 22:00:01",
+            "refreshed_at": "2026-06-29 22:05:01" if force_refresh else "2026-06-29 22:00:01",
         }
 
 
 class DataCenterAnalysisViewerTest(unittest.TestCase):
+    def test_metric_window_uses_snapshot_then_background_refresh(self):
+        backend = _BackendStub()
+        metric_config = {"key": "age", "label_key": "data_center.analysis.age"}
+
+        with patch.object(AsyncTaskHostMixin, "start_async_task", _run_sync_async_task):
+            window = MetricAnalysisWindow(backend, "actor", metric_config)
+            try:
+                self.assertEqual(backend.metric_refresh_flags, [False, True])
+                self.assertIn("2026-06-29 22:05:00", window.last_refreshed_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_actor_metric_distribution_renders_clickable_bucket_buttons_in_ten_columns(self):
         backend = _BackendStub()
         metric_config = {"key": "age", "label_key": "data_center.analysis.age"}
@@ -83,6 +102,23 @@ class DataCenterAnalysisViewerTest(unittest.TestCase):
 
                 widths = [widget.minimumWidth() for widget in window.ranking_item_widgets]
                 self.assertTrue(all(width == widths[0] for width in widths))
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_actor_metric_bucket_window_uses_snapshot_then_background_refresh(self):
+        backend = _BackendStub()
+
+        with patch.object(AsyncTaskHostMixin, "start_async_task", _run_sync_async_task):
+            window = ActorMetricBucketWindow(
+                backend,
+                {"key": "age", "label_key": "data_center.analysis.age"},
+                70,
+                "70\u5c81",
+            )
+            try:
+                self.assertEqual(backend.bucket_refresh_flags, [False, True])
+                self.assertIn("2026-06-29 22:05:01", window.last_refreshed_label.text())
             finally:
                 window.hide()
                 window.deleteLater()

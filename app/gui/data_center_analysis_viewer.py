@@ -196,6 +196,7 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
         self.bucket_label = str(bucket_label or '').strip()
         self.actor_rows = []
         self.detail_windows = []
+        self._startup_refresh_pending = True
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -261,6 +262,9 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
         )
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
         self._render_rows()
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            self.load_data(force_refresh=True)
 
     def _render_rows(self):
         _clear_layout(self.rows_layout)
@@ -336,6 +340,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.bucket_windows = []
         self.distribution_buttons = []
         self.ranking_item_widgets = []
+        self._startup_refresh_pending = True
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -440,6 +445,9 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
         self._render_distribution_rows(distribution_rows, distribution_items_per_line)
         self._render_ranking_rows(ranking_items, ranking_items_per_line)
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            self.load_data(force_refresh=True)
 
     def _render_distribution_rows(self, distribution_rows, items_per_line):
         clickable_rows = [

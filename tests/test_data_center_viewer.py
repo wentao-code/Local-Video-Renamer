@@ -31,7 +31,7 @@ class _BackendStub:
                 'code_prefix_library': {'sources': {'avfan': {}, 'javtxt': {}}},
                 'actor_library': {'sources': {'avfan': {}, 'javtxt': {}, 'binghuo': {}}},
             },
-            'refreshed_at': '2026-06-21 12:34:56',
+            'refreshed_at': '2026-06-21 12:35:56' if force_refresh else '2026-06-21 12:34:56',
         }
 
     @staticmethod
@@ -40,18 +40,28 @@ class _BackendStub:
 
 
 class DataCenterViewerTest(unittest.TestCase):
-    def test_uses_cached_summary_on_open_and_force_refresh_on_button_click(self):
+    def test_startup_load_uses_snapshot_then_background_refresh(self):
         backend = _BackendStub()
 
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = DataCenterWindow(backend)
             try:
-                self.assertEqual(backend.summary_refresh_flags, [False])
+                self.assertEqual(backend.summary_refresh_flags, [False, True])
+                self.assertIn('2026-06-21 12:35:56', window.last_refreshed_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
 
+    def test_manual_refresh_still_uses_force_refresh_after_startup_refresh(self):
+        backend = _BackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = DataCenterWindow(backend)
+            try:
                 window.load_data(force_refresh=True)
 
-                self.assertEqual(backend.summary_refresh_flags, [False, True])
-                self.assertIn('2026-06-21 12:34:56', window.last_refreshed_label.text())
+                self.assertEqual(backend.summary_refresh_flags, [False, True, True])
+                self.assertIn('2026-06-21 12:35:56', window.last_refreshed_label.text())
             finally:
                 window.hide()
                 window.deleteLater()

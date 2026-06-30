@@ -1,6 +1,8 @@
 import re
+import json
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
+from pathlib import Path
 from threading import Lock
 
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRIC_MAP
@@ -39,15 +41,20 @@ MISSING_HEIGHT_LABEL = '\u65e0\u8eab\u9ad8'
 
 
 class DataCenterService:
-    def __init__(self, database, video_filter_service=None):
+    SNAPSHOT_VERSION = 1
+
+    def __init__(self, database, video_filter_service=None, snapshot_file=None):
         self.database = database
         self.code_prefix_library = CodePrefixLibrary(database)
         self.video_filter_service = video_filter_service or VideoFilterService()
+        self.snapshot_file = Path(snapshot_file) if snapshot_file else None
         self._summary_cache = None
         self._summary_cache_refreshed_at = ''
         self._summary_cache_lock = Lock()
         self._analysis_cache = {}
         self._analysis_cache_lock = Lock()
+        self._snapshot_file_lock = Lock()
+        self._load_persisted_snapshots()
 
     def get_summary(self, force_refresh=False):
         return self.get_summary_snapshot(force_refresh=force_refresh)['summary']
@@ -56,7 +63,7 @@ class DataCenterService:
         with self._summary_cache_lock:
             if self._summary_cache is not None and not force_refresh:
                 return {
-                    'summary': self._summary_cache,
+                    'summary': dict(self._summary_cache or {}),
                     'refreshed_at': self._summary_cache_refreshed_at,
                 }
 
@@ -64,8 +71,9 @@ class DataCenterService:
             summary = self._build_summary(filter_settings=filter_settings)
             self._summary_cache = summary
             self._summary_cache_refreshed_at = self._current_cache_timestamp()
+            self._persist_snapshots()
             return {
-                'summary': summary,
+                'summary': dict(summary or {}),
                 'refreshed_at': self._summary_cache_refreshed_at,
             }
 
@@ -85,6 +93,7 @@ class DataCenterService:
                 'refreshed_at': self._current_cache_timestamp(),
             }
             self._analysis_cache[cache_key] = payload
+            self._persist_snapshots()
             return dict(payload)
 
     def get_actor_metric_bucket_snapshot(self, metric_key, bucket_value, force_refresh=False):
@@ -110,6 +119,7 @@ class DataCenterService:
                 'refreshed_at': self._current_cache_timestamp(),
             }
             self._analysis_cache[cache_key] = payload
+            self._persist_snapshots()
             return dict(payload)
 
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
@@ -128,7 +138,107 @@ class DataCenterService:
                 'refreshed_at': self._current_cache_timestamp(),
             }
             self._analysis_cache[cache_key] = payload
+            self._persist_snapshots()
             return dict(payload)
+
+    def _load_persisted_snapshots(self):
+        if self.snapshot_file is None:
+            return
+        try:
+            if not self.snapshot_file.exists():
+                return
+            payload = json.loads(self.snapshot_file.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            return
+
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get('version', 0) or 0) != self.SNAPSHOT_VERSION:
+            return
+
+        summary_snapshot = self._normalize_summary_snapshot(payload.get('summary_snapshot'))
+        if summary_snapshot is not None:
+            self._summary_cache = summary_snapshot.get('summary', {})
+            self._summary_cache_refreshed_at = str(summary_snapshot.get('refreshed_at', '') or '').strip()
+
+        analysis_snapshots = payload.get('analysis_snapshots', {})
+        if not isinstance(analysis_snapshots, dict):
+            return
+
+        normalized_analysis_snapshots = {}
+        for cache_key, snapshot in analysis_snapshots.items():
+            normalized_snapshot = self._normalize_analysis_snapshot(snapshot)
+            if normalized_snapshot is None:
+                continue
+            normalized_analysis_snapshots[str(cache_key or '').strip()] = normalized_snapshot
+        self._analysis_cache = normalized_analysis_snapshots
+
+    def _persist_snapshots(self):
+        if self.snapshot_file is None:
+            return
+        payload = {
+            'version': self.SNAPSHOT_VERSION,
+            'summary_snapshot': self._build_persisted_summary_snapshot(),
+            'analysis_snapshots': self._build_persisted_analysis_snapshots(),
+        }
+        temp_snapshot_file = self.snapshot_file.with_suffix(self.snapshot_file.suffix + '.tmp')
+
+        try:
+            with self._snapshot_file_lock:
+                self.snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+                temp_snapshot_file.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+                temp_snapshot_file.replace(self.snapshot_file)
+        except OSError:
+            return
+
+    def _build_persisted_summary_snapshot(self):
+        if self._summary_cache is None:
+            return {}
+        return {
+            'summary': dict(self._summary_cache or {}),
+            'refreshed_at': self._summary_cache_refreshed_at,
+        }
+
+    def _build_persisted_analysis_snapshots(self):
+        snapshots = {}
+        for cache_key, payload in dict(self._analysis_cache or {}).items():
+            normalized_key = str(cache_key or '').strip()
+            normalized_payload = self._normalize_analysis_snapshot(payload)
+            if not normalized_key or normalized_payload is None:
+                continue
+            snapshots[normalized_key] = normalized_payload
+        return snapshots
+
+    @staticmethod
+    def _normalize_summary_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return None
+        summary = snapshot.get('summary')
+        refreshed_at = str(snapshot.get('refreshed_at', '') or '').strip()
+        if not isinstance(summary, dict):
+            return None
+        return {
+            'summary': dict(summary or {}),
+            'refreshed_at': refreshed_at,
+        }
+
+    @staticmethod
+    def _normalize_analysis_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return None
+        refreshed_at = str(snapshot.get('refreshed_at', '') or '').strip()
+        normalized_snapshot = {
+            str(key or '').strip(): value
+            for key, value in dict(snapshot or {}).items()
+            if str(key or '').strip()
+        }
+        if not normalized_snapshot or not refreshed_at:
+            return None
+        normalized_snapshot['refreshed_at'] = refreshed_at
+        return normalized_snapshot
 
     def _build_summary(self, filter_settings=None):
         return {

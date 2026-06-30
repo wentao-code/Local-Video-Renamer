@@ -13,6 +13,7 @@ from app.core.ladder_board import (
     LADDER_ENTITY_ACTOR,
 )
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
+from app.core.project_paths import DATA_CENTER_SNAPSHOT_FILE
 from app.data.database_handler import VideoDatabase
 from app.scraper.avfan_scraper import reset_avfan_browser_profile
 from app.services.auth import AutoLoginService
@@ -62,7 +63,11 @@ class BackendService:
         self.code_prefix_library = CodePrefixLibrary(self.db, self.video_filter_service)
         self.code_prefix_video_category_bulk_service = CodePrefixVideoCategoryBulkService(self.db)
         self.canglangge_candidate_service = CanglanggeCandidateService(self.db)
-        self.data_center_service = DataCenterService(self.db, self.video_filter_service)
+        self.data_center_service = DataCenterService(
+            self.db,
+            self.video_filter_service,
+            snapshot_file=DATA_CENTER_SNAPSHOT_FILE,
+        )
         self.library_admin_service = LibraryAdminService(self.db)
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
         self.ladder_board_service = LadderBoardService(self.db)

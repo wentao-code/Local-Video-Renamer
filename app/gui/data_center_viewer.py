@@ -20,6 +20,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.backend_client = backend_client
         self.refresh_client = _build_refresh_client(backend_client)
         self._pending_close = False
+        self._startup_refresh_pending = True
         self.analysis_window = None
         self._init_async_task_host()
         self.init_ui()
@@ -125,6 +126,9 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             actor_summary.get(BINGHUO_ACTOR_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_BIRTHDAY_TARGET, BINGHUO_ACTOR_SOURCE)),
         )
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            self.load_data(force_refresh=True)
 
     def _handle_async_task_failed(self, message):
         if self._pending_close:

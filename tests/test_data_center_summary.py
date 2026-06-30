@@ -469,6 +469,64 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         self.assertEqual(second["refreshed_at"], "2026-06-21 10:00:00")
         self.assertEqual(refreshed["refreshed_at"], "2026-06-21 10:05:00")
 
+    def test_summary_snapshot_persists_across_service_restarts(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
+            first_service = DataCenterService(database=None, snapshot_file=snapshot_file)
+
+            with patch.object(first_service, "_load_filter_settings", return_value=None), patch.object(
+                first_service,
+                "_build_summary",
+                return_value={"version": 1},
+            ), patch.object(
+                first_service,
+                "_current_cache_timestamp",
+                return_value="2026-06-30 09:00:00",
+            ):
+                first = first_service.get_summary_snapshot(force_refresh=True)
+
+            second_service = DataCenterService(database=None, snapshot_file=snapshot_file)
+            with patch.object(second_service, "_load_filter_settings", return_value=None), patch.object(
+                second_service,
+                "_build_summary",
+                side_effect=AssertionError("should reuse persisted snapshot"),
+            ):
+                second = second_service.get_summary_snapshot()
+
+            self.assertEqual(first, second)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_analysis_snapshot_persists_across_service_restarts(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
+            first_service = DataCenterService(database=None, snapshot_file=snapshot_file)
+
+            with patch.object(
+                first_service,
+                "_build_actor_metric_analysis",
+                return_value={"metric_key": "age", "distribution_rows": [], "ranking_rows": []},
+            ), patch.object(
+                first_service,
+                "_current_cache_timestamp",
+                return_value="2026-06-30 09:10:00",
+            ):
+                first = first_service.get_actor_metric_analysis_snapshot("age", force_refresh=True)
+
+            second_service = DataCenterService(database=None, snapshot_file=snapshot_file)
+            with patch.object(
+                second_service,
+                "_build_actor_metric_analysis",
+                side_effect=AssertionError("should reuse persisted analysis snapshot"),
+            ):
+                second = second_service.get_actor_metric_analysis_snapshot("age")
+
+            self.assertEqual(first, second)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_actor_metric_analysis_builds_distribution_and_top_rankings(self):
         temp_dir = tempfile.mkdtemp()
         try:
