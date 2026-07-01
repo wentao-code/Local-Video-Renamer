@@ -173,7 +173,9 @@ class SummaryCard(QFrame):
         if total_count > 0:
             terminal_percent = round(((no_search_count + no_detail_count) / total_count) * 100.0, 1)
 
-        self.title_label.setText(str(summary.get('label', '')))
+        summary_label = str(summary.get('label', '') or '').strip()
+        if summary_label:
+            self.title_label.setText(summary_label)
         self.count_label.setText(
             tr(
                 'enrichment.summary.count',

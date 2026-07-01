@@ -478,6 +478,31 @@ class _PassThroughLadderTagService:
         return list(rows or [])
 
 
+class DatabaseIndexCoverageTest(unittest.TestCase):
+    def test_database_initialization_creates_supplement_task_indexes(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            VideoDatabase(db_path)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA index_list('processed_videos')")
+                processed_indexes = {row[1] for row in cursor.fetchall()}
+                cursor.execute("PRAGMA index_list('code_prefix_movies')")
+                prefix_indexes = {row[1] for row in cursor.fetchall()}
+                cursor.execute("PRAGMA index_list('actor_movies')")
+                actor_indexes = {row[1] for row in cursor.fetchall()}
+
+            self.assertIn('idx_processed_videos_supplement_status', processed_indexes)
+            self.assertIn('idx_processed_videos_avfan_release', processed_indexes)
+            self.assertIn('idx_processed_videos_javtxt_release', processed_indexes)
+            self.assertIn('idx_code_prefix_movies_supplement_status', prefix_indexes)
+            self.assertIn('idx_actor_movies_supplement_status', actor_indexes)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main()
 

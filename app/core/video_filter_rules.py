@@ -1,8 +1,9 @@
 import re
 from functools import lru_cache
 
-from app.core.javtxt_video_state import COLLECTION_TITLE_KEYWORDS
 from app.core.enrichment_status import UNENRICHED_STATUS
+from app.core.javtxt_video_state import COLLECTION_TITLE_KEYWORDS
+from app.core.video_code import standardize_video_code
 from app.services.video import COLLECTION_TAG_KEYWORDS
 
 
@@ -27,6 +28,11 @@ LIBRARY_HIDDEN_FILTER_FIELDS = (
     FILTER_FIELD_CODE,
     FILTER_FIELD_TITLE,
     FILTER_FIELD_JAVTXT_TAGS,
+)
+
+EXACT_PREFIX_FILTER_FIELDS = (
+    FILTER_FIELD_CODE,
+    FILTER_FIELD_CO_STAR_CODE,
 )
 
 VR_FILTER_KEYWORD = 'VR'
@@ -71,13 +77,14 @@ def get_filter_keywords(settings, field_name):
     return list(normalized.get('rules', {}).get(field_name, []))
 
 
-def matches_filter_keywords(value, keywords):
+def matches_filter_keywords(value, keywords, field_name=''):
     raw_value = str(value or '').strip()
     if not raw_value:
         return False
     normalized_value = raw_value.lower()
+    normalized_field_name = str(field_name or '').strip().lower()
     return any(
-        _matches_single_keyword(raw_value, normalized_value, keyword)
+        _matches_single_keyword(raw_value, normalized_value, keyword, normalized_field_name)
         for keyword in _normalize_keyword_values(keywords)
     )
 
@@ -85,7 +92,7 @@ def matches_filter_keywords(value, keywords):
 def should_skip_video_before_enrichment(video, settings):
     rules = _get_normalized_rules(settings)
     return any(
-        matches_filter_keywords((video or {}).get(field_name, ''), rules.get(field_name, []))
+        matches_filter_keywords((video or {}).get(field_name, ''), rules.get(field_name, []), field_name=field_name)
         for field_name in PRE_ENRICHMENT_FILTER_FIELDS
     )
 
@@ -95,7 +102,7 @@ def should_hide_video_from_library(video, settings):
         return False
     rules = _get_normalized_rules(settings)
     return any(
-        matches_filter_keywords((video or {}).get(field_name, ''), rules.get(field_name, []))
+        matches_filter_keywords((video or {}).get(field_name, ''), rules.get(field_name, []), field_name=field_name)
         for field_name in LIBRARY_HIDDEN_FILTER_FIELDS
     )
 
@@ -147,14 +154,35 @@ def _get_normalized_rules(settings):
     return normalize_video_filter_settings(settings).get('rules', {})
 
 
-def _matches_single_keyword(raw_value, normalized_value, keyword):
+def _matches_single_keyword(raw_value, normalized_value, keyword, field_name=''):
     normalized_keyword = str(keyword or '').strip().lower()
     if not normalized_keyword:
         return False
+    if field_name in EXACT_PREFIX_FILTER_FIELDS:
+        return _matches_exact_code_prefix(raw_value, normalized_keyword)
     if normalized_keyword == VR_FILTER_KEYWORD.lower():
         normalized_text = raw_value.replace('Ｖ', 'V').replace('Ｒ', 'R')
         return bool(VR_MARKER_RE.search(normalized_text))
     return normalized_keyword in normalized_value
+
+
+def _matches_exact_code_prefix(raw_value, normalized_keyword):
+    value_prefix = _normalize_code_prefix(raw_value)
+    keyword_prefix = _normalize_code_prefix(normalized_keyword)
+    if not value_prefix or not keyword_prefix:
+        return False
+    return value_prefix == keyword_prefix
+
+
+def _normalize_code_prefix(value):
+    standardized = standardize_video_code(value)
+    if not standardized:
+        return ''
+    match = re.match(r'^([A-Z0-9]+?)(?:[-_\s]*\d.*)?$', standardized, re.IGNORECASE)
+    if not match:
+        return ''
+    prefix = re.sub(r'[^A-Z0-9]', '', match.group(1).upper())
+    return prefix if any(char.isalpha() for char in prefix) else ''
 
 
 def is_post_enrichment_video(video):

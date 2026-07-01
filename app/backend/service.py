@@ -771,6 +771,7 @@ class BackendService:
             self._build_single_task_key(target_type, source_key),
             self._build_single_task_label(target_type, source_key),
         )
+        active_filter_settings = self.video_filter_service.load_settings()
         try:
             enrichment_service = LibraryEnrichmentService(
                 self.db,
@@ -779,7 +780,10 @@ class BackendService:
                 should_stop=self.enrichment_task_state.cancel_event.is_set,
                 progress_tracker=self.enrichment_progress,
                 logger=logger,
-                video_candidate_filter=self.video_filter_service.build_pre_enrichment_filter(),
+                video_candidate_filter=self.video_filter_service.build_pre_enrichment_filter(
+                    settings=active_filter_settings
+                ),
+                video_filter_settings=active_filter_settings,
             )
             if target_type == ACTOR_LIBRARY_TARGET:
                 self.actor_library_sync_service.sync_from_video_library()

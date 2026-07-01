@@ -1,4 +1,5 @@
 import gc
+import json
 import shutil
 import sqlite3
 import tempfile
@@ -6,7 +7,13 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    BAOMU_ACTOR_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
+)
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
@@ -20,7 +27,225 @@ from app.services.video import VIDEO_CATEGORY_COLLECTION
 from app.services.video import VideoFilterService
 
 
+def _build_complete_summary_stub(version):
+    label = f'summary-{version}'
+    source_summary = {
+        'label': label,
+        'total_count': version,
+        'completed_count': version,
+        'success_count': version,
+        'pending_count': 0,
+        'failed_count': 0,
+        'no_search_count': 0,
+        'no_detail_count': 0,
+        'progress_percent': 100.0,
+        'count_label': 'done',
+        'pending_label': 'pending',
+        'list_kind': 'video',
+        'issue_groups': [],
+    }
+    actor_source_summary = dict(source_summary, list_kind='actor')
+    return {
+        'video_library': {
+            'label': 'video',
+            'sources': {
+                AVFAN_VIDEO_SOURCE: dict(source_summary),
+                JAVTXT_VIDEO_SOURCE: dict(source_summary),
+                SUPPLEMENT_TASK_SOURCE: dict(source_summary),
+            },
+        },
+        'code_prefix_library': {
+            'label': 'code',
+            'sources': {
+                AVFAN_VIDEO_SOURCE: dict(source_summary, list_kind='code_prefix'),
+                JAVTXT_VIDEO_SOURCE: dict(source_summary, list_kind='code_prefix'),
+                SUPPLEMENT_TASK_SOURCE: dict(source_summary, list_kind='code_prefix'),
+            },
+        },
+        'actor_library': {
+            'label': 'actor',
+            'sources': {
+                AVFAN_VIDEO_SOURCE: dict(actor_source_summary),
+                JAVTXT_VIDEO_SOURCE: dict(actor_source_summary),
+                BINGHUO_ACTOR_SOURCE: dict(actor_source_summary),
+                BAOMU_ACTOR_SOURCE: dict(actor_source_summary),
+                SUPPLEMENT_TASK_SOURCE: dict(actor_source_summary),
+            },
+        },
+    }
+
+
 class DataCenterSummarySplitCountsTest(unittest.TestCase):
+    def test_supplement_summary_reports_pending_candidates_for_all_libraries(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            self._seed_processed_video(
+                db_path,
+                code="AAA-001",
+                title="Missing Actor",
+                author="",
+                release_date="2024-01-01",
+                status=ENRICHED_STATUS,
+                movie_id="m1",
+                url="https://example.com/1",
+            )
+            self._seed_processed_video(
+                db_path,
+                code="AAA-002",
+                title="No Search Video",
+                author="",
+                release_date="2024-01-02",
+                status=NO_SEARCH_RESULTS_STATUS,
+            )
+
+            db.replace_code_prefix_movies(
+                "AAA",
+                [
+                    self._build_library_movie("AAA-001", "Missing Actor", "", "2024-01-01", ENRICHED_STATUS, "m1", "https://example.com/1"),
+                    self._build_library_movie("AAA-002", "No Search Video", "", "2024-01-02", NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    ("Actor A",),
+                )
+                conn.commit()
+
+            db.replace_actor_movies(
+                "Actor A",
+                [
+                    self._build_library_movie("AAA-001", "Missing Actor", "", "2024-01-01", ENRICHED_STATUS, "m1", "https://example.com/1"),
+                    self._build_library_movie("AAA-002", "No Search Video", "", "2024-01-02", NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+
+            summary = DataCenterService(db).get_summary()
+
+            video_summary = summary["video_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(video_summary["total_count"], 2)
+            self.assertEqual(video_summary["pending_count"], 2)
+            self.assertEqual(video_summary["count_label"], "待补充")
+
+            code_prefix_summary = summary["code_prefix_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(code_prefix_summary["total_count"], 2)
+            self.assertEqual(code_prefix_summary["pending_count"], 2)
+            self.assertEqual(code_prefix_summary["list_kind"], "video")
+            self.assertEqual(code_prefix_summary["issue_groups"][0]["key"], "pending")
+            self.assertEqual(
+                {item["code"] for item in code_prefix_summary["issue_groups"][0]["items"]},
+                {"AAA-001", "AAA-002"},
+            )
+
+            actor_summary = summary["actor_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(actor_summary["total_count"], 2)
+            self.assertEqual(actor_summary["pending_count"], 2)
+            self.assertEqual(actor_summary["list_kind"], "video")
+            self.assertEqual(actor_summary["issue_groups"][0]["key"], "pending")
+            self.assertEqual(
+                {item["code"] for item in actor_summary["issue_groups"][0]["items"]},
+                {"AAA-001", "AAA-002"},
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_supplement_summary_excludes_javtxt_filtered_videos(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            self._seed_processed_video(
+                db_path,
+                code="SKIP-001",
+                title="Filtered Missing Actor",
+                author="",
+                release_date="2024-01-01",
+                status=ENRICHED_STATUS,
+                movie_id="m1",
+                url="https://example.com/1",
+            )
+            self._seed_processed_video(
+                db_path,
+                code="AAA-002",
+                title="Visible Missing Actor",
+                author="",
+                release_date="2024-01-02",
+                status=ENRICHED_STATUS,
+                movie_id="m2",
+                url="https://example.com/2",
+            )
+
+            db.replace_code_prefix_movies(
+                "SKIP",
+                [
+                    self._build_library_movie("SKIP-001", "Filtered Missing Actor", "", "2024-01-01", ENRICHED_STATUS, "m1", "https://example.com/1"),
+                ],
+            )
+            db.replace_code_prefix_movies(
+                "AAA",
+                [
+                    self._build_library_movie("AAA-002", "Visible Missing Actor", "", "2024-01-02", ENRICHED_STATUS, "m2", "https://example.com/2"),
+                ],
+            )
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    ("Actor A",),
+                )
+                conn.commit()
+
+            db.replace_actor_movies(
+                "Actor A",
+                [
+                    self._build_library_movie("SKIP-001", "Filtered Missing Actor", "", "2024-01-01", ENRICHED_STATUS, "m1", "https://example.com/1"),
+                    self._build_library_movie("AAA-002", "Visible Missing Actor", "", "2024-01-02", ENRICHED_STATUS, "m2", "https://example.com/2"),
+                ],
+            )
+
+            filter_service = VideoFilterService(
+                settings_loader=lambda: {
+                    "rules": {
+                        "code": ["SKIP"],
+                        "title": [],
+                        "javtxt_tags": [],
+                        "co_star_code": [],
+                    }
+                }
+            )
+            summary = DataCenterService(db, video_filter_service=filter_service).get_summary()
+
+            video_summary = summary["video_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(video_summary["total_count"], 1)
+            self.assertEqual(video_summary["pending_count"], 1)
+            self.assertEqual(
+                {item["code"] for item in video_summary["issue_groups"][0]["items"]},
+                {"AAA-002"},
+            )
+
+            code_prefix_summary = summary["code_prefix_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(code_prefix_summary["total_count"], 1)
+            self.assertEqual(code_prefix_summary["pending_count"], 1)
+            self.assertEqual(
+                {item["code"] for item in code_prefix_summary["issue_groups"][0]["items"]},
+                {"AAA-002"},
+            )
+
+            actor_summary = summary["actor_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(actor_summary["total_count"], 1)
+            self.assertEqual(actor_summary["pending_count"], 1)
+            self.assertEqual(
+                {item["code"] for item in actor_summary["issue_groups"][0]["items"]},
+                {"AAA-002"},
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_javtxt_summary_keeps_no_detail_separate_from_no_search(self):
         temp_dir = tempfile.mkdtemp()
         try:
@@ -365,6 +590,52 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_actor_baomu_summary_uses_baomu_status_counts(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    [
+                        ("Actor Success",),
+                        ("Actor No Search",),
+                        ("Actor Failed",),
+                        ("Actor Pending",),
+                    ],
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO actor_enrichments (
+                        actor_name,
+                        baomu_enrichment_status
+                    )
+                    VALUES (?, ?)
+                    """,
+                    [
+                        ("Actor Success", ENRICHED_STATUS),
+                        ("Actor No Search", NO_SEARCH_RESULTS_STATUS),
+                        ("Actor Failed", FAILED_STATUS),
+                    ],
+                )
+                conn.commit()
+
+            summary = DataCenterService(db).get_summary_snapshot()["summary"]
+            baomu_summary = summary["actor_library"]["sources"][BAOMU_ACTOR_SOURCE]
+
+            self.assertEqual(baomu_summary["total_count"], 4)
+            self.assertEqual(baomu_summary["success_count"], 1)
+            self.assertEqual(baomu_summary["no_search_count"], 1)
+            self.assertEqual(baomu_summary["failed_count"], 1)
+            self.assertEqual(baomu_summary["pending_count"], 1)
+            self.assertEqual(baomu_summary["enriched_count"], 2)
+            self.assertEqual(baomu_summary["progress_percent"], 50.0)
+            self.assertEqual(baomu_summary["list_kind"], "actor")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_actor_binghuo_summary_splits_missing_fields_and_builds_issue_groups(self):
         temp_dir = tempfile.mkdtemp()
         try:
@@ -446,7 +717,7 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
 
     def test_summary_cache_only_rebuilds_on_manual_refresh(self):
         service = DataCenterService(database=None)
-        built_values = [{"version": 1}, {"version": 2}]
+        built_values = [_build_complete_summary_stub(1), _build_complete_summary_stub(2)]
 
         with patch.object(service, "_load_filter_settings", return_value=None), patch.object(
             service,
@@ -462,9 +733,9 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             refreshed = service.get_summary_snapshot(force_refresh=True)
 
         self.assertEqual(build_summary_mock.call_count, 2)
-        self.assertEqual(first["summary"]["version"], 1)
-        self.assertEqual(second["summary"]["version"], 1)
-        self.assertEqual(refreshed["summary"]["version"], 2)
+        self.assertEqual(first["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 1)
+        self.assertEqual(second["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 1)
+        self.assertEqual(refreshed["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 2)
         self.assertEqual(first["refreshed_at"], "2026-06-21 10:00:00")
         self.assertEqual(second["refreshed_at"], "2026-06-21 10:00:00")
         self.assertEqual(refreshed["refreshed_at"], "2026-06-21 10:05:00")
@@ -473,21 +744,22 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         temp_dir = tempfile.mkdtemp()
         try:
             snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
-            first_service = DataCenterService(database=None, snapshot_file=snapshot_file)
+            filter_service = VideoFilterService(settings_loader=lambda: None)
+            first_service = DataCenterService(database=None, snapshot_file=snapshot_file, video_filter_service=filter_service)
 
-            with patch.object(first_service, "_load_filter_settings", return_value=None), patch.object(
-                first_service,
-                "_build_summary",
-                return_value={"version": 1},
-            ), patch.object(
+            with patch.object(first_service, "_build_summary", return_value=_build_complete_summary_stub(1)), patch.object(
                 first_service,
                 "_current_cache_timestamp",
                 return_value="2026-06-30 09:00:00",
             ):
                 first = first_service.get_summary_snapshot(force_refresh=True)
 
-            second_service = DataCenterService(database=None, snapshot_file=snapshot_file)
-            with patch.object(second_service, "_load_filter_settings", return_value=None), patch.object(
+            second_service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                video_filter_service=VideoFilterService(settings_loader=lambda: None),
+            )
+            with patch.object(
                 second_service,
                 "_build_summary",
                 side_effect=AssertionError("should reuse persisted snapshot"),
@@ -495,6 +767,124 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                 second = second_service.get_summary_snapshot()
 
             self.assertEqual(first, second)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_summary_snapshot_is_rebuilt_when_filter_settings_change(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
+            first_service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                video_filter_service=VideoFilterService(
+                    settings_loader=lambda: {
+                        "rules": {
+                            "code": ["AAA"],
+                            "title": [],
+                            "javtxt_tags": [],
+                            "co_star_code": [],
+                        }
+                    }
+                ),
+            )
+
+            with patch.object(first_service, "_build_summary", return_value=_build_complete_summary_stub(1)), patch.object(
+                first_service,
+                "_current_cache_timestamp",
+                return_value="2026-06-30 09:00:00",
+            ):
+                first = first_service.get_summary_snapshot(force_refresh=True)
+
+            second_service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                video_filter_service=VideoFilterService(
+                    settings_loader=lambda: {
+                        "rules": {
+                            "code": ["BBB"],
+                            "title": [],
+                            "javtxt_tags": [],
+                            "co_star_code": [],
+                        }
+                    }
+                ),
+            )
+            with patch.object(second_service, "_build_summary", return_value=_build_complete_summary_stub(2)) as build_summary_mock, patch.object(
+                second_service,
+                "_current_cache_timestamp",
+                return_value="2026-06-30 09:05:00",
+            ):
+                second = second_service.get_summary_snapshot()
+
+            self.assertEqual(first["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 1)
+            self.assertEqual(build_summary_mock.call_count, 1)
+            self.assertEqual(second["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 2)
+            self.assertEqual(second["refreshed_at"], "2026-06-30 09:05:00")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_summary_cache_is_invalidated_when_filter_settings_change_in_same_service(self):
+        current_settings = {
+            "rules": {
+                "code": ["AAA"],
+                "title": [],
+                "javtxt_tags": [],
+                "co_star_code": [],
+            }
+        }
+        service = DataCenterService(
+            database=None,
+            video_filter_service=VideoFilterService(settings_loader=lambda: current_settings),
+        )
+
+        with patch.object(service, "_build_summary", side_effect=[_build_complete_summary_stub(1), _build_complete_summary_stub(2)]) as build_summary_mock, patch.object(
+            service,
+            "_current_cache_timestamp",
+            side_effect=["2026-06-30 09:00:00", "2026-06-30 09:05:00"],
+        ):
+            first = service.get_summary_snapshot(force_refresh=True)
+            current_settings["rules"]["code"] = ["BBB"]
+            second = service.get_summary_snapshot()
+
+        self.assertEqual(build_summary_mock.call_count, 2)
+        self.assertEqual(first["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 1)
+        self.assertEqual(second["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 2)
+        self.assertEqual(second["refreshed_at"], "2026-06-30 09:05:00")
+
+    def test_empty_persisted_summary_snapshot_is_ignored_and_rebuilt(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
+            snapshot_file.write_text(
+                json.dumps(
+                    {
+                        "version": DataCenterService.SNAPSHOT_VERSION,
+                        "summary_snapshot": {
+                            "summary": {},
+                            "refreshed_at": "2026-06-21 10:00:00",
+                        },
+                        "analysis_snapshots": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = DataCenterService(database=None, snapshot_file=snapshot_file)
+
+            with patch.object(service, "_load_filter_settings", return_value=None), patch.object(
+                service,
+                "_build_summary",
+                return_value=_build_complete_summary_stub(3),
+            ) as build_summary_mock, patch.object(
+                service,
+                "_current_cache_timestamp",
+                return_value="2026-07-01 03:00:00",
+            ):
+                result = service.get_summary_snapshot()
+
+            self.assertEqual(build_summary_mock.call_count, 1)
+            self.assertEqual(result["refreshed_at"], "2026-07-01 03:00:00")
+            self.assertEqual(result["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"], 3)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

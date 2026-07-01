@@ -187,6 +187,7 @@ BASE_GUI_TEXTS = {
     'data_center.code_prefix_javtxt': '番号库 · 辛聚谷',
     'data_center.actor_avfan': '演员库 · 天陨阁',
     'data_center.actor_javtxt': '演员库 · 辛聚谷',
+    'data_center.actor_baomu': '演员库 · 保木',
     'data_center.read_failed': '读取数据中心进度失败: {error}',
     'db.viewer.title': '视频库',
     'db.viewer.search_placeholder': '输入视频编号、标题、演员、分类或补全状态实时筛选...',

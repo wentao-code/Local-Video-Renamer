@@ -9,8 +9,10 @@ from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRIC_MAP
 from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRIC_MAP
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
+    BAOMU_ACTOR_SOURCE,
     BINGHUO_ACTOR_SOURCE,
     JAVTXT_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
     get_video_enrichment_source_label,
 )
 from app.core.enrichment_status import (
@@ -21,6 +23,7 @@ from app.core.enrichment_status import (
     UNENRICHED_STATUS,
 )
 from app.core.javtxt_entry_state import JAVTXT_SEARCH_STATE_NO_RESULT, classify_search_state
+from app.core.supplement_task_state import build_supplement_candidate
 from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
 from app.core.video_code import standardize_video_code
 from app.services.library import CodePrefixLibrary, build_merged_movie_snapshot, extract_code_prefix
@@ -42,12 +45,24 @@ MISSING_HEIGHT_LABEL = '\u65e0\u8eab\u9ad8'
 
 class DataCenterService:
     SNAPSHOT_VERSION = 1
+    EXPECTED_SUMMARY_SOURCE_KEYS = {
+        'video_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE),
+        'code_prefix_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE),
+        'actor_library': (
+            AVFAN_VIDEO_SOURCE,
+            JAVTXT_VIDEO_SOURCE,
+            BINGHUO_ACTOR_SOURCE,
+            BAOMU_ACTOR_SOURCE,
+            SUPPLEMENT_TASK_SOURCE,
+        ),
+    }
 
     def __init__(self, database, video_filter_service=None, snapshot_file=None):
         self.database = database
         self.code_prefix_library = CodePrefixLibrary(database)
         self.video_filter_service = video_filter_service or VideoFilterService()
         self.snapshot_file = Path(snapshot_file) if snapshot_file else None
+        self._snapshot_filter_fingerprint = self._build_filter_settings_fingerprint(self._load_filter_settings())
         self._summary_cache = None
         self._summary_cache_refreshed_at = ''
         self._summary_cache_lock = Lock()
@@ -61,13 +76,16 @@ class DataCenterService:
 
     def get_summary_snapshot(self, force_refresh=False):
         with self._summary_cache_lock:
-            if self._summary_cache is not None and not force_refresh:
+            filter_settings = self._refresh_filter_settings_state()
+            if self._is_complete_summary_snapshot(self._summary_cache) and not force_refresh:
                 return {
                     'summary': dict(self._summary_cache or {}),
                     'refreshed_at': self._summary_cache_refreshed_at,
                 }
+            if not force_refresh:
+                self._summary_cache = None
+                self._summary_cache_refreshed_at = ''
 
-            filter_settings = self._load_filter_settings()
             summary = self._build_summary(filter_settings=filter_settings)
             self._summary_cache = summary
             self._summary_cache_refreshed_at = self._current_cache_timestamp()
@@ -84,6 +102,7 @@ class DataCenterService:
         config = self._get_actor_metric_config(metric_key)
         cache_key = self._build_analysis_cache_key('actor', config['key'])
         with self._analysis_cache_lock:
+            self._refresh_filter_settings_state()
             cached = self._analysis_cache.get(cache_key)
             if cached is not None and not force_refresh:
                 return dict(cached)
@@ -107,6 +126,7 @@ class DataCenterService:
             f'{config["key"]}:{normalized_bucket_value}',
         )
         with self._analysis_cache_lock:
+            self._refresh_filter_settings_state()
             cached = self._analysis_cache.get(cache_key)
             if cached is not None and not force_refresh:
                 return dict(cached)
@@ -129,6 +149,7 @@ class DataCenterService:
         config = self._get_code_prefix_metric_config(metric_key)
         cache_key = self._build_analysis_cache_key('code_prefix', config['key'])
         with self._analysis_cache_lock:
+            self._refresh_filter_settings_state()
             cached = self._analysis_cache.get(cache_key)
             if cached is not None and not force_refresh:
                 return dict(cached)
@@ -155,9 +176,11 @@ class DataCenterService:
             return
         if int(payload.get('version', 0) or 0) != self.SNAPSHOT_VERSION:
             return
+        if str(payload.get('filter_settings_fingerprint', '') or '').strip() != self._snapshot_filter_fingerprint:
+            return
 
         summary_snapshot = self._normalize_summary_snapshot(payload.get('summary_snapshot'))
-        if summary_snapshot is not None:
+        if summary_snapshot is not None and self._is_complete_summary_snapshot(summary_snapshot.get('summary', {})):
             self._summary_cache = summary_snapshot.get('summary', {})
             self._summary_cache_refreshed_at = str(summary_snapshot.get('refreshed_at', '') or '').strip()
 
@@ -178,6 +201,7 @@ class DataCenterService:
             return
         payload = {
             'version': self.SNAPSHOT_VERSION,
+            'filter_settings_fingerprint': self._snapshot_filter_fingerprint,
             'summary_snapshot': self._build_persisted_summary_snapshot(),
             'analysis_snapshots': self._build_persisted_analysis_snapshots(),
         }
@@ -225,6 +249,23 @@ class DataCenterService:
             'refreshed_at': refreshed_at,
         }
 
+    @classmethod
+    def _is_complete_summary_snapshot(cls, summary):
+        if not isinstance(summary, dict):
+            return False
+        for library_key, source_keys in cls.EXPECTED_SUMMARY_SOURCE_KEYS.items():
+            library_summary = summary.get(library_key, {})
+            if not isinstance(library_summary, dict):
+                return False
+            sources = library_summary.get('sources', {})
+            if not isinstance(sources, dict):
+                return False
+            for source_key in source_keys:
+                source_summary = sources.get(source_key)
+                if not isinstance(source_summary, dict) or not source_summary:
+                    return False
+        return True
+
     @staticmethod
     def _normalize_analysis_snapshot(snapshot):
         if not isinstance(snapshot, dict):
@@ -253,6 +294,9 @@ class DataCenterService:
                         JAVTXT_VIDEO_SOURCE,
                         filter_settings=filter_settings,
                     ),
+                    SUPPLEMENT_TASK_SOURCE: self._build_video_supplement_summary(
+                        filter_settings=filter_settings,
+                    ),
                 },
             },
             'code_prefix_library': {
@@ -264,6 +308,9 @@ class DataCenterService:
                     ),
                     JAVTXT_VIDEO_SOURCE: self._build_code_prefix_source_summary(
                         JAVTXT_VIDEO_SOURCE,
+                        filter_settings=filter_settings,
+                    ),
+                    SUPPLEMENT_TASK_SOURCE: self._build_code_prefix_supplement_summary(
                         filter_settings=filter_settings,
                     ),
                 },
@@ -281,6 +328,13 @@ class DataCenterService:
                     ),
                     BINGHUO_ACTOR_SOURCE: self._build_actor_source_summary(
                         BINGHUO_ACTOR_SOURCE,
+                        filter_settings=filter_settings,
+                    ),
+                    BAOMU_ACTOR_SOURCE: self._build_actor_source_summary(
+                        BAOMU_ACTOR_SOURCE,
+                        filter_settings=filter_settings,
+                    ),
+                    SUPPLEMENT_TASK_SOURCE: self._build_actor_supplement_summary(
                         filter_settings=filter_settings,
                     ),
                 },
@@ -320,6 +374,19 @@ class DataCenterService:
         )
         return summary
 
+    def _build_video_supplement_summary(self, filter_settings=None):
+        pending_rows = [
+            row
+            for row in self._list_visible_video_summary_rows(filter_settings=filter_settings)
+            if build_supplement_candidate(row, filter_settings=filter_settings)
+        ]
+        return self._build_pending_only_summary(
+            self._build_source_label(VIDEO_LIBRARY_LABEL, SUPPLEMENT_TASK_SOURCE),
+            pending_rows,
+            list_kind='video',
+            item_builder=self._build_video_issue_item,
+        )
+
     def _build_code_prefix_source_summary(self, source_key, filter_settings=None):
         if source_key == JAVTXT_VIDEO_SOURCE:
             prefixes = [
@@ -348,6 +415,34 @@ class DataCenterService:
             lambda row: self._get_source_status(records.get(row.get('prefix', ''), {}), source_key),
         )
         return summary
+
+    def _build_code_prefix_supplement_summary(self, filter_settings=None):
+        prefixes = [
+            str(row.get('prefix', '') or '').strip().upper()
+            for row in self.code_prefix_library.list_prefixes()
+            if str(row.get('prefix', '') or '').strip()
+        ]
+        movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(prefixes) if prefixes else {}
+        filtered_movies_by_prefix = self._filter_grouped_movies(
+            movies_by_prefix,
+            filter_settings=filter_settings,
+        )
+        merged_movies = self._merge_movies_by_code(
+            [
+                movie
+                for movies in filtered_movies_by_prefix.values()
+                for movie in (movies or [])
+            ]
+        )
+        pending_movies = [
+            movie for movie in merged_movies if build_supplement_candidate(movie, filter_settings=filter_settings)
+        ]
+        return self._build_pending_only_summary(
+            self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, SUPPLEMENT_TASK_SOURCE),
+            pending_movies,
+            list_kind='video',
+            item_builder=self._build_video_issue_item,
+        )
 
     def _build_actor_source_summary(self, source_key, filter_settings=None):
         if source_key == BINGHUO_ACTOR_SOURCE:
@@ -379,6 +474,34 @@ class DataCenterService:
             lambda row: self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key),
         )
         return summary
+
+    def _build_actor_supplement_summary(self, filter_settings=None):
+        actor_names = [
+            str(row.get('name', '') or '').strip()
+            for row in self.database.list_actors()
+            if str(row.get('name', '') or '').strip()
+        ]
+        movies_by_actor = self.database.list_actor_movies_by_names(actor_names) if actor_names else {}
+        filtered_movies_by_actor = self._filter_grouped_movies(
+            movies_by_actor,
+            filter_settings=filter_settings,
+        )
+        merged_movies = self._merge_movies_by_code(
+            [
+                movie
+                for movies in filtered_movies_by_actor.values()
+                for movie in (movies or [])
+            ]
+        )
+        pending_movies = [
+            movie for movie in merged_movies if build_supplement_candidate(movie, filter_settings=filter_settings)
+        ]
+        return self._build_pending_only_summary(
+            self._build_source_label(ACTOR_LIBRARY_LABEL, SUPPLEMENT_TASK_SOURCE),
+            pending_movies,
+            list_kind='video',
+            item_builder=self._build_video_issue_item,
+        )
 
     def _build_actor_binghuo_source_summary(self):
         records = self.database.list_actor_enrichment_records()
@@ -514,6 +637,21 @@ class DataCenterService:
         if self.video_filter_service is None:
             return None
         return self.video_filter_service.load_settings()
+
+    def _refresh_filter_settings_state(self):
+        filter_settings = self._load_filter_settings()
+        current_fingerprint = self._build_filter_settings_fingerprint(filter_settings)
+        if current_fingerprint != self._snapshot_filter_fingerprint:
+            self._snapshot_filter_fingerprint = current_fingerprint
+            self._summary_cache = None
+            self._summary_cache_refreshed_at = ''
+            self._analysis_cache = {}
+        return filter_settings
+
+    @staticmethod
+    def _build_filter_settings_fingerprint(filter_settings):
+        normalized_settings = filter_settings if isinstance(filter_settings, dict) else {}
+        return json.dumps(normalized_settings, ensure_ascii=False, sort_keys=True)
 
     def _build_actor_metric_analysis(self, config):
         distribution_counts = {}
@@ -849,7 +987,14 @@ class DataCenterService:
 
     @staticmethod
     def _get_source_status(record, source_key):
-        key = 'javtxt_enrichment_status' if source_key == JAVTXT_VIDEO_SOURCE else 'avfan_enrichment_status'
+        if source_key == JAVTXT_VIDEO_SOURCE:
+            key = 'javtxt_enrichment_status'
+        elif source_key == BINGHUO_ACTOR_SOURCE:
+            key = 'binghuo_enrichment_status'
+        elif source_key == BAOMU_ACTOR_SOURCE:
+            key = 'baomu_enrichment_status'
+        else:
+            key = 'avfan_enrichment_status'
         return str((record or {}).get(key, '') or '').strip() or UNENRICHED_STATUS
 
     @staticmethod
@@ -1004,6 +1149,34 @@ class DataCenterService:
                 self._build_issue_group('no_detail', NO_DETAIL_LABEL, no_detail_items),
             ]
         )
+
+    @classmethod
+    def _build_pending_only_summary(cls, label, rows, list_kind, item_builder):
+        pending_items = []
+        for row in rows or []:
+            item = dict(item_builder(row) or {})
+            if item:
+                pending_items.append(item)
+        pending_count = len(pending_items)
+        return {
+            'label': label,
+            'total_count': pending_count,
+            'completed_count': 0,
+            'success_count': 0,
+            'pending_count': pending_count,
+            'failed_count': 0,
+            'no_search_count': 0,
+            'no_detail_count': 0,
+            'progress_percent': 0.0,
+            'count_label': '待补充',
+            'pending_label': '待补充',
+            'list_kind': list_kind,
+            'issue_groups': cls._compact_issue_groups(
+                [
+                    cls._build_issue_group('pending', '待补充', pending_items),
+                ]
+            ),
+        }
 
     @staticmethod
     def _classify_javtxt_issue_key(movie):

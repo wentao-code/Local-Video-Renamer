@@ -27,9 +27,52 @@ class _BackendStub:
         self.summary_refresh_flags.append(bool(force_refresh))
         return {
             'summary': {
-                'video_library': {'sources': {'avfan': {}, 'javtxt': {}}},
-                'code_prefix_library': {'sources': {'avfan': {}, 'javtxt': {}}},
-                'actor_library': {'sources': {'avfan': {}, 'javtxt': {}, 'binghuo': {}}},
+                'video_library': {
+                    'sources': {
+                        'avfan': {},
+                        'javtxt': {},
+                        'supplement': {
+                            'label': '视频库 · 补充任务',
+                            'total_count': 2,
+                            'pending_count': 2,
+                            'count_label': '待补充',
+                            'pending_label': '待补充',
+                        },
+                    },
+                },
+                'code_prefix_library': {
+                    'sources': {
+                        'avfan': {},
+                        'javtxt': {},
+                        'supplement': {
+                            'label': '番号库 · 补充任务',
+                            'total_count': 1,
+                            'pending_count': 1,
+                            'count_label': '待补充',
+                            'pending_label': '待补充',
+                        },
+                    },
+                },
+                'actor_library': {
+                    'sources': {
+                        'avfan': {},
+                        'javtxt': {},
+                        'binghuo': {},
+                        'baomu': {
+                            'label': '演员库 · 保木',
+                            'total_count': 4,
+                            'pending_count': 1,
+                            'count_label': '已完成',
+                        },
+                        'supplement': {
+                            'label': '演员库 · 补充任务',
+                            'total_count': 3,
+                            'pending_count': 3,
+                            'count_label': '待补充',
+                            'pending_label': '待补充',
+                        },
+                    },
+                },
             },
             'refreshed_at': '2026-06-21 12:35:56' if force_refresh else '2026-06-21 12:34:56',
         }
@@ -90,6 +133,20 @@ class DataCenterViewerTest(unittest.TestCase):
         self.assertIs(created.get('backend_client'), backend)
         self.assertIs(created.get('parent'), window)
         self.assertTrue(created.get('opened'))
+
+    def test_viewer_creates_supplement_progress_cards(self):
+        backend = _BackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = DataCenterWindow(backend)
+            try:
+                self.assertEqual(window.video_supplement_card.title_label.text(), '视频库 · 补充任务')
+                self.assertEqual(window.code_prefix_supplement_card.title_label.text(), '番号库 · 补充任务')
+                self.assertEqual(window.actor_supplement_card.title_label.text(), '演员库 · 补充任务')
+                self.assertEqual(window.actor_baomu_card.title_label.text(), '演员库 · 保木')
+            finally:
+                window.hide()
+                window.deleteLater()
 
 
 if __name__ == '__main__':

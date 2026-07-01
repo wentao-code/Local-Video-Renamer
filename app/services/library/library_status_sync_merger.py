@@ -59,6 +59,7 @@ def build_merged_movie_snapshot(code, library_rows, processed_row=None, cache_ro
         "javtxt_url": _pick_best_text([best_search_candidate] + candidates, "javtxt_url"),
         "javtxt_tags": _pick_best_text([best_search_candidate] + candidates, "javtxt_tags"),
         "video_category": _pick_best_category(candidates),
+        "supplement_enrichment_status": _pick_supplement_status(candidates),
         "search_state": best_search_state,
     }
 
@@ -274,6 +275,14 @@ def _pick_best_category(candidates):
         if category:
             return category
     return ""
+
+
+def _pick_supplement_status(candidates):
+    for candidate in candidates or []:
+        status = str((candidate or {}).get("supplement_enrichment_status", "") or "").strip()
+        if status and status != UNENRICHED_STATUS:
+            return status
+    return UNENRICHED_STATUS
 
 
 def _status_from_search_state(search_state, fallback_status=UNENRICHED_STATUS):

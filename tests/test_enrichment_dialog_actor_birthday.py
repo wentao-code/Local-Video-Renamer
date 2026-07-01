@@ -6,8 +6,19 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication
 
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE, BAOMU_ACTOR_SOURCE
-from app.core.enrichment_targets import ACTOR_BIRTHDAY_TARGET, ACTOR_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    BAOMU_ACTOR_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
+)
+from app.core.enrichment_targets import (
+    ACTOR_BIRTHDAY_TARGET,
+    ACTOR_LIBRARY_TARGET,
+    CODE_PREFIX_LIBRARY_TARGET,
+    VIDEO_LIBRARY_TARGET,
+)
 from app.gui.enrichment_dialog import DEFAULT_SETTINGS_PAYLOAD, EnrichmentDialog
 
 
@@ -85,6 +96,32 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertFalse(dialog.combo_group.isHidden())
         self.assertFalse(dialog.combo_single_button.isHidden())
         self.assertFalse(dialog.combo_batch_button.isHidden())
+
+    def test_supplement_source_is_available_for_video_code_prefix_and_actor_targets(self):
+        dialog = self._create_dialog()
+
+        dialog.supplement_source_button.setChecked(True)
+        self.assertEqual(dialog.selected_target_type(), VIDEO_LIBRARY_TARGET)
+        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
+        self.assertTrue(dialog.combo_group.isHidden())
+        self.assertTrue(dialog.combo_single_button.isHidden())
+        self.assertTrue(dialog.combo_batch_button.isHidden())
+        self.assertEqual(dialog.values()['combo_task_settings'], {})
+
+        dialog.code_prefix_target_button.setChecked(True)
+        self.assertTrue(dialog.supplement_source_button.isEnabled())
+        dialog.supplement_source_button.setChecked(True)
+        self.assertEqual(dialog.selected_target_type(), CODE_PREFIX_LIBRARY_TARGET)
+        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
+
+        dialog.actor_target_button.setChecked(True)
+        self.assertTrue(dialog.supplement_source_button.isEnabled())
+        dialog.supplement_source_button.setChecked(True)
+        self.assertEqual(dialog.selected_target_type(), ACTOR_LIBRARY_TARGET)
+        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
+
+        dialog.actor_birthday_target_button.setChecked(True)
+        self.assertFalse(dialog.supplement_source_button.isEnabled())
 
     def test_invalid_saved_source_for_actor_birthday_falls_back_to_first_actor_profile_source(self):
         payload = build_default_payload()

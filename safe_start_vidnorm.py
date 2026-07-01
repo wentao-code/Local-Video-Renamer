@@ -27,6 +27,12 @@ def is_matching_backend_code(health):
 def is_project_backend(health):
     if not health or not is_matching_backend_code(health):
         return False
+    return is_same_project_backend(health)
+
+
+def is_same_project_backend(health):
+    if not health:
+        return False
     project_root = str((health or {}).get('project_root') or '').strip()
     if not project_root:
         return False
@@ -201,33 +207,43 @@ def run_launcher(test_mode=False):
 
     stale_backend_cleaned = False
     existing_health = get_backend_health(timeout_seconds=2)
+    reused_backend_token = ''
     if existing_health is not None:
-        if not is_project_backend(existing_health):
+        if is_same_project_backend(existing_health) and not is_project_backend(existing_health):
+            existing_pid = extract_backend_pid(existing_health)
+            if not terminate_pid(existing_pid):
+                raise RuntimeError(f'检测到端口 {get_backend_port()} 已被其他进程占用，安全启动器不会接管该进程。')
+            wait_for_backend_release(timeout_seconds=3)
+            stale_backend_cleaned = True
+            logger.write(f'检测到同项目旧后端，已清理后重启。PID={existing_pid or "未知"}')
+        elif not is_project_backend(existing_health):
             raise RuntimeError(f'检测到端口 {get_backend_port()} 已被其他进程占用，安全启动器不会接管该进程。')
-        existing_pid = extract_backend_pid(existing_health)
-        logger.write(f'检测到旧后端，准备清理。PID={existing_pid or "未知"}')
-        stale_backend_cleaned = terminate_pid(existing_pid)
-        if stale_backend_cleaned:
-            wait_for_backend_release(timeout_seconds=5)
-        if get_backend_health(timeout_seconds=1) is not None:
-            raise RuntimeError('旧后端未能成功退出，请先关闭旧实例后重试。')
+        else:
+            reused_backend_token = str((existing_health or {}).get('backend_instance_token') or '').strip()
+            existing_pid = extract_backend_pid(existing_health)
+            logger.write(f'检测到可复用后端，直接复用。PID={existing_pid or "未知"}')
 
     instance_token = uuid.uuid4().hex
     backend_process = None
     gui_process = None
     startup_timeout_seconds = max(30.0, float(get_backend_timeout_seconds() or 0))
     try:
-        logger.write('正在启动后端服务...')
-        backend_process = start_backend_process(console_python, instance_token)
-        wait_for_expected_backend(
-            instance_token,
-            backend_process,
-            logger,
-            startup_timeout_seconds=startup_timeout_seconds,
-            stale_backend_cleaned=stale_backend_cleaned,
-        )
+        owns_backend = not bool(reused_backend_token)
+        if owns_backend:
+            logger.write('正在启动后端服务...')
+            backend_process = start_backend_process(console_python, instance_token)
+            wait_for_expected_backend(
+                instance_token,
+                backend_process,
+                logger,
+                startup_timeout_seconds=startup_timeout_seconds,
+                stale_backend_cleaned=stale_backend_cleaned,
+            )
+            active_backend_token = instance_token
+        else:
+            active_backend_token = reused_backend_token
 
-        gui_env = build_gui_environment(os.environ, instance_token, owns_backend=True)
+        gui_env = build_gui_environment(os.environ, active_backend_token, owns_backend=owns_backend)
         gui_script = PROJECT_ROOT / 'Local_Video_gui.py'
         logger.write('后端准备完成，正在启动图形界面...')
         gui_process = subprocess.Popen(

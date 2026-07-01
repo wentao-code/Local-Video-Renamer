@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import UNENRICHED_STATUS
-from app.core.video_filter_rules import DEFAULT_VIDEO_FILTER_SETTINGS, matches_filter_keywords, should_hide_video_from_library
+from app.core.video_filter_rules import (
+    DEFAULT_VIDEO_FILTER_SETTINGS,
+    FILTER_FIELD_CODE,
+    FILTER_FIELD_CO_STAR_CODE,
+    matches_filter_keywords,
+    should_hide_video_from_library,
+)
 from app.data.database_handler import VideoDatabase
 from app.services.video import VideoFilterService
 
@@ -112,6 +118,15 @@ class VideoFilterServiceTest(unittest.TestCase):
 
     def test_vr_keyword_matches_legacy_spaced_marker(self):
         self.assertTrue(matches_filter_keywords('这是一个 V R 作品', ['VR']))
+
+    def test_code_keyword_requires_exact_prefix_match(self):
+        self.assertFalse(matches_filter_keywords('ADN-518', ['AD'], field_name=FILTER_FIELD_CODE))
+        self.assertTrue(matches_filter_keywords('ADN-518', ['ADN'], field_name=FILTER_FIELD_CODE))
+        self.assertTrue(matches_filter_keywords('skip-', ['SKIP'], field_name=FILTER_FIELD_CODE))
+
+    def test_co_star_code_keyword_requires_exact_prefix_match(self):
+        self.assertFalse(matches_filter_keywords('ADN-518', ['AD'], field_name=FILTER_FIELD_CO_STAR_CODE))
+        self.assertTrue(matches_filter_keywords('ADN-518', ['ADN'], field_name=FILTER_FIELD_CO_STAR_CODE))
 
     @staticmethod
     def _seed_processed_video(db_path, code, title, release_date):

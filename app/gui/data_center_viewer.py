@@ -1,7 +1,13 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
-from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, BINGHUO_ACTOR_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    BAOMU_ACTOR_SOURCE,
+    BINGHUO_ACTOR_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
+)
 from app.core.enrichment_targets import (
     ACTOR_BIRTHDAY_TARGET,
     ACTOR_LIBRARY_TARGET,
@@ -52,19 +58,27 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
 
         self.video_avfan_card = SummaryCard(tr('data_center.video_avfan'))
         self.video_javtxt_card = SummaryCard(tr('data_center.video_javtxt'))
+        self.video_supplement_card = SummaryCard(tr('data_center.video_supplement'))
         self.code_prefix_avfan_card = SummaryCard(tr('data_center.code_prefix_avfan'))
         self.code_prefix_javtxt_card = SummaryCard(tr('data_center.code_prefix_javtxt'))
+        self.code_prefix_supplement_card = SummaryCard(tr('data_center.code_prefix_supplement'))
         self.actor_avfan_card = SummaryCard(tr('data_center.actor_avfan'))
         self.actor_javtxt_card = SummaryCard(tr('data_center.actor_javtxt'))
         self.actor_binghuo_card = SummaryCard(tr('data_center.actor_binghuo'))
+        self.actor_baomu_card = SummaryCard(tr('data_center.actor_baomu'))
+        self.actor_supplement_card = SummaryCard(tr('data_center.actor_supplement'))
 
         summary_layout.addWidget(self.video_avfan_card, 0, 0)
         summary_layout.addWidget(self.video_javtxt_card, 0, 1)
+        summary_layout.addWidget(self.video_supplement_card, 0, 2)
         summary_layout.addWidget(self.code_prefix_avfan_card, 1, 0)
         summary_layout.addWidget(self.code_prefix_javtxt_card, 1, 1)
+        summary_layout.addWidget(self.code_prefix_supplement_card, 1, 2)
         summary_layout.addWidget(self.actor_avfan_card, 2, 0)
         summary_layout.addWidget(self.actor_javtxt_card, 2, 1)
+        summary_layout.addWidget(self.actor_supplement_card, 2, 2)
         summary_layout.addWidget(self.actor_binghuo_card, 3, 0)
+        summary_layout.addWidget(self.actor_baomu_card, 3, 1)
 
         layout.addWidget(summary_group)
         self.setLayout(layout)
@@ -106,6 +120,11 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             show_terminal_details=True,
             live_progress=live_progress_map.get((VIDEO_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
         )
+        self.video_supplement_card.set_summary(
+            video_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
+            show_terminal_details=False,
+            live_progress=live_progress_map.get((VIDEO_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
+        )
         self.code_prefix_avfan_card.set_summary(
             code_prefix_summary.get(AVFAN_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((CODE_PREFIX_LIBRARY_TARGET, AVFAN_VIDEO_SOURCE)),
@@ -113,6 +132,11 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.code_prefix_javtxt_card.set_summary(
             code_prefix_summary.get(JAVTXT_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((CODE_PREFIX_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
+        )
+        self.code_prefix_supplement_card.set_summary(
+            code_prefix_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
+            show_terminal_details=False,
+            live_progress=live_progress_map.get((CODE_PREFIX_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
         )
         self.actor_avfan_card.set_summary(
             actor_summary.get(AVFAN_VIDEO_SOURCE, {}),
@@ -122,9 +146,18 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             actor_summary.get(JAVTXT_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
         )
+        self.actor_supplement_card.set_summary(
+            actor_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
+            show_terminal_details=False,
+            live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
+        )
         self.actor_binghuo_card.set_summary(
             actor_summary.get(BINGHUO_ACTOR_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_BIRTHDAY_TARGET, BINGHUO_ACTOR_SOURCE)),
+        )
+        self.actor_baomu_card.set_summary(
+            actor_summary.get(BAOMU_ACTOR_SOURCE, {}),
+            live_progress=live_progress_map.get((ACTOR_BIRTHDAY_TARGET, BAOMU_ACTOR_SOURCE)),
         )
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
