@@ -21,6 +21,15 @@ ACTOR_ANALYSIS_METRICS = (
         'suffix': ' cm',
     },
     {
+        'key': 'cup',
+        'label_key': 'data_center.analysis.cup',
+        'source': 'enrichment',
+        'field': 'binghuo_cup',
+        'fallback_field': 'baomu_cup',
+        'value_type': 'categorical',
+        'sort_order': 'desc',
+    },
+    {
         'key': 'waist',
         'label_key': 'data_center.analysis.waist',
         'source': 'enrichment',

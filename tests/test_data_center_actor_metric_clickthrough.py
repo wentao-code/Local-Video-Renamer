@@ -32,15 +32,16 @@ class DataCenterActorMetricClickthroughTest(unittest.TestCase):
                         actor_name,
                         binghuo_height,
                         binghuo_bust,
+                        binghuo_cup,
                         binghuo_waist,
                         binghuo_hip
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     [
-                        ("Actor A", "179", "90", "60", "92"),
-                        ("Actor B", "168", "84", "58", "88"),
-                        ("Actor D", "175", "", "", ""),
+                        ("Actor A", "179", "90", "F", "60", "92"),
+                        ("Actor B", "168", "84", "C", "58", "88"),
+                        ("Actor D", "175", "", "F", "", ""),
                     ],
                 )
                 conn.commit()
@@ -73,6 +74,29 @@ class DataCenterActorMetricClickthroughTest(unittest.TestCase):
                 height_bucket["actors"],
                 [
                     {"actor_name": "Actor A", "display_value": "179 cm", "numeric_value": 179},
+                ],
+            )
+
+            cup_analysis = service.get_actor_metric_analysis_snapshot("cup")
+            self.assertEqual(
+                cup_analysis["analysis"]["distribution_rows"],
+                [
+                    {"label": "F", "count": 2, "bucket_value": "F"},
+                    {"label": "C", "count": 1, "bucket_value": "C"},
+                    {"label": "\u65e0\u6570\u636e", "count": 1},
+                ],
+            )
+            self.assertEqual(cup_analysis["analysis"]["ranking_rows"], [])
+
+            cup_bucket = service.get_actor_metric_bucket_snapshot("cup", "F")
+            self.assertEqual(cup_bucket["metric_key"], "cup")
+            self.assertEqual(cup_bucket["bucket_value"], "F")
+            self.assertEqual(cup_bucket["bucket_label"], "F")
+            self.assertEqual(
+                cup_bucket["actors"],
+                [
+                    {"actor_name": "Actor A", "display_value": "F", "bucket_value": "F"},
+                    {"actor_name": "Actor D", "display_value": "F", "bucket_value": "F"},
                 ],
             )
 

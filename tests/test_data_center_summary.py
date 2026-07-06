@@ -915,7 +915,11 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            service = DataCenterService(database=None, snapshot_file=snapshot_file)
+            service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                video_filter_service=VideoFilterService(settings_loader=lambda: None),
+            )
 
             with patch.object(service, "_load_filter_settings", return_value=None), patch.object(
                 service,
@@ -960,6 +964,76 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                 second = second_service.get_actor_metric_analysis_snapshot("age")
 
             self.assertEqual(first, second)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_legacy_analysis_snapshot_without_version_is_ignored_and_rebuilt(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
+            filter_settings = {
+                "rules": {
+                    "code": [],
+                    "title": [],
+                    "javtxt_tags": [],
+                    "co_star_code": [],
+                }
+            }
+            snapshot_file.write_text(
+                json.dumps(
+                    {
+                        "version": DataCenterService.SNAPSHOT_VERSION,
+                        "filter_settings_fingerprint": DataCenterService._build_filter_settings_fingerprint(
+                            filter_settings
+                        ),
+                        "summary_snapshot": {
+                            "summary": _build_complete_summary_stub(1),
+                            "refreshed_at": "2026-06-30 09:00:00",
+                        },
+                        "analysis_snapshots": {
+                            "actor:age": {
+                                "analysis": {
+                                    "metric_key": "age",
+                                    "distribution_rows": [
+                                        {"label": "70岁", "count": 2, "bucket_value": 70},
+                                    ],
+                                    "ranking_rows": [
+                                        {
+                                            "actor_name": "Actor A",
+                                            "display_value": "70岁",
+                                            "numeric_value": 70,
+                                        }
+                                    ],
+                                },
+                                "refreshed_at": "2026-06-30 09:05:00",
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                video_filter_service=VideoFilterService(settings_loader=lambda: filter_settings),
+            )
+            with patch.object(
+                service,
+                "_build_actor_metric_analysis",
+                return_value={"metric_key": "age", "distribution_rows": [], "ranking_rows": []},
+            ) as build_analysis_mock, patch.object(
+                service,
+                "_current_cache_timestamp",
+                return_value="2026-07-06 12:00:00",
+            ):
+                result = service.get_actor_metric_analysis_snapshot("age")
+
+            self.assertEqual(build_analysis_mock.call_count, 1)
+            self.assertEqual(result["refreshed_at"], "2026-07-06 12:00:00")
+            self.assertEqual(result["analysis"]["ranking_rows"], [])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

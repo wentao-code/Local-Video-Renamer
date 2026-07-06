@@ -25,6 +25,20 @@ class _BackendStub:
 
     def get_metric_analysis(self, analysis_type, metric_key, force_refresh=False):
         self.metric_refresh_flags.append(bool(force_refresh))
+        if metric_key == "cup":
+            return {
+                "analysis": {
+                    "distribution_rows": [
+                        {"label": "F", "count": 3, "bucket_value": "F"},
+                        {"label": "C", "count": 1, "bucket_value": "C"},
+                        {"label": "无数据", "count": 2},
+                    ],
+                    "ranking_rows": [],
+                    "distribution_items_per_line": 10,
+                    "ranking_items_per_line": 6,
+                },
+                "refreshed_at": "2026-06-29 22:05:00" if force_refresh else "2026-06-29 22:00:00",
+            }
         return {
             "analysis": {
                 "distribution_rows": [
@@ -158,6 +172,20 @@ class DataCenterAnalysisViewerTest(unittest.TestCase):
         self.assertEqual(created.get("actor_name"), "Actor D")
         self.assertIs(created.get("parent"), window)
         self.assertTrue(created.get("opened"))
+
+    def test_cup_metric_hides_ranking_and_keeps_clickable_distribution(self):
+        backend = _BackendStub()
+        metric_config = {"key": "cup", "label_key": "data_center.analysis.cup"}
+
+        with patch.object(AsyncTaskHostMixin, "start_async_task", _run_sync_async_task):
+            window = MetricAnalysisWindow(backend, "actor", metric_config)
+            try:
+                self.assertFalse(window.ranking_group.isVisible())
+                self.assertEqual([button.text() for button in window.distribution_buttons], ["F: 3", "C: 1"])
+                self.assertEqual(window.distribution_label.text(), "无数据: 2")
+            finally:
+                window.hide()
+                window.deleteLater()
 
 
 if __name__ == "__main__":

@@ -71,6 +71,14 @@ def make_handler(service):
                 )
             if method == 'GET' and path == '/database/videos/summary':
                 return service.get_video_enrichment_summary()
+            if method == 'GET' and path == '/masterpiece/entries':
+                return service.list_masterpiece_entries()
+            if method == 'POST' and path == '/masterpiece/entries/add':
+                return service.add_masterpiece_entry(body.get('code'))
+            if method == 'POST' and path == '/masterpiece/entries/medal':
+                return service.update_masterpiece_entry_medal(body.get('code'), body.get('medal'))
+            if method == 'GET' and path == '/database/videos/detail':
+                return service.get_video_detail(query.get('code', [''])[0])
             if method == 'GET' and path == '/data-center/summary':
                 return service.get_data_center_summary(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'GET' and path == '/data-center/analysis':
@@ -82,7 +90,7 @@ def make_handler(service):
             if method == 'GET' and path == '/data-center/analysis/actors':
                 return service.get_actor_metric_bucket(
                     query.get('metric', [''])[0],
-                    _int_query_value(query, 'value', default=None),
+                    query.get('value', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
             if method == 'POST' and path == '/database/videos/reset':

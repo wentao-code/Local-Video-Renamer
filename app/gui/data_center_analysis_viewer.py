@@ -192,7 +192,7 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
         self.refresh_client = _build_refresh_client(backend_client)
         self.metric_config = dict(metric_config or {})
         self.metric_key = str(self.metric_config.get('key', '') or '').strip()
-        self.bucket_value = int(bucket_value or 0)
+        self.bucket_value = bucket_value
         self.bucket_label = str(bucket_label or '').strip()
         self.actor_rows = []
         self.detail_windows = []
@@ -337,6 +337,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.analysis_type = str(analysis_type or '').strip()
         self.metric_config = dict(metric_config or {})
         self.metric_key = str(self.metric_config.get('key', '') or '').strip()
+        self.hide_ranking = self.analysis_type == 'actor' and self.metric_key == 'cup'
         self.bucket_windows = []
         self.distribution_buttons = []
         self.ranking_item_widgets = []
@@ -391,8 +392,8 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         distribution_layout.addWidget(self.distribution_label)
         content_layout.addWidget(distribution_group)
 
-        ranking_group = QGroupBox(tr('data_center.analysis.ranking_group'))
-        ranking_layout = QVBoxLayout(ranking_group)
+        self.ranking_group = QGroupBox(tr('data_center.analysis.ranking_group'))
+        ranking_layout = QVBoxLayout(self.ranking_group)
         self.ranking_widget = QWidget()
         self.ranking_grid_layout = QGridLayout(self.ranking_widget)
         self.ranking_grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -403,7 +404,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.ranking_label.setWordWrap(True)
         self.ranking_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         ranking_layout.addWidget(self.ranking_label)
-        content_layout.addWidget(ranking_group)
+        content_layout.addWidget(self.ranking_group)
         content_layout.addStretch()
 
         scroll_area.setWidget(content)
@@ -444,7 +445,11 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
 
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
         self._render_distribution_rows(distribution_rows, distribution_items_per_line)
-        self._render_ranking_rows(ranking_items, ranking_items_per_line)
+        if self.hide_ranking:
+            self.ranking_group.hide()
+        else:
+            self.ranking_group.show()
+            self._render_ranking_rows(ranking_items, ranking_items_per_line)
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
             self.load_data(force_refresh=True)
@@ -468,7 +473,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
                 button.setMinimumHeight(32)
                 button.clicked.connect(
                     lambda _checked=False,
-                    bucket_value=int(row.get('bucket_value', 0) or 0),
+                    bucket_value=row.get('bucket_value'),
                     bucket_label=str(row.get('label', '') or '').strip(): self.open_actor_metric_bucket_window(
                         bucket_value,
                         bucket_label,

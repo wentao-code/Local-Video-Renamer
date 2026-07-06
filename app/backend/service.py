@@ -178,6 +178,25 @@ class BackendService:
     def get_video_enrichment_summary(self):
         return {'summary': self.db.get_video_enrichment_summary()}
 
+    def list_masterpiece_entries(self):
+        self.ensure_database_loaded()
+        return {'entries': self.db.list_masterpiece_entries()}
+
+    def add_masterpiece_entry(self, code):
+        self.ensure_database_loaded()
+        return {'entry': self.db.add_masterpiece_entry(code)}
+
+    def update_masterpiece_entry_medal(self, code, medal):
+        self.ensure_database_loaded()
+        return {'entry': self.db.update_masterpiece_entry_medal(code, medal)}
+
+    def get_video_detail(self, code):
+        self.ensure_database_loaded()
+        detail = self.db.get_video_detail_record(code)
+        if not detail:
+            raise FileNotFoundError(f'视频不存在: {code}')
+        return {'video': detail}
+
     def get_data_center_summary(self, force_refresh=False):
         self.ensure_database_loaded()
         return self.data_center_service.get_summary_snapshot(force_refresh=force_refresh)

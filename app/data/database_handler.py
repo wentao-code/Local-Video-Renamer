@@ -51,6 +51,7 @@ from app.core.second_source_actor_text import is_unpublished_actor_text, normali
 from app.core.project_paths import DATABASE_FILE
 from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, get_filter_keywords, matches_filter_keywords
 from app.core.video_filter_settings import load_video_filter_settings
+from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
 from app.data.repositories import (
     ActorRepositoryMixin,
     CodePrefixRepositoryMixin,
@@ -180,6 +181,14 @@ class VideoDatabase(
                     birthday TEXT,
                     age TEXT,
                     matched INTEGER DEFAULT 0
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS masterpiece_entries (
+                    code TEXT PRIMARY KEY,
+                    medal TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             cursor.execute('''
@@ -4612,6 +4621,166 @@ class VideoDatabase(
                 'publisher': row[15] or '',
             }
             for row in rows
+        }
+
+    def list_masterpiece_entries(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT m.code,
+                       COALESCE(p.title, ''),
+                       COALESCE(p.author, ''),
+                       COALESCE(m.medal, ''),
+                       COALESCE(m.created_at, ''),
+                       COALESCE(m.updated_at, '')
+                FROM masterpiece_entries AS m
+                INNER JOIN processed_videos AS p
+                    ON p.code = m.code
+                ORDER BY COALESCE(m.created_at, '') ASC, UPPER(m.code) ASC
+                '''
+            )
+            rows = cursor.fetchall()
+
+        result = []
+        for row in rows:
+            medal_text = normalize_ladder_medal_text(row[3] or '')
+            result.append(
+                {
+                    'code': row[0] or '',
+                    'title': row[1] or '',
+                    'author': sanitize_actor_text(row[2] or ''),
+                    'medal': medal_text,
+                    'medals': split_ladder_medals(medal_text),
+                    'created_at': row[4] or '',
+                    'updated_at': row[5] or '',
+                }
+            )
+        return result
+
+    def add_masterpiece_entry(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            raise ValueError('缺少视频编号')
+
+        detail = self.get_video_detail_record(normalized_code)
+        if not detail:
+            raise ValueError(f'视频不存在: {normalized_code}')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO masterpiece_entries (code, medal)
+                VALUES (?, '')
+                ''',
+                (normalized_code,),
+            )
+            cursor.execute(
+                '''
+                UPDATE masterpiece_entries
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
+                ''',
+                (normalized_code,),
+            )
+            conn.commit()
+
+        return self._get_masterpiece_entry(normalized_code)
+
+    def update_masterpiece_entry_medal(self, code, medal):
+        normalized_code = standardize_video_code(code)
+        normalized_medal = normalize_ladder_medal_text(medal)
+        if not normalized_code:
+            raise ValueError('缺少视频编号')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE masterpiece_entries
+                SET medal = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
+                ''',
+                (normalized_medal, normalized_code),
+            )
+            if cursor.rowcount <= 0:
+                raise ValueError(f'名作堂条目不存在: {normalized_code}')
+            conn.commit()
+
+        return self._get_masterpiece_entry(normalized_code)
+
+    def _get_masterpiece_entry(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return {}
+        for row in self.list_masterpiece_entries():
+            if str((row or {}).get('code', '') or '').strip() == normalized_code:
+                return dict(row or {})
+        return {}
+
+    def get_video_detail_record(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return {}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT code,
+                       title,
+                       author,
+                       duration,
+                       size,
+                       storage_location,
+                       avfan_movie_id,
+                       javtxt_movie_id,
+                       javtxt_url,
+                       javtxt_title,
+                       javtxt_actors,
+                       javtxt_tags,
+                       video_category,
+                       release_date,
+                       maker,
+                       publisher,
+                       avfan_enrichment_status,
+                       javtxt_enrichment_status,
+                       supplement_enrichment_status,
+                       supplement_enrichment_error,
+                       supplement_enriched_at
+                FROM processed_videos
+                WHERE code = ?
+                ''',
+                (normalized_code,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            return {}
+
+        return {
+            'code': row[0] or '',
+            'title': row[1] or '',
+            'author': sanitize_actor_text(row[2] or ''),
+            'duration': row[3] or '',
+            'size': row[4] or '',
+            'storage_location': row[5] or '',
+            'avfan_movie_id': row[6] or '',
+            'javtxt_movie_id': row[7] or '',
+            'javtxt_url': row[8] or '',
+            'javtxt_title': row[9] or '',
+            'javtxt_actors': sanitize_actor_text(row[10] or ''),
+            'javtxt_tags': row[11] or '',
+            'video_category': normalize_video_category(row[12]),
+            'release_date': row[13] or '',
+            'maker': row[14] or '',
+            'publisher': row[15] or '',
+            'avfan_enrichment_status': row[16] or '',
+            'javtxt_enrichment_status': row[17] or '',
+            'supplement_enrichment_status': row[18] or '',
+            'supplement_enrichment_error': row[19] or '',
+            'supplement_enriched_at': row[20] or '',
         }
 
     def bulk_update_processed_videos_for_supplement(self, updates):

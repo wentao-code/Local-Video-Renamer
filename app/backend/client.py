@@ -129,6 +129,19 @@ class BackendClient:
     def get_video_enrichment_summary(self):
         return self._get('/database/videos/summary').get('summary', {})
 
+    def list_masterpiece_entries(self):
+        return self._get('/masterpiece/entries').get('entries', [])
+
+    def add_masterpiece_entry(self, code):
+        return self._post('/masterpiece/entries/add', {'code': code}).get('entry', {})
+
+    def update_masterpiece_entry_medal(self, code, medal):
+        return self._post('/masterpiece/entries/medal', {'code': code, 'medal': medal}).get('entry', {})
+
+    def get_video_detail(self, code):
+        query = '?' + urlencode({'code': code})
+        return self._get('/database/videos/detail' + query).get('video', {})
+
     def get_data_center_summary(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
         return self._get('/data-center/summary' + query)
@@ -139,7 +152,7 @@ class BackendClient:
     def get_actor_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
         params = {
             'metric': metric_key,
-            'value': int(bucket_value),
+            'value': str(bucket_value or ''),
         }
         if force_refresh:
             params['refresh'] = '1'

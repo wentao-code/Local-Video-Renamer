@@ -45,6 +45,7 @@ MISSING_HEIGHT_LABEL = '\u65e0\u8eab\u9ad8'
 
 class DataCenterService:
     SNAPSHOT_VERSION = 1
+    ANALYSIS_SNAPSHOT_VERSION = 1
     EXPECTED_SUMMARY_SOURCE_KEYS = {
         'video_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE),
         'code_prefix_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE),
@@ -117,8 +118,8 @@ class DataCenterService:
 
     def get_actor_metric_bucket_snapshot(self, metric_key, bucket_value, force_refresh=False):
         config = self._get_actor_metric_config(metric_key)
-        normalized_bucket_value = self._parse_metric_number(bucket_value)
-        if normalized_bucket_value is None:
+        normalized_bucket_value = self._normalize_actor_metric_bucket_value(config, bucket_value)
+        if normalized_bucket_value in (None, ''):
             raise ValueError(f'Unknown actor metric bucket value: {bucket_value}')
 
         cache_key = self._build_analysis_cache_key(
@@ -134,7 +135,7 @@ class DataCenterService:
             payload = {
                 'metric_key': config['key'],
                 'bucket_value': normalized_bucket_value,
-                'bucket_label': f'{normalized_bucket_value}{str(config.get("suffix", "") or "")}',
+                'bucket_label': self._format_actor_metric_bucket_label(config, normalized_bucket_value),
                 'actors': self._build_actor_metric_bucket(config, normalized_bucket_value),
                 'refreshed_at': self._current_cache_timestamp(),
             }
@@ -186,17 +187,21 @@ class DataCenterService:
             self._summary_cache = summary_snapshot.get('summary', {})
             self._summary_cache_refreshed_at = str(summary_snapshot.get('refreshed_at', '') or '').strip()
 
-        analysis_snapshots = payload.get('analysis_snapshots', {})
-        if not isinstance(analysis_snapshots, dict):
-            return
+        analysis_snapshot_version = int(payload.get('analysis_snapshot_version', 0) or 0)
+        if analysis_snapshot_version == self.ANALYSIS_SNAPSHOT_VERSION:
+            analysis_snapshots = payload.get('analysis_snapshots', {})
+            if not isinstance(analysis_snapshots, dict):
+                return
 
-        normalized_analysis_snapshots = {}
-        for cache_key, snapshot in analysis_snapshots.items():
-            normalized_snapshot = self._normalize_analysis_snapshot(snapshot)
-            if normalized_snapshot is None:
-                continue
-            normalized_analysis_snapshots[str(cache_key or '').strip()] = normalized_snapshot
-        self._analysis_cache = normalized_analysis_snapshots
+            normalized_analysis_snapshots = {}
+            for cache_key, snapshot in analysis_snapshots.items():
+                normalized_snapshot = self._normalize_analysis_snapshot(snapshot)
+                if normalized_snapshot is None:
+                    continue
+                normalized_analysis_snapshots[str(cache_key or '').strip()] = normalized_snapshot
+            self._analysis_cache = normalized_analysis_snapshots
+        else:
+            self._analysis_cache = {}
         if should_migrate_legacy_snapshot and (self._summary_cache is not None or self._analysis_cache):
             self._persist_snapshots()
 
@@ -205,6 +210,7 @@ class DataCenterService:
             return
         payload = {
             'version': self.SNAPSHOT_VERSION,
+            'analysis_snapshot_version': self.ANALYSIS_SNAPSHOT_VERSION,
             'filter_settings_fingerprint': self._snapshot_filter_fingerprint,
             'summary_snapshot': self._build_persisted_summary_snapshot(),
             'analysis_snapshots': self._build_persisted_analysis_snapshots(),
@@ -769,6 +775,35 @@ class DataCenterService:
 
     def _build_actor_metric_analysis(self, config):
         metric_rows, unknown_count = self._collect_actor_metric_rows(config)
+        if self._is_categorical_actor_metric(config):
+            distribution_by_value = {}
+            for row in metric_rows:
+                bucket_value = str(row.get('bucket_value', '') or '').strip()
+                if bucket_value not in distribution_by_value:
+                    distribution_by_value[bucket_value] = {
+                        'label': str(row.get('display_value', '') or '').strip(),
+                        'count': 0,
+                        'bucket_value': bucket_value,
+                    }
+                distribution_by_value[bucket_value]['count'] += 1
+
+            distribution_rows = [
+                distribution_by_value[bucket_value]
+                for bucket_value in sorted(
+                    distribution_by_value.keys(),
+                    key=self._categorical_metric_sort_key,
+                    reverse=str(config.get('sort_order', 'asc') or '').strip().lower() == 'desc',
+                )
+            ]
+            if unknown_count > 0:
+                distribution_rows.append({'label': '\u65e0\u6570\u636e', 'count': unknown_count})
+
+            return {
+                'metric_key': config['key'],
+                'distribution_rows': distribution_rows,
+                'ranking_rows': [],
+            }
+
         distribution_by_value = {}
         for row in metric_rows:
             numeric_value = int(row.get('numeric_value', 0) or 0)
@@ -799,6 +834,21 @@ class DataCenterService:
 
     def _build_actor_metric_bucket(self, config, bucket_value):
         metric_rows, _unknown_count = self._collect_actor_metric_rows(config)
+        if self._is_categorical_actor_metric(config):
+            normalized_bucket_value = str(bucket_value or '').strip().upper()
+            return [
+                {
+                    'actor_name': str(row.get('actor_name', '') or '').strip(),
+                    'display_value': str(row.get('display_value', '') or '').strip(),
+                    'bucket_value': str(row.get('bucket_value', '') or '').strip(),
+                }
+                for row in sorted(
+                    metric_rows,
+                    key=lambda item: str(item.get('actor_name', '') or '').strip(),
+                )
+                if str(row.get('bucket_value', '') or '').strip().upper() == normalized_bucket_value
+            ]
+
         normalized_bucket_value = int(bucket_value or 0)
         return [
             {
@@ -822,39 +872,84 @@ class DataCenterService:
             actor_name = str((actor_row or {}).get('name', '') or '').strip()
             if not actor_name:
                 continue
-            numeric_value, display_value = self._resolve_actor_metric_value(
+            metric_row = self._resolve_actor_metric_row(
                 config,
                 actor_row,
                 enrichment_records.get(actor_name, {}),
             )
-            if numeric_value is None:
+            if metric_row is None:
                 unknown_count += 1
                 continue
-            metric_rows.append(
-                {
-                    'actor_name': actor_name,
-                    'display_value': display_value,
-                    'numeric_value': numeric_value,
-                }
-            )
+            metric_rows.append(metric_row)
 
         return metric_rows, unknown_count
 
     @staticmethod
-    def _resolve_actor_metric_value(config, actor_row, enrichment_record):
+    def _resolve_actor_metric_raw_value(config, actor_row, enrichment_record):
         source_name = str(config.get('source', '') or '').strip()
         field_name = str(config.get('field', '') or '').strip()
-        suffix = str(config.get('suffix', '') or '')
         if source_name == 'enrichment':
             raw_value = str((enrichment_record or {}).get(field_name, '') or '').strip()
+            fallback_field = str(config.get('fallback_field', '') or '').strip()
+            if not raw_value and fallback_field:
+                raw_value = str((enrichment_record or {}).get(fallback_field, '') or '').strip()
         else:
             raw_value = str(
                 (actor_row or {}).get(f'raw_{field_name}', (actor_row or {}).get(field_name, '')) or ''
             ).strip()
+        return raw_value
+
+    @classmethod
+    def _resolve_actor_metric_row(cls, config, actor_row, enrichment_record):
+        actor_name = str((actor_row or {}).get('name', '') or '').strip()
+        raw_value = cls._resolve_actor_metric_raw_value(config, actor_row, enrichment_record)
+        if cls._is_categorical_actor_metric(config):
+            bucket_value = cls._parse_metric_text_bucket(raw_value)
+            if not bucket_value:
+                return None
+            return {
+                'actor_name': actor_name,
+                'display_value': bucket_value,
+                'bucket_value': bucket_value,
+            }
+
+        suffix = str(config.get('suffix', '') or '')
         numeric_value = DataCenterService._parse_metric_number(raw_value)
         if numeric_value is None:
-            return None, ''
-        return numeric_value, f'{numeric_value}{suffix}'
+            return None
+        return {
+            'actor_name': actor_name,
+            'display_value': f'{numeric_value}{suffix}',
+            'numeric_value': numeric_value,
+        }
+
+    @staticmethod
+    def _is_categorical_actor_metric(config):
+        return str((config or {}).get('value_type', '') or '').strip().lower() == 'categorical'
+
+    @classmethod
+    def _normalize_actor_metric_bucket_value(cls, config, bucket_value):
+        if cls._is_categorical_actor_metric(config):
+            return cls._parse_metric_text_bucket(bucket_value)
+        return cls._parse_metric_number(bucket_value)
+
+    @staticmethod
+    def _format_actor_metric_bucket_label(config, bucket_value):
+        if DataCenterService._is_categorical_actor_metric(config):
+            return str(bucket_value or '').strip()
+        return f'{bucket_value}{str(config.get("suffix", "") or "")}'
+
+    @staticmethod
+    def _parse_metric_text_bucket(value):
+        match = re.search(r'[A-Z]+', str(value or '').strip().upper())
+        if not match:
+            return ''
+        return match.group(0)
+
+    @staticmethod
+    def _categorical_metric_sort_key(value):
+        text = str(value or '').strip().upper()
+        return (len(text), text)
 
     @staticmethod
     def _parse_metric_number(value):

@@ -43,6 +43,7 @@ from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.gui_task_runner import GuiTaskRunner
 from app.gui.i18n import tr
 from app.gui.ladder_board_viewer import LadderBoardWindow
+from app.gui.masterpiece_viewer import MasterpieceWindow
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
@@ -494,6 +495,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_ladder_board = QPushButton(tr('main.ladder_board'))
         self.btn_ladder_board.clicked.connect(self.show_ladder_board_viewer)
 
+        self.btn_masterpiece = QPushButton('名作堂')
+        self.btn_masterpiece.clicked.connect(self.show_masterpiece_viewer)
+
         self.btn_scan = QPushButton(tr('main.scan_local_videos'))
         self.btn_scan.clicked.connect(self.scan_files)
 
@@ -528,6 +532,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_canglangge)
         top_button_row.addWidget(self.btn_tianji)
         top_button_row.addWidget(self.btn_ladder_board)
+        top_button_row.addWidget(self.btn_masterpiece)
         top_button_row.addStretch()
 
         bottom_button_row.addWidget(self.btn_scan)
@@ -1552,6 +1557,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def show_ladder_board_viewer(self):
         viewer = LadderBoardWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
+    def show_masterpiece_viewer(self):
+        viewer = MasterpieceWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
     def show_video_filter_dialog(self):
