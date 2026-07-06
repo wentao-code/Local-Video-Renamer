@@ -33,6 +33,7 @@ class BackendClient:
         cooldown_before_search=False,
         target_type=None,
         source_key=None,
+        batch_mode=False,
     ):
         cooldown_seconds = 180 if cooldown_before_search else 0
         if target_type in ('code_prefix_library', 'actor_library', 'actor_birthday'):
@@ -47,6 +48,7 @@ class BackendClient:
                 'cooldown_before_search': cooldown_before_search,
                 'target_type': target_type,
                 'source_key': source_key,
+                'batch_mode': bool(batch_mode),
             },
             timeout=timeout,
         )

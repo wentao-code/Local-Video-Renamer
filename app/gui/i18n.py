@@ -277,6 +277,7 @@ BASE_GUI_TEXTS = {
     'main.combo_plan_status': '组合批次计划运行中，两个子任务会按各自的间隔独立进入下一批。',
     'main.batch_entity_default': '条目',
     'main.batch_no_items': '分批补全第 {round_number} 批本轮没有可处理的{entity_label}，将在 {interval_minutes} 分钟后继续检查。',
+    'main.batch_countdown_pending_current_round': '当前批次完成后，将按 {interval_minutes} 分钟间隔进入下一批倒计时。',
     'main.batch_current_hint': '{status_text} 当前提示：{message}',
     'main.batch_round_completed': '分批补全第 {round_number} 批已完成，将在 {interval_minutes} 分钟后开始下一批。',
     'main.batch_stopped': '已停止分批补全计划。',

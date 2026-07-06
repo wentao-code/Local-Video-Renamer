@@ -602,6 +602,49 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['success_count'], 1)
         self.assertEqual(result['remaining_count'], 1)
 
+    def test_code_prefix_remaining_count_uses_flat_movie_scan(self):
+        class FakeDatabase:
+            @staticmethod
+            def list_all_code_prefix_movies():
+                return [
+                    {
+                        'prefix': 'AAA',
+                        'code': 'AAA-001',
+                        'title': 'Visible Missing Actor',
+                        'author': '',
+                        'author_raw': '',
+                        'release_date': '2024-01-01',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'm1',
+                        'javtxt_url': 'https://example.com/1',
+                        'javtxt_tags': '',
+                        'javtxt_release_date': '2024-01-01',
+                        'supplement_enrichment_status': '',
+                    },
+                    {
+                        'prefix': 'AAA',
+                        'code': 'AAA-002',
+                        'title': 'Complete',
+                        'author': 'Actor B',
+                        'author_raw': 'Actor B',
+                        'release_date': '2024-01-02',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'm2',
+                        'javtxt_url': 'https://example.com/2',
+                        'javtxt_tags': '',
+                        'javtxt_release_date': '2024-01-02',
+                        'supplement_enrichment_status': ENRICHED_STATUS,
+                    },
+                ]
+
+            @staticmethod
+            def list_code_prefix_movies(prefix):
+                raise AssertionError('should not fall back to per-prefix scans')
+
+        service = CodePrefixSupplementEnrichmentService(FakeDatabase())
+
+        self.assertEqual(service._remaining_video_count(), 1)
+
     def test_actor_supplement_reports_video_progress_counts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -825,6 +868,53 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['success_count'], 2)
         self.assertEqual(result['remaining_count'], 1)
 
+    def test_actor_supplement_batch_mode_uses_fast_remaining_probe(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    ('Actor A',),
+                )
+                conn.commit()
+
+            db.replace_actor_movies(
+                'Actor A',
+                [
+                    self._build_library_movie('AAA-001', 'No Search 1', '', '2024-01-01', NO_SEARCH_RESULTS_STATUS),
+                    self._build_library_movie('AAA-002', 'No Search 2', '', '2024-01-02', NO_SEARCH_RESULTS_STATUS),
+                    self._build_library_movie('AAA-003', 'No Search 3', '', '2024-01-03', NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+            service = ActorSupplementEnrichmentService(
+                db,
+                scraper=_FakeScraper(
+                    payload_by_code={
+                        'AAA-001': {
+                            'found': True,
+                            'title': 'Filled 1',
+                            'actors': ['Actor A'],
+                            'release_date': '2024-01-01',
+                            'avfan_url': 'https://example.com/1',
+                        },
+                        'AAA-002': {
+                            'found': True,
+                            'title': 'Filled 2',
+                            'actors': ['Actor A'],
+                            'release_date': '2024-01-02',
+                            'avfan_url': 'https://example.com/2',
+                        },
+                    }
+                ),
+            )
+
+            result = service.enrich_next_actors(2, estimate_remaining=True)
+
+        self.assertTrue(result['has_more_pending'])
+        self.assertEqual(result['remaining_count'], 1)
+
     def test_actor_supplement_stop_takes_effect_within_current_actor(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -874,6 +964,53 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['processed_count'], 1)
         self.assertEqual(result['success_count'], 1)
         self.assertEqual(result['remaining_count'], 1)
+
+    def test_actor_remaining_count_uses_flat_movie_scan(self):
+        class FakeDatabase:
+            @staticmethod
+            def list_all_actor_movies():
+                return [
+                    {
+                        'actor_name': 'Actor A',
+                        'code': 'AAA-001',
+                        'title': 'Visible Missing Actor',
+                        'author': '',
+                        'author_raw': '',
+                        'release_date': '2024-01-01',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'm1',
+                        'javtxt_url': 'https://example.com/1',
+                        'javtxt_tags': '',
+                        'javtxt_release_date': '2024-01-01',
+                        'supplement_enrichment_status': '',
+                    },
+                    {
+                        'actor_name': 'Actor B',
+                        'code': 'AAA-002',
+                        'title': 'Complete',
+                        'author': 'Actor B',
+                        'author_raw': 'Actor B',
+                        'release_date': '2024-01-02',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'm2',
+                        'javtxt_url': 'https://example.com/2',
+                        'javtxt_tags': '',
+                        'javtxt_release_date': '2024-01-02',
+                        'supplement_enrichment_status': ENRICHED_STATUS,
+                    },
+                ]
+
+            @staticmethod
+            def list_actors():
+                raise AssertionError('should not fall back to per-actor scans')
+
+            @staticmethod
+            def list_actor_movies(actor_name):
+                raise AssertionError('should not fall back to per-actor scans')
+
+        service = ActorSupplementEnrichmentService(FakeDatabase())
+
+        self.assertEqual(service._remaining_video_count(), 1)
 
     @staticmethod
     def _insert_processed_video(

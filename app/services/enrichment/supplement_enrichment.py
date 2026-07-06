@@ -108,6 +108,13 @@ class _SupplementBaseService:
             return
         self.progress_tracker.finish(message=message, stopped=stopped)
 
+    def _resolve_remaining_state(self, estimate_remaining, exact_count_loader, has_more_loader):
+        if estimate_remaining:
+            has_more_pending = bool(has_more_loader())
+            return (1 if has_more_pending else 0), has_more_pending
+        remaining_count = max(0, int(exact_count_loader() or 0))
+        return remaining_count, remaining_count > 0
+
     def _fetch_movie_info(self, row):
         current_row = dict(row or {})
         avfan_url = str(current_row.get('avfan_url', '') or '').strip()
@@ -169,6 +176,7 @@ class _SupplementBaseService:
             'success_count': success_count,
             'failed_count': failed_count,
             'remaining_count': remaining_count,
+            'has_more_pending': max(0, int(remaining_count or 0)) > 0,
             'results': results,
             'stopped': stopped,
             'requires_manual_verification': requires_manual_verification,
@@ -194,7 +202,7 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
     stop_message = '视频补充任务已停止'
     finish_message = '视频补充任务已完成'
 
-    def enrich_next_videos(self, limit):
+    def enrich_next_videos(self, limit, estimate_remaining=False):
         limit = int(limit or 0)
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
@@ -206,14 +214,20 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
         with self.scraper.session():
             for row in candidates:
                 if self.should_stop():
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self.database.count_pending_video_supplements,
+                        lambda: self.database.list_video_supplement_candidates(1),
+                    )
                     result = self._result(
                         limit,
                         results,
                         success_count,
                         failed_count,
-                        self.database.count_pending_video_supplements(),
+                        remaining_count,
                         stopped=True,
                     )
+                    result['has_more_pending'] = has_more_pending
                     self._finish_progress(self.stop_message, stopped=True)
                     return result
                 code = row.get('code', '')
@@ -238,16 +252,22 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                     failed_count += 1
                     results.append({'code': code, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(len(results), success_count, failed_count, code)
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self.database.count_pending_video_supplements,
+                        lambda: self.database.list_video_supplement_candidates(1),
+                    )
                     result = self._result(
                         limit,
                         results,
                         success_count,
                         failed_count,
-                        self.database.count_pending_video_supplements(),
+                        remaining_count,
                         stopped=True,
                         message=str(exc),
                         requires_manual_verification=True,
                     )
+                    result['has_more_pending'] = has_more_pending
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
@@ -255,13 +275,19 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                     failed_count += 1
                     results.append({'code': code, 'status': 'failed', 'error': str(exc)})
                 self._update_progress(len(results), success_count, failed_count, code)
+        remaining_count, has_more_pending = self._resolve_remaining_state(
+            estimate_remaining,
+            self.database.count_pending_video_supplements,
+            lambda: self.database.list_video_supplement_candidates(1),
+        )
         result = self._result(
             limit,
             results,
             success_count,
             failed_count,
-            self.database.count_pending_video_supplements(),
+            remaining_count,
         )
+        result['has_more_pending'] = has_more_pending
         self._finish_progress(self.finish_message)
         return result
 
@@ -294,7 +320,7 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         )
         self.prefix_library = CodePrefixLibrary(database)
 
-    def enrich_next_prefixes(self, limit):
+    def enrich_next_prefixes(self, limit, estimate_remaining=False):
         limit = int(limit or 0)
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
@@ -336,17 +362,23 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     failed_count += 1
                     results.append({'prefix': prefix, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(processed_count, success_count, failed_count, prefix)
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self._remaining_video_count,
+                        lambda: self._candidate_prefix_batches(1),
+                    )
                     result = self._result(
                         limit,
                         results,
                         success_count,
                         failed_count,
-                        self._remaining_video_count(),
+                        remaining_count,
                         processed_count=processed_count,
                         stopped=True,
                         message=str(exc),
                         requires_manual_verification=True,
                     )
+                    result['has_more_pending'] = has_more_pending
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
@@ -367,26 +399,38 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     results.append({'prefix': prefix, 'status': 'failed'})
 
                 if stop_requested:
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self._remaining_video_count,
+                        lambda: self._candidate_prefix_batches(1),
+                    )
                     result = self._result(
                         limit,
                         results,
                         success_count,
                         failed_count,
-                        self._remaining_video_count(),
+                        remaining_count,
                         processed_count=processed_count,
                         stopped=True,
                     )
+                    result['has_more_pending'] = has_more_pending
                     self._finish_progress(self.stop_message, stopped=True)
                     return result
 
+        remaining_count, has_more_pending = self._resolve_remaining_state(
+            estimate_remaining,
+            self._remaining_video_count,
+            lambda: self._candidate_prefix_batches(1),
+        )
         result = self._result(
             limit,
             results,
             success_count,
             failed_count,
-            self._remaining_video_count(),
+            remaining_count,
             processed_count=processed_count,
         )
+        result['has_more_pending'] = has_more_pending
         self._finish_progress(self.finish_message)
         return result
 
@@ -415,13 +459,11 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         return batches
 
     def _remaining_video_count(self):
-        remaining_count = 0
-        for row in self.prefix_library.list_prefixes():
-            prefix = str(row.get('prefix', '') or '').strip().upper()
-            if not prefix:
-                continue
-            remaining_count += len(self._candidate_rows_for_prefix(prefix))
-        return remaining_count
+        return sum(
+            1
+            for movie in (self.database.list_all_code_prefix_movies() or [])
+            if build_supplement_candidate(movie, filter_settings=self.filter_settings)
+        )
 
 
 class ActorSupplementEnrichmentService(_SupplementBaseService):
@@ -431,7 +473,7 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
     stop_message = '演员补充任务已停止'
     finish_message = '演员补充任务已完成'
 
-    def enrich_next_actors(self, limit):
+    def enrich_next_actors(self, limit, estimate_remaining=False):
         limit = int(limit or 0)
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
@@ -473,17 +515,23 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     failed_count += 1
                     results.append({'actor_name': actor_name, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(processed_count, success_count, failed_count, actor_name)
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self._remaining_video_count,
+                        lambda: self._candidate_actor_batches(1),
+                    )
                     result = self._result(
                         limit,
                         results,
                         success_count,
                         failed_count,
-                        self._remaining_video_count(),
+                        remaining_count,
                         processed_count=processed_count,
                         stopped=True,
                         message=str(exc),
                         requires_manual_verification=True,
                     )
+                    result['has_more_pending'] = has_more_pending
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
@@ -504,26 +552,38 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     results.append({'actor_name': actor_name, 'status': 'failed'})
 
                 if stop_requested:
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self._remaining_video_count,
+                        lambda: self._candidate_actor_batches(1),
+                    )
                     result = self._result(
                         limit,
                         results,
                         success_count,
                         failed_count,
-                        self._remaining_video_count(),
+                        remaining_count,
                         processed_count=processed_count,
                         stopped=True,
                     )
+                    result['has_more_pending'] = has_more_pending
                     self._finish_progress(self.stop_message, stopped=True)
                     return result
 
+        remaining_count, has_more_pending = self._resolve_remaining_state(
+            estimate_remaining,
+            self._remaining_video_count,
+            lambda: self._candidate_actor_batches(1),
+        )
         result = self._result(
             limit,
             results,
             success_count,
             failed_count,
-            self._remaining_video_count(),
+            remaining_count,
             processed_count=processed_count,
         )
+        result['has_more_pending'] = has_more_pending
         self._finish_progress(self.finish_message)
         return result
 
@@ -552,10 +612,8 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
         return batches
 
     def _remaining_video_count(self):
-        remaining_count = 0
-        for row in self.database.list_actors():
-            actor_name = str(row.get('name', '') or '').strip()
-            if not actor_name:
-                continue
-            remaining_count += len(self._candidate_rows_for_actor(actor_name))
-        return remaining_count
+        return sum(
+            1
+            for movie in (self.database.list_all_actor_movies() or [])
+            if build_supplement_candidate(movie, filter_settings=self.filter_settings)
+        )

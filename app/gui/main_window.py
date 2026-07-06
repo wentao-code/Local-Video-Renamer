@@ -54,7 +54,16 @@ class EnrichmentWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, backend_client, limit, show_browser, cooldown_before_search, target_type, source_key):
+    def __init__(
+        self,
+        backend_client,
+        limit,
+        show_browser,
+        cooldown_before_search,
+        target_type,
+        source_key,
+        batch_mode=False,
+    ):
         super().__init__()
         self.backend_client = backend_client
         self.limit = limit
@@ -62,6 +71,7 @@ class EnrichmentWorker(QObject):
         self.cooldown_before_search = cooldown_before_search
         self.target_type = target_type
         self.source_key = source_key
+        self.batch_mode = bool(batch_mode)
 
     def run(self):
         try:
@@ -71,6 +81,7 @@ class EnrichmentWorker(QObject):
                 cooldown_before_search=self.cooldown_before_search,
                 target_type=self.target_type,
                 source_key=self.source_key,
+                batch_mode=self.batch_mode,
             )
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -694,11 +705,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             cooldown_before_search,
             target_type,
             source_key,
+            batch_mode=(mode == 'batch'),
         )
         if mode == 'batch':
             self.batch_enrichment_round += 1
             self.status_label.setText(
                 tr('main.batch_round_running', round_number=self.batch_enrichment_round)
+            )
+            interval_minutes = max(1, int((self.batch_enrichment_config or {}).get('interval_minutes', 1) or 1))
+            self.batch_countdown_label.setText(
+                tr('main.batch_countdown_pending_current_round', interval_minutes=interval_minutes)
             )
         else:
             self.status_label.setText(tr('main.single_enrichment_running'))
@@ -729,6 +745,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.batch_enrichment_round += 1
             self.status_label.setText(
                 tr('main.combo_round_running', round_number=self.batch_enrichment_round)
+            )
+            interval_minutes = max(1, int((self.batch_enrichment_config or {}).get('interval_minutes', 1) or 1))
+            self.batch_countdown_label.setText(
+                tr('main.batch_countdown_pending_current_round', interval_minutes=interval_minutes)
             )
         else:
             self.status_label.setText(tr('main.combo_running'))
@@ -1277,7 +1297,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 QMessageBox.information(self, tr('main.batch_stopped_title'), summary)
                 return
 
-            if int(result.get('remaining_count', 0) or 0) <= 0:
+            has_more_pending = result.get('has_more_pending')
+            if has_more_pending is None:
+                has_more_pending = int(result.get('remaining_count', 0) or 0) > 0
+
+            if not has_more_pending:
                 self.stop_batch_enrichment(tr('main.batch_completed'))
                 QMessageBox.information(self, tr('main.enrichment_completed_title'), summary)
                 return

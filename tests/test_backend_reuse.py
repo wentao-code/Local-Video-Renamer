@@ -313,6 +313,62 @@ class BackendReuseDecisionTest(unittest.TestCase):
         self.assertNotIn(('schedule', unittest.mock.ANY), calls)
         self.assertTrue(info_mock.called)
 
+    def test_batch_plan_prefers_has_more_pending_flag_over_remaining_count(self):
+        calls = []
+        stub = SimpleNamespace(
+            enrichment_mode='batch',
+            batch_enrichment_active=True,
+            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
+            build_enrichment_summary=lambda result: 'summary',
+            stop_batch_enrichment=lambda message=None: calls.append(('stop_batch', message)),
+            schedule_next_batch_enrichment=lambda last_result=None: calls.append(('schedule', last_result)),
+        )
+
+        with patch('app.gui.main_window.QMessageBox.information') as info_mock:
+            VidNormApp.on_enrichment_finished(
+                stub,
+                {
+                    'entity_label': '演员库',
+                    'remaining_count': 0,
+                    'has_more_pending': True,
+                    'stopped': False,
+                    'requires_manual_verification': False,
+                    'message': '',
+                },
+            )
+
+        self.assertNotIn(('stop_batch', tr('main.batch_completed')), calls)
+        self.assertIn(('schedule', unittest.mock.ANY), calls)
+        self.assertFalse(info_mock.called)
+
+    def test_batch_running_shows_countdown_hint_before_waiting_phase(self):
+        calls = []
+        stub = SimpleNamespace(
+            backend_client=object(),
+            batch_enrichment_round=0,
+            batch_enrichment_config={'interval_minutes': 2},
+            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
+            batch_countdown_label=SimpleNamespace(setText=lambda value: calls.append(('countdown', value))),
+            _start_enrichment_task_runner=lambda: calls.append(('start', None)),
+        )
+
+        with patch('app.gui.main_window.EnrichmentWorker', return_value=object()):
+            VidNormApp.start_enrichment(
+                stub,
+                15,
+                False,
+                False,
+                'actor_library',
+                'supplement',
+                mode='batch',
+            )
+
+        self.assertIn(('status', tr('main.batch_round_running', round_number=1)), calls)
+        self.assertIn(
+            ('countdown', tr('main.batch_countdown_pending_current_round', interval_minutes=2)),
+            calls,
+        )
+
     def test_attach_actor_update_status_loads_filter_settings_once(self):
         class FakeDatabase:
             @staticmethod

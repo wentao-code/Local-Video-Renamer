@@ -179,6 +179,7 @@ def make_handler(service):
                     cooldown_before_search=bool(body.get('cooldown_before_search')),
                     target_type=body.get('target_type'),
                     source_key=body.get('source_key'),
+                    batch_mode=bool(body.get('batch_mode')),
                 )
             if method == 'POST' and path == '/database/enrich/combo':
                 return service.enrich_combo(

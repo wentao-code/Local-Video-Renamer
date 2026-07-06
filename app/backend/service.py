@@ -764,7 +764,15 @@ class BackendService:
             'selected': [dict(row or {}) for row in board.get('selected', []) or []],
         }
 
-    def enrich_videos(self, limit, show_browser=False, cooldown_before_search=False, target_type=None, source_key=None):
+    def enrich_videos(
+        self,
+        limit,
+        show_browser=False,
+        cooldown_before_search=False,
+        target_type=None,
+        source_key=None,
+        batch_mode=False,
+    ):
         self._begin_enrichment_task('single')
         logger = TaskTraceLogger(
             'single',
@@ -788,7 +796,7 @@ class BackendService:
             if target_type == ACTOR_LIBRARY_TARGET:
                 self.actor_library_sync_service.sync_from_video_library()
 
-            result = enrichment_service.run(target_type, limit, source_key=source_key)
+            result = enrichment_service.run(target_type, limit, source_key=source_key, batch_mode=batch_mode)
             result['log_path'] = str(logger.log_path)
 
             if (not target_type or target_type == VIDEO_LIBRARY_TARGET) and result.get('processed_count', 0) > 0:

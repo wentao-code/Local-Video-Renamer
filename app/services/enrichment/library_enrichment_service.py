@@ -49,7 +49,7 @@ class LibraryEnrichmentService:
         self.video_candidate_filter = video_candidate_filter
         self.video_filter_settings = video_filter_settings
 
-    def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
+    def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, batch_mode=False):
         if not target_type:
             target_type = VIDEO_LIBRARY_TARGET
 
@@ -74,7 +74,7 @@ class LibraryEnrichmentService:
                     logger=self.logger,
                     filter_settings=self.video_filter_settings,
                 )
-                result = service.enrich_next_videos(limit)
+                result = service.enrich_next_videos(limit, estimate_remaining=batch_mode)
             else:
                 service = VideoSourceEnrichmentService(
                     self.database,
@@ -116,7 +116,10 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                 )
-            result = service.enrich_next_prefixes(limit)
+            if source_key == SUPPLEMENT_TASK_SOURCE:
+                result = service.enrich_next_prefixes(limit, estimate_remaining=batch_mode)
+            else:
+                result = service.enrich_next_prefixes(limit)
             result.setdefault(
                 'source_key',
                 source_key or (SUPPLEMENT_TASK_SOURCE if source_key == SUPPLEMENT_TASK_SOURCE else AVFAN_VIDEO_SOURCE),
@@ -149,7 +152,10 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                 )
-            result = service.enrich_next_actors(limit)
+            if source_key == SUPPLEMENT_TASK_SOURCE:
+                result = service.enrich_next_actors(limit, estimate_remaining=batch_mode)
+            else:
+                result = service.enrich_next_actors(limit)
             result.setdefault(
                 'source_key',
                 source_key or (SUPPLEMENT_TASK_SOURCE if source_key == SUPPLEMENT_TASK_SOURCE else AVFAN_VIDEO_SOURCE),
