@@ -79,19 +79,20 @@ class MainWindowStartupTest(unittest.TestCase):
 
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []
+        created_worker = object()
         stub = SimpleNamespace(
             snapshot_refresh_running=False,
             snapshot_refresh_task_runner=None,
             snapshot_refresh_worker=None,
             backend_client=SimpleNamespace(),
-            _create_snapshot_refresh_worker=lambda: object(),
+            _create_snapshot_refresh_worker=lambda: created_worker,
             _on_snapshot_refresh_finished=lambda _result=None: None,
             _on_snapshot_refresh_failed=lambda _error=None: None,
         )
 
         class _Runner:
-            def __init__(self, worker, success_handler, error_handler):
-                started.append(('init', worker, success_handler, error_handler))
+            def __init__(self, parent, worker, success_handler, error_handler, cleanup_handler=None):
+                started.append(('init', parent, worker, success_handler, error_handler, cleanup_handler))
 
             def start(self):
                 started.append('start')
@@ -100,6 +101,9 @@ class MainWindowStartupTest(unittest.TestCase):
             main_window.VidNormApp.schedule_snapshot_refresh_cycle(stub)
 
         self.assertTrue(stub.snapshot_refresh_running)
+        self.assertIs(stub.snapshot_refresh_worker, created_worker)
+        self.assertEqual(started[0][1], stub)
+        self.assertIs(started[0][2], created_worker)
         self.assertEqual(started[-1], 'start')
 
 

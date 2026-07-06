@@ -1609,6 +1609,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.snapshot_refresh_running = True
         self.snapshot_refresh_worker = self._create_snapshot_refresh_worker()
         self.snapshot_refresh_task_runner = GuiTaskRunner(
+            self,
             self.snapshot_refresh_worker,
             self._on_snapshot_refresh_finished,
             self._on_snapshot_refresh_failed,
