@@ -176,7 +176,9 @@ class DataCenterService:
             return
         if int(payload.get('version', 0) or 0) != self.SNAPSHOT_VERSION:
             return
-        if str(payload.get('filter_settings_fingerprint', '') or '').strip() != self._snapshot_filter_fingerprint:
+        persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
+        should_migrate_legacy_snapshot = not persisted_fingerprint
+        if persisted_fingerprint and persisted_fingerprint != self._snapshot_filter_fingerprint:
             return
 
         summary_snapshot = self._normalize_summary_snapshot(payload.get('summary_snapshot'))
@@ -195,6 +197,8 @@ class DataCenterService:
                 continue
             normalized_analysis_snapshots[str(cache_key or '').strip()] = normalized_snapshot
         self._analysis_cache = normalized_analysis_snapshots
+        if should_migrate_legacy_snapshot and (self._summary_cache is not None or self._analysis_cache):
+            self._persist_snapshots()
 
     def _persist_snapshots(self):
         if self.snapshot_file is None:

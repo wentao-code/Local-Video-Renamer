@@ -770,6 +770,52 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_legacy_summary_snapshot_without_filter_fingerprint_is_reused(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            snapshot_file = Path(temp_dir) / "data_center_snapshot.json"
+            legacy_payload = {
+                "version": DataCenterService.SNAPSHOT_VERSION,
+                "summary_snapshot": {
+                    "summary": _build_complete_summary_stub(7),
+                    "refreshed_at": "2026-07-06 10:00:00",
+                },
+                "analysis_snapshots": {},
+            }
+            snapshot_file.write_text(
+                json.dumps(legacy_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                video_filter_service=VideoFilterService(
+                    settings_loader=lambda: {
+                        "rules": {
+                            "code": ["AAA"],
+                            "title": [],
+                            "javtxt_tags": [],
+                            "co_star_code": [],
+                        }
+                    }
+                ),
+            )
+            with patch.object(
+                service,
+                "_build_summary",
+                side_effect=AssertionError("should reuse legacy persisted snapshot"),
+            ):
+                result = service.get_summary_snapshot()
+
+            self.assertEqual(result["refreshed_at"], "2026-07-06 10:00:00")
+            self.assertEqual(
+                result["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"],
+                7,
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_summary_snapshot_is_rebuilt_when_filter_settings_change(self):
         temp_dir = tempfile.mkdtemp()
         try:
