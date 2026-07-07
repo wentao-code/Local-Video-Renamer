@@ -18,6 +18,7 @@ from app.core.project_paths import (
     DATA_CENTER_SNAPSHOT_FILE,
     LEGACY_CODE_PREFIX_SNAPSHOT_FILE,
     LEGACY_DATA_CENTER_SNAPSHOT_FILE,
+    MASTERPIECE_SNAPSHOT_FILE,
     SNAPSHOT_REFRESH_LOG_FILE,
 )
 from app.data.database_handler import VideoDatabase
@@ -97,6 +98,7 @@ class BackendService:
             self._load_actor_snapshot_filter_settings()
         )
         self._actor_library_snapshots = {}
+        self._actor_detail_snapshots = {}
         self._code_prefix_snapshot_file = CODE_PREFIX_SNAPSHOT_FILE
         self._code_prefix_snapshot_file_lock = Lock()
         self._code_prefix_snapshot_filter_fingerprint = self._build_code_prefix_snapshot_filter_fingerprint(
@@ -104,8 +106,12 @@ class BackendService:
         )
         self._code_prefix_library_snapshots = {}
         self._code_prefix_detail_snapshots = {}
+        self._masterpiece_snapshot_file = MASTERPIECE_SNAPSHOT_FILE
+        self._masterpiece_snapshot_file_lock = Lock()
+        self._masterpiece_detail_snapshots = {}
         self._load_actor_snapshots()
         self._load_code_prefix_snapshots()
+        self._load_masterpiece_snapshots()
         self.database_loaded = False
 
     def load_database(self):
@@ -211,11 +217,15 @@ class BackendService:
 
     def add_masterpiece_entry(self, code):
         self.ensure_database_loaded()
-        return {'entry': self.db.add_masterpiece_entry(code)}
+        result = {'entry': self.db.add_masterpiece_entry(code)}
+        self._invalidate_masterpiece_snapshots()
+        return result
 
     def update_masterpiece_entry_medal(self, code, medal):
         self.ensure_database_loaded()
-        return {'entry': self.db.update_masterpiece_entry_medal(code, medal)}
+        result = {'entry': self.db.update_masterpiece_entry_medal(code, medal)}
+        self._invalidate_masterpiece_snapshots()
+        return result
 
     def get_masterpiece_detail(self, code):
         self.ensure_database_loaded()
@@ -223,6 +233,40 @@ class BackendService:
         if not detail:
             raise FileNotFoundError(f'鍚嶄綔鍫傛潯鐩笉瀛樺湪: {code}')
         return {'detail': detail}
+
+    def get_masterpiece_detail_snapshot(self, code, force_refresh=False):
+        self.ensure_database_loaded()
+        normalized_code = str(code or '').strip().upper()
+        if not normalized_code:
+            raise ValueError('缺少名作堂番号')
+        with self._snapshot_guard():
+            snapshot = (self._masterpiece_detail_snapshots or {}).get(normalized_code)
+            if snapshot is not None and not force_refresh:
+                return {
+                    **self._clone_masterpiece_detail_snapshot(snapshot),
+                    'cache_hit': True,
+                }
+
+        started_at = perf_counter()
+        payload = self.get_masterpiece_detail(normalized_code)
+        refresh_duration_ms = self._build_refresh_duration_ms(started_at)
+        snapshot = self._build_snapshot_payload(
+            detail=dict(payload.get('detail', {}) or {}),
+            refresh_duration_ms=refresh_duration_ms,
+        )
+        with self._snapshot_guard():
+            self._masterpiece_detail_snapshots[normalized_code] = snapshot
+            self._persist_masterpiece_snapshots()
+        self._append_snapshot_refresh_log(
+            snapshot_key='masterpiece_detail',
+            refreshed_at=self._snapshot_refreshed_at(snapshot),
+            refresh_duration_ms=refresh_duration_ms,
+            cache_kind='detail',
+        )
+        return {
+            **self._clone_masterpiece_detail_snapshot(snapshot),
+            'cache_hit': False,
+        }
 
     def list_global_medals(self):
         self.ensure_database_loaded()
@@ -405,6 +449,42 @@ class BackendService:
     def get_actor_detail(self, actor_name):
         self.ensure_database_loaded()
         return {'actor': self.actor_detail_library.get_actor_detail(actor_name)}
+
+    def get_actor_detail_snapshot(self, actor_name, force_refresh=False):
+        self.ensure_database_loaded()
+        normalized_actor_name = str(actor_name or '').strip()
+        if not normalized_actor_name:
+            raise ValueError('缺少演员名称')
+        self._refresh_actor_snapshot_filter_state()
+        snapshot_key = normalized_actor_name.casefold()
+        with self._snapshot_guard():
+            snapshot = (self._actor_detail_snapshots or {}).get(snapshot_key)
+            if snapshot is not None and not force_refresh:
+                return {
+                    **self._clone_actor_detail_snapshot(snapshot),
+                    'cache_hit': True,
+                }
+
+        started_at = perf_counter()
+        payload = self.get_actor_detail(normalized_actor_name)
+        refresh_duration_ms = self._build_refresh_duration_ms(started_at)
+        snapshot = self._build_snapshot_payload(
+            actor=dict(payload.get('actor', {}) or {}),
+            refresh_duration_ms=refresh_duration_ms,
+        )
+        with self._snapshot_guard():
+            self._actor_detail_snapshots[snapshot_key] = snapshot
+            self._persist_actor_snapshots()
+        self._append_snapshot_refresh_log(
+            snapshot_key='actor_detail',
+            refreshed_at=self._snapshot_refreshed_at(snapshot),
+            refresh_duration_ms=refresh_duration_ms,
+            cache_kind='detail',
+        )
+        return {
+            **self._clone_actor_detail_snapshot(snapshot),
+            'cache_hit': False,
+        }
 
     def add_actor(self, actor_name, birthday='', age=''):
         self.ensure_database_loaded()
@@ -1000,6 +1080,7 @@ class BackendService:
         if persisted_fingerprint and persisted_fingerprint != getattr(self, '_actor_snapshot_filter_fingerprint', ''):
             return
         self._actor_library_snapshots = self._normalize_actor_library_snapshots(payload.get('library_snapshots', {}))
+        self._actor_detail_snapshots = self._normalize_actor_detail_snapshots(payload.get('detail_snapshots', {}))
 
     def _persist_actor_snapshots(self):
         snapshot_file = getattr(self, '_actor_snapshot_file', None)
@@ -1009,6 +1090,7 @@ class BackendService:
             'version': 1,
             'filter_settings_fingerprint': getattr(self, '_actor_snapshot_filter_fingerprint', ''),
             'library_snapshots': self._build_persisted_actor_library_snapshots(),
+            'detail_snapshots': self._build_persisted_actor_detail_snapshots(),
         }
         target_file = Path(snapshot_file)
         temp_snapshot_file = target_file.with_suffix(target_file.suffix + '.tmp')
@@ -1032,11 +1114,13 @@ class BackendService:
         with self._snapshot_guard():
             self._actor_snapshot_filter_fingerprint = current_fingerprint
             self._actor_library_snapshots = {}
+            self._actor_detail_snapshots = {}
             self._persist_actor_snapshots()
 
     def _invalidate_actor_snapshots(self):
         with self._snapshot_guard():
             self._actor_library_snapshots = {}
+            self._actor_detail_snapshots = {}
             self._persist_actor_snapshots()
 
     def _build_persisted_actor_library_snapshots(self):
@@ -1048,11 +1132,29 @@ class BackendService:
                 snapshots[normalized_key] = normalized_snapshot
         return snapshots
 
+    def _build_persisted_actor_detail_snapshots(self):
+        snapshots = {}
+        for actor_name, snapshot in dict(getattr(self, '_actor_detail_snapshots', {}) or {}).items():
+            normalized_key = str(actor_name or '').strip().casefold()
+            normalized_snapshot = self._normalize_actor_detail_snapshot(snapshot)
+            if normalized_key and normalized_snapshot is not None:
+                snapshots[normalized_key] = normalized_snapshot
+        return snapshots
+
     def _normalize_actor_library_snapshots(self, snapshots):
         normalized_snapshots = {}
         for snapshot_key, snapshot in dict(snapshots or {}).items():
             normalized_key = str(snapshot_key or '').strip()
             normalized_snapshot = self._normalize_actor_list_snapshot(snapshot)
+            if normalized_key and normalized_snapshot is not None:
+                normalized_snapshots[normalized_key] = normalized_snapshot
+        return normalized_snapshots
+
+    def _normalize_actor_detail_snapshots(self, snapshots):
+        normalized_snapshots = {}
+        for actor_name, snapshot in dict(snapshots or {}).items():
+            normalized_key = str(actor_name or '').strip().casefold()
+            normalized_snapshot = self._normalize_actor_detail_snapshot(snapshot)
             if normalized_key and normalized_snapshot is not None:
                 normalized_snapshots[normalized_key] = normalized_snapshot
         return normalized_snapshots
@@ -1113,6 +1215,24 @@ class BackendService:
             payload.get('detail_snapshots', {})
         )
 
+    def _load_masterpiece_snapshots(self):
+        snapshot_file = getattr(self, '_masterpiece_snapshot_file', None)
+        if snapshot_file is None:
+            return
+        try:
+            if not Path(snapshot_file).exists():
+                return
+            payload = json.loads(Path(snapshot_file).read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get('version', 0) or 0) != 1:
+            return
+        self._masterpiece_detail_snapshots = self._normalize_masterpiece_detail_snapshots(
+            payload.get('detail_snapshots', {})
+        )
+
     def _persist_code_prefix_snapshots(self):
         snapshot_file = getattr(self, '_code_prefix_snapshot_file', None)
         if snapshot_file is None:
@@ -1136,11 +1256,37 @@ class BackendService:
         except OSError:
             return
 
+    def _persist_masterpiece_snapshots(self):
+        snapshot_file = getattr(self, '_masterpiece_snapshot_file', None)
+        if snapshot_file is None:
+            return
+        payload = {
+            'version': 1,
+            'detail_snapshots': self._build_persisted_masterpiece_detail_snapshots(),
+        }
+        target_file = Path(snapshot_file)
+        temp_snapshot_file = target_file.with_suffix(target_file.suffix + '.tmp')
+        try:
+            with self._masterpiece_snapshot_file_guard():
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                temp_snapshot_file.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+                temp_snapshot_file.replace(target_file)
+        except OSError:
+            return
+
     def _invalidate_code_prefix_snapshots(self):
         with self._snapshot_guard():
             self._code_prefix_library_snapshots = {}
             self._code_prefix_detail_snapshots = {}
             self._persist_code_prefix_snapshots()
+
+    def _invalidate_masterpiece_snapshots(self):
+        with self._snapshot_guard():
+            self._masterpiece_detail_snapshots = {}
+            self._persist_masterpiece_snapshots()
 
     def _refresh_code_prefix_snapshot_filter_state(self):
         current_fingerprint = self._build_code_prefix_snapshot_filter_fingerprint(
@@ -1220,6 +1366,16 @@ class BackendService:
         }
 
     @staticmethod
+    def _clone_actor_detail_snapshot(snapshot):
+        current = dict(snapshot or {})
+        return {
+            'actor': dict(current.get('actor', {}) or {}),
+            'refreshed_at': str(current.get('refreshed_at', '') or '').strip(),
+            'refresh_duration_ms': int(current.get('refresh_duration_ms', 0) or 0),
+            'refresh_duration_text': str(current.get('refresh_duration_text', '') or '').strip(),
+        }
+
+    @staticmethod
     def _clone_code_prefix_list_snapshot(snapshot):
         current = dict(snapshot or {})
         return {
@@ -1237,6 +1393,16 @@ class BackendService:
         current = dict(snapshot or {})
         return {
             'prefix_detail': dict(current.get('prefix_detail', {}) or {}),
+            'refreshed_at': str(current.get('refreshed_at', '') or '').strip(),
+            'refresh_duration_ms': int(current.get('refresh_duration_ms', 0) or 0),
+            'refresh_duration_text': str(current.get('refresh_duration_text', '') or '').strip(),
+        }
+
+    @staticmethod
+    def _clone_masterpiece_detail_snapshot(snapshot):
+        current = dict(snapshot or {})
+        return {
+            'detail': dict(current.get('detail', {}) or {}),
             'refreshed_at': str(current.get('refreshed_at', '') or '').strip(),
             'refresh_duration_ms': int(current.get('refresh_duration_ms', 0) or 0),
             'refresh_duration_text': str(current.get('refresh_duration_text', '') or '').strip(),
@@ -1260,6 +1426,15 @@ class BackendService:
                 snapshots[normalized_prefix] = normalized_snapshot
         return snapshots
 
+    def _build_persisted_masterpiece_detail_snapshots(self):
+        snapshots = {}
+        for code, snapshot in dict(getattr(self, '_masterpiece_detail_snapshots', {}) or {}).items():
+            normalized_code = str(code or '').strip().upper()
+            normalized_snapshot = self._normalize_masterpiece_detail_snapshot(snapshot)
+            if normalized_code and normalized_snapshot is not None:
+                snapshots[normalized_code] = normalized_snapshot
+        return snapshots
+
     def _normalize_code_prefix_library_snapshots(self, snapshots):
         normalized_snapshots = {}
         for snapshot_key, snapshot in dict(snapshots or {}).items():
@@ -1278,6 +1453,15 @@ class BackendService:
                 normalized_snapshots[normalized_prefix] = normalized_snapshot
         return normalized_snapshots
 
+    def _normalize_masterpiece_detail_snapshots(self, snapshots):
+        normalized_snapshots = {}
+        for code, snapshot in dict(snapshots or {}).items():
+            normalized_code = str(code or '').strip().upper()
+            normalized_snapshot = self._normalize_masterpiece_detail_snapshot(snapshot)
+            if normalized_code and normalized_snapshot is not None:
+                normalized_snapshots[normalized_code] = normalized_snapshot
+        return normalized_snapshots
+
     @staticmethod
     def _normalize_actor_list_snapshot(snapshot):
         if not isinstance(snapshot, dict):
@@ -1293,6 +1477,23 @@ class BackendService:
             'total_count': int(snapshot.get('total_count', 0) or 0),
             'offset': int(snapshot.get('offset', 0) or 0),
             'limit': snapshot.get('limit'),
+            'refreshed_at': refreshed_at,
+            'refresh_duration_ms': refresh_duration_ms,
+            'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
+        }
+
+    @staticmethod
+    def _normalize_actor_detail_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return None
+        refreshed_at = str(snapshot.get('refreshed_at', '') or '').strip()
+        actor = snapshot.get('actor')
+        if not refreshed_at or not isinstance(actor, dict):
+            return None
+        refresh_duration_ms = int(snapshot.get('refresh_duration_ms', 0) or 0)
+        refresh_duration_text = str(snapshot.get('refresh_duration_text', '') or '').strip()
+        return {
+            'actor': dict(actor or {}),
             'refreshed_at': refreshed_at,
             'refresh_duration_ms': refresh_duration_ms,
             'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
@@ -1337,11 +1538,31 @@ class BackendService:
             'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
         }
 
+    @staticmethod
+    def _normalize_masterpiece_detail_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return None
+        refreshed_at = str(snapshot.get('refreshed_at', '') or '').strip()
+        detail = snapshot.get('detail')
+        if not refreshed_at or not isinstance(detail, dict):
+            return None
+        refresh_duration_ms = int(snapshot.get('refresh_duration_ms', 0) or 0)
+        refresh_duration_text = str(snapshot.get('refresh_duration_text', '') or '').strip()
+        return {
+            'detail': dict(detail or {}),
+            'refreshed_at': refreshed_at,
+            'refresh_duration_ms': refresh_duration_ms,
+            'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
+        }
+
     def _actor_snapshot_file_guard(self):
         return getattr(self, '_actor_snapshot_file_lock', None) or nullcontext()
 
     def _code_prefix_snapshot_file_guard(self):
         return getattr(self, '_code_prefix_snapshot_file_lock', None) or nullcontext()
+
+    def _masterpiece_snapshot_file_guard(self):
+        return getattr(self, '_masterpiece_snapshot_file_lock', None) or nullcontext()
 
     def _snapshot_refresh_log_guard(self):
         return getattr(self, '_snapshot_refresh_log_lock', None) or nullcontext()

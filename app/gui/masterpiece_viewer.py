@@ -19,9 +19,21 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.backend.client import BackendClient
 from app.core.ladder_board import split_ladder_medals
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, build_medal_text
+
+
+def _build_refresh_client(backend_client, minimum_timeout=90):
+    base_url = str(getattr(backend_client, 'base_url', '') or '').strip()
+    if not base_url:
+        return backend_client
+    return BackendClient(
+        base_url=base_url,
+        timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), minimum_timeout),
+    )
 
 
 class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
@@ -45,9 +57,9 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         layout = QVBoxLayout(self)
 
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel('视频编号'))
+        toolbar.addWidget(QLabel('视频番号'))
         self.code_input = QLineEdit()
-        self.code_input.setPlaceholderText('输入视频编号，例如 PFSA-001')
+        self.code_input.setPlaceholderText('输入视频番号，例如 PFSA-001')
         self.code_input.returnPressed.connect(self.handle_add_entry)
         toolbar.addWidget(self.code_input, 1)
 
@@ -63,7 +75,7 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
 
         self.table = QTableWidget()
         self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(['编号', '标题', '演员', '勋章', '操作', '详情'])
+        self.table.setHorizontalHeaderLabels(['番号', '标题', '演员', '勋章', '操作', '详情'])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.verticalHeader().setVisible(False)
@@ -84,7 +96,7 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
     def handle_add_entry(self):
         code = str(self.code_input.text() or '').strip()
         if not code:
-            QMessageBox.warning(self, '缺少编号', '请先输入要加入名作堂的视频编号。')
+            QMessageBox.warning(self, '缺少番号', '请先输入要加入名作堂的视频番号。')
             return
 
         self.start_async_task(
@@ -109,7 +121,7 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
     def _on_entries_loaded(self, payload):
         rows = payload
         if isinstance(payload, dict):
-            rows = payload.get('rows', [])
+            rows = payload.get('rows', payload.get('entries', []))
         self.rows = [dict(row or {}) for row in (rows or [])]
         self._render_rows()
 
@@ -189,7 +201,7 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             return
 
         merged_text = build_medal_text(current_medals, dialog.selected_medal_names())
-        if merged_text == build_medal_text(current_medals, []):
+        if merged_text == str((self._find_row_by_code(code) or {}).get('medal', '') or '').strip():
             return
 
         self.start_async_task(
@@ -201,6 +213,13 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             '保存勋章失败',
         )
 
+    def _find_row_by_code(self, code):
+        normalized_code = str(code or '').strip().upper()
+        for row in self.rows:
+            if str((row or {}).get('code', '') or '').strip().upper() == normalized_code:
+                return row
+        return None
+
     def show_detail(self, code):
         dialog = MasterpieceDetailWindow(self.backend_client, code, self)
         dialog.exec_()
@@ -211,21 +230,29 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         super().closeEvent(event)
 
 
-class MasterpieceDetailWindow(QDialog):
+class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     _SOURCE_TITLES = {
         'video_library': '视频库参考',
         'actor_library': '演员库参考',
         'code_prefix_library': '番号库参考',
     }
     _SOURCE_ORDER = ('video_library', 'actor_library', 'code_prefix_library')
-    _ACTOR_HEADERS = ['演员', '生日', '年龄', '出演年龄', '身高', '三围', '罩杯', '详情']
+    _ACTOR_HEADERS = ['演员', '生日', '年龄', '出演年龄', '身高', '三围', '罩杯', '原始数据']
 
     def __init__(self, backend_client, code, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
-        self.code = str(code or '').strip()
+        self.refresh_client = _build_refresh_client(backend_client)
+        self.code = str(code or '').strip().upper()
         self.detail = {}
         self.collaborator_tables = {}
+        self._startup_refresh_pending = True
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self._suppress_async_error_dialog = False
+        self._init_async_task_host()
+        self._init_deferred_reload(self._perform_deferred_load)
         self.setWindowTitle(f'名作堂详情 - {self.code}')
         self.resize(980, 760)
         self._init_ui()
@@ -233,13 +260,22 @@ class MasterpieceDetailWindow(QDialog):
 
     def _init_ui(self):
         root_layout = QVBoxLayout(self)
+
+        top_bar = QHBoxLayout()
+        self.btn_open_primary = QPushButton('打开主链接')
+        self.btn_open_primary.clicked.connect(self.open_primary_link)
+        top_bar.addWidget(self.btn_open_primary)
+        self.btn_refresh = QPushButton('刷新')
+        self.btn_refresh.clicked.connect(lambda: self.load_detail(force_refresh=True))
+        top_bar.addWidget(self.btn_refresh)
+        self.last_refreshed_label = QLabel('上次刷新: 暂无')
+        top_bar.addWidget(self.last_refreshed_label)
+        top_bar.addStretch()
+        root_layout.addLayout(top_bar)
+
         self.summary_label = QLabel('')
         self.summary_label.setWordWrap(True)
         root_layout.addWidget(self.summary_label)
-
-        self.btn_open_primary = QPushButton('打开主链接')
-        self.btn_open_primary.clicked.connect(self.open_primary_link)
-        root_layout.addWidget(self.btn_open_primary, 0, Qt.AlignLeft)
 
         actor_group = QGroupBox('演员信息')
         actor_layout = QVBoxLayout(actor_group)
@@ -261,18 +297,74 @@ class MasterpieceDetailWindow(QDialog):
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(12)
         scroll_area.setWidget(self.content_widget)
+        self.set_async_busy_widgets([self.btn_open_primary, self.btn_refresh])
 
-    def load_detail(self):
-        self.detail = dict(self.backend_client.get_masterpiece_detail(self.code) or {})
+    def load_detail(self, force_refresh=False, silent_errors=False, allow_deferred_close=False):
+        if self.is_async_task_running():
+            self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
+            self._deferred_silent_errors = self._deferred_silent_errors or bool(silent_errors)
+            self._deferred_allow_deferred_close = (
+                self._deferred_allow_deferred_close or bool(allow_deferred_close)
+            )
+            self.schedule_deferred_reload(0)
+            return
+        self._suppress_async_error_dialog = bool(silent_errors)
+        self.start_async_task(
+            lambda: self._load_detail_payload(force_refresh=force_refresh),
+            self._on_detail_loaded,
+            '读取名作堂详情失败',
+            block_ui=not bool(allow_deferred_close),
+            allow_deferred_close=allow_deferred_close,
+        )
+
+    def _perform_deferred_load(self):
+        force_refresh = self._deferred_force_refresh
+        silent_errors = self._deferred_silent_errors
+        allow_deferred_close = self._deferred_allow_deferred_close
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self.load_detail(
+            force_refresh=force_refresh,
+            silent_errors=silent_errors,
+            allow_deferred_close=allow_deferred_close,
+        )
+
+    def _load_detail_payload(self, force_refresh=False):
+        if hasattr(self.refresh_client, 'get_masterpiece_detail_snapshot'):
+            return self.refresh_client.get_masterpiece_detail_snapshot(self.code, force_refresh=force_refresh)
+        detail = self.backend_client.get_masterpiece_detail(self.code)
+        return {
+            'detail': dict(detail or {}),
+            'refreshed_at': '',
+            'cache_hit': False,
+        }
+
+    def _on_detail_loaded(self, result):
+        payload = dict(result or {})
+        self.detail = dict(payload.get('detail', payload or {}) or {})
+        self._suppress_async_error_dialog = False
+        refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or '暂无'
+        self.last_refreshed_label.setText(f'上次刷新: {refreshed_at}')
         display_title = str(self.detail.get('display_title', '') or self.detail.get('title', '') or '')
         display_author = str(self.detail.get('display_author', '') or self.detail.get('author', '') or '')
         primary_source = self._source_title(str(self.detail.get('primary_source', '') or ''))
         self.summary_label.setText(
-            f'编号: {self.detail.get("code", "")} | 标题: {display_title} | 演员: {display_author or "暂无"} | 主来源: {primary_source}'
+            f'番号: {self.detail.get("code", "")} | 标题: {display_title} | 演员: {display_author or "暂无"} | 主来源: {primary_source}'
         )
         self.btn_open_primary.setEnabled(bool(str(self.detail.get('primary_detail_url', '') or '').strip()))
         self._render_actor_details()
         self._render_detail_sections()
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            if bool(payload.get('cache_hit')):
+                self.load_detail(force_refresh=True, silent_errors=True, allow_deferred_close=True)
+
+    def _handle_async_task_failed(self, message):
+        if self._suppress_async_error_dialog:
+            self._suppress_async_error_dialog = False
+            return
+        super()._handle_async_task_failed(message)
 
     def _render_actor_details(self):
         actor_rows = list(self.detail.get('actor_details', []) or [])
@@ -324,7 +416,7 @@ class MasterpieceDetailWindow(QDialog):
             group_layout = QVBoxLayout(group_box)
             rows = list((section or {}).get('collaborators', []) or [])
             if not rows:
-                empty_label = QLabel('鏆傛棤鍚堜綔婕斿憳')
+                empty_label = QLabel('暂无合作演员数据')
                 empty_label.setStyleSheet('color: #777777;')
                 group_layout.addWidget(empty_label)
             else:
@@ -340,8 +432,13 @@ class MasterpieceDetailWindow(QDialog):
                 for index, collaborator in enumerate(rows):
                     row_index = index // 6
                     column_index = index % 6
-                    label = f'{str((collaborator or {}).get("actor_name", "") or "")} x{int((collaborator or {}).get("count", 0) or 0)}'
-                    table.setItem(row_index, column_index, QTableWidgetItem(label))
+                    label = (
+                        f'{str((collaborator or {}).get("actor_name", "") or "")} '
+                        f'x{int((collaborator or {}).get("count", 0) or 0)}'
+                    )
+                    item = QTableWidgetItem(label)
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    table.setItem(row_index, column_index, item)
                 table.resizeColumnsToContents()
                 table.resizeRowsToContents()
                 group_layout.addWidget(table)
@@ -349,7 +446,6 @@ class MasterpieceDetailWindow(QDialog):
             self.content_layout.addWidget(group_box)
 
     def _render_reference_groups(self):
-
         references = list(self.detail.get('references', []) or [])
         grouped = {source: [] for source in self._SOURCE_ORDER}
         for reference in references:

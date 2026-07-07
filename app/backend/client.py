@@ -142,6 +142,14 @@ class BackendClient:
         query = '?' + urlencode({'code': code})
         return self._get('/masterpiece/detail' + query).get('detail', {})
 
+    def get_masterpiece_detail_snapshot(self, code, force_refresh=False):
+        params = {'code': code}
+        if force_refresh:
+            params['refresh'] = '1'
+        query = '?' + urlencode(params)
+        timeout = max(self.timeout, 120)
+        return self._get('/masterpiece/detail' + query, timeout=timeout)
+
     def list_global_medals(self):
         return self._get('/medals').get('medals', [])
 
@@ -259,6 +267,14 @@ class BackendClient:
     def get_actor_detail(self, actor_name):
         query = '?' + urlencode({'name': actor_name})
         return self._get('/database/actors/detail' + query).get('actor', {})
+
+    def get_actor_detail_snapshot(self, actor_name, force_refresh=False):
+        params = {'name': actor_name}
+        if force_refresh:
+            params['refresh'] = '1'
+        query = '?' + urlencode(params)
+        timeout = max(self.timeout, 120)
+        return self._get('/database/actors/detail' + query, timeout=timeout)
 
     def add_actor(self, actor_name, birthday='', age=''):
         return self._post(

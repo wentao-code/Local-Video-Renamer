@@ -13,7 +13,10 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
 )
 
+from app.backend.client import BackendClient
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_TIERS
+from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary, format_update_frequency_summary
 from app.gui.i18n import tr
 from app.gui.video_category_update_events import video_category_update_event_bus
@@ -21,12 +24,30 @@ from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
 
-class ActorDetailViewerWindow(QDialog):
+def _build_refresh_client(backend_client, minimum_timeout=90):
+    base_url = str(getattr(backend_client, 'base_url', '') or '').strip()
+    if not base_url:
+        return backend_client
+    return BackendClient(
+        base_url=base_url,
+        timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), minimum_timeout),
+    )
+
+
+class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, actor_name, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
-        self.actor_name = actor_name
+        self.refresh_client = _build_refresh_client(backend_client)
+        self.actor_name = str(actor_name or '').strip()
         self.detail = {}
+        self._startup_refresh_pending = True
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self._suppress_async_error_dialog = False
+        self._init_async_task_host()
+        self._init_deferred_reload(self._perform_deferred_load)
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
         video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
@@ -76,12 +97,18 @@ class ActorDetailViewerWindow(QDialog):
         self.btn_update_tier = QPushButton(tr('detail.update_tier'))
         self.btn_update_tier.clicked.connect(self.update_ladder_tier)
         action_layout.addWidget(self.btn_update_tier)
+        self.btn_refresh = QPushButton(tr('common.refresh'))
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
+        action_layout.addWidget(self.btn_refresh)
+        self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
+        action_layout.addWidget(self.last_refreshed_label)
         for button in (
             self.btn_prev_item,
             self.btn_next_item,
             self.btn_copy_actor_name,
             self.btn_open_web,
             self.btn_update_tier,
+            self.btn_refresh,
         ):
             button.setMinimumHeight(30)
             button.setMinimumWidth(92)
@@ -205,15 +232,80 @@ class ActorDetailViewerWindow(QDialog):
         layout.addWidget(local_movie_group)
         layout.addWidget(web_movie_group)
         layout.addStretch()
+        self.set_async_busy_widgets(
+            [
+                self.btn_prev_item,
+                self.btn_next_item,
+                self.btn_copy_actor_name,
+                self.btn_open_web,
+                self.tier_combo,
+                self.btn_update_tier,
+                self.btn_refresh,
+                self.btn_local_movie_detail,
+                self.btn_web_movie_detail,
+            ]
+        )
 
-    def load_data(self):
-        try:
-            self.detail = self.backend_client.get_actor_detail(self.actor_name)
-        except Exception as exc:
-            QMessageBox.critical(self, tr('common.read_failed'), tr('actor.detail.read_failed', error=exc))
-            self.reject()
+    def load_data(self, force_refresh=False, silent_errors=False, allow_deferred_close=False):
+        if self.is_async_task_running():
+            self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
+            self._deferred_silent_errors = self._deferred_silent_errors or bool(silent_errors)
+            self._deferred_allow_deferred_close = (
+                self._deferred_allow_deferred_close or bool(allow_deferred_close)
+            )
+            self.schedule_deferred_reload(0)
             return
+        self._suppress_async_error_dialog = bool(silent_errors)
+        self.start_async_task(
+            lambda: self._load_detail_payload(force_refresh=force_refresh),
+            self._on_load_data_finished,
+            tr('common.read_failed'),
+            block_ui=not bool(allow_deferred_close),
+            allow_deferred_close=allow_deferred_close,
+        )
 
+    def _perform_deferred_load(self):
+        force_refresh = self._deferred_force_refresh
+        silent_errors = self._deferred_silent_errors
+        allow_deferred_close = self._deferred_allow_deferred_close
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self.load_data(
+            force_refresh=force_refresh,
+            silent_errors=silent_errors,
+            allow_deferred_close=allow_deferred_close,
+        )
+
+    def _load_detail_payload(self, force_refresh=False):
+        if hasattr(self.refresh_client, 'get_actor_detail_snapshot'):
+            return self.refresh_client.get_actor_detail_snapshot(self.actor_name, force_refresh=force_refresh)
+        detail = self.backend_client.get_actor_detail(self.actor_name)
+        return {
+            'actor': dict(detail or {}),
+            'refreshed_at': '',
+            'cache_hit': False,
+        }
+
+    def _on_load_data_finished(self, result):
+        payload = dict(result or {})
+        self.detail = dict(payload.get('actor', payload or {}) or {})
+        self._suppress_async_error_dialog = False
+        refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
+        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
+        self._apply_detail_to_widgets()
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            if bool(payload.get('cache_hit')):
+                self.load_data(force_refresh=True, silent_errors=True, allow_deferred_close=True)
+
+    def _handle_async_task_failed(self, message):
+        if self._suppress_async_error_dialog:
+            self._suppress_async_error_dialog = False
+            return
+        super()._handle_async_task_failed(message)
+
+    def _apply_detail_to_widgets(self):
         self.basic_grid.set_value('name', self.detail.get('name', ''))
         self.basic_grid.set_value('actor_id', self.detail.get('actor_id', '') or tr('common.empty'))
         self.basic_grid.set_value('binghuo_person_id', self.detail.get('binghuo_person_id', '') or tr('common.empty'))
@@ -242,7 +334,10 @@ class ActorDetailViewerWindow(QDialog):
                 self.detail.get('binghuo_hip', ''),
             ),
         )
-        self.basic_status_grid.set_value('web_status', self.detail.get('web_enrichment_status', '') or tr('actor.detail.web_status_default'))
+        self.basic_status_grid.set_value(
+            'web_status',
+            self.detail.get('web_enrichment_status', '') or tr('actor.detail.web_status_default'),
+        )
 
         self.local_grid.set_value(
             'local_prefix',
@@ -356,18 +451,17 @@ class ActorDetailViewerWindow(QDialog):
 
     def on_filter_rules_saved(self):
         if self.isVisible():
-            self.load_data()
+            self.load_data(force_refresh=True)
 
     def on_video_categories_updated(self):
         if self.isVisible():
-            self.load_data()
+            self.load_data(force_refresh=True)
 
     def _detail_host(self):
         detail_host = self.parent()
         if detail_host is None:
             return None
-        required_methods = ('neighbor_detail_key',)
-        if any(not hasattr(detail_host, method_name) for method_name in required_methods):
+        if not hasattr(detail_host, 'neighbor_detail_key'):
             return None
         return detail_host
 
@@ -393,6 +487,11 @@ class ActorDetailViewerWindow(QDialog):
 
     def _switch_actor(self, actor_name):
         self.actor_name = str(actor_name or '').strip()
+        self.detail = {}
+        self._startup_refresh_pending = True
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
         self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
         if hasattr(self.parent(), 'select_actor_row'):
             self.parent().select_actor_row(self.actor_name)
@@ -410,7 +509,7 @@ class ActorDetailViewerWindow(QDialog):
                 parent.load_board()
                 return
             if hasattr(parent, 'load_data'):
-                parent.load_data()
+                parent.load_data(force_refresh=True)
         except Exception as exc:
             QMessageBox.warning(self, tr('common.operation_failed'), str(exc))
 
@@ -431,9 +530,9 @@ class ActorDetailViewerWindow(QDialog):
         if not any((normalized_bust, normalized_waist, normalized_hip)):
             return tr('common.empty')
         return (
-            f'胸围：{ActorDetailViewerWindow._format_measurement_value(normalized_bust)} '
-            f'腰围：{ActorDetailViewerWindow._format_measurement_value(normalized_waist)} '
-            f'臀围：{ActorDetailViewerWindow._format_measurement_value(normalized_hip)}'
+            f'胸围: {ActorDetailViewerWindow._format_measurement_value(normalized_bust)} '
+            f'腰围: {ActorDetailViewerWindow._format_measurement_value(normalized_waist)} '
+            f'臀围: {ActorDetailViewerWindow._format_measurement_value(normalized_hip)}'
         )
 
     @staticmethod

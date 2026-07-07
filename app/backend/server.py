@@ -78,7 +78,10 @@ def make_handler(service):
             if method == 'POST' and path == '/masterpiece/entries/medal':
                 return service.update_masterpiece_entry_medal(body.get('code'), body.get('medal'))
             if method == 'GET' and path == '/masterpiece/detail':
-                return service.get_masterpiece_detail(query.get('code', [''])[0])
+                return service.get_masterpiece_detail_snapshot(
+                    query.get('code', [''])[0],
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
             if method == 'GET' and path == '/medals':
                 return service.list_global_medals()
             if method == 'POST' and path == '/medals/add':
@@ -127,7 +130,10 @@ def make_handler(service):
                 )
             if method == 'GET' and path == '/database/actors/detail':
                 actor_name = query.get('name', [''])[0]
-                return service.get_actor_detail(actor_name)
+                return service.get_actor_detail_snapshot(
+                    actor_name,
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
             if method == 'POST' and path == '/database/actors/add':
                 return service.add_actor(
                     body.get('actor_name'),
