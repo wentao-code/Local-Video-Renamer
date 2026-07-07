@@ -77,6 +77,30 @@ class MainWindowStartupTest(unittest.TestCase):
         for _name, kwargs in calls:
             self.assertTrue(kwargs.get('force_refresh'))
 
+    def test_run_snapshot_refresh_cycle_emits_target_labels_in_order(self):
+        progress_payloads = []
+        refresh_client = SimpleNamespace(
+            list_actors_snapshot=lambda **kwargs: None,
+            list_code_prefixes_snapshot=lambda **kwargs: None,
+            get_data_center_summary=lambda **kwargs: None,
+        )
+        stub = SimpleNamespace(snapshot_refresh_running=False)
+
+        main_window.VidNormApp._run_snapshot_refresh_cycle(
+            stub,
+            progress_callback=lambda payload: progress_payloads.append(dict(payload or {})),
+            refresh_client=refresh_client,
+        )
+
+        self.assertEqual(
+            [(payload.get('target_key'), payload.get('target_label')) for payload in progress_payloads],
+            [
+                ('actor_library', '演员库'),
+                ('code_prefix_library', '番号库'),
+                ('data_center', '数据中心'),
+            ],
+        )
+
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []
         created_worker = object()

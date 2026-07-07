@@ -1,4 +1,4 @@
-import ctypes
+﻿import ctypes
 import os
 import sqlite3
 import subprocess
@@ -1650,11 +1650,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         active_client = refresh_client or _build_refresh_client(self.backend_client, minimum_timeout=600)
         self.snapshot_refresh_running = True
         try:
-            self._emit_snapshot_refresh_progress(progress_callback, 'actor_library', '演员库')
+            VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'actor_library', '演员库')
             active_client.list_actors_snapshot(force_refresh=True)
-            self._emit_snapshot_refresh_progress(progress_callback, 'code_prefix_library', '番号库')
+            VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'code_prefix_library', '番号库')
             active_client.list_code_prefixes_snapshot(force_refresh=True)
-            self._emit_snapshot_refresh_progress(progress_callback, 'data_center', '数据中心')
+            VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'data_center', '数据中心')
             active_client.get_data_center_summary(force_refresh=True)
             return {'success': True}
         finally:
@@ -1671,69 +1671,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'elapsed_seconds': 0,
             }
         )
-
-    def _on_snapshot_refresh_progress(self, payload):
-        current = dict(payload or {})
-        self.snapshot_refresh_current_target = str(current.get('target_label', '') or '').strip()
-        self.snapshot_refresh_started_at = time.time()
-        self.snapshot_refresh_status_label.setText(self._build_snapshot_refresh_status_text(0))
-        self.snapshot_refresh_elapsed_timer.start()
-
-    def update_snapshot_refresh_elapsed(self):
-        if not str(self.snapshot_refresh_current_target or '').strip():
-            self.snapshot_refresh_elapsed_timer.stop()
-            self.snapshot_refresh_status_label.setText('')
-            return
-        elapsed_seconds = max(0, int(time.time() - float(self.snapshot_refresh_started_at or 0.0)))
-        self.snapshot_refresh_status_label.setText(self._build_snapshot_refresh_status_text(elapsed_seconds))
-
-    def _build_snapshot_refresh_status_text(self, elapsed_seconds):
-        target_label = str(self.snapshot_refresh_current_target or '').strip() or '后台任务'
-        return f'后台刷新: 正在刷新 {target_label} | 已耗时 {max(0, int(elapsed_seconds or 0))}秒'
-
-    def _on_snapshot_refresh_finished(self, result):
-        self.snapshot_refresh_running = False
-        self.snapshot_refresh_elapsed_timer.stop()
-        self.snapshot_refresh_started_at = 0.0
-        self.snapshot_refresh_current_target = ''
-        self.snapshot_refresh_status_label.setText('')
-        self.snapshot_refresh_worker = None
-        self.snapshot_refresh_task_runner = None
-
-    def _on_snapshot_refresh_failed(self, error_message):
-        self.snapshot_refresh_running = False
-        self.snapshot_refresh_elapsed_timer.stop()
-        self.snapshot_refresh_started_at = 0.0
-        self.snapshot_refresh_current_target = ''
-        self.snapshot_refresh_status_label.setText('')
-        self.snapshot_refresh_worker = None
-        self.snapshot_refresh_task_runner = None
-
-    def _run_snapshot_refresh_cycle(self, progress_callback=None, refresh_client=None):
-        active_client = refresh_client or _build_refresh_client(self.backend_client, minimum_timeout=600)
-        self.snapshot_refresh_running = True
-        try:
-            VidNormApp._emit_snapshot_refresh_progress(
-                progress_callback,
-                'actor_library',
-                '\u6f14\u5458\u5e93',
-            )
-            active_client.list_actors_snapshot(force_refresh=True)
-            VidNormApp._emit_snapshot_refresh_progress(
-                progress_callback,
-                'code_prefix_library',
-                '\u756a\u53f7\u5e93',
-            )
-            active_client.list_code_prefixes_snapshot(force_refresh=True)
-            VidNormApp._emit_snapshot_refresh_progress(
-                progress_callback,
-                'data_center',
-                '\u6570\u636e\u4e2d\u5fc3',
-            )
-            active_client.get_data_center_summary(force_refresh=True)
-            return {'success': True}
-        finally:
-            self.snapshot_refresh_running = False
 
     def _on_snapshot_refresh_progress(self, payload):
         current = dict(payload or {})
@@ -1759,11 +1696,26 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     @staticmethod
     def _build_snapshot_refresh_status_text(target_label, elapsed_seconds):
-        current_target = str(target_label or '').strip() or '\u540e\u53f0\u4efb\u52a1'
-        return (
-            f'\u540e\u53f0\u5237\u65b0: \u6b63\u5728\u5237\u65b0 {current_target} | '
-            f'\u5df2\u8017\u65f6 {max(0, int(elapsed_seconds or 0))}\u79d2'
-        )
+        current_target = str(target_label or '').strip() or '后台任务'
+        return f'后台刷新: 正在刷新 {current_target} | 已耗时 {max(0, int(elapsed_seconds or 0))}秒'
+
+    def _on_snapshot_refresh_finished(self, result):
+        self.snapshot_refresh_running = False
+        self.snapshot_refresh_elapsed_timer.stop()
+        self.snapshot_refresh_started_at = 0.0
+        self.snapshot_refresh_current_target = ''
+        self.snapshot_refresh_status_label.setText('')
+        self.snapshot_refresh_worker = None
+        self.snapshot_refresh_task_runner = None
+
+    def _on_snapshot_refresh_failed(self, error_message):
+        self.snapshot_refresh_running = False
+        self.snapshot_refresh_elapsed_timer.stop()
+        self.snapshot_refresh_started_at = 0.0
+        self.snapshot_refresh_current_target = ''
+        self.snapshot_refresh_status_label.setText('')
+        self.snapshot_refresh_worker = None
+        self.snapshot_refresh_task_runner = None
 
     def closeEvent(self, event):
         if self.block_close_while_async_running(event):
