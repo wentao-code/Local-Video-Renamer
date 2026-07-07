@@ -52,7 +52,12 @@ from app.core.second_source_actor_text import is_unpublished_actor_text, normali
 from app.core.project_paths import DATABASE_FILE
 from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, get_filter_keywords, matches_filter_keywords
 from app.core.video_filter_settings import load_video_filter_settings
-from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
+from app.core.ladder_board import (
+    LADDER_BOARD_ACTOR,
+    LADDER_ENTITY_ACTOR,
+    normalize_ladder_medal_text,
+    split_ladder_medals,
+)
 from app.core.runtime_config import get_avfan_base_url
 from app.data.repositories import (
     ActorRepositoryMixin,
@@ -71,6 +76,7 @@ from app.services.video import (
     MANUAL_CATEGORY_TIER_SECOND,
     MANUAL_CATEGORY_TIER_THIRD,
     VIDEO_CATEGORY_COLLECTION,
+    VIDEO_CATEGORY_CO_STAR,
     VIDEO_CATEGORY_OPTIONS,
     classify_manual_category_tier,
     count_video_actors,
@@ -92,6 +98,7 @@ def sanitize_actor_text(value):
 STARTUP_MAINTENANCE_META_KEY = 'startup_maintenance_version'
 STARTUP_MAINTENANCE_VERSION = '2026-06-30-1'
 MASTERPIECE_SOURCE_PRIORITY = ('video_library', 'code_prefix_library', 'actor_library')
+MASTERPIECE_DATE_RE = re.compile(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})')
 
 
 class VideoDatabase(
@@ -228,6 +235,36 @@ class VideoDatabase(
                 'idx_masterpiece_references_code_source',
                 'masterpiece_references',
                 'masterpiece_code, reference_source',
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS masterpiece_actor_details (
+                    masterpiece_code TEXT NOT NULL,
+                    actor_name TEXT NOT NULL,
+                    actor_order INTEGER DEFAULT 0,
+                    source_video_code TEXT DEFAULT '',
+                    release_date TEXT DEFAULT '',
+                    birthday TEXT DEFAULT '',
+                    current_age TEXT DEFAULT '',
+                    appearance_age TEXT DEFAULT '',
+                    height TEXT DEFAULT '',
+                    bust TEXT DEFAULT '',
+                    waist TEXT DEFAULT '',
+                    hip TEXT DEFAULT '',
+                    cup TEXT DEFAULT '',
+                    measurements_raw TEXT DEFAULT '',
+                    actor_exists_in_library INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (masterpiece_code, actor_name)
+                )
+                '''
+            )
+            self._ensure_index(
+                cursor,
+                'idx_masterpiece_actor_details_code_order',
+                'masterpiece_actor_details',
+                'masterpiece_code, actor_order, actor_name',
             )
             cursor.execute(
                 '''
@@ -4836,6 +4873,7 @@ class VideoDatabase(
         if not references:
             raise ValueError(f'瑙嗛涓嶅瓨鍦? {normalized_code}')
         primary_reference = self._pick_primary_masterpiece_reference(references)
+        actor_details = self._collect_masterpiece_actor_details(normalized_code, primary_reference, references)
 
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -4868,6 +4906,13 @@ class VideoDatabase(
             cursor.execute(
                 '''
                 DELETE FROM masterpiece_references
+                WHERE masterpiece_code = ?
+                ''',
+                (normalized_code,),
+            )
+            cursor.execute(
+                '''
+                DELETE FROM masterpiece_actor_details
                 WHERE masterpiece_code = ?
                 ''',
                 (normalized_code,),
@@ -4906,6 +4951,48 @@ class VideoDatabase(
                         reference.get('detail_url', ''),
                     )
                     for reference in references
+                ],
+            )
+            cursor.executemany(
+                '''
+                INSERT INTO masterpiece_actor_details (
+                    masterpiece_code,
+                    actor_name,
+                    actor_order,
+                    source_video_code,
+                    release_date,
+                    birthday,
+                    current_age,
+                    appearance_age,
+                    height,
+                    bust,
+                    waist,
+                    hip,
+                    cup,
+                    measurements_raw,
+                    actor_exists_in_library
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        normalized_code,
+                        actor_detail.get('actor_name', ''),
+                        int(actor_detail.get('actor_order', 0) or 0),
+                        actor_detail.get('source_video_code', ''),
+                        actor_detail.get('release_date', ''),
+                        actor_detail.get('birthday', ''),
+                        actor_detail.get('current_age', ''),
+                        actor_detail.get('appearance_age', ''),
+                        actor_detail.get('height', ''),
+                        actor_detail.get('bust', ''),
+                        actor_detail.get('waist', ''),
+                        actor_detail.get('hip', ''),
+                        actor_detail.get('cup', ''),
+                        actor_detail.get('measurements_raw', ''),
+                        int(actor_detail.get('actor_exists_in_library', 0) or 0),
+                    )
+                    for actor_detail in actor_details
                 ],
             )
             conn.commit()
@@ -4957,6 +5044,29 @@ class VideoDatabase(
                 (normalized_code,),
             )
             rows = cursor.fetchall()
+            cursor.execute(
+                '''
+                SELECT actor_name,
+                       actor_order,
+                       source_video_code,
+                       release_date,
+                       birthday,
+                       current_age,
+                       appearance_age,
+                       height,
+                       bust,
+                       waist,
+                       hip,
+                       cup,
+                       measurements_raw,
+                       actor_exists_in_library
+                FROM masterpiece_actor_details
+                WHERE masterpiece_code = ?
+                ORDER BY actor_order ASC, UPPER(actor_name) ASC
+                ''',
+                (normalized_code,),
+            )
+            actor_rows = cursor.fetchall()
 
         references = [
             {
@@ -4984,6 +5094,33 @@ class VideoDatabase(
             if processed_detail:
                 references = [self._build_processed_masterpiece_reference(processed_detail)]
 
+        actor_details = [
+            {
+                'actor_name': row[0] or '',
+                'actor_order': int(row[1] or 0),
+                'source_video_code': row[2] or '',
+                'release_date': row[3] or '',
+                'birthday': row[4] or '',
+                'current_age': row[5] or '',
+                'appearance_age': row[6] or '',
+                'height': row[7] or '',
+                'bust': row[8] or '',
+                'waist': row[9] or '',
+                'hip': row[10] or '',
+                'cup': row[11] or '',
+                'measurements_raw': row[12] or '',
+                'actor_exists_in_library': int(row[13] or 0),
+                'ladder_tier': self._get_masterpiece_actor_ladder_tier(row[0] or ''),
+            }
+            for row in actor_rows
+        ]
+        if not actor_details:
+            actor_details = self._collect_masterpiece_actor_details(
+                normalized_code,
+                self._pick_primary_masterpiece_reference(references),
+                references,
+            )
+
         return {
             'code': entry.get('code', normalized_code),
             'title': entry.get('title', ''),
@@ -4994,6 +5131,8 @@ class VideoDatabase(
             'primary_detail_url': entry.get('primary_detail_url', ''),
             'medal': entry.get('medal', ''),
             'medals': list(entry.get('medals', []) or []),
+            'actor_details': actor_details,
+            'collaborator_sections': self._collect_masterpiece_collaborator_sections(actor_details),
             'references': references,
         }
 
@@ -5130,6 +5269,232 @@ class VideoDatabase(
                 javtxt_url=normalized_javtxt_url,
             ),
         }
+
+    def _collect_masterpiece_actor_details(self, normalized_code, primary_reference, references):
+        actor_names = self._collect_masterpiece_actor_names(primary_reference, references)
+        release_date = self._resolve_masterpiece_release_date(primary_reference, references)
+        actor_details = []
+        for actor_order, actor_name in enumerate(actor_names, start=1):
+            actor_row = self._find_exact_actor_row(actor_name)
+            actor_exists_in_library = 1 if actor_row else 0
+            if actor_row is None:
+                try:
+                    self.add_actor(actor_name, birthday='', age='')
+                except ValueError:
+                    pass
+                actor_row = self._find_exact_actor_row(actor_name)
+            enrichment_record = self.get_actor_enrichment_record(actor_name)
+            actor_details.append(
+                self._build_masterpiece_actor_detail_row(
+                    normalized_code,
+                    actor_name,
+                    actor_order,
+                    release_date,
+                    actor_exists_in_library,
+                    actor_row=actor_row,
+                    enrichment_record=enrichment_record,
+                )
+            )
+        return actor_details
+
+    def _collect_masterpiece_actor_names(self, primary_reference, references):
+        ordered_names = []
+        seen = set()
+
+        def push_name(name):
+            normalized_name = str(name or '').strip()
+            if not normalized_name or normalized_name in seen:
+                return
+            seen.add(normalized_name)
+            ordered_names.append(normalized_name)
+
+        primary_source = str((primary_reference or {}).get('reference_source', '') or '').strip()
+        if primary_source == 'actor_library':
+            push_name((primary_reference or {}).get('reference_key', ''))
+        else:
+            for actor_name in split_actor_names((primary_reference or {}).get('author', '')):
+                push_name(actor_name)
+        for reference in references or []:
+            reference_source = str((reference or {}).get('reference_source', '') or '').strip()
+            if reference_source == 'actor_library':
+                push_name((reference or {}).get('reference_key', ''))
+                continue
+            for actor_name in split_actor_names((reference or {}).get('author', '')):
+                push_name(actor_name)
+        return ordered_names
+
+    def _build_masterpiece_actor_detail_row(
+        self,
+        normalized_code,
+        actor_name,
+        actor_order,
+        release_date,
+        actor_exists_in_library,
+        actor_row=None,
+        enrichment_record=None,
+    ):
+        actor_row = dict(actor_row or {})
+        enrichment_record = dict(enrichment_record or {})
+        birthday = self._resolve_masterpiece_actor_birthday(actor_row, enrichment_record)
+        return {
+            'actor_name': actor_name,
+            'actor_order': int(actor_order or 0),
+            'source_video_code': normalized_code,
+            'release_date': str(release_date or '').strip(),
+            'birthday': birthday,
+            'current_age': self._resolve_masterpiece_actor_current_age(actor_row, birthday),
+            'appearance_age': self._calculate_masterpiece_appearance_age(birthday, release_date),
+            'height': self._merged_masterpiece_actor_profile_value(enrichment_record, 'binghuo_height', 'baomu_height'),
+            'bust': self._merged_masterpiece_actor_profile_value(enrichment_record, 'binghuo_bust', 'baomu_bust'),
+            'waist': self._merged_masterpiece_actor_profile_value(enrichment_record, 'binghuo_waist', 'baomu_waist'),
+            'hip': self._merged_masterpiece_actor_profile_value(enrichment_record, 'binghuo_hip', 'baomu_hip'),
+            'cup': self._merged_masterpiece_actor_profile_value(enrichment_record, 'binghuo_cup', 'baomu_cup'),
+            'measurements_raw': self._merged_masterpiece_actor_profile_value(
+                enrichment_record,
+                'binghuo_measurements_raw',
+                'baomu_measurements_raw',
+            ),
+            'actor_exists_in_library': int(actor_exists_in_library or 0),
+            'ladder_tier': self._get_masterpiece_actor_ladder_tier(actor_name),
+        }
+
+    def _find_exact_actor_row(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return None
+        for row in self.list_actors(normalized_name):
+            if str((row or {}).get('name', '') or '').strip() == normalized_name:
+                return dict(row or {})
+        return None
+
+    def _get_masterpiece_actor_ladder_tier(self, actor_name):
+        entry = self.get_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, actor_name)
+        return str((entry or {}).get('tier', '') or '').strip().upper()
+
+    @staticmethod
+    def _merged_masterpiece_actor_profile_value(enrichment_record, primary_key, fallback_key):
+        return str(
+            (enrichment_record or {}).get(primary_key, '')
+            or (enrichment_record or {}).get(fallback_key, '')
+            or ''
+        ).strip()
+
+    def _resolve_masterpiece_actor_birthday(self, actor_row, enrichment_record):
+        birthday = (
+            str((actor_row or {}).get('birthday', '') or '').strip()
+            or normalize_actor_birthday_for_display((enrichment_record or {}).get('binghuo_birthday', ''))
+            or normalize_actor_birthday_for_display((enrichment_record or {}).get('baomu_birthday', ''))
+        )
+        return str(birthday or '').strip()
+
+    @staticmethod
+    def _resolve_masterpiece_actor_current_age(actor_row, birthday):
+        raw_age = str((actor_row or {}).get('raw_age', '') or '').strip()
+        if raw_age:
+            return raw_age
+        display_age = str((actor_row or {}).get('age', '') or '').strip()
+        if birthday and display_age.isdigit():
+            return display_age
+        return ''
+
+    def _resolve_masterpiece_release_date(self, primary_reference, references):
+        for candidate in (
+            (primary_reference or {}).get('release_date', ''),
+            *[(reference or {}).get('release_date', '') for reference in (references or [])],
+        ):
+            normalized_candidate = str(candidate or '').strip()
+            if normalized_candidate:
+                return normalized_candidate
+        return ''
+
+    def _collect_masterpiece_collaborator_sections(self, actor_details):
+        sections = []
+        for actor_detail in actor_details or []:
+            ladder_tier = str((actor_detail or {}).get('ladder_tier', '') or '').strip().upper()
+            if ladder_tier not in {'S', 'A'}:
+                continue
+            actor_name = str((actor_detail or {}).get('actor_name', '') or '').strip()
+            if not actor_name:
+                continue
+            sections.append(
+                {
+                    'actor_name': actor_name,
+                    'ladder_tier': ladder_tier,
+                    'collaborators': self._collect_masterpiece_collaborators_for_actor(actor_name),
+                }
+            )
+        return sections
+
+    def _collect_masterpiece_collaborators_for_actor(self, actor_name):
+        rows_by_code = {}
+        try:
+            local_rows = self.list_local_videos_by_actor_name(actor_name, refresh_categories=False)
+        except TypeError:
+            local_rows = self.list_local_videos_by_actor_name(actor_name)
+        for row in local_rows or []:
+            normalized_code = standardize_video_code((row or {}).get('code', ''))
+            if normalized_code:
+                rows_by_code[normalized_code] = dict(row or {})
+
+        for row in self.list_actor_movies(actor_name) or []:
+            normalized_code = standardize_video_code((row or {}).get('code', ''))
+            if not normalized_code:
+                continue
+            current = dict(rows_by_code.get(normalized_code, {}) or {})
+            merged = dict(row or {})
+            if current:
+                for field_name in ('author', 'release_date', 'video_category', 'title'):
+                    if not merged.get(field_name):
+                        merged[field_name] = current.get(field_name, '')
+            rows_by_code[normalized_code] = merged
+
+        collaborator_counts = {}
+        normalized_actor_name = str(actor_name or '').strip()
+        for row in rows_by_code.values():
+            if normalize_video_category((row or {}).get('video_category', '')) != VIDEO_CATEGORY_CO_STAR:
+                continue
+            collaborator_names = []
+            seen = set()
+            for collaborator_name in split_actor_names((row or {}).get('author', '')):
+                if collaborator_name == normalized_actor_name or collaborator_name in seen:
+                    continue
+                seen.add(collaborator_name)
+                collaborator_names.append(collaborator_name)
+            for collaborator_name in collaborator_names:
+                collaborator_counts[collaborator_name] = collaborator_counts.get(collaborator_name, 0) + 1
+
+        return [
+            {'actor_name': collaborator_name, 'count': count}
+            for collaborator_name, count in sorted(
+                collaborator_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+
+    @classmethod
+    def _calculate_masterpiece_appearance_age(cls, birthday, release_date):
+        birthday_date = cls._parse_masterpiece_date(birthday)
+        release_day = cls._parse_masterpiece_date(release_date)
+        if birthday_date is None or release_day is None:
+            return ''
+        age = release_day.year - birthday_date.year
+        if (release_day.month, release_day.day) < (birthday_date.month, birthday_date.day):
+            age -= 1
+        return str(max(age, 0))
+
+    @classmethod
+    def _parse_masterpiece_date(cls, value):
+        text = str(value or '').strip()
+        if not text:
+            return None
+        match = MASTERPIECE_DATE_RE.search(text)
+        if not match:
+            return None
+        year, month, day = (int(part) for part in match.groups())
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
 
     def _build_movie_detail_url(self, avfan_url='', avfan_movie_id='', javtxt_url=''):
         normalized_avfan_url = str(avfan_url or '').strip()

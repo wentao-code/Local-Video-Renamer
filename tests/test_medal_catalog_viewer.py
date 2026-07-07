@@ -5,7 +5,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QCheckBox
+from PyQt5.QtWidgets import QApplication, QCheckBox, QHeaderView
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, MedalCatalogWindow
@@ -68,6 +68,11 @@ class MedalCatalogViewerTest(unittest.TestCase):
             try:
                 self.assertEqual(window.table.rowCount(), 2)
                 self.assertEqual(window.table.item(0, 0).text(), 'Rookie')
+                self.assertEqual(
+                    window.table.horizontalHeader().sectionResizeMode(1),
+                    QHeaderView.Stretch,
+                )
+                self.assertGreaterEqual(window.description_input.minimumWidth(), 520)
 
                 window.name_input.setText('Legend')
                 window.description_input.setText('For all-time great entities')

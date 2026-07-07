@@ -83,6 +83,51 @@ class MasterpieceBackendStub:
             'primary_detail_url': 'https://avfan.example/movies/avfan-001',
             'medal': 'Rookie',
             'medals': ['Rookie'],
+            'actor_details': [
+                {
+                    'actor_name': 'Alice',
+                    'birthday': '2000/4/10',
+                    'current_age': '24',
+                    'appearance_age': '24',
+                    'height': '168',
+                    'bust': '88',
+                    'waist': '59',
+                    'hip': '89',
+                    'cup': 'E',
+                    'measurements_raw': 'B88(E) W59 H89',
+                    'actor_exists_in_library': 1,
+                    'ladder_tier': 'S',
+                },
+                {
+                    'actor_name': 'Beta',
+                    'birthday': '',
+                    'current_age': '',
+                    'appearance_age': '',
+                    'height': '',
+                    'bust': '',
+                    'waist': '',
+                    'hip': '',
+                    'cup': '',
+                    'measurements_raw': '',
+                    'actor_exists_in_library': 0,
+                    'ladder_tier': 'B',
+                },
+            ],
+            'collaborator_sections': [
+                {
+                    'actor_name': 'Alice',
+                    'ladder_tier': 'S',
+                    'collaborators': [
+                        {'actor_name': 'Carol', 'count': 3},
+                        {'actor_name': 'Dana', 'count': 2},
+                        {'actor_name': 'Erin', 'count': 2},
+                        {'actor_name': 'Fiona', 'count': 1},
+                        {'actor_name': 'Grace', 'count': 1},
+                        {'actor_name': 'Helen', 'count': 1},
+                        {'actor_name': 'Iris', 'count': 1},
+                    ],
+                }
+            ],
             'references': [
                 {
                     'reference_source': 'video_library',
@@ -180,13 +225,26 @@ class MasterpieceViewerTest(unittest.TestCase):
         try:
             self.assertEqual(backend.detail_calls, ['PFSA-001'])
             group_titles = {group.title() for group in window.findChildren(QGroupBox)}
-            self.assertIn('视频库参考', group_titles)
-            self.assertIn('演员库参考', group_titles)
-            self.assertIn('番号库参考', group_titles)
+            self.assertIn(window._source_title('video_library'), group_titles)
+            self.assertIn(window._source_title('actor_library'), group_titles)
+            self.assertIn(window._source_title('code_prefix_library'), group_titles)
 
-            detail_buttons = [button for button in window.findChildren(QPushButton) if button.text() == '详情']
+            detail_buttons = [
+                button
+                for button in window.findChildren(QPushButton)
+                if button is not window.btn_open_primary
+            ]
             self.assertEqual(len(detail_buttons), 3)
             self.assertEqual([button.isEnabled() for button in detail_buttons], [True, False, True])
+            self.assertEqual(window.actor_table.rowCount(), 2)
+            self.assertEqual(window.actor_table.item(0, 0).text(), 'Alice')
+            self.assertEqual(window.actor_table.item(0, 3).text(), '24')
+            self.assertEqual(window.actor_table.item(1, 0).text(), 'Beta')
+            self.assertIn('Alice', window.collaborator_tables)
+            self.assertEqual(window.collaborator_tables['Alice'].columnCount(), 6)
+            self.assertEqual(window.collaborator_tables['Alice'].rowCount(), 2)
+            self.assertEqual(window.collaborator_tables['Alice'].item(0, 0).text(), 'Carol x3')
+            self.assertEqual(window.collaborator_tables['Alice'].item(1, 0).text(), 'Iris x1')
         finally:
             window.hide()
             window.deleteLater()

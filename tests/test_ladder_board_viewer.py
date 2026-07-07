@@ -126,7 +126,8 @@ class LadderBoardViewerTest(unittest.TestCase):
 
                 self.assertEqual(action_button.text(), tr('ladder.selected.add_medal'))
                 self.assertNotIn(tr('ladder.selected.edit_medal'), action_button.text())
-                self.assertNotIn(tr('ladder.selected.medal_empty'), medal_label.text())
+                self.assertIn('Rookie', medal_label.text())
+                self.assertIn('border-radius', medal_label.text())
             finally:
                 window.hide()
                 window.deleteLater()

@@ -5,7 +5,9 @@ import unittest
 import os
 from pathlib import Path
 
+from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR
 from app.data.database_handler import VideoDatabase
+from app.services.video import VIDEO_CATEGORY_CO_STAR
 
 
 class MasterpieceLibraryTest(unittest.TestCase):
@@ -40,6 +42,8 @@ class MasterpieceLibraryTest(unittest.TestCase):
         javtxt_url='',
         javtxt_tags='',
         supplement_status='',
+        video_category='鍗曚綋',
+        release_date='2024-05-01',
     ):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
@@ -77,7 +81,7 @@ class MasterpieceLibraryTest(unittest.TestCase):
                     '3.20',
                     r'D:\videos',
                     'avfan-001',
-                    '2024-05-01',
+                    release_date,
                     'Maker A',
                     'Publisher A',
                     'javtxt-001',
@@ -101,6 +105,74 @@ class MasterpieceLibraryTest(unittest.TestCase):
 
     def _replace_actor_movies(self, actor_name, movies):
         self.db.replace_actor_movies(actor_name, movies)
+
+    def _update_processed_video_author(self, code, author, release_date='2024-05-01'):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                '''
+                UPDATE processed_videos
+                SET author = ?, javtxt_actors = ?, release_date = ?, javtxt_release_date = ?
+                WHERE code = ?
+                ''',
+                (author, author, release_date, release_date, code),
+            )
+            conn.commit()
+
+    def _insert_collaboration_video(self, code, author, release_date):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                '''
+                INSERT INTO processed_videos (
+                    code,
+                    title,
+                    author,
+                    duration,
+                    size,
+                    storage_location,
+                    avfan_movie_id,
+                    release_date,
+                    maker,
+                    publisher,
+                    javtxt_movie_id,
+                    javtxt_url,
+                    javtxt_title,
+                    javtxt_actors,
+                    javtxt_tags,
+                    javtxt_release_date,
+                    video_category,
+                    avfan_enrichment_status,
+                    javtxt_enrichment_status,
+                    supplement_enrichment_status,
+                    supplement_enrichment_error,
+                    supplement_enriched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    code,
+                    code,
+                    author,
+                    '01:10:00',
+                    '2.10',
+                    r'D:\videos',
+                    '',
+                    release_date,
+                    '',
+                    '',
+                    '',
+                    '',
+                    code,
+                    author,
+                    '',
+                    release_date,
+                    VIDEO_CATEGORY_CO_STAR,
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                ),
+            )
+            conn.commit()
 
     def test_add_masterpiece_entry_lists_video_and_normalizes_medals(self):
         entry = self.db.add_masterpiece_entry('pfsa-001')
@@ -219,6 +291,90 @@ class MasterpieceLibraryTest(unittest.TestCase):
         self.assertEqual(
             [row['reference_source'] for row in detail['references']],
             ['video_library', 'code_prefix_library', 'actor_library'],
+        )
+
+    def test_add_masterpiece_entry_persists_actor_snapshots_and_auto_admits_missing_actor(self):
+        self._update_processed_video_author('PFSA-001', 'Alice Beta', release_date='2024-05-01')
+        self.db.add_actor('Alice')
+        self.db.save_binghuo_actor_profile(
+            'Alice',
+            '已补全',
+            birthday='2000-04-10',
+            age='24',
+            height='168',
+            bust='88',
+            waist='59',
+            hip='89',
+            cup='E',
+            measurements_raw='B88(E) W59 H89',
+        )
+
+        self.db.add_masterpiece_entry('PFSA-001')
+        detail = self.db.get_masterpiece_detail_record('PFSA-001')
+
+        self.assertEqual([row['actor_name'] for row in detail['actor_details']], ['Alice', 'Beta'])
+        self.assertEqual(detail['actor_details'][0]['appearance_age'], '24')
+        self.assertEqual(detail['actor_details'][0]['height'], '168')
+        self.assertEqual(detail['actor_details'][0]['cup'], 'E')
+        self.assertEqual(detail['actor_details'][0]['measurements_raw'], 'B88(E) W59 H89')
+        self.assertEqual(detail['actor_details'][0]['actor_exists_in_library'], 1)
+        self.assertEqual(detail['actor_details'][1]['actor_exists_in_library'], 0)
+        self.assertTrue(any(row['name'] == 'Beta' for row in self.db.list_actors('Beta')))
+
+    def test_actor_library_only_entry_uses_actor_library_names_for_actor_snapshots(self):
+        self.db.add_actor('Actor Only')
+        self.db.save_baomu_actor_profile(
+            'Actor Only',
+            '已补全',
+            birthday='1998-02-14',
+            height='160',
+            bust='84',
+            waist='57',
+            hip='86',
+            cup='C',
+            measurements_raw='breast=84cm; waist=57cm; hip=86cm; cup=C',
+        )
+        self._replace_actor_movies(
+            'Actor Only',
+            [
+                {
+                    'code': 'ACT-002',
+                    'title': 'Actor Library Story',
+                    'author': 'Actor Only',
+                    'release_date': '2024-04-02',
+                    'javtxt_url': 'https://javtxt.example/act-002',
+                }
+            ],
+        )
+
+        self.db.add_masterpiece_entry('ACT-002')
+        detail = self.db.get_masterpiece_detail_record('ACT-002')
+
+        self.assertEqual(len(detail['actor_details']), 1)
+        self.assertEqual(detail['actor_details'][0]['actor_name'], 'Actor Only')
+        self.assertEqual(detail['actor_details'][0]['cup'], 'C')
+        self.assertEqual(detail['actor_details'][0]['birthday'], '1998/2/14')
+
+    def test_detail_collects_collaborators_for_s_and_a_tier_actors_only(self):
+        self._update_processed_video_author('PFSA-001', 'Alice Beta', release_date='2024-05-01')
+        self._insert_collaboration_video('COSTAR-001', 'Alice Carol', '2024-04-01')
+        self._insert_collaboration_video('COSTAR-002', 'Alice Dana', '2024-03-01')
+        self._insert_collaboration_video('COSTAR-003', 'Alice Carol', '2024-02-01')
+        self.db.save_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, 'Alice', 'S')
+        self.db.save_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, 'Beta', 'B')
+
+        self.db.add_masterpiece_entry('PFSA-001')
+        detail = self.db.get_masterpiece_detail_record('PFSA-001')
+
+        self.assertEqual(len(detail['collaborator_sections']), 1)
+        self.assertEqual(detail['collaborator_sections'][0]['actor_name'], 'Alice')
+        self.assertEqual(detail['collaborator_sections'][0]['ladder_tier'], 'S')
+        self.assertEqual(
+            detail['collaborator_sections'][0]['collaborators'],
+            [
+                {'actor_name': 'Carol', 'count': 2},
+                {'actor_name': 'Dana', 'count': 1},
+            ],
         )
 
     def test_get_video_detail_record_returns_full_video_fields(self):

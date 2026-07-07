@@ -11,27 +11,10 @@ from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, build_medal_te
 class LadderSelectedPanel(QWidget):
     medal_save_requested = pyqtSignal(str, str)
     detail_requested = pyqtSignal(str)
-    _TIER_MEDAL_STYLES = {
-        'S': {
-            'border': '#c89b2f',
-            'background': '#f6e7b6',
-            'text': '#6f4a00',
-        },
-        'A': {
-            'border': '#b96a3b',
-            'background': '#f6d8c3',
-            'text': '#7a3513',
-        },
-        'B': {
-            'border': '#6d9dc5',
-            'background': '#dcecf8',
-            'text': '#1f5378',
-        },
-        'C': {
-            'border': '#7ca37c',
-            'background': '#dcefdc',
-            'text': '#2f5d2f',
-        },
+    _MEDAL_CHIP_STYLE = {
+        'border': '#c7a55a',
+        'background': '#f8edd0',
+        'text': '#6b4d12',
     }
 
     def __init__(self, parent=None):
@@ -75,7 +58,7 @@ class LadderSelectedPanel(QWidget):
             tier_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row_index, 0, name_item)
             self.table.setItem(row_index, 1, tier_item)
-            self.table.setCellWidget(row_index, 2, self._build_medal_widget(entity_name, tier, medal_text, medals))
+            self.table.setCellWidget(row_index, 2, self._build_medal_widget(entity_name, medal_text, medals))
             self.table.setCellWidget(row_index, 3, self._build_action_widget(entity_name))
             self.table.setCellWidget(row_index, 4, self._build_detail_button(entity_name))
 
@@ -84,13 +67,13 @@ class LadderSelectedPanel(QWidget):
     def set_global_medals(self, medals):
         self.global_medals = [dict(row or {}) for row in (medals or [])]
 
-    def _build_medal_widget(self, entity_name, tier, medal_text, medals):
+    def _build_medal_widget(self, entity_name, medal_text, medals):
         label = QLabel()
         label.setWordWrap(True)
         label.setTextFormat(Qt.RichText)
         label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         label.setMargin(4)
-        label.setText(self._build_medal_html(tier, medals))
+        label.setText(self._build_medal_html(medals))
         self._medal_widgets[entity_name] = {
             'label': label,
             'medal_text': medal_text,
@@ -127,18 +110,19 @@ class LadderSelectedPanel(QWidget):
             return
         self.medal_save_requested.emit(entity_name, medal_text)
 
-    def _build_medal_html(self, tier, medals):
+    def _build_medal_html(self, medals):
         if not medals:
             return ''
 
-        palette = dict(self._TIER_MEDAL_STYLES.get(str(tier or '').strip().upper(), self._TIER_MEDAL_STYLES['C']))
+        palette = dict(self._MEDAL_CHIP_STYLE)
         chips = []
         for medal in medals:
             chips.append(
                 (
-                    '<span style="display:inline-block; margin:0 6px 6px 0; '
-                    f'padding:3px 10px; border:1px solid {palette["border"]}; border-radius:10px; '
-                    f'background-color:{palette["background"]}; color:{palette["text"]};">'
+                    '<span style="display:inline-block; margin:0 8px 8px 0; '
+                    f'padding:4px 12px; border:1px solid {palette["border"]}; border-radius:999px; '
+                    f'background-color:{palette["background"]}; color:{palette["text"]}; '
+                    'font-weight:600;">'
                     f'{escape(str(medal or ""))}'
                     '</span>'
                 )

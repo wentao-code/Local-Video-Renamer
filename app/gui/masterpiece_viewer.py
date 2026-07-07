@@ -24,66 +24,6 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, build_medal_text
 
 
-class MasterpieceDetailWindow(QDialog):
-    _DETAIL_FIELDS = (
-        ('编号', 'code'),
-        ('标题', 'title'),
-        ('演员', 'author'),
-        ('时长', 'duration'),
-        ('大小(GB)', 'size'),
-        ('存放位置', 'storage_location'),
-        ('AVFan ID', 'avfan_movie_id'),
-        ('JAVTXT ID', 'javtxt_movie_id'),
-        ('JAVTXT 链接', 'javtxt_url'),
-        ('JAVTXT 标题', 'javtxt_title'),
-        ('JAVTXT 演员', 'javtxt_actors'),
-        ('JAVTXT 标签', 'javtxt_tags'),
-        ('视频分类', 'video_category'),
-        ('发行日期', 'release_date'),
-        ('制作商', 'maker'),
-        ('发行商', 'publisher'),
-        ('AVFan 补全状态', 'avfan_enrichment_status'),
-        ('JAVTXT 补全状态', 'javtxt_enrichment_status'),
-        ('补充任务状态', 'supplement_enrichment_status'),
-        ('补充任务错误', 'supplement_enrichment_error'),
-        ('补充任务时间', 'supplement_enriched_at'),
-    )
-
-    def __init__(self, backend_client, code, parent=None):
-        super().__init__(parent)
-        self.backend_client = backend_client
-        self.code = str(code or '').strip()
-        self.setWindowTitle(f'视频详情 - {self.code}')
-        self.resize(860, 620)
-        self._init_ui()
-        self.load_detail()
-
-    def _init_ui(self):
-        layout = QVBoxLayout(self)
-        self.summary_label = QLabel('')
-        layout.addWidget(self.summary_label)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(['字段', '内容'])
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setSelectionMode(QAbstractItemView.NoSelection)
-        self.table.verticalHeader().setVisible(False)
-        layout.addWidget(self.table)
-
-    def load_detail(self):
-        detail = dict(self.backend_client.get_video_detail(self.code) or {})
-        self.summary_label.setText(f'编号: {detail.get("code", "")} | 标题: {detail.get("title", "")}')
-        self.table.setRowCount(0)
-        for row_index, (label_text, field_name) in enumerate(self._DETAIL_FIELDS):
-            self.table.insertRow(row_index)
-            name_item = QTableWidgetItem(label_text)
-            value_item = QTableWidgetItem(str(detail.get(field_name, '') or ''))
-            name_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row_index, 0, name_item)
-            self.table.setItem(row_index, 1, value_item)
-
-
 class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
     _MEDAL_STYLES = {
         'border': '#b96a3b',
@@ -278,12 +218,14 @@ class MasterpieceDetailWindow(QDialog):
         'code_prefix_library': '番号库参考',
     }
     _SOURCE_ORDER = ('video_library', 'actor_library', 'code_prefix_library')
+    _ACTOR_HEADERS = ['演员', '生日', '年龄', '出演年龄', '身高', '三围', '罩杯', '详情']
 
     def __init__(self, backend_client, code, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.code = str(code or '').strip()
         self.detail = {}
+        self.collaborator_tables = {}
         self.setWindowTitle(f'名作堂详情 - {self.code}')
         self.resize(980, 760)
         self._init_ui()
@@ -298,6 +240,17 @@ class MasterpieceDetailWindow(QDialog):
         self.btn_open_primary = QPushButton('打开主链接')
         self.btn_open_primary.clicked.connect(self.open_primary_link)
         root_layout.addWidget(self.btn_open_primary, 0, Qt.AlignLeft)
+
+        actor_group = QGroupBox('演员信息')
+        actor_layout = QVBoxLayout(actor_group)
+        self.actor_table = QTableWidget()
+        self.actor_table.setColumnCount(len(self._ACTOR_HEADERS))
+        self.actor_table.setHorizontalHeaderLabels(list(self._ACTOR_HEADERS))
+        self.actor_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.actor_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.actor_table.verticalHeader().setVisible(False)
+        actor_layout.addWidget(self.actor_table)
+        root_layout.addWidget(actor_group)
 
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -318,14 +271,84 @@ class MasterpieceDetailWindow(QDialog):
             f'编号: {self.detail.get("code", "")} | 标题: {display_title} | 演员: {display_author or "暂无"} | 主来源: {primary_source}'
         )
         self.btn_open_primary.setEnabled(bool(str(self.detail.get('primary_detail_url', '') or '').strip()))
-        self._render_reference_groups()
+        self._render_actor_details()
+        self._render_detail_sections()
 
-    def _render_reference_groups(self):
+    def _render_actor_details(self):
+        actor_rows = list(self.detail.get('actor_details', []) or [])
+        self.actor_table.setRowCount(0)
+        for row_index, actor in enumerate(actor_rows):
+            self.actor_table.insertRow(row_index)
+            values = [
+                str((actor or {}).get('actor_name', '') or ''),
+                str((actor or {}).get('birthday', '') or ''),
+                str((actor or {}).get('current_age', '') or ''),
+                str((actor or {}).get('appearance_age', '') or ''),
+                str((actor or {}).get('height', '') or ''),
+                self._build_measurements_text(actor),
+                str((actor or {}).get('cup', '') or ''),
+                str((actor or {}).get('measurements_raw', '') or ''),
+            ]
+            for column_index, value in enumerate(values):
+                self.actor_table.setItem(row_index, column_index, QTableWidgetItem(value))
+
+        self.actor_table.resizeColumnsToContents()
+        self.actor_table.resizeRowsToContents()
+
+    @staticmethod
+    def _build_measurements_text(actor):
+        bust = str((actor or {}).get('bust', '') or '').strip()
+        waist = str((actor or {}).get('waist', '') or '').strip()
+        hip = str((actor or {}).get('hip', '') or '').strip()
+        if bust and waist and hip:
+            return f'{bust}/{waist}/{hip}'
+        return str((actor or {}).get('measurements_raw', '') or '').strip()
+
+    def _render_detail_sections(self):
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+        self.collaborator_tables = {}
+        self._render_collaborator_sections()
+        self._render_reference_groups()
+
+    def _render_collaborator_sections(self):
+        sections = list(self.detail.get('collaborator_sections', []) or [])
+        for section in sections:
+            actor_name = str((section or {}).get('actor_name', '') or '').strip()
+            ladder_tier = str((section or {}).get('ladder_tier', '') or '').strip().upper()
+            group_box = QGroupBox(f'{actor_name} ({ladder_tier})')
+            group_layout = QVBoxLayout(group_box)
+            rows = list((section or {}).get('collaborators', []) or [])
+            if not rows:
+                empty_label = QLabel('鏆傛棤鍚堜綔婕斿憳')
+                empty_label.setStyleSheet('color: #777777;')
+                group_layout.addWidget(empty_label)
+            else:
+                table = QTableWidget()
+                table.setColumnCount(6)
+                table.setEditTriggers(QTableWidget.NoEditTriggers)
+                table.setSelectionMode(QAbstractItemView.NoSelection)
+                table.verticalHeader().setVisible(False)
+                table.horizontalHeader().setVisible(False)
+                table.setShowGrid(False)
+                row_count = (len(rows) + 5) // 6
+                table.setRowCount(row_count)
+                for index, collaborator in enumerate(rows):
+                    row_index = index // 6
+                    column_index = index % 6
+                    label = f'{str((collaborator or {}).get("actor_name", "") or "")} x{int((collaborator or {}).get("count", 0) or 0)}'
+                    table.setItem(row_index, column_index, QTableWidgetItem(label))
+                table.resizeColumnsToContents()
+                table.resizeRowsToContents()
+                group_layout.addWidget(table)
+                self.collaborator_tables[actor_name] = table
+            self.content_layout.addWidget(group_box)
+
+    def _render_reference_groups(self):
 
         references = list(self.detail.get('references', []) or [])
         grouped = {source: [] for source in self._SOURCE_ORDER}

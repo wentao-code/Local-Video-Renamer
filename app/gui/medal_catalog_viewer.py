@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -129,6 +130,7 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         toolbar.addWidget(QLabel('描述'))
         self.description_input = QLineEdit()
         self.description_input.setPlaceholderText('输入勋章描述')
+        self.description_input.setMinimumWidth(520)
         toolbar.addWidget(self.description_input, 1)
 
         self.btn_add = QPushButton('添加')
@@ -146,6 +148,9 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         self.table = QTableWidget()
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(['勋章', '描述', '操作'])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
@@ -196,11 +201,13 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
             self.table.setItem(row_index, 0, QTableWidgetItem(name))
 
             description_editor = QLineEdit(description)
+            description_editor.setMinimumWidth(320)
             self.table.setCellWidget(row_index, 1, description_editor)
             self.table.setCellWidget(row_index, 2, self._build_action_widget(row_index, name, description_editor))
 
         self.summary_label.setText(f'共 {len(self.rows)} 枚勋章')
-        self.table.resizeColumnsToContents()
+        self.table.resizeColumnToContents(0)
+        self.table.resizeColumnToContents(2)
 
     def _build_action_widget(self, row_index, name, description_editor):
         widget = QWidget()
