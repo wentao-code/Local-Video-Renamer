@@ -34,6 +34,9 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
         self.detail = {}
         self._startup_refresh_pending = True
         self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self._suppress_async_error_dialog = False
         self._init_async_task_host()
         self._init_deferred_reload(self._perform_deferred_load)
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
@@ -188,21 +191,41 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
             ]
         )
 
-    def load_data(self, force_refresh=False):
+    def load_data(
+        self,
+        force_refresh=False,
+        silent_errors=False,
+        allow_deferred_close=False,
+    ):
         if self.is_async_task_running():
             self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
+            self._deferred_silent_errors = self._deferred_silent_errors or bool(silent_errors)
+            self._deferred_allow_deferred_close = (
+                self._deferred_allow_deferred_close or bool(allow_deferred_close)
+            )
             self.schedule_deferred_reload(0)
             return
+        self._suppress_async_error_dialog = bool(silent_errors)
         self.start_async_task(
             lambda: self._load_detail_payload(force_refresh=force_refresh),
             self._on_load_data_finished,
             tr('common.read_failed'),
+            block_ui=not bool(allow_deferred_close),
+            allow_deferred_close=allow_deferred_close,
         )
 
     def _perform_deferred_load(self):
         force_refresh = self._deferred_force_refresh
+        silent_errors = self._deferred_silent_errors
+        allow_deferred_close = self._deferred_allow_deferred_close
         self._deferred_force_refresh = False
-        self.load_data(force_refresh=force_refresh)
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self.load_data(
+            force_refresh=force_refresh,
+            silent_errors=silent_errors,
+            allow_deferred_close=allow_deferred_close,
+        )
 
     def _load_detail_payload(self, force_refresh=False):
         if hasattr(self.refresh_client, 'get_code_prefix_detail_snapshot'):
@@ -217,6 +240,7 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
         self.detail = dict(payload.get('prefix_detail', payload.get('detail', payload or {})) or {})
+        self._suppress_async_error_dialog = False
         self.last_refreshed_label.setText(
             tr('data_center.last_refreshed', value=str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty'))
         )
@@ -224,7 +248,17 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
             if bool(payload.get('cache_hit')):
-                self.load_data(force_refresh=True)
+                self.load_data(
+                    force_refresh=True,
+                    silent_errors=True,
+                    allow_deferred_close=True,
+                )
+
+    def _handle_async_task_failed(self, message):
+        if self._suppress_async_error_dialog:
+            self._suppress_async_error_dialog = False
+            return
+        super()._handle_async_task_failed(message)
 
     def _apply_detail_to_widgets(self):
         self.summary_grid.set_value('prefix', self.detail.get('prefix', ''))

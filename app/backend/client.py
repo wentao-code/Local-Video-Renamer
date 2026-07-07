@@ -138,6 +138,22 @@ class BackendClient:
     def update_masterpiece_entry_medal(self, code, medal):
         return self._post('/masterpiece/entries/medal', {'code': code, 'medal': medal}).get('entry', {})
 
+    def get_masterpiece_detail(self, code):
+        query = '?' + urlencode({'code': code})
+        return self._get('/masterpiece/detail' + query).get('detail', {})
+
+    def list_global_medals(self):
+        return self._get('/medals').get('medals', [])
+
+    def add_global_medal(self, name, description=''):
+        return self._post('/medals/add', {'name': name, 'description': description}).get('medal', {})
+
+    def update_global_medal_description(self, name, description=''):
+        return self._post('/medals/update', {'name': name, 'description': description}).get('medal', {})
+
+    def delete_global_medal(self, name):
+        return self._post('/medals/delete', {'name': name})
+
     def get_video_detail(self, code):
         query = '?' + urlencode({'code': code})
         return self._get('/database/videos/detail' + query).get('video', {})

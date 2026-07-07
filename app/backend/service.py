@@ -217,6 +217,29 @@ class BackendService:
         self.ensure_database_loaded()
         return {'entry': self.db.update_masterpiece_entry_medal(code, medal)}
 
+    def get_masterpiece_detail(self, code):
+        self.ensure_database_loaded()
+        detail = self.db.get_masterpiece_detail_record(code)
+        if not detail:
+            raise FileNotFoundError(f'鍚嶄綔鍫傛潯鐩笉瀛樺湪: {code}')
+        return {'detail': detail}
+
+    def list_global_medals(self):
+        self.ensure_database_loaded()
+        return {'medals': self.db.list_global_medals()}
+
+    def add_global_medal(self, name, description=''):
+        self.ensure_database_loaded()
+        return {'medal': self.db.add_global_medal(name, description)}
+
+    def update_global_medal_description(self, name, description=''):
+        self.ensure_database_loaded()
+        return {'medal': self.db.update_global_medal_description(name, description)}
+
+    def delete_global_medal(self, name):
+        self.ensure_database_loaded()
+        return self.db.delete_global_medal(name)
+
     def get_video_detail(self, code):
         self.ensure_database_loaded()
         detail = self.db.get_video_detail_record(code)
@@ -1386,6 +1409,11 @@ class BackendService:
             'candidates': [dict(row or {}) for row in board.get('candidates', []) or []],
             'selected': [dict(row or {}) for row in board.get('selected', []) or []],
         }
+
+    @staticmethod
+    def _format_refresh_duration(duration_ms):
+        total_seconds = max(0, int(round(int(duration_ms or 0) / 1000.0)))
+        return f'{total_seconds}\u79d2'
 
     def enrich_videos(
         self,

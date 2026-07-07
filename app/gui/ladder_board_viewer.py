@@ -31,6 +31,7 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         self.current_board_key = LADDER_BOARD_ACTOR
         self.current_view_key = LADDER_VIEW_CANDIDATES
         self.current_board_data = {}
+        self.global_medals = []
         self._init_async_task_host()
         self.init_ui()
         self.load_board()
@@ -112,7 +113,7 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
     def load_board(self, force_refresh=False):
         board_key = self.current_board_key
         self.start_async_task(
-            lambda: self.backend_client.get_ladder_board_snapshot(board_key, force_refresh=force_refresh),
+            lambda: self._build_board_payload(board_key, force_refresh=force_refresh),
             self._on_board_loaded,
             tr('common.read_failed'),
         )
@@ -137,7 +138,19 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
 
     def _reload_board_after(self, operation):
         operation()
-        return self.backend_client.get_ladder_board_snapshot(self.current_board_key)
+        return self._build_board_payload(self.current_board_key, include_medals=False)
+
+    def _build_board_payload(self, board_key, force_refresh=False, include_medals=None):
+        if include_medals is None:
+            include_medals = force_refresh or not self.global_medals
+        payload = {
+            'board_payload': self.backend_client.get_ladder_board_snapshot(board_key, force_refresh=force_refresh),
+        }
+        if include_medals:
+            payload['global_medals'] = self.backend_client.list_global_medals()
+        else:
+            payload['global_medals'] = list(self.global_medals)
+        return payload
 
     def show_detail(self, entity_name):
         if not entity_name:
@@ -151,12 +164,15 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
 
     def _on_board_loaded(self, payload):
         payload = dict(payload or {})
-        refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
+        board_payload = dict(payload.get('board_payload', payload) or {})
+        refreshed_at = str(board_payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
-        board = dict(payload.get('board', payload) or {})
+        board = dict(board_payload.get('board', board_payload) or {})
         self.current_board_data = board
+        self.global_medals = [dict(row or {}) for row in (payload.get('global_medals', []) or [])]
         self.candidate_panel.set_rows(board.get('candidates', []) or [])
         self.selected_panel.set_rows(board.get('selected', []) or [])
+        self.selected_panel.set_global_medals(self.global_medals)
         self._update_summary()
         self._apply_view()
         self._refresh_toggle_states()

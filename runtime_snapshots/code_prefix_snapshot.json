@@ -2752,9 +2752,9 @@
       "total_count": 196,
       "offset": 0,
       "limit": 200,
-      "refreshed_at": "2026-07-06 22:20:09",
-      "refresh_duration_ms": 0,
-      "refresh_duration_text": "0秒"
+      "refreshed_at": "2026-07-07 00:19:05",
+      "refresh_duration_ms": 873706,
+      "refresh_duration_text": "14分34秒"
     },
     "{\"limit\": null, \"offset\": 0, \"search_text\": \"\", \"sort_field\": \"prefix\", \"sort_order\": \"asc\"}": {
       "prefixes": [
@@ -5506,9 +5506,9 @@
       "total_count": 196,
       "offset": 0,
       "limit": null,
-      "refreshed_at": "2026-07-06 23:48:37",
-      "refresh_duration_ms": 54599,
-      "refresh_duration_text": "55秒"
+      "refreshed_at": "2026-07-07 02:56:26",
+      "refresh_duration_ms": 57563,
+      "refresh_duration_text": "58秒"
     }
   },
   "detail_snapshots": {}

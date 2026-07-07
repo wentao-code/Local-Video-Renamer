@@ -46,6 +46,7 @@ from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.gui_task_runner import GuiTaskRunner
 from app.gui.i18n import tr
 from app.gui.ladder_board_viewer import LadderBoardWindow
+from app.gui.medal_catalog_viewer import MedalCatalogWindow
 from app.gui.masterpiece_viewer import MasterpieceWindow
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.gui.task_progress_widget import TaskProgressWidget
@@ -150,6 +151,7 @@ class AutoLoginWorker(QObject):
 
 
 class SnapshotRefreshWorker(QObject):
+    progress = pyqtSignal(dict)
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
@@ -159,7 +161,7 @@ class SnapshotRefreshWorker(QObject):
 
     def run(self):
         try:
-            result = self.refresh_callback()
+            result = self.refresh_callback(self.progress.emit)
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -205,9 +207,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.snapshot_refresh_worker = None
         self.snapshot_refresh_task_runner = None
         self.snapshot_refresh_running = False
+        self.snapshot_refresh_started_at = 0.0
+        self.snapshot_refresh_current_target = ''
         self.snapshot_refresh_timer = QTimer(self)
         self.snapshot_refresh_timer.setInterval(3 * 60 * 60 * 1000)
         self.snapshot_refresh_timer.timeout.connect(self.schedule_snapshot_refresh_cycle)
+        self.snapshot_refresh_elapsed_timer = QTimer(self)
+        self.snapshot_refresh_elapsed_timer.setInterval(1000)
+        self.snapshot_refresh_elapsed_timer.timeout.connect(self.update_snapshot_refresh_elapsed)
         self._init_async_task_host()
 
         self.ensure_backend_running()
@@ -488,6 +495,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
 
         self.status_label = QLabel('')
+        self.snapshot_refresh_status_label = QLabel('')
         self.network_status_label = QLabel(tr('main.network_status_unknown'))
         self.progress_label = QLabel('')
         self.progress_bar = QProgressBar()
@@ -525,6 +533,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_masterpiece = QPushButton('名作堂')
         self.btn_masterpiece.clicked.connect(self.show_masterpiece_viewer)
 
+        self.btn_medal_catalog = QPushButton('勋章堂')
+        self.btn_medal_catalog.clicked.connect(self.show_medal_catalog_viewer)
+
         self.btn_scan = QPushButton(tr('main.scan_local_videos'))
         self.btn_scan.clicked.connect(self.scan_files)
 
@@ -560,6 +571,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_tianji)
         top_button_row.addWidget(self.btn_ladder_board)
         top_button_row.addWidget(self.btn_masterpiece)
+        top_button_row.addWidget(self.btn_medal_catalog)
         top_button_row.addStretch()
 
         bottom_button_row.addWidget(self.btn_scan)
@@ -582,6 +594,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         main_layout.addLayout(top_layout)
         main_layout.addWidget(self.table)
         main_layout.addLayout(status_bar_layout)
+        main_layout.addWidget(self.snapshot_refresh_status_label)
         main_layout.addWidget(self.progress_label)
         main_layout.addWidget(self.progress_bar)
         for combo_subtask_widget in self.combo_subtask_widgets:
@@ -1438,11 +1451,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             tr('common.reset_failed'),
         )
 
-    def start_async_task(self, task, success_handler, error_title=None):
+    def start_async_task(self, task, success_handler, error_title=None, block_ui=True):
         if self.is_async_task_running():
             QMessageBox.information(self, tr('common.task_in_progress'), tr('main.new_button_action_wait'))
             return False
-        return super().start_async_task(task, success_handler, error_title)
+        return super().start_async_task(task, success_handler, error_title, block_ui=block_ui)
 
     def _set_async_busy(self, busy):
         self.btn_browse.setEnabled(not busy)
@@ -1590,6 +1603,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         viewer = MasterpieceWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
 
+    def show_medal_catalog_viewer(self):
+        viewer = MedalCatalogWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
     def show_video_filter_dialog(self):
         dialog = VideoFilterDialog(self)
         dialog.exec_()
@@ -1608,6 +1625,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             return False
         self.snapshot_refresh_running = True
         self.snapshot_refresh_worker = self._create_snapshot_refresh_worker()
+        progress_signal = getattr(self.snapshot_refresh_worker, 'progress', None)
+        if progress_signal is not None and hasattr(progress_signal, 'connect'):
+            progress_signal.connect(self._on_snapshot_refresh_progress)
         self.snapshot_refresh_task_runner = GuiTaskRunner(
             self,
             self.snapshot_refresh_worker,
@@ -1619,28 +1639,131 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def _create_snapshot_refresh_worker(self):
         refresh_client = _build_refresh_client(self.backend_client, minimum_timeout=600)
-        return SnapshotRefreshWorker(lambda: self._run_snapshot_refresh_cycle(refresh_client=refresh_client))
+        return SnapshotRefreshWorker(
+            lambda progress_callback: self._run_snapshot_refresh_cycle(
+                progress_callback=progress_callback,
+                refresh_client=refresh_client,
+            )
+        )
 
-    def _run_snapshot_refresh_cycle(self, refresh_client=None):
+    def _run_snapshot_refresh_cycle(self, progress_callback=None, refresh_client=None):
         active_client = refresh_client or _build_refresh_client(self.backend_client, minimum_timeout=600)
         self.snapshot_refresh_running = True
         try:
+            self._emit_snapshot_refresh_progress(progress_callback, 'actor_library', '演员库')
             active_client.list_actors_snapshot(force_refresh=True)
+            self._emit_snapshot_refresh_progress(progress_callback, 'code_prefix_library', '番号库')
             active_client.list_code_prefixes_snapshot(force_refresh=True)
+            self._emit_snapshot_refresh_progress(progress_callback, 'data_center', '数据中心')
             active_client.get_data_center_summary(force_refresh=True)
             return {'success': True}
         finally:
             self.snapshot_refresh_running = False
 
+    @staticmethod
+    def _emit_snapshot_refresh_progress(progress_callback, target_key, target_label):
+        if not callable(progress_callback):
+            return
+        progress_callback(
+            {
+                'target_key': str(target_key or '').strip(),
+                'target_label': str(target_label or '').strip(),
+                'elapsed_seconds': 0,
+            }
+        )
+
+    def _on_snapshot_refresh_progress(self, payload):
+        current = dict(payload or {})
+        self.snapshot_refresh_current_target = str(current.get('target_label', '') or '').strip()
+        self.snapshot_refresh_started_at = time.time()
+        self.snapshot_refresh_status_label.setText(self._build_snapshot_refresh_status_text(0))
+        self.snapshot_refresh_elapsed_timer.start()
+
+    def update_snapshot_refresh_elapsed(self):
+        if not str(self.snapshot_refresh_current_target or '').strip():
+            self.snapshot_refresh_elapsed_timer.stop()
+            self.snapshot_refresh_status_label.setText('')
+            return
+        elapsed_seconds = max(0, int(time.time() - float(self.snapshot_refresh_started_at or 0.0)))
+        self.snapshot_refresh_status_label.setText(self._build_snapshot_refresh_status_text(elapsed_seconds))
+
+    def _build_snapshot_refresh_status_text(self, elapsed_seconds):
+        target_label = str(self.snapshot_refresh_current_target or '').strip() or '后台任务'
+        return f'后台刷新: 正在刷新 {target_label} | 已耗时 {max(0, int(elapsed_seconds or 0))}秒'
+
     def _on_snapshot_refresh_finished(self, result):
         self.snapshot_refresh_running = False
+        self.snapshot_refresh_elapsed_timer.stop()
+        self.snapshot_refresh_started_at = 0.0
+        self.snapshot_refresh_current_target = ''
+        self.snapshot_refresh_status_label.setText('')
         self.snapshot_refresh_worker = None
         self.snapshot_refresh_task_runner = None
 
     def _on_snapshot_refresh_failed(self, error_message):
         self.snapshot_refresh_running = False
+        self.snapshot_refresh_elapsed_timer.stop()
+        self.snapshot_refresh_started_at = 0.0
+        self.snapshot_refresh_current_target = ''
+        self.snapshot_refresh_status_label.setText('')
         self.snapshot_refresh_worker = None
         self.snapshot_refresh_task_runner = None
+
+    def _run_snapshot_refresh_cycle(self, progress_callback=None, refresh_client=None):
+        active_client = refresh_client or _build_refresh_client(self.backend_client, minimum_timeout=600)
+        self.snapshot_refresh_running = True
+        try:
+            VidNormApp._emit_snapshot_refresh_progress(
+                progress_callback,
+                'actor_library',
+                '\u6f14\u5458\u5e93',
+            )
+            active_client.list_actors_snapshot(force_refresh=True)
+            VidNormApp._emit_snapshot_refresh_progress(
+                progress_callback,
+                'code_prefix_library',
+                '\u756a\u53f7\u5e93',
+            )
+            active_client.list_code_prefixes_snapshot(force_refresh=True)
+            VidNormApp._emit_snapshot_refresh_progress(
+                progress_callback,
+                'data_center',
+                '\u6570\u636e\u4e2d\u5fc3',
+            )
+            active_client.get_data_center_summary(force_refresh=True)
+            return {'success': True}
+        finally:
+            self.snapshot_refresh_running = False
+
+    def _on_snapshot_refresh_progress(self, payload):
+        current = dict(payload or {})
+        self.snapshot_refresh_current_target = str(current.get('target_label', '') or '').strip()
+        self.snapshot_refresh_started_at = time.time()
+        self.snapshot_refresh_status_label.setText(
+            VidNormApp._build_snapshot_refresh_status_text(self.snapshot_refresh_current_target, 0)
+        )
+        self.snapshot_refresh_elapsed_timer.start()
+
+    def update_snapshot_refresh_elapsed(self):
+        if not str(self.snapshot_refresh_current_target or '').strip():
+            self.snapshot_refresh_elapsed_timer.stop()
+            self.snapshot_refresh_status_label.setText('')
+            return
+        elapsed_seconds = max(0, int(time.time() - float(self.snapshot_refresh_started_at or 0.0)))
+        self.snapshot_refresh_status_label.setText(
+            VidNormApp._build_snapshot_refresh_status_text(
+                self.snapshot_refresh_current_target,
+                elapsed_seconds,
+            )
+        )
+
+    @staticmethod
+    def _build_snapshot_refresh_status_text(target_label, elapsed_seconds):
+        current_target = str(target_label or '').strip() or '\u540e\u53f0\u4efb\u52a1'
+        return (
+            f'\u540e\u53f0\u5237\u65b0: \u6b63\u5728\u5237\u65b0 {current_target} | '
+            f'\u5df2\u8017\u65f6 {max(0, int(elapsed_seconds or 0))}\u79d2'
+        )
 
     def closeEvent(self, event):
         if self.block_close_while_async_running(event):
@@ -1670,6 +1793,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             event.ignore()
             return
         self.snapshot_refresh_timer.stop()
+        self.snapshot_refresh_elapsed_timer.stop()
         self.stop_owned_backend()
         super().closeEvent(event)
 

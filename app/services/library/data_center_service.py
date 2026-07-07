@@ -335,6 +335,11 @@ class DataCenterService:
         return True
 
     @staticmethod
+    def _format_duration_text(duration_ms):
+        total_seconds = max(0, int(round((int(duration_ms or 0) / 1000.0))))
+        return f'{total_seconds}\u79d2'
+
+    @staticmethod
     def _normalize_analysis_snapshot(snapshot):
         if not isinstance(snapshot, dict):
             return None

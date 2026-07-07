@@ -1,10 +1,19 @@
 import json
 import unittest
+from unittest.mock import MagicMock
 
 from app.scraper.baomu_actor_scraper import BaomuActorScraper
+from app.scraper.browser_window import minimize_browser_window_if_needed
 
 
 class BaomuActorScraperParseProfileTest(unittest.TestCase):
+    def test_minimize_browser_window_skips_visible_browser_sessions(self):
+        page = MagicMock()
+
+        minimize_browser_window_if_needed(page, headless=False)
+
+        page.context.new_cdp_session.assert_not_called()
+
     def test_parse_profile_reads_embedded_next_data_and_normalizes_actor_fields(self):
         next_payload = {
             "props": {

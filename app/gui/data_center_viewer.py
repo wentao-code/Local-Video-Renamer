@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import QDialog, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from app.core.enrichment_sources import (
@@ -18,6 +18,7 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.data_center_analysis_viewer import DataAnalysisWindow, _build_refresh_client
 from app.gui.enrichment_summary_widgets import SummaryCard
 from app.gui.i18n import tr
+from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
 
 
 class DataCenterWindow(AsyncTaskHostMixin, QDialog):
@@ -27,6 +28,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.refresh_client = _build_refresh_client(backend_client)
         self._pending_close = False
         self._startup_refresh_pending = True
+        self._suppress_async_error_dialog = False
         self.analysis_window = None
         self._init_async_task_host()
         self.init_ui()
@@ -39,14 +41,17 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
 
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
+        meta_layout = QVBoxLayout()
+        meta_layout.setSpacing(4)
         self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
         self.last_refresh_duration_label = QLabel(tr('common.duration', value=tr('common.empty')))
         self.btn_analysis = QPushButton(tr('data_center.analysis.entry'))
         self.btn_analysis.clicked.connect(self.show_analysis_window)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
-        top_layout.addWidget(self.last_refreshed_label)
-        top_layout.addWidget(self.last_refresh_duration_label)
+        meta_layout.addWidget(self.last_refreshed_label)
+        meta_layout.addWidget(self.last_refresh_duration_label)
+        top_layout.addLayout(meta_layout)
         top_layout.addStretch()
         top_layout.addWidget(self.btn_analysis)
         top_layout.addWidget(self.btn_refresh)
@@ -86,9 +91,10 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.setLayout(layout)
         self.set_async_busy_widgets([self.btn_refresh, self.btn_analysis])
 
-    def load_data(self, force_refresh=False):
+    def load_data(self, force_refresh=False, block_ui=True, silent_errors=False):
         if self._pending_close or self.is_async_task_running():
             return
+        self._suppress_async_error_dialog = bool(silent_errors)
 
         self.start_async_task(
             lambda: {
@@ -97,6 +103,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             },
             self._on_load_data_finished,
             tr('common.read_failed'),
+            block_ui=block_ui,
         )
 
     def _on_load_data_finished(self, result):
@@ -105,7 +112,8 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             return
         summary = result.get('summary', {}) or {}
         refreshed_at = str(result.get('refreshed_at', '') or '').strip() or tr('common.empty')
-        refresh_duration_text = str(result.get('refresh_duration_text', '') or '').strip() or tr('common.empty')
+        refresh_duration_text = resolve_refresh_duration_text(result) or tr('common.empty')
+        self._suppress_async_error_dialog = False
         progress = result.get('progress', {}) or {}
         live_progress_map = self._build_live_progress_map(progress)
         video_summary = summary.get('video_library', {}).get('sources', {})
@@ -165,9 +173,15 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         )
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
-            self.load_data(force_refresh=True)
+            if self.is_async_task_running():
+                QTimer.singleShot(0, lambda: self.load_data(force_refresh=True, block_ui=False, silent_errors=True))
+            else:
+                self.load_data(force_refresh=True, block_ui=False, silent_errors=True)
 
     def _handle_async_task_failed(self, message):
+        if self._suppress_async_error_dialog:
+            self._suppress_async_error_dialog = False
+            return
         if self._pending_close:
             return
         print(tr('data_center.read_failed', error=message))

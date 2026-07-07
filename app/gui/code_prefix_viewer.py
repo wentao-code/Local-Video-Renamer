@@ -36,6 +36,7 @@ from app.gui.code_prefix_library_sorting import (
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
 from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
 from app.services.detail import CODE_PREFIX_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
@@ -63,6 +64,10 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.action_buttons = {}
         self._startup_refresh_pending = True
         self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_block_ui = False
+        self._deferred_allow_deferred_close = False
+        self._suppress_async_error_dialog = False
         self.sort_settings = load_code_prefix_library_settings()
         self._init_async_task_host()
         self._init_deferred_reload(self._perform_deferred_load)
@@ -77,6 +82,8 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         layout = QVBoxLayout()
         filter_layout = QHBoxLayout()
         filter_layout.setSpacing(10)
+        meta_layout = QVBoxLayout()
+        meta_layout.setSpacing(4)
         action_layout = QHBoxLayout()
         action_layout.setSpacing(10)
         self.search_input = QLineEdit()
@@ -137,9 +144,10 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         filter_layout.addWidget(self.sort_order_combo)
         filter_layout.addStretch()
 
+        meta_layout.addWidget(self.last_refreshed_label)
+        meta_layout.addWidget(self.last_refresh_duration_label)
+
         action_layout.addStretch()
-        action_layout.addWidget(self.last_refreshed_label)
-        action_layout.addWidget(self.last_refresh_duration_label)
         action_layout.addWidget(self.btn_apply_sort)
         action_layout.addWidget(self.btn_add)
         action_layout.addWidget(self.btn_reset_avfan)
@@ -160,6 +168,7 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         layout.addLayout(filter_layout)
+        layout.addLayout(meta_layout)
         layout.addLayout(action_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
@@ -182,11 +191,23 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
         self._update_page_controls()
 
-    def load_data(self, force_refresh=False):
+    def load_data(
+        self,
+        force_refresh=False,
+        silent_errors=False,
+        block_ui=True,
+        allow_deferred_close=False,
+    ):
         if self.is_async_task_running():
             self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
+            self._deferred_silent_errors = self._deferred_silent_errors or bool(silent_errors)
+            self._deferred_block_ui = self._deferred_block_ui or bool(block_ui)
+            self._deferred_allow_deferred_close = (
+                self._deferred_allow_deferred_close or bool(allow_deferred_close)
+            )
             self.schedule_deferred_reload(0 if force_refresh else None)
             return
+        self._suppress_async_error_dialog = bool(silent_errors)
         search_text = self.search_input.text().strip()
         sort_field = self.sort_settings.get('sort_field', DEFAULT_CODE_PREFIX_SORT_FIELD)
         sort_order = self.sort_settings.get('sort_order', DEFAULT_CODE_PREFIX_SORT_ORDER)
@@ -201,12 +222,25 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             ),
             self._on_load_data_finished,
             tr('common.read_failed'),
+            block_ui=block_ui,
+            allow_deferred_close=allow_deferred_close,
         )
 
     def _perform_deferred_load(self):
         force_refresh = self._deferred_force_refresh
+        silent_errors = self._deferred_silent_errors
+        block_ui = self._deferred_block_ui
+        allow_deferred_close = self._deferred_allow_deferred_close
         self._deferred_force_refresh = False
-        self.load_data(force_refresh=force_refresh)
+        self._deferred_silent_errors = False
+        self._deferred_block_ui = False
+        self._deferred_allow_deferred_close = False
+        self.load_data(
+            force_refresh=force_refresh,
+            silent_errors=silent_errors,
+            block_ui=block_ui,
+            allow_deferred_close=allow_deferred_close,
+        )
 
     def render_rows(self, rows):
         self.action_buttons = {}
@@ -628,7 +662,8 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.current_offset = int(payload.get('offset', self.current_offset) or 0)
         self.page_size = int(payload.get('limit', self.page_size) or self.page_size)
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
-        refresh_duration_text = str(payload.get('refresh_duration_text', '') or '').strip() or tr('common.empty')
+        refresh_duration_text = resolve_refresh_duration_text(payload) or tr('common.empty')
+        self._suppress_async_error_dialog = False
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
         self.last_refresh_duration_label.setText(tr('common.duration', value=refresh_duration_text))
         self.rebuild_visible_rows()
@@ -645,7 +680,18 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
             if bool(payload.get('cache_hit')):
-                self.load_data(force_refresh=True)
+                self.load_data(
+                    force_refresh=True,
+                    silent_errors=True,
+                    block_ui=False,
+                    allow_deferred_close=True,
+                )
+
+    def _handle_async_task_failed(self, message):
+        if self._suppress_async_error_dialog:
+            self._suppress_async_error_dialog = False
+            return
+        super()._handle_async_task_failed(message)
 
     def _on_reset_finished(self, result):
         self._on_load_data_finished(result)

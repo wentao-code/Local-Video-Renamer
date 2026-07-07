@@ -77,6 +77,16 @@ def make_handler(service):
                 return service.add_masterpiece_entry(body.get('code'))
             if method == 'POST' and path == '/masterpiece/entries/medal':
                 return service.update_masterpiece_entry_medal(body.get('code'), body.get('medal'))
+            if method == 'GET' and path == '/masterpiece/detail':
+                return service.get_masterpiece_detail(query.get('code', [''])[0])
+            if method == 'GET' and path == '/medals':
+                return service.list_global_medals()
+            if method == 'POST' and path == '/medals/add':
+                return service.add_global_medal(body.get('name'), body.get('description', ''))
+            if method == 'POST' and path == '/medals/update':
+                return service.update_global_medal_description(body.get('name'), body.get('description', ''))
+            if method == 'POST' and path == '/medals/delete':
+                return service.delete_global_medal(body.get('name'))
             if method == 'GET' and path == '/database/videos/detail':
                 return service.get_video_detail(query.get('code', [''])[0])
             if method == 'GET' and path == '/data-center/summary':

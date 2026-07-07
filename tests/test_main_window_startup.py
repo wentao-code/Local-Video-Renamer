@@ -106,6 +106,34 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertIs(started[0][2], created_worker)
         self.assertEqual(started[-1], 'start')
 
+    def test_snapshot_refresh_progress_updates_status_with_elapsed_seconds(self):
+        snapshot_status = SimpleNamespace(text='')
+        snapshot_status.setText = lambda value: setattr(snapshot_status, 'text', value)
+        elapsed_timer = SimpleNamespace(started=False)
+        elapsed_timer.start = lambda: setattr(elapsed_timer, 'started', True)
+        elapsed_timer.stop = lambda: setattr(elapsed_timer, 'started', False)
+        stub = SimpleNamespace(
+            snapshot_refresh_status_label=snapshot_status,
+            snapshot_refresh_elapsed_timer=elapsed_timer,
+            snapshot_refresh_current_target='',
+            snapshot_refresh_started_at=0.0,
+        )
+
+        with patch('app.gui.main_window.time.time', return_value=100.0):
+            main_window.VidNormApp._on_snapshot_refresh_progress(
+                stub,
+                {'target_label': '番号库', 'elapsed_seconds': 0},
+            )
+
+        self.assertTrue(elapsed_timer.started)
+        self.assertEqual(stub.snapshot_refresh_current_target, '番号库')
+        self.assertIn('番号库', snapshot_status.text)
+
+        with patch('app.gui.main_window.time.time', return_value=108.4):
+            main_window.VidNormApp.update_snapshot_refresh_elapsed(stub)
+
+        self.assertIn('8秒', snapshot_status.text)
+
 
 if __name__ == '__main__':
     unittest.main()

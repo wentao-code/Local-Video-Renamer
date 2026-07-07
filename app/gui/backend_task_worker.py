@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
 from app.gui.i18n import tr
@@ -31,6 +31,9 @@ class AsyncTaskHostMixin:
         self._async_task_success_handler = None
         self._async_task_error_title = ''
         self._async_busy_widgets = []
+        self._async_task_blocks_ui = False
+        self._async_task_allows_deferred_close = False
+        self._async_close_pending = False
 
     def is_async_task_running(self):
         return self._async_task_thread is not None
@@ -45,11 +48,22 @@ class AsyncTaskHostMixin:
             **payload,
         }
 
-    def start_async_task(self, task, success_handler, error_title=None):
+    def start_async_task(
+        self,
+        task,
+        success_handler,
+        error_title=None,
+        block_ui=True,
+        allow_deferred_close=False,
+    ):
         if self._async_task_thread is not None:
             return False
 
-        self._set_async_busy(True)
+        self._async_task_blocks_ui = bool(block_ui)
+        self._async_task_allows_deferred_close = bool(allow_deferred_close)
+        self._async_close_pending = False
+        if self._async_task_blocks_ui:
+            self._set_async_busy(True)
         self._async_task_success_handler = success_handler
         self._async_task_error_title = str(error_title or tr('common.operation_failed'))
         self._async_task_thread = QThread(self)
@@ -82,14 +96,26 @@ class AsyncTaskHostMixin:
             self._async_task_worker.deleteLater()
         if self._async_task_thread is not None:
             self._async_task_thread.deleteLater()
+        close_pending = bool(self._async_close_pending)
         self._async_task_worker = None
         self._async_task_thread = None
-        self._set_async_busy(False)
+        if self._async_task_blocks_ui:
+            self._set_async_busy(False)
+        self._async_task_blocks_ui = False
+        self._async_task_allows_deferred_close = False
+        self._async_close_pending = False
+        if close_pending:
+            QTimer.singleShot(0, self.close)
 
     def block_close_while_async_running(self, event, title=None, message=None):
         title = title or tr('common.task_in_progress')
         message = message or tr('common.task_wait')
         if self._async_task_thread and self._async_task_thread.isRunning():
+            if self._async_task_allows_deferred_close:
+                self._async_close_pending = True
+                self.hide()
+                event.ignore()
+                return True
             QMessageBox.information(self, title, message)
             event.ignore()
             return True

@@ -15,7 +15,14 @@ from app.gui.db_viewer import DatabaseViewerWindow
 _APP = QApplication.instance() or QApplication([])
 
 
-def _run_sync_async_task(self, task, success_handler, error_title=None):
+def _run_sync_async_task(
+    self,
+    task,
+    success_handler,
+    error_title=None,
+    block_ui=True,
+    allow_deferred_close=False,
+):
     success_handler(task())
     return True
 

@@ -1,47 +1,11 @@
 from html import escape
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QHeaderView,
-    QLabel,
-    QPlainTextEdit,
-    QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt5.QtWidgets import QDialog, QHeaderView, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
-from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
+from app.core.ladder_board import split_ladder_medals
 from app.gui.i18n import tr
-
-
-class MedalEditDialog(QDialog):
-    def __init__(self, entity_name, medal_text, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(tr('ladder.selected.medal_dialog_title', entity_name=entity_name))
-        self.resize(420, 280)
-
-        layout = QVBoxLayout(self)
-
-        hint_label = QLabel(tr('ladder.selected.medal_dialog_hint'))
-        hint_label.setWordWrap(True)
-        layout.addWidget(hint_label)
-
-        self.editor = QPlainTextEdit()
-        self.editor.setPlainText(str(medal_text or ''))
-        self.editor.setPlaceholderText(tr('ladder.selected.medal_placeholder'))
-        layout.addWidget(self.editor)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def medal_text(self):
-        return normalize_ladder_medal_text(self.editor.toPlainText())
+from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, build_medal_text
 
 
 class LadderSelectedPanel(QWidget):
@@ -74,6 +38,7 @@ class LadderSelectedPanel(QWidget):
         super().__init__(parent)
         self.rows = []
         self._medal_widgets = {}
+        self.global_medals = []
         self.init_ui()
 
     def init_ui(self):
@@ -101,7 +66,7 @@ class LadderSelectedPanel(QWidget):
         for row_index, row in enumerate(self.rows):
             entity_name = str((row or {}).get('display_name', '') or '').strip()
             tier = str((row or {}).get('tier', '') or '').strip().upper()
-            medal_text = normalize_ladder_medal_text((row or {}).get('medal', ''))
+            medal_text = str((row or {}).get('medal', '') or '').strip()
             medals = list((row or {}).get('medals') or split_ladder_medals(medal_text))
             self.table.insertRow(row_index)
 
@@ -115,6 +80,9 @@ class LadderSelectedPanel(QWidget):
             self.table.setCellWidget(row_index, 4, self._build_detail_button(entity_name))
 
         self._refresh_row_heights()
+
+    def set_global_medals(self, medals):
+        self.global_medals = [dict(row or {}) for row in (medals or [])]
 
     def _build_medal_widget(self, entity_name, tier, medal_text, medals):
         label = QLabel()
@@ -132,10 +100,7 @@ class LadderSelectedPanel(QWidget):
 
     def _build_action_widget(self, entity_name):
         state = self._medal_widgets.get(entity_name) or {}
-        medal_text = str(state.get('medal_text', '') or '').strip()
-        button = QPushButton(
-            tr('ladder.selected.edit_medal') if medal_text else tr('ladder.selected.add_medal')
-        )
+        button = QPushButton(tr('ladder.selected.add_medal'))
         button.clicked.connect(lambda _checked=False, name=entity_name: self._handle_action_clicked(name))
         if state is not None:
             state['button'] = button
@@ -152,18 +117,19 @@ class LadderSelectedPanel(QWidget):
         if not state:
             return
 
-        dialog = MedalEditDialog(entity_name, state.get('medal_text', ''), self)
+        current_medals = list(split_ladder_medals(state.get('medal_text', '')))
+        dialog = GlobalMedalPickerDialog(self.global_medals, owned_medals=current_medals, parent=self)
         if dialog.exec_() != QDialog.Accepted:
             return
 
-        medal_text = dialog.medal_text()
+        medal_text = build_medal_text(current_medals, dialog.selected_medal_names())
         if medal_text == str(state.get('medal_text', '') or ''):
             return
         self.medal_save_requested.emit(entity_name, medal_text)
 
     def _build_medal_html(self, tier, medals):
         if not medals:
-            return f'<span style="color:#888888;">{escape(tr("ladder.selected.medal_empty"))}</span>'
+            return ''
 
         palette = dict(self._TIER_MEDAL_STYLES.get(str(tier or '').strip().upper(), self._TIER_MEDAL_STYLES['C']))
         chips = []

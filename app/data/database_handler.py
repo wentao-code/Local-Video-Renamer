@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from threading import Lock
+from urllib.parse import quote
 
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
@@ -52,6 +53,7 @@ from app.core.project_paths import DATABASE_FILE
 from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, get_filter_keywords, matches_filter_keywords
 from app.core.video_filter_settings import load_video_filter_settings
 from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
+from app.core.runtime_config import get_avfan_base_url
 from app.data.repositories import (
     ActorRepositoryMixin,
     CodePrefixRepositoryMixin,
@@ -89,6 +91,7 @@ def sanitize_actor_text(value):
 
 STARTUP_MAINTENANCE_META_KEY = 'startup_maintenance_version'
 STARTUP_MAINTENANCE_VERSION = '2026-06-30-1'
+MASTERPIECE_SOURCE_PRIORITY = ('video_library', 'code_prefix_library', 'actor_library')
 
 
 class VideoDatabase(
@@ -186,11 +189,56 @@ class VideoDatabase(
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS masterpiece_entries (
                     code TEXT PRIMARY KEY,
+                    display_title TEXT DEFAULT '',
+                    display_author TEXT DEFAULT '',
+                    primary_source TEXT DEFAULT '',
+                    primary_detail_url TEXT DEFAULT '',
                     medal TEXT DEFAULT '',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            self._ensure_column(cursor, 'masterpiece_entries', 'display_title', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'masterpiece_entries', 'display_author', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'masterpiece_entries', 'primary_source', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'masterpiece_entries', 'primary_detail_url', "TEXT DEFAULT ''")
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS masterpiece_references (
+                    masterpiece_code TEXT NOT NULL,
+                    reference_source TEXT NOT NULL,
+                    reference_key TEXT NOT NULL,
+                    matched_code TEXT NOT NULL,
+                    title TEXT DEFAULT '',
+                    author TEXT DEFAULT '',
+                    release_date TEXT DEFAULT '',
+                    avfan_movie_id TEXT DEFAULT '',
+                    avfan_url TEXT DEFAULT '',
+                    javtxt_movie_id TEXT DEFAULT '',
+                    javtxt_url TEXT DEFAULT '',
+                    detail_url TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (masterpiece_code, reference_source, reference_key, matched_code)
+                )
+                '''
+            )
+            self._ensure_index(
+                cursor,
+                'idx_masterpiece_references_code_source',
+                'masterpiece_references',
+                'masterpiece_code, reference_source',
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS global_medals (
+                    name TEXT PRIMARY KEY,
+                    description TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS path_library (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,6 +428,9 @@ class VideoDatabase(
             self._ensure_column(cursor, 'ladder_entries', 'medal', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'ladder_entries', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_column(cursor, 'ladder_entries', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+            self._ensure_column(cursor, 'global_medals', 'description', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'global_medals', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+            self._ensure_column(cursor, 'global_medals', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_index(cursor, 'idx_processed_videos_manual_category', 'processed_videos', 'javtxt_enrichment_status, video_category, code')
             self._ensure_index(cursor, 'idx_processed_videos_release_date', 'processed_videos', 'release_date, code')
             self._ensure_index(
@@ -4629,13 +4680,17 @@ class VideoDatabase(
             cursor.execute(
                 '''
                 SELECT m.code,
-                       COALESCE(p.title, ''),
-                       COALESCE(p.author, ''),
+                       COALESCE(NULLIF(m.display_title, ''), NULLIF(p.javtxt_title, ''), NULLIF(p.title, ''), m.code),
+                       COALESCE(NULLIF(m.display_author, ''), NULLIF(p.javtxt_actors, ''), NULLIF(p.author, ''), ''),
+                       COALESCE(NULLIF(m.primary_source, ''), CASE WHEN p.code IS NOT NULL THEN 'video_library' ELSE '' END),
+                       COALESCE(NULLIF(m.primary_detail_url, ''), ''),
                        COALESCE(m.medal, ''),
                        COALESCE(m.created_at, ''),
-                       COALESCE(m.updated_at, '')
+                       COALESCE(m.updated_at, ''),
+                       COALESCE(p.avfan_movie_id, ''),
+                       COALESCE(p.javtxt_url, '')
                 FROM masterpiece_entries AS m
-                INNER JOIN processed_videos AS p
+                LEFT JOIN processed_videos AS p
                     ON p.code = m.code
                 ORDER BY COALESCE(m.created_at, '') ASC, UPPER(m.code) ASC
                 '''
@@ -4644,16 +4699,23 @@ class VideoDatabase(
 
         result = []
         for row in rows:
-            medal_text = normalize_ladder_medal_text(row[3] or '')
+            medal_text = normalize_ladder_medal_text(row[5] or '')
             result.append(
                 {
                     'code': row[0] or '',
                     'title': row[1] or '',
                     'author': sanitize_actor_text(row[2] or ''),
+                    'display_title': row[1] or '',
+                    'display_author': sanitize_actor_text(row[2] or ''),
+                    'primary_source': row[3] or '',
+                    'primary_detail_url': (row[4] or '') or self._build_movie_detail_url(
+                        avfan_movie_id=row[8] or '',
+                        javtxt_url=row[9] or '',
+                    ),
                     'medal': medal_text,
                     'medals': split_ladder_medals(medal_text),
-                    'created_at': row[4] or '',
-                    'updated_at': row[5] or '',
+                    'created_at': row[6] or '',
+                    'updated_at': row[7] or '',
                 }
             )
         return result
@@ -4663,8 +4725,8 @@ class VideoDatabase(
         if not normalized_code:
             raise ValueError('缺少视频编号')
 
-        detail = self.get_video_detail_record(normalized_code)
-        if not detail:
+        references = self._collect_masterpiece_references(normalized_code)
+        if not references:
             raise ValueError(f'视频不存在: {normalized_code}')
 
         with self._connect() as conn:
@@ -4716,6 +4778,462 @@ class VideoDatabase(
             return {}
         for row in self.list_masterpiece_entries():
             if str((row or {}).get('code', '') or '').strip() == normalized_code:
+                return dict(row or {})
+        return {}
+
+    def list_masterpiece_entries(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT m.code,
+                       COALESCE(NULLIF(m.display_title, ''), NULLIF(p.javtxt_title, ''), NULLIF(p.title, ''), m.code),
+                       COALESCE(NULLIF(m.display_author, ''), NULLIF(p.javtxt_actors, ''), NULLIF(p.author, ''), ''),
+                       COALESCE(NULLIF(m.primary_source, ''), CASE WHEN p.code IS NOT NULL THEN 'video_library' ELSE '' END),
+                       COALESCE(NULLIF(m.primary_detail_url, ''), ''),
+                       COALESCE(m.medal, ''),
+                       COALESCE(m.created_at, ''),
+                       COALESCE(m.updated_at, ''),
+                       COALESCE(p.avfan_movie_id, ''),
+                       COALESCE(p.javtxt_url, '')
+                FROM masterpiece_entries AS m
+                LEFT JOIN processed_videos AS p
+                    ON p.code = m.code
+                ORDER BY COALESCE(m.created_at, '') ASC, UPPER(m.code) ASC
+                '''
+            )
+            rows = cursor.fetchall()
+
+        result = []
+        for row in rows:
+            medal_text = normalize_ladder_medal_text(row[5] or '')
+            result.append(
+                {
+                    'code': row[0] or '',
+                    'title': row[1] or '',
+                    'author': sanitize_actor_text(row[2] or ''),
+                    'display_title': row[1] or '',
+                    'display_author': sanitize_actor_text(row[2] or ''),
+                    'primary_source': row[3] or '',
+                    'primary_detail_url': (row[4] or '') or self._build_movie_detail_url(
+                        avfan_movie_id=row[8] or '',
+                        javtxt_url=row[9] or '',
+                    ),
+                    'medal': medal_text,
+                    'medals': split_ladder_medals(medal_text),
+                    'created_at': row[6] or '',
+                    'updated_at': row[7] or '',
+                }
+            )
+        return result
+
+    def add_masterpiece_entry(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            raise ValueError('缂哄皯瑙嗛缂栧彿')
+
+        references = self._collect_masterpiece_references(normalized_code)
+        if not references:
+            raise ValueError(f'瑙嗛涓嶅瓨鍦? {normalized_code}')
+        primary_reference = self._pick_primary_masterpiece_reference(references)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO masterpiece_entries (
+                    code,
+                    display_title,
+                    display_author,
+                    primary_source,
+                    primary_detail_url,
+                    medal
+                )
+                VALUES (?, ?, ?, ?, ?, '')
+                ON CONFLICT(code) DO UPDATE SET
+                    display_title = excluded.display_title,
+                    display_author = excluded.display_author,
+                    primary_source = excluded.primary_source,
+                    primary_detail_url = excluded.primary_detail_url,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    normalized_code,
+                    primary_reference.get('title', '') or normalized_code,
+                    primary_reference.get('author', ''),
+                    primary_reference.get('reference_source', ''),
+                    primary_reference.get('detail_url', ''),
+                ),
+            )
+            cursor.execute(
+                '''
+                DELETE FROM masterpiece_references
+                WHERE masterpiece_code = ?
+                ''',
+                (normalized_code,),
+            )
+            cursor.executemany(
+                '''
+                INSERT INTO masterpiece_references (
+                    masterpiece_code,
+                    reference_source,
+                    reference_key,
+                    matched_code,
+                    title,
+                    author,
+                    release_date,
+                    avfan_movie_id,
+                    avfan_url,
+                    javtxt_movie_id,
+                    javtxt_url,
+                    detail_url
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        normalized_code,
+                        reference.get('reference_source', ''),
+                        reference.get('reference_key', ''),
+                        reference.get('matched_code', ''),
+                        reference.get('title', ''),
+                        reference.get('author', ''),
+                        reference.get('release_date', ''),
+                        reference.get('avfan_movie_id', ''),
+                        reference.get('avfan_url', ''),
+                        reference.get('javtxt_movie_id', ''),
+                        reference.get('javtxt_url', ''),
+                        reference.get('detail_url', ''),
+                    )
+                    for reference in references
+                ],
+            )
+            conn.commit()
+
+        return self._get_masterpiece_entry(normalized_code)
+
+    def _get_masterpiece_entry(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return {}
+        for row in self.list_masterpiece_entries():
+            if str((row or {}).get('code', '') or '').strip() == normalized_code:
+                return dict(row or {})
+        return {}
+
+    def get_masterpiece_detail_record(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return {}
+
+        entry = self._get_masterpiece_entry(normalized_code)
+        if not entry:
+            return {}
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT reference_source,
+                       reference_key,
+                       matched_code,
+                       title,
+                       author,
+                       release_date,
+                       avfan_movie_id,
+                       avfan_url,
+                       javtxt_movie_id,
+                       javtxt_url,
+                       detail_url
+                FROM masterpiece_references
+                WHERE masterpiece_code = ?
+                ORDER BY CASE reference_source
+                    WHEN 'video_library' THEN 0
+                    WHEN 'code_prefix_library' THEN 1
+                    WHEN 'actor_library' THEN 2
+                    ELSE 99
+                END, UPPER(reference_key), UPPER(matched_code)
+                ''',
+                (normalized_code,),
+            )
+            rows = cursor.fetchall()
+
+        references = [
+            {
+                'reference_source': row[0] or '',
+                'reference_key': row[1] or '',
+                'matched_code': row[2] or '',
+                'title': row[3] or '',
+                'author': sanitize_actor_text(row[4] or ''),
+                'release_date': row[5] or '',
+                'avfan_movie_id': row[6] or '',
+                'avfan_url': row[7] or '',
+                'javtxt_movie_id': row[8] or '',
+                'javtxt_url': row[9] or '',
+                'detail_url': (row[10] or '') or self._build_movie_detail_url(
+                    avfan_url=row[7] or '',
+                    avfan_movie_id=row[6] or '',
+                    javtxt_url=row[9] or '',
+                ),
+            }
+            for row in rows
+        ]
+
+        if not references:
+            processed_detail = self.get_video_detail_record(normalized_code)
+            if processed_detail:
+                references = [self._build_processed_masterpiece_reference(processed_detail)]
+
+        return {
+            'code': entry.get('code', normalized_code),
+            'title': entry.get('title', ''),
+            'author': entry.get('author', ''),
+            'display_title': entry.get('display_title', entry.get('title', '')),
+            'display_author': entry.get('display_author', entry.get('author', '')),
+            'primary_source': entry.get('primary_source', ''),
+            'primary_detail_url': entry.get('primary_detail_url', ''),
+            'medal': entry.get('medal', ''),
+            'medals': list(entry.get('medals', []) or []),
+            'references': references,
+        }
+
+    def _collect_masterpiece_references(self, normalized_code):
+        references = []
+        processed_detail = self.get_video_detail_record(normalized_code)
+        if processed_detail:
+            references.append(self._build_processed_masterpiece_reference(processed_detail))
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT prefix,
+                       code,
+                       COALESCE(title, ''),
+                       COALESCE(NULLIF(author, ''), NULLIF(author_raw, ''), ''),
+                       COALESCE(release_date, ''),
+                       COALESCE(avfan_url, ''),
+                       COALESCE(javtxt_movie_id, ''),
+                       COALESCE(javtxt_url, '')
+                FROM code_prefix_movies
+                WHERE code = ?
+                ORDER BY release_date DESC, prefix ASC
+                ''',
+                (normalized_code,),
+            )
+            for row in cursor.fetchall():
+                references.append(
+                    self._build_masterpiece_reference(
+                        reference_source='code_prefix_library',
+                        reference_key=row[0] or '',
+                        matched_code=row[1] or normalized_code,
+                        title=row[2] or normalized_code,
+                        author=row[3] or '',
+                        release_date=row[4] or '',
+                        avfan_url=row[5] or '',
+                        javtxt_movie_id=row[6] or '',
+                        javtxt_url=row[7] or '',
+                    )
+                )
+
+            cursor.execute(
+                '''
+                SELECT actor_name,
+                       code,
+                       COALESCE(title, ''),
+                       COALESCE(NULLIF(author, ''), NULLIF(author_raw, ''), ''),
+                       COALESCE(release_date, ''),
+                       COALESCE(avfan_url, ''),
+                       COALESCE(javtxt_movie_id, ''),
+                       COALESCE(javtxt_url, '')
+                FROM actor_movies
+                WHERE code = ?
+                ORDER BY release_date DESC, actor_name ASC
+                ''',
+                (normalized_code,),
+            )
+            for row in cursor.fetchall():
+                references.append(
+                    self._build_masterpiece_reference(
+                        reference_source='actor_library',
+                        reference_key=row[0] or '',
+                        matched_code=row[1] or normalized_code,
+                        title=row[2] or normalized_code,
+                        author=row[3] or '',
+                        release_date=row[4] or '',
+                        avfan_url=row[5] or '',
+                        javtxt_movie_id=row[6] or '',
+                        javtxt_url=row[7] or '',
+                    )
+                )
+        return references
+
+    @staticmethod
+    def _pick_primary_masterpiece_reference(references):
+        for source_name in MASTERPIECE_SOURCE_PRIORITY:
+            for reference in references:
+                if str(reference.get('reference_source', '') or '').strip() == source_name:
+                    return dict(reference)
+        return dict(references[0] or {}) if references else {}
+
+    def _build_processed_masterpiece_reference(self, detail):
+        normalized_code = standardize_video_code(detail.get('code', ''))
+        return self._build_masterpiece_reference(
+            reference_source='video_library',
+            reference_key=normalized_code,
+            matched_code=normalized_code,
+            title=detail.get('title', '') or normalized_code,
+            author=detail.get('author', ''),
+            release_date=detail.get('release_date', ''),
+            avfan_movie_id=detail.get('avfan_movie_id', ''),
+            javtxt_movie_id=detail.get('javtxt_movie_id', ''),
+            javtxt_url=detail.get('javtxt_url', ''),
+        )
+
+    def _build_masterpiece_reference(
+        self,
+        reference_source,
+        reference_key,
+        matched_code,
+        title='',
+        author='',
+        release_date='',
+        avfan_movie_id='',
+        avfan_url='',
+        javtxt_movie_id='',
+        javtxt_url='',
+    ):
+        normalized_source = str(reference_source or '').strip()
+        normalized_key = str(reference_key or '').strip()
+        normalized_matched_code = standardize_video_code(matched_code)
+        normalized_title = str(title or '').strip() or normalized_matched_code
+        normalized_author = sanitize_actor_text(author or '')
+        normalized_release_date = str(release_date or '').strip()
+        normalized_avfan_movie_id = str(avfan_movie_id or '').strip()
+        normalized_avfan_url = str(avfan_url or '').strip()
+        normalized_javtxt_movie_id = str(javtxt_movie_id or '').strip()
+        normalized_javtxt_url = str(javtxt_url or '').strip()
+        return {
+            'reference_source': normalized_source,
+            'reference_key': normalized_key,
+            'matched_code': normalized_matched_code,
+            'title': normalized_title,
+            'author': normalized_author,
+            'release_date': normalized_release_date,
+            'avfan_movie_id': normalized_avfan_movie_id,
+            'avfan_url': normalized_avfan_url,
+            'javtxt_movie_id': normalized_javtxt_movie_id,
+            'javtxt_url': normalized_javtxt_url,
+            'detail_url': self._build_movie_detail_url(
+                avfan_url=normalized_avfan_url,
+                avfan_movie_id=normalized_avfan_movie_id,
+                javtxt_url=normalized_javtxt_url,
+            ),
+        }
+
+    def _build_movie_detail_url(self, avfan_url='', avfan_movie_id='', javtxt_url=''):
+        normalized_avfan_url = str(avfan_url or '').strip()
+        if normalized_avfan_url:
+            return normalized_avfan_url
+
+        normalized_avfan_movie_id = str(avfan_movie_id or '').strip()
+        if normalized_avfan_movie_id:
+            try:
+                return f'{get_avfan_base_url()}/movies/{quote(normalized_avfan_movie_id)}'
+            except Exception:
+                pass
+
+        return str(javtxt_url or '').strip()
+
+    def list_global_medals(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT name,
+                       COALESCE(description, ''),
+                       COALESCE(created_at, ''),
+                       COALESCE(updated_at, '')
+                FROM global_medals
+                ORDER BY created_at ASC, UPPER(name) ASC
+                '''
+            )
+            rows = cursor.fetchall()
+
+        return [
+            {
+                'name': row[0] or '',
+                'description': row[1] or '',
+                'created_at': row[2] or '',
+                'updated_at': row[3] or '',
+            }
+            for row in rows
+        ]
+
+    def add_global_medal(self, name, description=''):
+        normalized_name = str(name or '').strip()
+        normalized_description = str(description or '').strip()
+        if not normalized_name:
+            raise ValueError('缺少勋章名称')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1 FROM global_medals WHERE name = ?', (normalized_name,))
+            if cursor.fetchone():
+                raise ValueError(f'勋章已存在: {normalized_name}')
+            cursor.execute(
+                '''
+                INSERT INTO global_medals (name, description)
+                VALUES (?, ?)
+                ''',
+                (normalized_name, normalized_description),
+            )
+            conn.commit()
+
+        return self._get_global_medal(normalized_name)
+
+    def update_global_medal_description(self, name, description=''):
+        normalized_name = str(name or '').strip()
+        normalized_description = str(description or '').strip()
+        if not normalized_name:
+            raise ValueError('缺少勋章名称')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE global_medals
+                SET description = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE name = ?
+                ''',
+                (normalized_description, normalized_name),
+            )
+            if cursor.rowcount <= 0:
+                raise ValueError(f'勋章不存在: {normalized_name}')
+            conn.commit()
+
+        return self._get_global_medal(normalized_name)
+
+    def delete_global_medal(self, name):
+        normalized_name = str(name or '').strip()
+        if not normalized_name:
+            raise ValueError('缺少勋章名称')
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM global_medals WHERE name = ?', (normalized_name,))
+            if cursor.rowcount <= 0:
+                raise ValueError(f'勋章不存在: {normalized_name}')
+            conn.commit()
+
+        return {'name': normalized_name, 'deleted': True}
+
+    def _get_global_medal(self, name):
+        normalized_name = str(name or '').strip()
+        if not normalized_name:
+            return {}
+        for row in self.list_global_medals():
+            if str((row or {}).get('name', '') or '').strip() == normalized_name:
                 return dict(row or {})
         return {}
 

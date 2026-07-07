@@ -13,7 +13,14 @@ from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 _APP = QApplication.instance() or QApplication([])
 
 
-def _run_sync_async_task(self, task, success_handler, error_title=None):
+def _run_sync_async_task(
+    self,
+    task,
+    success_handler,
+    error_title=None,
+    block_ui=True,
+    allow_deferred_close=False,
+):
     success_handler(task())
     return True
 
@@ -73,6 +80,39 @@ class CodePrefixDetailViewerWindowTest(unittest.TestCase):
                 self.assertIn('3.00', window.last_enriched_grid.value_labels['update_frequency'].text())
                 self.assertEqual(backend.refresh_flags, [False, True])
                 self.assertIn('2026-07-06 14:04:00', window.last_refreshed_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
+    def test_deferred_startup_refresh_keeps_allow_deferred_close_flag(self):
+        parent = QWidget()
+        backend = _BackendStub()
+        captured = []
+
+        def _capture_task(self, task, success_handler, error_title=None, block_ui=True, allow_deferred_close=False):
+            captured.append(
+                {
+                    'block_ui': bool(block_ui),
+                    'allow_deferred_close': bool(allow_deferred_close),
+                }
+            )
+            success_handler(task())
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_task):
+            window = CodePrefixDetailViewerWindow(backend, 'ROE', parent)
+            try:
+                captured.clear()
+                window._deferred_force_refresh = True
+                window._deferred_silent_errors = True
+                window._deferred_allow_deferred_close = True
+
+                window._perform_deferred_load()
+
+                self.assertEqual(len(captured), 1)
+                self.assertFalse(captured[0]['block_ui'])
+                self.assertTrue(captured[0]['allow_deferred_close'])
             finally:
                 window.hide()
                 window.deleteLater()
