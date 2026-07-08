@@ -118,6 +118,37 @@ class CodePrefixDetailViewerWindowTest(unittest.TestCase):
                 window.deleteLater()
                 parent.deleteLater()
 
+    def test_stale_prefix_response_is_discarded_after_switch(self):
+        parent = QWidget()
+        backend = _BackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = CodePrefixDetailViewerWindow(backend, 'ROE', parent)
+            try:
+                window.prefix = 'ADN'
+                window._active_request_token = 2
+                window._active_request_prefix = 'ADN'
+                original_prefix_text = window.summary_grid.value_labels['prefix'].text()
+                original_refreshed_text = window.last_refreshed_label.text()
+
+                window._on_load_data_finished(
+                    {
+                        'prefix_detail': {'prefix': 'ROE'},
+                        'refreshed_at': '2026-07-08 10:00:00',
+                        'cache_hit': False,
+                        'request_token': 1,
+                        'request_prefix': 'ROE',
+                    }
+                )
+
+                self.assertEqual(window.prefix, 'ADN')
+                self.assertEqual(window.summary_grid.value_labels['prefix'].text(), original_prefix_text)
+                self.assertEqual(window.last_refreshed_label.text(), original_refreshed_text)
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
 
 if __name__ == '__main__':
     unittest.main()

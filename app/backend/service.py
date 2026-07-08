@@ -3,8 +3,9 @@ import json
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+import threading
 from time import perf_counter
+from urllib.parse import quote, unquote
 
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
 from app.core.combo_enrichment import get_combo_label, normalize_combo_key
@@ -13,13 +14,16 @@ from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.core.project_paths import (
+    ACTOR_DETAIL_SNAPSHOT_DIR,
     ACTOR_SNAPSHOT_FILE,
+    CODE_PREFIX_DETAIL_SNAPSHOT_DIR,
     CODE_PREFIX_SNAPSHOT_FILE,
     DATA_CENTER_SNAPSHOT_FILE,
     LEGACY_CODE_PREFIX_SNAPSHOT_FILE,
     LEGACY_DATA_CENTER_SNAPSHOT_FILE,
     MASTERPIECE_SNAPSHOT_FILE,
     SNAPSHOT_REFRESH_LOG_FILE,
+    VIDEO_CATEGORY_SNAPSHOT_FILE,
 )
 from app.data.database_handler import VideoDatabase
 from app.scraper.avfan_scraper import reset_avfan_browser_profile
@@ -48,7 +52,9 @@ from app.services.library import (
     summarize_paths,
 )
 from app.services.local_video import LocalVideoLibraryService
+from app.services.queen_library_service import QueenLibraryService
 from app.services.video import VideoFilterService
+from app.core.project_paths import QUEEN_LIBRARY_DB_FILE
 
 
 class BackendService:
@@ -83,35 +89,45 @@ class BackendService:
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
         self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
+        self.queen_library_service = QueenLibraryService(QUEEN_LIBRARY_DB_FILE)
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
         self.enrichment_task_state = EnrichmentTaskState()
-        self._snapshot_lock = Lock()
+        self._snapshot_lock = threading.Lock()
         self._ladder_board_snapshots = {}
         self._path_library_snapshot = None
         self._canglangge_snapshot = None
         self._snapshot_refresh_log_file = SNAPSHOT_REFRESH_LOG_FILE
-        self._snapshot_refresh_log_lock = Lock()
+        self._snapshot_refresh_log_lock = threading.Lock()
         self._actor_snapshot_file = ACTOR_SNAPSHOT_FILE
-        self._actor_snapshot_file_lock = Lock()
+        self._actor_detail_snapshot_dir = ACTOR_DETAIL_SNAPSHOT_DIR
+        self._actor_snapshot_file_lock = threading.Lock()
         self._actor_snapshot_filter_fingerprint = self._build_actor_snapshot_filter_fingerprint(
             self._load_actor_snapshot_filter_settings()
         )
         self._actor_library_snapshots = {}
         self._actor_detail_snapshots = {}
         self._code_prefix_snapshot_file = CODE_PREFIX_SNAPSHOT_FILE
-        self._code_prefix_snapshot_file_lock = Lock()
+        self._code_prefix_detail_snapshot_dir = CODE_PREFIX_DETAIL_SNAPSHOT_DIR
+        self._code_prefix_snapshot_file_lock = threading.Lock()
         self._code_prefix_snapshot_filter_fingerprint = self._build_code_prefix_snapshot_filter_fingerprint(
             self._load_code_prefix_snapshot_filter_settings()
         )
         self._code_prefix_library_snapshots = {}
         self._code_prefix_detail_snapshots = {}
         self._masterpiece_snapshot_file = MASTERPIECE_SNAPSHOT_FILE
-        self._masterpiece_snapshot_file_lock = Lock()
+        self._masterpiece_snapshot_file_lock = threading.Lock()
         self._masterpiece_detail_snapshots = {}
+        self._video_category_snapshot_file = VIDEO_CATEGORY_SNAPSHOT_FILE
+        self._video_category_snapshot_file_lock = threading.Lock()
+        self._video_category_snapshot_filter_fingerprint = self._build_video_category_snapshot_filter_fingerprint(
+            self._load_video_category_snapshot_filter_settings()
+        )
+        self._video_category_overview_snapshot = None
         self._load_actor_snapshots()
         self._load_code_prefix_snapshots()
         self._load_masterpiece_snapshots()
+        self._load_video_category_snapshot()
         self.database_loaded = False
 
     def load_database(self):
@@ -346,21 +362,62 @@ class BackendService:
             'videos': self.video_filter_service.filter_video_rows((overview or {}).get('videos', []) or []),
         }
 
+    def list_videos_requiring_manual_category_snapshot(self, force_refresh=False):
+        self.ensure_database_loaded()
+        self._refresh_video_category_snapshot_filter_state()
+        with self._snapshot_guard():
+            snapshot = getattr(self, '_video_category_overview_snapshot', None)
+            if snapshot is not None and not force_refresh:
+                return {
+                    **self._clone_video_category_snapshot(snapshot),
+                    'cache_hit': True,
+                }
+
+        started_at = perf_counter()
+        overview = self.list_videos_requiring_manual_category()
+        refresh_duration_ms = self._build_refresh_duration_ms(started_at)
+        snapshot = self._build_snapshot_payload(
+            videos=[dict(row or {}) for row in (overview or {}).get('videos', []) or []],
+            staged_count=int((overview or {}).get('staged_count', 0) or 0),
+            refresh_duration_ms=refresh_duration_ms,
+        )
+        with self._snapshot_guard():
+            self._video_category_overview_snapshot = snapshot
+            self._persist_video_category_snapshot()
+        self._append_snapshot_refresh_log(
+            snapshot_key='video_category_overview',
+            refreshed_at=self._snapshot_refreshed_at(snapshot),
+            refresh_duration_ms=refresh_duration_ms,
+            cache_kind='list',
+        )
+        return {
+            **self._clone_video_category_snapshot(snapshot),
+            'cache_hit': False,
+        }
+
     def stage_video_category(self, code, category):
         self.ensure_database_loaded()
-        return self.db.stage_video_category(code, category)
+        result = self.db.stage_video_category(code, category)
+        self._invalidate_video_category_snapshot()
+        return result
 
     def stage_video_categories(self, entries):
         self.ensure_database_loaded()
-        return self.db.stage_video_categories(entries)
+        result = self.db.stage_video_categories(entries)
+        self._invalidate_video_category_snapshot()
+        return result
 
     def sync_staged_video_categories(self):
         self.ensure_database_loaded()
-        return self.db.sync_staged_video_categories()
+        result = self.db.sync_staged_video_categories()
+        self._invalidate_video_category_snapshot()
+        return result
 
     def update_video_category(self, code, category):
         self.ensure_database_loaded()
-        return {'updated_count': self.db.update_video_category(code, category)}
+        result = {'updated_count': self.db.update_video_category(code, category)}
+        self._invalidate_video_category_snapshot()
+        return result
 
     def list_actors(self, search_text='', sort_field='name', sort_order='asc', limit=None, offset=0):
         self.ensure_database_loaded()
@@ -464,6 +521,13 @@ class BackendService:
                     **self._clone_actor_detail_snapshot(snapshot),
                     'cache_hit': True,
                 }
+            if not force_refresh:
+                disk_snapshot = self._load_single_actor_detail_snapshot_file(normalized_actor_name)
+                if disk_snapshot is not None:
+                    return {
+                        **self._clone_actor_detail_snapshot(disk_snapshot),
+                        'cache_hit': True,
+                    }
 
         started_at = perf_counter()
         payload = self.get_actor_detail(normalized_actor_name)
@@ -474,7 +538,7 @@ class BackendService:
         )
         with self._snapshot_guard():
             self._actor_detail_snapshots[snapshot_key] = snapshot
-            self._persist_actor_snapshots()
+            self._persist_single_actor_detail_snapshot_file(normalized_actor_name, snapshot)
         self._append_snapshot_refresh_log(
             snapshot_key='actor_detail',
             refreshed_at=self._snapshot_refreshed_at(snapshot),
@@ -633,6 +697,13 @@ class BackendService:
                     **self._clone_code_prefix_detail_snapshot(snapshot),
                     'cache_hit': True,
                 }
+            if not force_refresh:
+                disk_snapshot = self._load_single_code_prefix_detail_snapshot_file(normalized_prefix)
+                if disk_snapshot is not None:
+                    return {
+                        **self._clone_code_prefix_detail_snapshot(disk_snapshot),
+                        'cache_hit': True,
+                    }
 
         started_at = perf_counter()
         payload = self.get_code_prefix_detail(normalized_prefix)
@@ -643,10 +714,25 @@ class BackendService:
         )
         with self._snapshot_guard():
             self._code_prefix_detail_snapshots[normalized_prefix] = snapshot
-            self._persist_code_prefix_snapshots()
+            self._persist_single_code_prefix_detail_snapshot_file(normalized_prefix, snapshot)
+        self._append_snapshot_refresh_log(
+            snapshot_key='code_prefix_detail',
+            refreshed_at=self._snapshot_refreshed_at(snapshot),
+            refresh_duration_ms=refresh_duration_ms,
+            cache_kind='detail',
+        )
         return {
             **self._clone_code_prefix_detail_snapshot(snapshot),
             'cache_hit': False,
+        }
+
+    def rebuild_detail_snapshots(self):
+        self.ensure_database_loaded()
+        actor_summary = self._rebuild_actor_detail_snapshots()
+        code_prefix_summary = self._rebuild_code_prefix_detail_snapshots()
+        return {
+            **actor_summary,
+            **code_prefix_summary,
         }
 
     def add_code_prefix(self, prefix):
@@ -687,7 +773,7 @@ class BackendService:
         if str(board_key or '').strip() == LADDER_BOARD_CODE_PREFIX:
             self._invalidate_code_prefix_snapshots()
         if str(board_key or '').strip() == LADDER_BOARD_ACTOR:
-            self._invalidate_actor_snapshots()
+            self._invalidate_actor_ladder_snapshots(entity_name)
         return self._store_ladder_board_snapshot(board_key, board)
 
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
@@ -695,8 +781,6 @@ class BackendService:
         board = self.ladder_board_service.update_medal(board_key, entity_name, medal)
         if str(board_key or '').strip() == LADDER_BOARD_CODE_PREFIX:
             self._invalidate_code_prefix_snapshots()
-        if str(board_key or '').strip() == LADDER_BOARD_ACTOR:
-            self._invalidate_actor_snapshots()
         return self._store_ladder_board_snapshot(board_key, board)
 
     def _expand_video_search_candidates_by_ladder_tags(self, search_text, medal_maps=None):
@@ -939,6 +1023,59 @@ class BackendService:
     def list_paths(self, force_refresh=False):
         return self._get_path_library_snapshot(force_refresh=force_refresh)
 
+    def list_queen_library_snapshot(self, force_refresh=False):
+        return {
+            'queens': self.queen_library_service.list_queens(),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def list_queen_keywords_snapshot(self, force_refresh=False):
+        return {
+            'keywords': self.queen_library_service.list_keywords(),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def search_queen_keyword(self, keyword, show_browser=True):
+        result = self.queen_library_service.search_keyword(keyword, show_browser=show_browser)
+        return {
+            **dict(result or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def refresh_queen_library(self, show_browser=True):
+        result = self.queen_library_service.refresh_all(show_browser=show_browser)
+        return {
+            **dict(result or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
+        return {
+            **dict(self.queen_library_service.get_queen_detail(queen_name) or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def delete_queen_video(self, record_id):
+        deleted_count = self.queen_library_service.delete_queen_video(record_id)
+        return {
+            'deleted_count': deleted_count,
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def delete_queen(self, queen_name):
+        deleted_count = self.queen_library_service.delete_queen(queen_name)
+        return {
+            'deleted_count': deleted_count,
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def delete_queen_keyword(self, keyword):
+        deleted_count = self.queen_library_service.delete_keyword(keyword)
+        return {
+            'deleted_count': deleted_count,
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
     def add_path(self, folder_path):
         path_record = self.path_library.build_path_record(folder_path)
         saved_record = self.db.add_path(path_record['path'])
@@ -1064,23 +1201,164 @@ class BackendService:
 
     def _load_actor_snapshots(self):
         snapshot_file = getattr(self, '_actor_snapshot_file', None)
-        if snapshot_file is None:
-            return
+        self._actor_detail_snapshots = self._load_actor_detail_snapshot_files()
+        legacy_detail_snapshots = {}
+        if snapshot_file is not None:
+            try:
+                if not Path(snapshot_file).exists():
+                    payload = {}
+                else:
+                    payload = json.loads(Path(snapshot_file).read_text(encoding='utf-8'))
+            except (OSError, ValueError, TypeError):
+                payload = {}
+            if isinstance(payload, dict) and int(payload.get('version', 0) or 0) == 1:
+                persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
+                if (
+                    not persisted_fingerprint
+                    or persisted_fingerprint == getattr(self, '_actor_snapshot_filter_fingerprint', '')
+                ):
+                    self._actor_library_snapshots = self._normalize_actor_library_snapshots(
+                        payload.get('library_snapshots', {})
+                    )
+                    legacy_detail_snapshots = self._normalize_actor_detail_snapshots(
+                        payload.get('detail_snapshots', {})
+                    )
+        migrated = False
+        for actor_name, snapshot in legacy_detail_snapshots.items():
+            if actor_name not in self._actor_detail_snapshots:
+                self._actor_detail_snapshots[actor_name] = snapshot
+                self._persist_single_actor_detail_snapshot_file(actor_name, snapshot)
+                migrated = True
+        if migrated:
+            self._persist_actor_snapshots()
+
+    def _load_actor_detail_snapshot_files(self):
+        detail_dir = getattr(self, '_actor_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return {}
+        detail_dir = Path(detail_dir)
+        if not detail_dir.exists():
+            return {}
+        snapshots = {}
+        for file_path in sorted(detail_dir.glob('*.json')):
+            try:
+                payload = json.loads(file_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError, TypeError):
+                continue
+            actor_name = self._actor_detail_snapshot_key(unquote(file_path.stem))
+            normalized = self._normalize_actor_detail_snapshot(payload)
+            if actor_name and normalized is not None:
+                snapshots[actor_name] = normalized
+        return snapshots
+
+    def _load_single_actor_detail_snapshot_file(self, actor_name):
+        detail_dir = getattr(self, '_actor_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return None
+        normalized_name = str(actor_name or '').strip().casefold()
+        if not normalized_name:
+            return None
+        target_file = Path(detail_dir) / self._actor_detail_snapshot_filename(normalized_name)
         try:
-            if not Path(snapshot_file).exists():
-                return
-            payload = json.loads(Path(snapshot_file).read_text(encoding='utf-8'))
+            if not target_file.exists():
+                return None
+            payload = json.loads(target_file.read_text(encoding='utf-8'))
         except (OSError, ValueError, TypeError):
+            return None
+        normalized = self._normalize_actor_detail_snapshot(payload)
+        if normalized is None:
+            return None
+        self._actor_detail_snapshots[normalized_name] = normalized
+        return normalized
+
+    def _persist_actor_detail_snapshot_files(self):
+        detail_dir = getattr(self, '_actor_detail_snapshot_dir', None)
+        if detail_dir is None:
             return
-        if not isinstance(payload, dict):
+        detail_dir = Path(detail_dir)
+        try:
+            detail_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
             return
-        if int(payload.get('version', 0) or 0) != 1:
+        for actor_name, snapshot in (self._actor_detail_snapshots or {}).items():
+            normalized_name = self._actor_detail_snapshot_key(actor_name)
+            normalized_snapshot = self._normalize_actor_detail_snapshot(snapshot)
+            if not normalized_name or normalized_snapshot is None:
+                continue
+            target_file = detail_dir / self._actor_detail_snapshot_filename(normalized_name)
+            temp_file = target_file.with_suffix(target_file.suffix + '.tmp')
+            try:
+                temp_file.write_text(
+                    json.dumps(normalized_snapshot, ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+                temp_file.replace(target_file)
+            except OSError:
+                continue
+
+    def _persist_single_actor_detail_snapshot_file(self, actor_name, snapshot):
+        detail_dir = getattr(self, '_actor_detail_snapshot_dir', None)
+        if detail_dir is None:
             return
-        persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
-        if persisted_fingerprint and persisted_fingerprint != getattr(self, '_actor_snapshot_filter_fingerprint', ''):
+        normalized_name = self._actor_detail_snapshot_key(actor_name)
+        normalized_snapshot = self._normalize_actor_detail_snapshot(snapshot)
+        if not normalized_name or normalized_snapshot is None:
             return
-        self._actor_library_snapshots = self._normalize_actor_library_snapshots(payload.get('library_snapshots', {}))
-        self._actor_detail_snapshots = self._normalize_actor_detail_snapshots(payload.get('detail_snapshots', {}))
+        detail_dir = Path(detail_dir)
+        try:
+            detail_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        target_file = detail_dir / self._actor_detail_snapshot_filename(normalized_name)
+        temp_file = target_file.with_suffix(target_file.suffix + '.tmp')
+        try:
+            temp_file.write_text(
+                json.dumps(normalized_snapshot, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
+            temp_file.replace(target_file)
+        except OSError:
+            return
+
+    def _clear_actor_detail_snapshot_files(self):
+        detail_dir = getattr(self, '_actor_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return
+        detail_dir = Path(detail_dir)
+        if not detail_dir.exists():
+            return
+        for file_path in sorted(detail_dir.glob('*.json')):
+            try:
+                file_path.unlink()
+            except OSError:
+                continue
+
+    def _delete_actor_detail_snapshot_file(self, normalized_actor_name):
+        detail_dir = getattr(self, '_actor_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return
+        normalized_name = self._actor_detail_snapshot_key(normalized_actor_name)
+        if not normalized_name:
+            return
+        target_file = Path(detail_dir) / self._actor_detail_snapshot_filename(normalized_name)
+        try:
+            if target_file.exists():
+                target_file.unlink()
+        except OSError:
+            return
+
+    def _prune_actor_detail_snapshots(self, valid_keys):
+        normalized_valid_keys = {
+            self._actor_detail_snapshot_key(key)
+            for key in (valid_keys or set())
+            if self._actor_detail_snapshot_key(key)
+        }
+        with self._snapshot_guard():
+            current_keys = list((self._actor_detail_snapshots or {}).keys())
+            for actor_name in current_keys:
+                if actor_name not in normalized_valid_keys:
+                    self._actor_detail_snapshots.pop(actor_name, None)
+                    self._delete_actor_detail_snapshot_file(actor_name)
 
     def _persist_actor_snapshots(self):
         snapshot_file = getattr(self, '_actor_snapshot_file', None)
@@ -1090,7 +1368,6 @@ class BackendService:
             'version': 1,
             'filter_settings_fingerprint': getattr(self, '_actor_snapshot_filter_fingerprint', ''),
             'library_snapshots': self._build_persisted_actor_library_snapshots(),
-            'detail_snapshots': self._build_persisted_actor_detail_snapshots(),
         }
         target_file = Path(snapshot_file)
         temp_snapshot_file = target_file.with_suffix(target_file.suffix + '.tmp')
@@ -1115,12 +1392,23 @@ class BackendService:
             self._actor_snapshot_filter_fingerprint = current_fingerprint
             self._actor_library_snapshots = {}
             self._actor_detail_snapshots = {}
+            self._clear_actor_detail_snapshot_files()
             self._persist_actor_snapshots()
 
     def _invalidate_actor_snapshots(self):
         with self._snapshot_guard():
             self._actor_library_snapshots = {}
             self._actor_detail_snapshots = {}
+            self._clear_actor_detail_snapshot_files()
+            self._persist_actor_snapshots()
+
+    def _invalidate_actor_ladder_snapshots(self, actor_name):
+        normalized_actor_name = str(actor_name or '').strip().casefold()
+        with self._snapshot_guard():
+            self._actor_library_snapshots = {}
+            if normalized_actor_name:
+                self._actor_detail_snapshots.pop(normalized_actor_name, None)
+                self._delete_actor_detail_snapshot_file(normalized_actor_name)
             self._persist_actor_snapshots()
 
     def _build_persisted_actor_library_snapshots(self):
@@ -1190,30 +1478,34 @@ class BackendService:
 
     def _load_code_prefix_snapshots(self):
         snapshot_file = getattr(self, '_code_prefix_snapshot_file', None)
-        if snapshot_file is None:
-            return
-        try:
-            if not Path(snapshot_file).exists():
-                return
-            payload = json.loads(Path(snapshot_file).read_text(encoding='utf-8'))
-        except (OSError, ValueError, TypeError):
-            return
-        if not isinstance(payload, dict):
-            return
-        if int(payload.get('version', 0) or 0) != 1:
-            return
-        persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
-        if (
-            persisted_fingerprint
-            and persisted_fingerprint != getattr(self, '_code_prefix_snapshot_filter_fingerprint', '')
-        ):
-            return
-        self._code_prefix_library_snapshots = self._normalize_code_prefix_library_snapshots(
-            payload.get('library_snapshots', {})
-        )
-        self._code_prefix_detail_snapshots = self._normalize_code_prefix_detail_snapshots(
-            payload.get('detail_snapshots', {})
-        )
+        self._code_prefix_detail_snapshots = self._load_code_prefix_detail_snapshot_files()
+        legacy_detail_snapshots = {}
+        if snapshot_file is not None:
+            try:
+                if Path(snapshot_file).exists():
+                    payload = json.loads(Path(snapshot_file).read_text(encoding='utf-8'))
+                    if isinstance(payload, dict) and int(payload.get('version', 0) or 0) == 1:
+                        persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
+                        if (
+                            not persisted_fingerprint
+                            or persisted_fingerprint == getattr(self, '_code_prefix_snapshot_filter_fingerprint', '')
+                        ):
+                            self._code_prefix_library_snapshots = self._normalize_code_prefix_library_snapshots(
+                                payload.get('library_snapshots', {})
+                            )
+                            legacy_detail_snapshots = self._normalize_code_prefix_detail_snapshots(
+                                payload.get('detail_snapshots', {})
+                            )
+            except (OSError, ValueError, TypeError):
+                pass
+        migrated = False
+        for prefix, snapshot in legacy_detail_snapshots.items():
+            if prefix not in self._code_prefix_detail_snapshots:
+                self._code_prefix_detail_snapshots[prefix] = snapshot
+                self._persist_single_code_prefix_detail_snapshot_file(prefix, snapshot)
+                migrated = True
+        if migrated:
+            self._persist_code_prefix_snapshots()
 
     def _load_masterpiece_snapshots(self):
         snapshot_file = getattr(self, '_masterpiece_snapshot_file', None)
@@ -1233,6 +1525,30 @@ class BackendService:
             payload.get('detail_snapshots', {})
         )
 
+    def _load_video_category_snapshot(self):
+        snapshot_file = getattr(self, '_video_category_snapshot_file', None)
+        if snapshot_file is None:
+            return
+        try:
+            if not Path(snapshot_file).exists():
+                return
+            payload = json.loads(Path(snapshot_file).read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        if int(payload.get('version', 0) or 0) != 1:
+            return
+        persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
+        if (
+            persisted_fingerprint
+            and persisted_fingerprint != getattr(self, '_video_category_snapshot_filter_fingerprint', '')
+        ):
+            return
+        self._video_category_overview_snapshot = self._normalize_video_category_snapshot(
+            payload.get('overview_snapshot')
+        )
+
     def _persist_code_prefix_snapshots(self):
         snapshot_file = getattr(self, '_code_prefix_snapshot_file', None)
         if snapshot_file is None:
@@ -1241,7 +1557,6 @@ class BackendService:
             'version': 1,
             'filter_settings_fingerprint': getattr(self, '_code_prefix_snapshot_filter_fingerprint', ''),
             'library_snapshots': self._build_persisted_code_prefix_library_snapshots(),
-            'detail_snapshots': self._build_persisted_code_prefix_detail_snapshots(),
         }
         target_file = Path(snapshot_file)
         temp_snapshot_file = target_file.with_suffix(target_file.suffix + '.tmp')
@@ -1255,6 +1570,134 @@ class BackendService:
                 temp_snapshot_file.replace(target_file)
         except OSError:
             return
+
+    def _load_code_prefix_detail_snapshot_files(self):
+        detail_dir = getattr(self, '_code_prefix_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return {}
+        detail_dir = Path(detail_dir)
+        if not detail_dir.exists():
+            return {}
+        snapshots = {}
+        for file_path in sorted(detail_dir.glob('*.json')):
+            try:
+                payload = json.loads(file_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError, TypeError):
+                continue
+            prefix = self._code_prefix_detail_snapshot_key(unquote(file_path.stem))
+            normalized = self._normalize_code_prefix_detail_snapshot(payload)
+            if prefix and normalized is not None:
+                snapshots[prefix] = normalized
+        return snapshots
+
+    def _load_single_code_prefix_detail_snapshot_file(self, prefix):
+        detail_dir = getattr(self, '_code_prefix_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return None
+        normalized_prefix = self._code_prefix_detail_snapshot_key(prefix)
+        if not normalized_prefix:
+            return None
+        target_file = Path(detail_dir) / self._code_prefix_detail_snapshot_filename(normalized_prefix)
+        try:
+            if not target_file.exists():
+                return None
+            payload = json.loads(target_file.read_text(encoding='utf-8'))
+        except (OSError, ValueError, TypeError):
+            return None
+        normalized = self._normalize_code_prefix_detail_snapshot(payload)
+        if normalized is None:
+            return None
+        self._code_prefix_detail_snapshots[normalized_prefix] = normalized
+        return normalized
+
+    def _persist_code_prefix_detail_snapshot_files(self):
+        detail_dir = getattr(self, '_code_prefix_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return
+        detail_dir = Path(detail_dir)
+        try:
+            detail_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        for prefix, snapshot in (self._code_prefix_detail_snapshots or {}).items():
+            normalized_prefix = self._code_prefix_detail_snapshot_key(prefix)
+            normalized_snapshot = self._normalize_code_prefix_detail_snapshot(snapshot)
+            if not normalized_prefix or normalized_snapshot is None:
+                continue
+            target_file = detail_dir / self._code_prefix_detail_snapshot_filename(normalized_prefix)
+            temp_file = target_file.with_suffix(target_file.suffix + '.tmp')
+            try:
+                temp_file.write_text(
+                    json.dumps(normalized_snapshot, ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+                temp_file.replace(target_file)
+            except OSError:
+                continue
+
+    def _persist_single_code_prefix_detail_snapshot_file(self, prefix, snapshot):
+        detail_dir = getattr(self, '_code_prefix_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return
+        normalized_prefix = self._code_prefix_detail_snapshot_key(prefix)
+        normalized_snapshot = self._normalize_code_prefix_detail_snapshot(snapshot)
+        if not normalized_prefix or normalized_snapshot is None:
+            return
+        detail_dir = Path(detail_dir)
+        try:
+            detail_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        target_file = detail_dir / self._code_prefix_detail_snapshot_filename(normalized_prefix)
+        temp_file = target_file.with_suffix(target_file.suffix + '.tmp')
+        try:
+            temp_file.write_text(
+                json.dumps(normalized_snapshot, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
+            temp_file.replace(target_file)
+        except OSError:
+            return
+
+    def _clear_code_prefix_detail_snapshot_files(self):
+        detail_dir = getattr(self, '_code_prefix_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return
+        detail_dir = Path(detail_dir)
+        if not detail_dir.exists():
+            return
+        for file_path in sorted(detail_dir.glob('*.json')):
+            try:
+                file_path.unlink()
+            except OSError:
+                continue
+
+    def _delete_code_prefix_detail_snapshot_file(self, normalized_prefix):
+        detail_dir = getattr(self, '_code_prefix_detail_snapshot_dir', None)
+        if detail_dir is None:
+            return
+        normalized_prefix = self._code_prefix_detail_snapshot_key(normalized_prefix)
+        if not normalized_prefix:
+            return
+        target_file = Path(detail_dir) / self._code_prefix_detail_snapshot_filename(normalized_prefix)
+        try:
+            if target_file.exists():
+                target_file.unlink()
+        except OSError:
+            return
+
+    def _prune_code_prefix_detail_snapshots(self, valid_keys):
+        normalized_valid_keys = {
+            self._code_prefix_detail_snapshot_key(key)
+            for key in (valid_keys or set())
+            if self._code_prefix_detail_snapshot_key(key)
+        }
+        with self._snapshot_guard():
+            current_keys = list((self._code_prefix_detail_snapshots or {}).keys())
+            for prefix in current_keys:
+                if prefix not in normalized_valid_keys:
+                    self._code_prefix_detail_snapshots.pop(prefix, None)
+                    self._delete_code_prefix_detail_snapshot_file(prefix)
 
     def _persist_masterpiece_snapshots(self):
         snapshot_file = getattr(self, '_masterpiece_snapshot_file', None)
@@ -1277,16 +1720,46 @@ class BackendService:
         except OSError:
             return
 
+    def _persist_video_category_snapshot(self):
+        snapshot_file = getattr(self, '_video_category_snapshot_file', None)
+        if snapshot_file is None:
+            return
+        payload = {
+            'version': 1,
+            'filter_settings_fingerprint': getattr(self, '_video_category_snapshot_filter_fingerprint', ''),
+            'overview_snapshot': self._normalize_video_category_snapshot(
+                getattr(self, '_video_category_overview_snapshot', None)
+            ),
+        }
+        target_file = Path(snapshot_file)
+        temp_snapshot_file = target_file.with_suffix(target_file.suffix + '.tmp')
+        try:
+            with self._video_category_snapshot_file_guard():
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                temp_snapshot_file.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding='utf-8',
+                )
+                temp_snapshot_file.replace(target_file)
+        except OSError:
+            return
+
     def _invalidate_code_prefix_snapshots(self):
         with self._snapshot_guard():
             self._code_prefix_library_snapshots = {}
             self._code_prefix_detail_snapshots = {}
+            self._clear_code_prefix_detail_snapshot_files()
             self._persist_code_prefix_snapshots()
 
     def _invalidate_masterpiece_snapshots(self):
         with self._snapshot_guard():
             self._masterpiece_detail_snapshots = {}
             self._persist_masterpiece_snapshots()
+
+    def _invalidate_video_category_snapshot(self):
+        with self._snapshot_guard():
+            self._video_category_overview_snapshot = None
+            self._persist_video_category_snapshot()
 
     def _refresh_code_prefix_snapshot_filter_state(self):
         current_fingerprint = self._build_code_prefix_snapshot_filter_fingerprint(
@@ -1298,7 +1771,77 @@ class BackendService:
             self._code_prefix_snapshot_filter_fingerprint = current_fingerprint
             self._code_prefix_library_snapshots = {}
             self._code_prefix_detail_snapshots = {}
+            self._clear_code_prefix_detail_snapshot_files()
             self._persist_code_prefix_snapshots()
+
+    def _rebuild_actor_detail_snapshots(self):
+        actor_rows = self.list_actors(limit=None)
+        actor_names = [str(row.get('name', '') or '').strip() for row in (actor_rows.get('actors', []) or [])]
+        valid_keys = {
+            self._actor_detail_snapshot_key(actor_name)
+            for actor_name in actor_names
+            if self._actor_detail_snapshot_key(actor_name)
+        }
+        refreshed = 0
+        failed = 0
+        first_error = ''
+        for actor_name in actor_names:
+            if not str(actor_name or '').strip():
+                continue
+            try:
+                self.get_actor_detail_snapshot(actor_name, force_refresh=True)
+                refreshed += 1
+            except Exception as exc:
+                failed += 1
+                if not first_error:
+                    first_error = f'{actor_name}: {exc}'
+        self._prune_actor_detail_snapshots(valid_keys)
+        return {
+            'actor_total': len(actor_names),
+            'actor_refreshed': refreshed,
+            'actor_failed': failed,
+            'actor_first_error': first_error,
+        }
+
+    def _rebuild_code_prefix_detail_snapshots(self):
+        prefix_rows = self.list_code_prefixes(limit=None)
+        prefixes = [str(row.get('prefix', '') or '').strip() for row in (prefix_rows.get('prefixes', []) or [])]
+        valid_keys = {
+            self._code_prefix_detail_snapshot_key(prefix)
+            for prefix in prefixes
+            if self._code_prefix_detail_snapshot_key(prefix)
+        }
+        refreshed = 0
+        failed = 0
+        first_error = ''
+        for prefix in prefixes:
+            if not str(prefix or '').strip():
+                continue
+            try:
+                self.get_code_prefix_detail_snapshot(prefix, force_refresh=True)
+                refreshed += 1
+            except Exception as exc:
+                failed += 1
+                if not first_error:
+                    first_error = f'{prefix}: {exc}'
+        self._prune_code_prefix_detail_snapshots(valid_keys)
+        return {
+            'code_prefix_total': len(prefixes),
+            'code_prefix_refreshed': refreshed,
+            'code_prefix_failed': failed,
+            'code_prefix_first_error': first_error,
+        }
+
+    def _refresh_video_category_snapshot_filter_state(self):
+        current_fingerprint = self._build_video_category_snapshot_filter_fingerprint(
+            self._load_video_category_snapshot_filter_settings()
+        )
+        if current_fingerprint == getattr(self, '_video_category_snapshot_filter_fingerprint', ''):
+            return
+        with self._snapshot_guard():
+            self._video_category_snapshot_filter_fingerprint = current_fingerprint
+            self._video_category_overview_snapshot = None
+            self._persist_video_category_snapshot()
 
     def _load_actor_snapshot_filter_settings(self):
         if getattr(self, 'video_filter_service', None) is None:
@@ -1326,7 +1869,25 @@ class BackendService:
             sort_keys=True,
         )
 
+    @staticmethod
+    def _actor_detail_snapshot_key(actor_name):
+        return str(actor_name or '').strip().casefold()
+
+    @staticmethod
+    def _actor_detail_snapshot_filename(actor_name):
+        snapshot_key = BackendService._actor_detail_snapshot_key(actor_name)
+        if not snapshot_key:
+            return ''
+        return quote(snapshot_key, safe='') + '.json'
+
     def _load_code_prefix_snapshot_filter_settings(self):
+        if getattr(self, 'video_filter_service', None) is None:
+            return {}
+        if not hasattr(self.video_filter_service, 'load_settings'):
+            return {}
+        return self.video_filter_service.load_settings()
+
+    def _load_video_category_snapshot_filter_settings(self):
         if getattr(self, 'video_filter_service', None) is None:
             return {}
         if not hasattr(self.video_filter_service, 'load_settings'):
@@ -1335,6 +1896,11 @@ class BackendService:
 
     @staticmethod
     def _build_code_prefix_snapshot_filter_fingerprint(filter_settings):
+        normalized_settings = filter_settings if isinstance(filter_settings, dict) else {}
+        return json.dumps(normalized_settings, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def _build_video_category_snapshot_filter_fingerprint(filter_settings):
         normalized_settings = filter_settings if isinstance(filter_settings, dict) else {}
         return json.dumps(normalized_settings, ensure_ascii=False, sort_keys=True)
 
@@ -1351,6 +1917,17 @@ class BackendService:
             ensure_ascii=False,
             sort_keys=True,
         )
+
+    @staticmethod
+    def _code_prefix_detail_snapshot_key(prefix):
+        return str(prefix or '').strip().upper()
+
+    @staticmethod
+    def _code_prefix_detail_snapshot_filename(prefix):
+        snapshot_key = BackendService._code_prefix_detail_snapshot_key(prefix)
+        if not snapshot_key:
+            return ''
+        return quote(snapshot_key, safe='') + '.json'
 
     @staticmethod
     def _clone_actor_list_snapshot(snapshot):
@@ -1403,6 +1980,17 @@ class BackendService:
         current = dict(snapshot or {})
         return {
             'detail': dict(current.get('detail', {}) or {}),
+            'refreshed_at': str(current.get('refreshed_at', '') or '').strip(),
+            'refresh_duration_ms': int(current.get('refresh_duration_ms', 0) or 0),
+            'refresh_duration_text': str(current.get('refresh_duration_text', '') or '').strip(),
+        }
+
+    @staticmethod
+    def _clone_video_category_snapshot(snapshot):
+        current = dict(snapshot or {})
+        return {
+            'videos': [dict(row or {}) for row in current.get('videos', []) or []],
+            'staged_count': int(current.get('staged_count', 0) or 0),
             'refreshed_at': str(current.get('refreshed_at', '') or '').strip(),
             'refresh_duration_ms': int(current.get('refresh_duration_ms', 0) or 0),
             'refresh_duration_text': str(current.get('refresh_duration_text', '') or '').strip(),
@@ -1555,6 +2143,24 @@ class BackendService:
             'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
         }
 
+    @staticmethod
+    def _normalize_video_category_snapshot(snapshot):
+        if not isinstance(snapshot, dict):
+            return None
+        refreshed_at = str(snapshot.get('refreshed_at', '') or '').strip()
+        videos = snapshot.get('videos', [])
+        if not refreshed_at or not isinstance(videos, list):
+            return None
+        refresh_duration_ms = int(snapshot.get('refresh_duration_ms', 0) or 0)
+        refresh_duration_text = str(snapshot.get('refresh_duration_text', '') or '').strip()
+        return {
+            'videos': [dict(row or {}) for row in videos],
+            'staged_count': int(snapshot.get('staged_count', 0) or 0),
+            'refreshed_at': refreshed_at,
+            'refresh_duration_ms': refresh_duration_ms,
+            'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
+        }
+
     def _actor_snapshot_file_guard(self):
         return getattr(self, '_actor_snapshot_file_lock', None) or nullcontext()
 
@@ -1563,6 +2169,9 @@ class BackendService:
 
     def _masterpiece_snapshot_file_guard(self):
         return getattr(self, '_masterpiece_snapshot_file_lock', None) or nullcontext()
+
+    def _video_category_snapshot_file_guard(self):
+        return getattr(self, '_video_category_snapshot_file_lock', None) or nullcontext()
 
     def _snapshot_refresh_log_guard(self):
         return getattr(self, '_snapshot_refresh_log_lock', None) or nullcontext()

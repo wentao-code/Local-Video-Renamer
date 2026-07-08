@@ -117,7 +117,9 @@ class VideoDatabase(
     @contextmanager
     def _connect(self):
         conn = sqlite3.connect(self.db_path, timeout=60)
+        conn.execute('PRAGMA journal_mode = WAL')
         conn.execute('PRAGMA busy_timeout = 60000')
+        conn.execute('PRAGMA synchronous = NORMAL')
         conn.create_function('effective_actor_birthday_sql', 3, self._sql_effective_actor_birthday)
         conn.create_function('sortable_actor_birthday_sql', 3, self._sql_sortable_actor_birthday)
         conn.create_function('effective_actor_age_sql', 5, self._sql_effective_actor_age)
@@ -1930,7 +1932,7 @@ class VideoDatabase(
             return 0
 
         success_count = 0
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             for plan in plans:
                 normalized_code = standardize_video_code(plan.metadata.code)
@@ -3370,7 +3372,7 @@ class VideoDatabase(
             return 0
 
         placeholders = ','.join('?' for _ in normalized_codes)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(f'''
                 UPDATE processed_videos
@@ -3498,7 +3500,7 @@ class VideoDatabase(
         if not normalized_old_name or not normalized_new_name:
             raise ValueError('演员名称不能为空')
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT 1 FROM actors WHERE name = ?', (normalized_new_name,))
             if normalized_old_name != normalized_new_name and cursor.fetchone():
@@ -3545,7 +3547,7 @@ class VideoDatabase(
         if not normalized_name:
             raise ValueError('演员名称不能为空')
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM actor_enrichments WHERE actor_name = ?', (normalized_name,))
@@ -3649,7 +3651,7 @@ class VideoDatabase(
         if not normalized_old_prefix or not normalized_new_prefix:
             raise ValueError('番号前缀不能为空')
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             if normalized_old_prefix != normalized_new_prefix:
@@ -3736,7 +3738,7 @@ class VideoDatabase(
             return 1
 
     def get_path_by_value(self, folder_path):
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT id, path, created_at, last_total_bytes, last_used_bytes,
@@ -4395,7 +4397,7 @@ class VideoDatabase(
 
     def count_videos_by_enrichment_status(self, status, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
         status_column, _, _ = self._video_source_columns(source_key)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f'''

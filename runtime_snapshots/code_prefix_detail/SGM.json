@@ -1,0 +1,34 @@
+{
+  "prefix_detail": {
+    "prefix": "SGM",
+    "web_url": "https://avfan.com/zh-CN/number_letters/SGM?page=1",
+    "ladder_tier": "",
+    "update_status": "inactive",
+    "video_count": 0,
+    "eligible_video_count": 0,
+    "eligible_enriched_video_count": 0,
+    "enrichment_status": "天限阁: 已补全 | 辛聚谷: 已补全",
+    "avfan_total_pages": 3,
+    "avfan_total_videos": 89,
+    "last_enriched_at": "2026-06-30 02:33:55",
+    "update_frequency": {
+      "video_count": 0,
+      "month_count": 0,
+      "videos_per_month": null
+    },
+    "earliest_release_date": "",
+    "latest_release_date": "",
+    "year_distribution": [],
+    "top_actors": [],
+    "video_category_distribution": [],
+    "uncategorized_eligible_video_count": 0,
+    "local_videos": [],
+    "movies": [],
+    "eligible_movies": [],
+    "raw_local_video_count": 1,
+    "raw_video_count": 89
+  },
+  "refreshed_at": "2026-07-08 03:17:19",
+  "refresh_duration_ms": 5742,
+  "refresh_duration_text": "6秒"
+}

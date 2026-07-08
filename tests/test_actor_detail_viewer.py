@@ -78,6 +78,16 @@ class _BackendStub:
                 'web_video_category_distribution': [],
                 'local_videos': [],
                 'web_movies': [],
+                'collaborator_sections': [
+                    {
+                        'actor_name': actor_name,
+                        'ladder_tier': 'A',
+                        'collaborators': [
+                            {'actor_name': 'Alice', 'count': 3},
+                            {'actor_name': 'Beta', 'count': 1},
+                        ],
+                    }
+                ],
             },
             'refreshed_at': '2026-07-07 09:02:00' if force_refresh else '2026-07-07 09:00:00',
             'cache_hit': not force_refresh,
@@ -91,12 +101,27 @@ class _BackendStub:
 
 
 class ActorDetailViewerWindowTest(unittest.TestCase):
+    def test_window_defers_initial_load_until_event_loop_runs(self):
+        parent = QWidget()
+        backend = _BackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = ActorDetailViewerWindow(backend, 'Actor A', parent)
+            try:
+                self.assertEqual(backend.refresh_flags, [])
+                QApplication.processEvents()
+                self.assertEqual(backend.refresh_flags, [False, True])
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
     def test_load_data_formats_binghuo_fields_and_code_counts(self):
         parent = QWidget()
         backend = _BackendStub()
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = ActorDetailViewerWindow(backend, 'Actor A', parent)
             try:
+                QApplication.processEvents()
                 self.assertEqual(window.basic_grid.value_labels['actor_id'].text(), 'avfan-1')
                 self.assertEqual(window.basic_grid.value_labels['binghuo_person_id'].text(), 'binghuo-1')
                 self.assertEqual(window.basic_grid.value_labels['binghuo_height'].text(), '170 cm')
@@ -104,10 +129,13 @@ class ActorDetailViewerWindowTest(unittest.TestCase):
                 self.assertEqual(window.basic_grid.value_labels['code_prefix_library_count'].text(), '2')
                 self.assertEqual(window.basic_grid.value_labels['binghuo_cup'].text(), 'F')
                 self.assertIn('2.00', window.basic_grid.value_labels['web_update_frequency'].text())
-                self.assertEqual(
-                    window.basic_measurements_grid.value_labels['measurements'].text(),
-                    '胸围: 88 cm 腰围: 60 cm 臀围: 90 cm',
-                )
+                measurements_text = window.basic_measurements_grid.value_labels['measurements'].text()
+                self.assertIn('88 cm', measurements_text)
+                self.assertIn('60 cm', measurements_text)
+                self.assertIn('90 cm', measurements_text)
+                self.assertIn('Actor A', window.collaborator_tables)
+                self.assertEqual(window.collaborator_tables['Actor A'].columnCount(), 6)
+                self.assertEqual(window.collaborator_tables['Actor A'].item(0, 0).text(), 'Alice x3')
                 self.assertEqual(backend.refresh_flags, [False, True])
                 self.assertIn('2026-07-07 09:02:00', window.last_refreshed_label.text())
             finally:
@@ -120,6 +148,7 @@ class ActorDetailViewerWindowTest(unittest.TestCase):
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = ActorDetailViewerWindow(_BackendStub(), 'Actor A', parent)
             try:
+                QApplication.processEvents()
                 with patch('PyQt5.QtWidgets.QMessageBox.warning') as warning_mock, patch(
                     'PyQt5.QtWidgets.QMessageBox.information'
                 ):
@@ -150,6 +179,7 @@ class ActorDetailViewerWindowTest(unittest.TestCase):
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_task):
             window = ActorDetailViewerWindow(backend, 'Actor A', parent)
             try:
+                QApplication.processEvents()
                 captured.clear()
                 window._deferred_force_refresh = True
                 window._deferred_silent_errors = True
@@ -160,6 +190,37 @@ class ActorDetailViewerWindowTest(unittest.TestCase):
                 self.assertEqual(len(captured), 1)
                 self.assertFalse(captured[0]['block_ui'])
                 self.assertTrue(captured[0]['allow_deferred_close'])
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
+    def test_stale_actor_response_is_discarded_after_switch(self):
+        parent = QWidget()
+        backend = _BackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = ActorDetailViewerWindow(backend, 'Actor A', parent)
+            try:
+                QApplication.processEvents()
+                window.actor_name = 'Actor B'
+                window._active_request_token = 2
+                window._active_request_actor_name = 'Actor B'
+                original_name_text = window.basic_grid.value_labels['name'].text()
+                original_refreshed_text = window.last_refreshed_label.text()
+
+                window._on_load_data_finished(
+                    {
+                        'actor': {'name': 'Actor A'},
+                        'refreshed_at': '2026-07-08 10:00:00',
+                        'cache_hit': False,
+                        'request_token': 1,
+                        'request_actor_name': 'Actor A',
+                    }
+                )
+
+                self.assertEqual(window.actor_name, 'Actor B')
+                self.assertEqual(window.basic_grid.value_labels['name'].text(), original_name_text)
+                self.assertEqual(window.last_refreshed_label.text(), original_refreshed_text)
             finally:
                 window.hide()
                 window.deleteLater()

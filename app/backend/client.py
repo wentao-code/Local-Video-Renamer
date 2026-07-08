@@ -170,6 +170,10 @@ class BackendClient:
         query = '?refresh=1' if force_refresh else ''
         return self._get('/data-center/summary' + query)
 
+    def rebuild_detail_snapshots(self):
+        timeout = max(self.timeout, 600)
+        return self._post('/snapshots/details/rebuild', timeout=timeout)
+
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
         return self.get_metric_analysis('actor', metric_key, force_refresh=force_refresh)
 
@@ -201,6 +205,11 @@ class BackendClient:
 
     def list_videos_requiring_manual_category(self):
         return self._get('/database/videos/manual-category')
+
+    def list_videos_requiring_manual_category_snapshot(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        timeout = max(self.timeout, 120)
+        return self._get('/database/videos/manual-category' + query, timeout=timeout)
 
     def stage_video_category(self, code, category):
         return self._post('/database/videos/manual-category/stage', {'code': code, 'category': category})
@@ -405,13 +414,13 @@ class BackendClient:
         return self._post(
             '/ladder/entries/select',
             {'board_key': board_key, 'entity_name': entity_name, 'tier': tier},
-        ).get('board', {})
+        )
 
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
         return self._post(
             '/ladder/entries/medal',
             {'board_key': board_key, 'entity_name': entity_name, 'medal': medal},
-        ).get('board', {})
+        )
 
     def get_path_library(self):
         return self.get_path_library_snapshot()
@@ -429,6 +438,48 @@ class BackendClient:
 
     def delete_path(self, path_id):
         return self._post('/paths/delete', {'path_id': path_id}).get('deleted_count', 0)
+
+    def list_queen_library_snapshot(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        timeout = max(self.timeout, 180)
+        return self._get('/queen-library/queens' + query, timeout=timeout)
+
+    def list_queen_keywords_snapshot(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        timeout = max(self.timeout, 180)
+        return self._get('/queen-library/keywords' + query, timeout=timeout)
+
+    def search_queen_keyword(self, keyword, show_browser=True):
+        timeout = max(self.timeout, 240)
+        return self._post(
+            '/queen-library/search',
+            {'keyword': keyword, 'show_browser': bool(show_browser)},
+            timeout=timeout,
+        )
+
+    def refresh_queen_library(self, show_browser=True):
+        timeout = max(self.timeout, 1800)
+        return self._post(
+            '/queen-library/refresh',
+            {'show_browser': bool(show_browser)},
+            timeout=timeout,
+        )
+
+    def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
+        params = {'name': queen_name}
+        if force_refresh:
+            params['refresh'] = '1'
+        timeout = max(self.timeout, 180)
+        return self._get('/queen-library/detail?' + urlencode(params), timeout=timeout)
+
+    def delete_queen_video(self, record_id):
+        return self._post('/queen-library/videos/delete', {'record_id': record_id}).get('deleted_count', 0)
+
+    def delete_queen(self, queen_name):
+        return self._post('/queen-library/queens/delete', {'queen_name': queen_name}).get('deleted_count', 0)
+
+    def delete_queen_keyword(self, keyword):
+        return self._post('/queen-library/keywords/delete', {'keyword': keyword}).get('deleted_count', 0)
 
     def _get(self, path, timeout=_DEFAULT_TIMEOUT):
         request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout

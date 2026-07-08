@@ -1,0 +1,34 @@
+{
+  "prefix_detail": {
+    "prefix": "DVRT",
+    "web_url": "https://avfan.com/zh-CN/number_letters/DVRT?page=1",
+    "ladder_tier": "",
+    "update_status": "inactive",
+    "video_count": 0,
+    "eligible_video_count": 0,
+    "eligible_enriched_video_count": 0,
+    "enrichment_status": "天限阁: 已补全 | 辛聚谷: 已补全",
+    "avfan_total_pages": 4,
+    "avfan_total_videos": 137,
+    "last_enriched_at": "2026-06-30 02:33:54",
+    "update_frequency": {
+      "video_count": 0,
+      "month_count": 0,
+      "videos_per_month": null
+    },
+    "earliest_release_date": "",
+    "latest_release_date": "",
+    "year_distribution": [],
+    "top_actors": [],
+    "video_category_distribution": [],
+    "uncategorized_eligible_video_count": 0,
+    "local_videos": [],
+    "movies": [],
+    "eligible_movies": [],
+    "raw_local_video_count": 1,
+    "raw_video_count": 137
+  },
+  "refreshed_at": "2026-07-08 02:54:04",
+  "refresh_duration_ms": 6387,
+  "refresh_duration_text": "6秒"
+}

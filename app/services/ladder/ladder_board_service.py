@@ -20,6 +20,9 @@ class LadderBoardService:
     def get_board(self, board_key):
         config = get_ladder_board_config(board_key)
         local_counts = self._build_local_counts(config['entity_type'])
+        return self._build_board_from_local_counts(config, local_counts)
+
+    def _build_board_from_local_counts(self, config, local_counts):
         selected_entries = self.database.list_ladder_entries(config['board_key'], config['entity_type'])
         selected_names = {
             str((entry or {}).get('entity_name', '') or '').strip()
@@ -44,12 +47,15 @@ class LadderBoardService:
         selected = []
         for entry in selected_entries:
             entity_name = str((entry or {}).get('entity_name', '') or '').strip()
+            tier = str((entry or {}).get('tier', '') or '').strip().upper()
+            if tier == 'D':
+                continue
             medal_text = normalize_ladder_medal_text((entry or {}).get('medal', ''))
             selected.append(
                 {
                     'entity_name': entity_name,
                     'display_name': entity_name,
-                    'tier': str((entry or {}).get('tier', '') or '').strip().upper(),
+                    'tier': tier,
                     'medal': medal_text,
                     'medals': split_ladder_medals(medal_text),
                     'local_video_count': int(dict(local_counts).get(entity_name, 0) or 0),
@@ -80,7 +86,8 @@ class LadderBoardService:
         if not normalized_tier:
             raise ValueError('请选择有效等级')
 
-        available_names = {name for name, _count in self._build_local_counts(config['entity_type'])}
+        local_counts = self._build_local_counts(config['entity_type'])
+        available_names = {name for name, _count in local_counts}
         if normalized_name not in available_names:
             raise ValueError('未找到对应候选项')
 
@@ -90,7 +97,7 @@ class LadderBoardService:
             normalized_name,
             normalized_tier,
         )
-        return self.get_board(config['board_key'])
+        return self._build_board_from_local_counts(config, local_counts)
 
     def update_medal(self, board_key, entity_name, medal):
         config = get_ladder_board_config(board_key)

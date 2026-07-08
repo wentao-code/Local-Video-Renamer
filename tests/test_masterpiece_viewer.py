@@ -5,7 +5,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtGui import QCloseEvent
-from PyQt5.QtWidgets import QApplication, QDialog, QGroupBox, QPushButton
+from PyQt5.QtWidgets import QApplication, QGroupBox, QPushButton
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.masterpiece_viewer import MasterpieceDetailWindow, MasterpieceWindow
@@ -169,17 +169,6 @@ class MasterpieceBackendStub:
         return self.get_masterpiece_detail_snapshot(code, force_refresh=True)['detail']
 
 
-class _AcceptedGlobalMedalDialog:
-    def __init__(self, *_args, **_kwargs):
-        pass
-
-    def exec_(self):
-        return QDialog.Accepted
-
-    def selected_medal_names(self):
-        return ['Evergreen']
-
-
 class MasterpieceViewerTest(unittest.TestCase):
     def test_window_loads_entries(self):
         backend = MasterpieceBackendStub()
@@ -189,41 +178,49 @@ class MasterpieceViewerTest(unittest.TestCase):
             try:
                 self.assertEqual(window.table.rowCount(), 1)
                 self.assertEqual(window.table.item(0, 0).text(), 'PFSA-001')
+                self.assertFalse(window.medal_sidebar.medal_buttons['Rookie'].isEnabled())
             finally:
                 window.hide()
                 window.deleteLater()
 
-    def test_window_adds_new_code_then_opens_global_medal_picker(self):
+    def test_window_adds_new_code_then_enters_sidebar_edit_mode(self):
         backend = MasterpieceBackendStub()
 
-        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task), patch(
-            'app.gui.masterpiece_viewer.GlobalMedalPickerDialog',
-            _AcceptedGlobalMedalDialog,
-        ):
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = MasterpieceWindow(backend)
             try:
                 window.code_input.setText('ipx-001')
                 window.handle_add_entry()
 
                 self.assertEqual(backend.add_calls, ['IPX-001'])
-                self.assertEqual(backend.medal_calls, [('IPX-001', 'Evergreen')])
+                self.assertEqual(backend.medal_calls, [])
+                self.assertEqual(window.active_medal_code, 'IPX-001')
+                self.assertEqual(window.table.cellWidget(1, 4).text(), '确认')
+                self.assertTrue(window.medal_sidebar.medal_buttons['Rookie'].isEnabled())
             finally:
                 window.hide()
                 window.deleteLater()
 
-    def test_window_selects_new_global_medal_and_merges_existing_ones(self):
+    def test_window_updates_medals_via_sidebar_selection(self):
         backend = MasterpieceBackendStub()
 
-        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task), patch(
-            'app.gui.masterpiece_viewer.GlobalMedalPickerDialog',
-            _AcceptedGlobalMedalDialog,
-        ):
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = MasterpieceWindow(backend)
             try:
+                sidebar = window.medal_sidebar
                 action_button = window.table.cellWidget(0, 4)
                 action_button.click()
 
-                self.assertEqual(backend.medal_calls, [('PFSA-001', 'Rookie\nEvergreen')])
+                self.assertEqual(action_button.text(), '确认')
+                self.assertTrue(sidebar.medal_buttons['Rookie'].isChecked())
+
+                sidebar.medal_buttons['Rookie'].click()
+                sidebar.medal_buttons['Evergreen'].click()
+                action_button.click()
+
+                self.assertEqual(backend.medal_calls, [('PFSA-001', 'Evergreen')])
+                self.assertEqual(window.table.cellWidget(0, 4).text(), '添加')
+                self.assertFalse(window.medal_sidebar.medal_buttons['Rookie'].isEnabled())
             finally:
                 window.hide()
                 window.deleteLater()

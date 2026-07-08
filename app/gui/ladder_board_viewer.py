@@ -38,7 +38,7 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
 
     def init_ui(self):
         self.setWindowTitle(tr('ladder.title'))
-        self.resize(1260, 760)
+        self.resize(1180, 720)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout(self)
@@ -137,8 +137,17 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def _reload_board_after(self, operation):
-        operation()
-        return self._build_board_payload(self.current_board_key, include_medals=False)
+        board_payload = operation()
+        normalized_payload = dict(board_payload or {})
+        if 'board' not in normalized_payload:
+            normalized_payload = {
+                'board': normalized_payload,
+                'refreshed_at': '',
+            }
+        return {
+            'board_payload': normalized_payload,
+            'global_medals': list(self.global_medals),
+        }
 
     def _build_board_payload(self, board_key, force_refresh=False, include_medals=None):
         if include_medals is None:

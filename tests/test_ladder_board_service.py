@@ -15,6 +15,43 @@ from app.data.database_handler import VideoDatabase
 from app.services.ladder import LadderBoardService
 
 
+class LadderBoardDatabaseStub:
+    def __init__(self):
+        self.saved_entries = []
+
+    def save_ladder_entry(self, board_key, entity_type, entity_name, tier):
+        self.saved_entries.append((board_key, entity_type, entity_name, tier))
+
+    def list_ladder_entries(self, *_args):
+        return [{'entity_name': '演员01', 'tier': 'S', 'medal': ''}]
+
+
+class CountingLadderBoardService(LadderBoardService):
+    def __init__(self, database):
+        super().__init__(database)
+        self.local_count_builds = 0
+
+    def _build_local_counts(self, entity_type):
+        self.local_count_builds += 1
+        return [('演员01', 4), ('演员02', 3), ('演员03', 2)]
+
+
+class HiddenDTierDatabaseStub:
+    def save_ladder_entry(self, *_args):
+        return None
+
+    def list_ladder_entries(self, *_args):
+        return [
+            {'entity_name': 'ActorS', 'tier': 'S', 'medal': 'Rookie'},
+            {'entity_name': 'ActorD', 'tier': 'D', 'medal': 'Archive'},
+        ]
+
+
+class HiddenDTierBoardService(LadderBoardService):
+    def _build_local_counts(self, entity_type):
+        return [('ActorS', 5), ('ActorD', 4), ('ActorC', 3)]
+
+
 class LadderBoardServiceTest(unittest.TestCase):
     def test_medal_text_normalizes_multiple_delimiters(self):
         medal_text = '年度新人，白金常青树\n封面女王；年度新人|传奇系列'
@@ -82,6 +119,30 @@ class LadderBoardServiceTest(unittest.TestCase):
         self.assertEqual(board['selected'][0]['medal'], '白金常青树\n年度新人')
         self.assertEqual(board['selected'][0]['medals'], ['白金常青树', '年度新人'])
         self.assertEqual(board['candidates'][0]['entity_name'], 'MIDV')
+
+    def test_admit_entry_reuses_local_counts_for_validation_and_response(self):
+        db = LadderBoardDatabaseStub()
+        service = CountingLadderBoardService(db)
+
+        board = service.admit_entry(LADDER_BOARD_ACTOR, '演员01', 'S')
+
+        self.assertEqual(service.local_count_builds, 1)
+        self.assertEqual(
+            db.saved_entries,
+            [(LADDER_BOARD_ACTOR, 'actor', '演员01', 'S')],
+        )
+        self.assertEqual(board['selected'][0]['entity_name'], '演员01')
+        self.assertEqual(board['candidates'][0]['entity_name'], '演员02')
+
+
+    def test_d_tier_entries_are_hidden_from_selected_rows(self):
+        service = HiddenDTierBoardService(HiddenDTierDatabaseStub())
+
+        board = service.get_board(LADDER_BOARD_ACTOR)
+
+        self.assertEqual([item['entity_name'] for item in board['selected']], ['ActorS'])
+        self.assertEqual(board['selected'][0]['tier'], 'S')
+        self.assertEqual(board['candidates'][0]['entity_name'], 'ActorC')
 
 
 if __name__ == '__main__':

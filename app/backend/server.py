@@ -94,6 +94,8 @@ def make_handler(service):
                 return service.get_video_detail(query.get('code', [''])[0])
             if method == 'GET' and path == '/data-center/summary':
                 return service.get_data_center_summary(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'POST' and path == '/snapshots/details/rebuild':
+                return service.rebuild_detail_snapshots()
             if method == 'GET' and path == '/data-center/analysis':
                 return service.get_metric_analysis(
                     query.get('analysis_type', ['actor'])[0],
@@ -109,7 +111,9 @@ def make_handler(service):
             if method == 'POST' and path == '/database/videos/reset':
                 return service.reset_video_enrichments(body.get('codes', []), body.get('source_key'))
             if method == 'GET' and path == '/database/videos/manual-category':
-                return service.list_videos_requiring_manual_category()
+                return service.list_videos_requiring_manual_category_snapshot(
+                    force_refresh=_is_truthy_query_value(query, 'refresh')
+                )
             if method == 'POST' and path == '/database/videos/manual-category/stage':
                 return service.stage_video_category(body.get('code'), body.get('category'))
             if method == 'POST' and path == '/database/videos/manual-category/stage/batch':
@@ -201,6 +205,28 @@ def make_handler(service):
                 return service.add_path(folder_path)
             if method == 'POST' and path == '/paths/delete':
                 return service.delete_path(body.get('path_id'))
+            if method == 'GET' and path == '/queen-library/queens':
+                return service.list_queen_library_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'GET' and path == '/queen-library/keywords':
+                return service.list_queen_keywords_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'POST' and path == '/queen-library/search':
+                return service.search_queen_keyword(
+                    body.get('keyword'),
+                    show_browser=bool(body.get('show_browser', True)),
+                )
+            if method == 'POST' and path == '/queen-library/refresh':
+                return service.refresh_queen_library(show_browser=bool(body.get('show_browser', True)))
+            if method == 'GET' and path == '/queen-library/detail':
+                return service.get_queen_detail_snapshot(
+                    query.get('name', [''])[0],
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
+            if method == 'POST' and path == '/queen-library/videos/delete':
+                return service.delete_queen_video(body.get('record_id'))
+            if method == 'POST' and path == '/queen-library/queens/delete':
+                return service.delete_queen(body.get('queen_name'))
+            if method == 'POST' and path == '/queen-library/keywords/delete':
+                return service.delete_queen_keyword(body.get('keyword'))
             if method == 'POST' and path == '/database/enrich':
                 return service.enrich_videos(
                     body.get('limit', 1),

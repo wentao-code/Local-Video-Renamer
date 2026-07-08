@@ -7,10 +7,24 @@ from app.scraper.browser_window import minimize_browser_window_if_needed
 
 
 class BaomuActorScraperParseProfileTest(unittest.TestCase):
-    def test_minimize_browser_window_skips_visible_browser_sessions(self):
+    def test_minimize_browser_window_minimizes_visible_browser_sessions(self):
         page = MagicMock()
+        cdp_session = page.context.new_cdp_session.return_value
+        cdp_session.send.return_value = {'windowId': 7}
 
         minimize_browser_window_if_needed(page, headless=False)
+
+        page.context.new_cdp_session.assert_called_once_with(page)
+        cdp_session.send.assert_any_call('Browser.getWindowForTarget')
+        cdp_session.send.assert_any_call(
+            'Browser.setWindowBounds',
+            {'windowId': 7, 'bounds': {'windowState': 'minimized'}},
+        )
+
+    def test_minimize_browser_window_skips_headless_sessions(self):
+        page = MagicMock()
+
+        minimize_browser_window_if_needed(page, headless=True)
 
         page.context.new_cdp_session.assert_not_called()
 

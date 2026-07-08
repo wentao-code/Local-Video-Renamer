@@ -1,4 +1,5 @@
 from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication,
@@ -10,6 +11,8 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
 )
 
@@ -41,17 +44,21 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.refresh_client = _build_refresh_client(backend_client)
         self.actor_name = str(actor_name or '').strip()
         self.detail = {}
+        self.collaborator_tables = {}
         self._startup_refresh_pending = True
         self._deferred_force_refresh = False
         self._deferred_silent_errors = False
         self._deferred_allow_deferred_close = False
         self._suppress_async_error_dialog = False
+        self._detail_request_sequence = 0
+        self._active_request_token = 0
+        self._active_request_actor_name = self.actor_name
         self._init_async_task_host()
         self._init_deferred_reload(self._perform_deferred_load)
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
         video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
-        self.load_data()
+        QTimer.singleShot(0, self.load_data)
 
     def init_ui(self):
         self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
@@ -203,6 +210,9 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
         web_layout.addWidget(self.web_video_category_grid)
 
+        self.collaborator_group = QGroupBox('共演演员')
+        self.collaborator_layout = QVBoxLayout(self.collaborator_group)
+
         local_movie_group = QGroupBox(tr('actor.detail.local_movie_group'))
         local_movie_layout = QVBoxLayout(local_movie_group)
         self.local_movie_count_label = QLabel(tr('actor.detail.local_movie_count', count=0))
@@ -229,6 +239,7 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         layout.addWidget(basic_group)
         layout.addWidget(local_group)
         layout.addWidget(web_group)
+        layout.addWidget(self.collaborator_group)
         layout.addWidget(local_movie_group)
         layout.addWidget(web_movie_group)
         layout.addStretch()
@@ -255,9 +266,17 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             )
             self.schedule_deferred_reload(0)
             return
+        request_token = self._next_detail_request_token()
+        requested_actor_name = str(self.actor_name or '').strip()
+        self._active_request_token = request_token
+        self._active_request_actor_name = requested_actor_name
         self._suppress_async_error_dialog = bool(silent_errors)
         self.start_async_task(
-            lambda: self._load_detail_payload(force_refresh=force_refresh),
+            lambda: self._load_detail_payload(
+                requested_actor_name,
+                force_refresh=force_refresh,
+                request_token=request_token,
+            ),
             self._on_load_data_finished,
             tr('common.read_failed'),
             block_ui=not bool(allow_deferred_close),
@@ -277,18 +296,30 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             allow_deferred_close=allow_deferred_close,
         )
 
-    def _load_detail_payload(self, force_refresh=False):
+    def _load_detail_payload(self, actor_name, force_refresh=False, request_token=0):
+        requested_actor_name = str(actor_name or '').strip()
         if hasattr(self.refresh_client, 'get_actor_detail_snapshot'):
-            return self.refresh_client.get_actor_detail_snapshot(self.actor_name, force_refresh=force_refresh)
-        detail = self.backend_client.get_actor_detail(self.actor_name)
+            payload = self.refresh_client.get_actor_detail_snapshot(
+                requested_actor_name,
+                force_refresh=force_refresh,
+            )
+        else:
+            detail = self.backend_client.get_actor_detail(requested_actor_name)
+            payload = {
+                'actor': dict(detail or {}),
+                'refreshed_at': '',
+                'cache_hit': False,
+            }
         return {
-            'actor': dict(detail or {}),
-            'refreshed_at': '',
-            'cache_hit': False,
+            **dict(payload or {}),
+            'request_token': int(request_token or 0),
+            'request_actor_name': requested_actor_name,
         }
 
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
+        if not self._is_current_detail_response(payload):
+            return
         self.detail = dict(payload.get('actor', payload or {}) or {})
         self._suppress_async_error_dialog = False
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
@@ -298,6 +329,22 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             self._startup_refresh_pending = False
             if bool(payload.get('cache_hit')):
                 self.load_data(force_refresh=True, silent_errors=True, allow_deferred_close=True)
+
+    def _next_detail_request_token(self):
+        self._detail_request_sequence += 1
+        return self._detail_request_sequence
+
+    def _is_current_detail_response(self, payload):
+        payload = dict(payload or {})
+        request_token = payload.get('request_token')
+        request_actor_name = str(payload.get('request_actor_name', '') or '').strip()
+        if request_token is None and not request_actor_name:
+            return True
+        return (
+            int(request_token or 0) == int(getattr(self, '_active_request_token', 0) or 0)
+            and request_actor_name == str(self.actor_name or '').strip()
+            and request_actor_name == str(getattr(self, '_active_request_actor_name', '') or '').strip()
+        )
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:
@@ -383,6 +430,7 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_local_movie_detail.setEnabled(bool(local_rows))
         self.btn_web_movie_detail.setEnabled(bool(web_rows))
         self.btn_open_web.setEnabled(bool(str(self.detail.get('web_url', '') or '').strip()))
+        self._render_collaborator_sections()
         self._sync_tier_combo()
         self._refresh_navigation_buttons()
 
@@ -492,6 +540,7 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._deferred_force_refresh = False
         self._deferred_silent_errors = False
         self._deferred_allow_deferred_close = False
+        self._active_request_actor_name = self.actor_name
         self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
         if hasattr(self.parent(), 'select_actor_row'):
             self.parent().select_actor_row(self.actor_name)
@@ -521,6 +570,56 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         if normalized.lower().endswith('cm'):
             return normalized
         return f'{normalized} cm'
+
+    def _render_collaborator_sections(self):
+        while self.collaborator_layout.count():
+            item = self.collaborator_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self.collaborator_tables = {}
+        sections = list(self.detail.get('collaborator_sections', []) or [])
+        if not sections:
+            self.collaborator_group.setVisible(False)
+            return
+
+        self.collaborator_group.setVisible(True)
+        for section in sections:
+            actor_name = str((section or {}).get('actor_name', '') or '').strip()
+            ladder_tier = str((section or {}).get('ladder_tier', '') or '').strip().upper()
+            group_box = QGroupBox(f'{actor_name} ({ladder_tier})')
+            group_layout = QVBoxLayout(group_box)
+            rows = list((section or {}).get('collaborators', []) or [])
+            if not rows:
+                empty_label = QLabel('暂无共演演员数据')
+                empty_label.setStyleSheet('color: #777777;')
+                group_layout.addWidget(empty_label)
+            else:
+                table = QTableWidget()
+                table.setColumnCount(6)
+                table.setEditTriggers(QTableWidget.NoEditTriggers)
+                table.setSelectionMode(QTableWidget.NoSelection)
+                table.verticalHeader().setVisible(False)
+                table.horizontalHeader().setVisible(False)
+                table.setShowGrid(False)
+                row_count = (len(rows) + 5) // 6
+                table.setRowCount(row_count)
+                for index, collaborator in enumerate(rows):
+                    row_index = index // 6
+                    column_index = index % 6
+                    label = (
+                        f'{str((collaborator or {}).get("actor_name", "") or "")} '
+                        f'x{int((collaborator or {}).get("count", 0) or 0)}'
+                    )
+                    item = QTableWidgetItem(label)
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    table.setItem(row_index, column_index, item)
+                table.resizeColumnsToContents()
+                table.resizeRowsToContents()
+                group_layout.addWidget(table)
+                self.collaborator_tables[actor_name] = table
+            self.collaborator_layout.addWidget(group_box)
 
     @staticmethod
     def _format_measurements(bust_text, waist_text, hip_text):

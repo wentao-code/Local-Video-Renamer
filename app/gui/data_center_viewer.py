@@ -44,13 +44,11 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(4)
         self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
-        self.last_refresh_duration_label = QLabel(tr('common.duration', value=tr('common.empty')))
         self.btn_analysis = QPushButton(tr('data_center.analysis.entry'))
         self.btn_analysis.clicked.connect(self.show_analysis_window)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
         meta_layout.addWidget(self.last_refreshed_label)
-        meta_layout.addWidget(self.last_refresh_duration_label)
         top_layout.addLayout(meta_layout)
         top_layout.addStretch()
         top_layout.addWidget(self.btn_analysis)
@@ -119,8 +117,11 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         video_summary = summary.get('video_library', {}).get('sources', {})
         code_prefix_summary = summary.get('code_prefix_library', {}).get('sources', {})
         actor_summary = summary.get('actor_library', {}).get('sources', {})
-        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
-        self.last_refresh_duration_label.setText(tr('common.duration', value=refresh_duration_text))
+        self.last_refreshed_label.setText(
+            tr('data_center.last_refreshed', value=refreshed_at)
+            + '  '
+            + tr('common.duration', value=refresh_duration_text)
+        )
 
         self.video_avfan_card.set_summary(
             video_summary.get(AVFAN_VIDEO_SOURCE, {}),

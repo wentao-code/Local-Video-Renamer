@@ -130,7 +130,6 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_next_page = QPushButton(tr('video.category.page_next'))
         self.btn_next_page.clicked.connect(self.go_to_next_page)
         self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
-        self.last_refresh_duration_label = QLabel(tr('common.duration', value=tr('common.empty')))
         self.page_info_label = QLabel('')
 
         filter_layout.addWidget(QLabel(tr('common.filter_realtime')))
@@ -145,7 +144,6 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         filter_layout.addStretch()
 
         meta_layout.addWidget(self.last_refreshed_label)
-        meta_layout.addWidget(self.last_refresh_duration_label)
 
         action_layout.addStretch()
         action_layout.addWidget(self.btn_apply_sort)
@@ -160,7 +158,7 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(tr('code_prefix.viewer.headers'))
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         for index in range(1, 8):
             self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -664,8 +662,11 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
         refresh_duration_text = resolve_refresh_duration_text(payload) or tr('common.empty')
         self._suppress_async_error_dialog = False
-        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
-        self.last_refresh_duration_label.setText(tr('common.duration', value=refresh_duration_text))
+        self.last_refreshed_label.setText(
+            tr('data_center.last_refreshed', value=refreshed_at)
+            + '  '
+            + tr('common.duration', value=refresh_duration_text)
+        )
         self.rebuild_visible_rows()
         self.page_info_label.setText(
             tr(
@@ -679,13 +680,12 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._update_page_controls()
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
-            if bool(payload.get('cache_hit')):
-                self.load_data(
-                    force_refresh=True,
-                    silent_errors=True,
-                    block_ui=False,
-                    allow_deferred_close=True,
-                )
+            self.load_data(
+                force_refresh=True,
+                silent_errors=True,
+                block_ui=False,
+                allow_deferred_close=True,
+            )
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:

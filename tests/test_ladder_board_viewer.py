@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication, QDialog
+from PyQt5.QtWidgets import QApplication
 
 from app.core.ladder_board import LADDER_BOARD_ACTOR
 from app.gui.backend_task_worker import AsyncTaskHostMixin
@@ -31,6 +31,8 @@ class LadderBoardBackendStub:
     def __init__(self):
         self.refresh_flags = []
         self.medal_calls = []
+        self.admit_calls = []
+        self.selected_medal = 'Rookie\nEvergreen'
         self.global_medals = [
             {'name': 'Rookie', 'description': 'For debut-level standouts'},
             {'name': 'Evergreen', 'description': 'For long-running elite entries'},
@@ -48,8 +50,8 @@ class LadderBoardBackendStub:
                         'entity_name': 'ActorA',
                         'display_name': 'ActorA',
                         'tier': 'S',
-                        'medal': 'Rookie',
-                        'medals': ['Rookie'],
+                        'medal': self.selected_medal,
+                        'medals': [segment for segment in self.selected_medal.split('\n') if segment],
                     }
                 ],
             },
@@ -61,18 +63,12 @@ class LadderBoardBackendStub:
 
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
         self.medal_calls.append((board_key, entity_name, medal))
-        return {}
+        self.selected_medal = medal
+        return self.get_ladder_board_snapshot(board_key, force_refresh=False)
 
-
-class _AcceptedGlobalMedalDialog:
-    def __init__(self, *_args, **_kwargs):
-        pass
-
-    def exec_(self):
-        return QDialog.Accepted
-
-    def selected_medal_names(self):
-        return ['Evergreen']
+    def admit_ladder_entry(self, board_key, entity_name, tier):
+        self.admit_calls.append((board_key, entity_name, tier))
+        return self.get_ladder_board_snapshot(board_key, force_refresh=False)
 
 
 class LadderBoardViewerTest(unittest.TestCase):
@@ -95,27 +91,35 @@ class LadderBoardViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
-    def test_selects_global_medal_and_merges_existing_medals(self):
+    def test_selected_panel_uses_sidebar_edit_flow_for_medals(self):
         backend = LadderBoardBackendStub()
 
-        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task), patch(
-            'app.gui.ladder_selected_panel.GlobalMedalPickerDialog',
-            _AcceptedGlobalMedalDialog,
-        ):
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = LadderBoardWindow(backend)
             try:
+                sidebar = window.selected_panel.medal_sidebar
                 action_button = window.selected_panel.table.cellWidget(0, 3)
+
+                self.assertEqual(action_button.text(), tr('ladder.selected.add_medal'))
+                self.assertFalse(sidebar.medal_buttons['Rookie'].isEnabled())
+
+                action_button.click()
+                self.assertEqual(action_button.text(), tr('ladder.selected.confirm_medal'))
+                self.assertTrue(sidebar.medal_buttons['Rookie'].isEnabled())
+                self.assertTrue(sidebar.medal_buttons['Rookie'].isChecked())
+                self.assertTrue(sidebar.medal_buttons['Evergreen'].isChecked())
+
+                sidebar.medal_buttons['Rookie'].click()
                 action_button.click()
 
-                self.assertEqual(
-                    backend.medal_calls,
-                    [(LADDER_BOARD_ACTOR, 'ActorA', 'Rookie\nEvergreen')],
-                )
+                self.assertEqual(backend.medal_calls, [(LADDER_BOARD_ACTOR, 'ActorA', 'Evergreen')])
+                self.assertEqual(window.selected_panel.table.cellWidget(0, 3).text(), tr('ladder.selected.add_medal'))
+                self.assertFalse(window.selected_panel.medal_sidebar.medal_buttons['Rookie'].isEnabled())
             finally:
                 window.hide()
                 window.deleteLater()
 
-    def test_selected_panel_uses_add_label_even_when_medals_already_exist(self):
+    def test_selected_panel_shows_existing_medals_without_old_edit_copy(self):
         backend = LadderBoardBackendStub()
 
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
@@ -127,7 +131,27 @@ class LadderBoardViewerTest(unittest.TestCase):
                 self.assertEqual(action_button.text(), tr('ladder.selected.add_medal'))
                 self.assertNotIn(tr('ladder.selected.edit_medal'), action_button.text())
                 self.assertIn('Rookie', medal_label.text())
+                self.assertIn('Evergreen', medal_label.text())
+                self.assertIn('🥇', medal_label.text())
+                self.assertIn('width:96px', medal_label.text())
                 self.assertIn('border-radius', medal_label.text())
+                self.assertIn('box-shadow', medal_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_admit_reuses_operation_payload_without_extra_board_reload(self):
+        backend = LadderBoardBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = LadderBoardWindow(backend)
+            try:
+                backend.refresh_flags.clear()
+
+                window.admit_entry('ActorA', 'S')
+
+                self.assertEqual(backend.admit_calls, [(LADDER_BOARD_ACTOR, 'ActorA', 'S')])
+                self.assertEqual(backend.refresh_flags, [(LADDER_BOARD_ACTOR, False)])
             finally:
                 window.hide()
                 window.deleteLater()

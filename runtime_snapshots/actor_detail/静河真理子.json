@@ -1,0 +1,113 @@
+{
+  "actor": {
+    "name": "静河真理子",
+    "birthday": "1980/7/11",
+    "age": "45",
+    "matched": false,
+    "actor_id": "qkJJS1A5",
+    "binghuo_person_id": "5096",
+    "binghuo_height": "156",
+    "binghuo_bust": "88",
+    "binghuo_cup": "F",
+    "binghuo_waist": "63",
+    "binghuo_hip": "89",
+    "baomu_birthday": "1980-07-11",
+    "baomu_height": "156",
+    "baomu_bust": "88",
+    "baomu_cup": "",
+    "baomu_waist": "64",
+    "baomu_hip": "89",
+    "baomu_enrichment_status": "未补全",
+    "web_url": "https://avfan.com/casts/qkJJS1A5",
+    "ladder_tier": "",
+    "update_status": "inactive",
+    "local_video_count": 0,
+    "appearance_code_count": 1,
+    "code_prefix_library_count": 1,
+    "local_prefix_distribution": [],
+    "local_year_distribution": [],
+    "web_enrichment_status": "天限阁: 已补全 | 辛聚谷: 已补全 | 并火: 无视频详情 | 保木: 未补全",
+    "web_total_pages": 1,
+    "web_total_videos": 5,
+    "eligible_video_count": 1,
+    "eligible_enriched_video_count": 1,
+    "web_update_frequency": {
+      "video_count": 1,
+      "month_count": 1,
+      "videos_per_month": 1.0
+    },
+    "web_last_enriched_at": "2026-06-30 02:34:08",
+    "web_earliest_release_date": "2021-12-24",
+    "web_latest_release_date": "2021-12-24",
+    "web_prefix_distribution": [
+      {
+        "prefix": "ROE",
+        "video_count": 1
+      }
+    ],
+    "web_year_distribution": [
+      {
+        "year": "2021",
+        "video_count": 1
+      }
+    ],
+    "web_video_category_distribution": [
+      {
+        "name": "单体作品",
+        "video_count": 1
+      }
+    ],
+    "local_videos": [],
+    "web_movies": [
+      {
+        "actor_name": "静河真理子",
+        "code": "ROE-033",
+        "title": "生徒にも、夫にも見せられない才色兼備な英会話講師の裏の顔 静河真理子 42歳",
+        "author": "静河真理子",
+        "release_date": "2021-12-24",
+        "avfan_url": "https://avfan.com/zh-CN/movies/bxEAWl1O",
+        "page_number": 1,
+        "javtxt_enrichment_status": "已补全",
+        "javtxt_movie_id": "392396",
+        "javtxt_url": "https://javtxt.top/v/392396",
+        "javtxt_tags": "高清 独家分发 数位马赛克 熟女 人妻・主妇 巨乳 纪录片 处女作 单体作品",
+        "javtxt_release_date": "2021-12-24",
+        "author_raw": "静河真理子",
+        "video_category": "单体作品",
+        "supplement_enrichment_status": "未补全",
+        "ladder_tags": [
+          "熟女"
+        ],
+        "ladder_tag_text": "熟女"
+      }
+    ],
+    "eligible_web_movies": [
+      {
+        "actor_name": "静河真理子",
+        "code": "ROE-033",
+        "title": "生徒にも、夫にも見せられない才色兼備な英会話講師の裏の顔 静河真理子 42歳",
+        "author": "静河真理子",
+        "release_date": "2021-12-24",
+        "avfan_url": "https://avfan.com/zh-CN/movies/bxEAWl1O",
+        "page_number": 1,
+        "javtxt_enrichment_status": "已补全",
+        "javtxt_movie_id": "392396",
+        "javtxt_url": "https://javtxt.top/v/392396",
+        "javtxt_tags": "高清 独家分发 数位马赛克 熟女 人妻・主妇 巨乳 纪录片 处女作 单体作品",
+        "javtxt_release_date": "2021-12-24",
+        "author_raw": "静河真理子",
+        "video_category": "单体作品",
+        "supplement_enrichment_status": "未补全",
+        "ladder_tags": [
+          "熟女"
+        ],
+        "ladder_tag_text": "熟女"
+      }
+    ],
+    "collaborator_sections": [],
+    "raw_web_movie_count": 5
+  },
+  "refreshed_at": "2026-07-08 09:25:28",
+  "refresh_duration_ms": 117,
+  "refresh_duration_text": "0秒"
+}

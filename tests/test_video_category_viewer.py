@@ -1,11 +1,15 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication
 
+from app.backend.client import BackendClient
+from app.backend.service import BackendService
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 
@@ -13,7 +17,14 @@ from app.gui.video_category_viewer import VideoCategoryViewerWindow
 _APP = QApplication.instance() or QApplication([])
 
 
-def _run_sync_async_task(self, task, success_handler, error_title=None):
+def _run_sync_async_task(
+    self,
+    task,
+    success_handler,
+    error_title=None,
+    block_ui=True,
+    allow_deferred_close=False,
+):
     success_handler(task())
     return True
 
@@ -25,7 +36,18 @@ class _BackendClientStub:
 
 class _RefreshClientStub:
     def __init__(self, *args, **kwargs):
-        pass
+        self.calls = []
+
+    def list_videos_requiring_manual_category_snapshot(self, force_refresh=False):
+        self.calls.append(bool(force_refresh))
+        return {
+            'videos': [],
+            'staged_count': 0,
+            'refreshed_at': '2026-07-07 11:05:00' if force_refresh else '2026-07-07 11:00:00',
+            'refresh_duration_ms': 7000 if force_refresh else 3000,
+            'refresh_duration_text': '7秒' if force_refresh else '3秒',
+            'cache_hit': not force_refresh,
+        }
 
     @staticmethod
     def list_videos_requiring_manual_category():
@@ -33,6 +55,14 @@ class _RefreshClientStub:
             'videos': [],
             'staged_count': 0,
         }
+
+
+class _FilterServiceStub:
+    def __init__(self, settings=None):
+        self._settings = dict(settings or {})
+
+    def load_settings(self):
+        return dict(self._settings)
 
 
 class VideoCategoryViewerWindowTest(unittest.TestCase):
@@ -77,6 +107,117 @@ class VideoCategoryViewerWindowTest(unittest.TestCase):
             finally:
                 window.hide()
                 window.deleteLater()
+
+    def test_startup_load_uses_snapshot_then_background_refresh(self):
+        with (
+            patch('app.gui.video_category_viewer.BackendClient', _RefreshClientStub),
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task),
+        ):
+            window = VideoCategoryViewerWindow(_BackendClientStub())
+            try:
+                self.assertEqual(window.refresh_client.calls, [False, True])
+                self.assertIn('2026-07-07 11:05:00', window.last_refreshed_label.text())
+                self.assertIn('7秒', window.last_refresh_duration_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_deferred_startup_refresh_keeps_allow_deferred_close_flag(self):
+        captured = []
+
+        def _capture_task(self, task, success_handler, error_title=None, block_ui=True, allow_deferred_close=False):
+            captured.append(
+                {
+                    'block_ui': bool(block_ui),
+                    'allow_deferred_close': bool(allow_deferred_close),
+                }
+            )
+            success_handler(task())
+            return True
+
+        with (
+            patch('app.gui.video_category_viewer.BackendClient', _RefreshClientStub),
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_task),
+        ):
+            window = VideoCategoryViewerWindow(_BackendClientStub())
+            try:
+                captured.clear()
+                window._deferred_force_refresh = True
+                window._deferred_silent_errors = True
+                window._deferred_block_ui = False
+                window._deferred_allow_deferred_close = True
+
+                window._perform_deferred_load()
+
+                self.assertEqual(len(captured), 1)
+                self.assertFalse(captured[0]['block_ui'])
+                self.assertTrue(captured[0]['allow_deferred_close'])
+            finally:
+                window.hide()
+                window.deleteLater()
+
+
+class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
+    def _build_service(self, snapshot_file, filter_settings=None):
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service.video_filter_service = _FilterServiceStub(filter_settings)
+        service._snapshot_lock = None
+        service._video_category_snapshot_file_lock = None
+        service._video_category_snapshot_file = Path(snapshot_file)
+        service._video_category_snapshot_filter_fingerprint = BackendService._build_video_category_snapshot_filter_fingerprint(
+            filter_settings
+        )
+        service._video_category_overview_snapshot = None
+        return service
+
+    def test_snapshot_persists_across_service_restarts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_file = Path(temp_dir) / 'video_category_snapshot.json'
+            first_service = self._build_service(snapshot_file)
+            timestamps = iter(['2026-07-07 11:10:00'])
+            first_service._current_snapshot_timestamp = lambda: next(timestamps)
+            first_service.list_videos_requiring_manual_category = lambda: {
+                'videos': [{'code': 'IPX-001', 'title': 'A'}],
+                'staged_count': 2,
+            }
+
+            first = BackendService.list_videos_requiring_manual_category_snapshot(first_service)
+
+            self.assertFalse(first['cache_hit'])
+            self.assertEqual(first['refreshed_at'], '2026-07-07 11:10:00')
+
+            second_service = self._build_service(snapshot_file)
+            second_service.list_videos_requiring_manual_category = lambda: (_ for _ in ()).throw(
+                AssertionError('should reuse persisted video category snapshot')
+            )
+            BackendService._load_video_category_snapshot(second_service)
+
+            second = BackendService.list_videos_requiring_manual_category_snapshot(second_service)
+
+            self.assertTrue(second['cache_hit'])
+            self.assertEqual(second['refreshed_at'], '2026-07-07 11:10:00')
+            self.assertEqual(second['videos'][0]['code'], 'IPX-001')
+
+
+class BackendClientVideoCategorySnapshotTest(unittest.TestCase):
+    def test_list_videos_requiring_manual_category_snapshot_passes_refresh_query(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        calls = []
+
+        def fake_get(path, timeout=None):
+            calls.append((path, timeout))
+            return {'videos': [], 'staged_count': 0, 'refreshed_at': '2026-07-07 11:15:00'}
+
+        client._get = fake_get
+
+        result = client.list_videos_requiring_manual_category_snapshot(force_refresh=True)
+
+        self.assertEqual(result['refreshed_at'], '2026-07-07 11:15:00')
+        self.assertEqual(
+            calls,
+            [('/database/videos/manual-category?refresh=1', 120)],
+        )
 
 
 if __name__ == '__main__':

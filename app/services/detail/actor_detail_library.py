@@ -14,6 +14,7 @@ from app.services.detail import build_actor_detail_web_url, build_video_category
 from app.services.detail.update_frequency_service import calculate_update_frequency
 from app.services.identity import split_actor_names
 from app.services.library import extract_code_prefix
+from app.services.video import VIDEO_CATEGORY_CO_STAR, normalize_video_category
 
 
 YEAR_RE = re.compile(r'(19|20)\d{2}')
@@ -46,6 +47,7 @@ class ActorDetailLibrary:
         merged_birthday = self._merge_actor_birthday(actor_row, web_record)
         birthday = normalize_actor_birthday_for_display(merged_birthday)
         ladder_entry = self.database.get_ladder_entry(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR, actor_name)
+        ladder_tier = str((ladder_entry or {}).get('tier', '') or '').strip().upper()
 
         actor_id = actor_row.get('actor_id', '') or web_record.get('actor_id', '')
         appearance_prefixes = self._collect_unique_prefixes(local_videos + eligible_web_movies)
@@ -69,7 +71,7 @@ class ActorDetailLibrary:
             'baomu_hip': str((web_record or {}).get('baomu_hip', '') or '').strip(),
             'baomu_enrichment_status': str((web_record or {}).get('baomu_enrichment_status', '') or '').strip(),
             'web_url': build_actor_detail_web_url(actor_name, actor_id=actor_id),
-            'ladder_tier': str((ladder_entry or {}).get('tier', '') or '').strip().upper(),
+            'ladder_tier': ladder_tier,
             'update_status': resolve_update_status(local_videos + eligible_web_movies),
             'local_video_count': len(local_videos),
             'appearance_code_count': len(appearance_prefixes),
@@ -91,6 +93,12 @@ class ActorDetailLibrary:
             'local_videos': local_videos,
             'web_movies': web_movies,
             'eligible_web_movies': eligible_web_movies,
+            'collaborator_sections': self._build_collaborator_sections(
+                actor_name,
+                ladder_tier,
+                local_videos,
+                eligible_web_movies,
+            ),
             'raw_web_movie_count': len(raw_web_movies),
         }
 
@@ -231,3 +239,54 @@ class ActorDetailLibrary:
             if str(prefix or '').strip()
         }
         return sum(1 for prefix in (prefixes or set()) if prefix in available_prefixes)
+
+    def _build_collaborator_sections(self, actor_name, ladder_tier, local_videos, web_movies):
+        normalized_tier = str(ladder_tier or '').strip().upper()
+        if normalized_tier not in {'S', 'A'}:
+            return []
+        return [
+            {
+                'actor_name': str(actor_name or '').strip(),
+                'ladder_tier': normalized_tier,
+                'collaborators': self._collect_collaborators_for_actor(actor_name, local_videos, web_movies),
+            }
+        ]
+
+    def _collect_collaborators_for_actor(self, actor_name, local_videos, web_movies):
+        rows_by_code = {}
+        for row in local_videos or []:
+            normalized_code = standardize_video_code((row or {}).get('code', ''))
+            if normalized_code:
+                rows_by_code[normalized_code] = dict(row or {})
+
+        for row in web_movies or []:
+            normalized_code = standardize_video_code((row or {}).get('code', ''))
+            if not normalized_code:
+                continue
+            current = dict(rows_by_code.get(normalized_code, {}) or {})
+            merged = dict(row or {})
+            if current:
+                for field_name in ('author', 'release_date', 'video_category', 'title'):
+                    if not merged.get(field_name):
+                        merged[field_name] = current.get(field_name, '')
+            rows_by_code[normalized_code] = merged
+
+        collaborator_counts = {}
+        normalized_actor_name = str(actor_name or '').strip()
+        for row in rows_by_code.values():
+            if normalize_video_category((row or {}).get('video_category', '')) != VIDEO_CATEGORY_CO_STAR:
+                continue
+            seen = set()
+            for collaborator_name in split_actor_names((row or {}).get('author', '')):
+                if collaborator_name == normalized_actor_name or collaborator_name in seen:
+                    continue
+                seen.add(collaborator_name)
+                collaborator_counts[collaborator_name] = collaborator_counts.get(collaborator_name, 0) + 1
+
+        return [
+            {'actor_name': collaborator_name, 'count': count}
+            for collaborator_name, count in sorted(
+                collaborator_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]

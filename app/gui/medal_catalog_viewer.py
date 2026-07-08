@@ -37,6 +37,148 @@ def build_medal_text(existing_medals=None, new_medals=None):
     return normalize_ladder_medal_text('\n'.join(merge_medal_names(existing_medals, new_medals)))
 
 
+class MedalSelectionSidebar(QWidget):
+    _BUTTON_STYLES = {
+        'idle': 'background:#f2f2f2; border:1px solid #dddddd; color:#a0a0a0;',
+        'active': 'background:#fff8e5; border:1px solid #d4b15c; color:#7a5a16;',
+        'editable': 'background:#ffffff; border:1px solid #d6d6d6; color:#333333;',
+    }
+
+    def __init__(self, title='勋章选择', inactive_hint='点击左侧添加后可编辑勋章', parent=None):
+        super().__init__(parent)
+        self.title = str(title or '').strip() or '勋章选择'
+        self.inactive_hint = str(inactive_hint or '').strip() or '点击左侧添加后可编辑勋章'
+        self.medals = []
+        self.medal_names = []
+        self.medal_buttons = {}
+        self._selected_medals = set()
+        self._editing = False
+        self._active_label = ''
+        self._empty_label = None
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        self.title_label = QLabel(self.title)
+        self.title_label.setStyleSheet('font-size:14px; font-weight:600; color:#333333;')
+        layout.addWidget(self.title_label)
+
+        self.hint_label = QLabel(self.inactive_hint)
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet('color:#7a7a7a;')
+        layout.addWidget(self.hint_label)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        layout.addWidget(self.scroll_area, 1)
+
+        self.container = QWidget()
+        self.button_layout = QVBoxLayout(self.container)
+        self.button_layout.setContentsMargins(0, 0, 0, 0)
+        self.button_layout.setSpacing(8)
+        self.button_layout.addStretch()
+        self.scroll_area.setWidget(self.container)
+
+    def set_medals(self, medals):
+        self.medals = [dict(row or {}) for row in (medals or [])]
+        self.medal_names = []
+        seen = set()
+        for row in self.medals:
+            name = str((row or {}).get('name', '') or '').strip()
+            if not name or name in seen:
+                continue
+            self.medal_names.append(name)
+            seen.add(name)
+        self._selected_medals = set(name for name in self._selected_medals if name in seen)
+        self._render_buttons()
+        self._apply_state()
+
+    def begin_edit(self, label, selected_medals=None):
+        self._editing = True
+        self._active_label = str(label or '').strip()
+        self._selected_medals = set(
+            name for name in (str(medal or '').strip() for medal in (selected_medals or [])) if name in self.medal_names
+        )
+        self._apply_state()
+
+    def end_edit(self):
+        self._editing = False
+        self._active_label = ''
+        self._selected_medals = set()
+        self._apply_state()
+
+    def is_editing(self):
+        return self._editing
+
+    def selected_medal_names(self):
+        return [name for name in self.medal_names if name in self._selected_medals]
+
+    def _render_buttons(self):
+        self.medal_buttons = {}
+        while self.button_layout.count():
+            item = self.button_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self.medal_names:
+            self._empty_label = QLabel('暂无勋章')
+            self._empty_label.setStyleSheet('color:#9a9a9a; padding:10px 4px;')
+            self.button_layout.addWidget(self._empty_label)
+        else:
+            self._empty_label = None
+            for name in self.medal_names:
+                button = QPushButton(name)
+                button.setCheckable(True)
+                button.setMinimumHeight(34)
+                button.clicked.connect(lambda checked=False, medal_name=name: self._toggle_medal(medal_name, checked))
+                self.medal_buttons[name] = button
+                self.button_layout.addWidget(button)
+
+        self.button_layout.addStretch()
+
+    def _toggle_medal(self, medal_name, checked):
+        if not self._editing:
+            return
+        if checked:
+            self._selected_medals.add(medal_name)
+        else:
+            self._selected_medals.discard(medal_name)
+        self._refresh_button_style(medal_name)
+
+    def _apply_state(self):
+        if self._editing and self._active_label:
+            self.hint_label.setText(f'正在编辑：{self._active_label}\n点击勋章切换选中，再点确认保存。')
+            self.hint_label.setStyleSheet('color:#6d5423;')
+        else:
+            self.hint_label.setText(self.inactive_hint)
+            self.hint_label.setStyleSheet('color:#7a7a7a;')
+
+        for name, button in self.medal_buttons.items():
+            button.blockSignals(True)
+            button.setEnabled(self._editing)
+            button.setChecked(self._editing and name in self._selected_medals)
+            button.blockSignals(False)
+            self._refresh_button_style(name)
+
+    def _refresh_button_style(self, medal_name):
+        button = self.medal_buttons.get(medal_name)
+        if button is None:
+            return
+        if not self._editing:
+            style = self._BUTTON_STYLES['idle']
+        elif button.isChecked():
+            style = self._BUTTON_STYLES['active']
+        else:
+            style = self._BUTTON_STYLES['editable']
+        button.setStyleSheet(
+            f'QPushButton {{ {style} padding:6px 10px; text-align:left; border-radius:8px; font-weight:600; }}'
+        )
+
+
 class GlobalMedalPickerDialog(QDialog):
     def __init__(self, medals, owned_medals=None, parent=None):
         super().__init__(parent)

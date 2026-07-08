@@ -13,6 +13,7 @@ from app.core.enrichment_sources import (
     get_video_enrichment_source_label,
 )
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS
+from app.services.video import VIDEO_CATEGORY_CO_STAR, VIDEO_CATEGORY_SINGLE
 from app.data.database_handler import VideoDatabase
 from app.services.detail import ActorDetailLibrary
 
@@ -453,6 +454,97 @@ class ActorProfileDisplayTest(unittest.TestCase):
 
         self.assertEqual(detail['appearance_code_count'], 2)
         self.assertEqual(detail['code_prefix_library_count'], 1)
+
+    def test_actor_detail_collects_collaborators_for_s_and_a_tier(self):
+        class FakeDatabase:
+            def list_actors(self, search_text=''):
+                return [
+                    {
+                        'name': '演员S',
+                        'birthday': '1989-09-09',
+                        'age': '36',
+                        'matched': True,
+                        'actor_id': 'avfan-s',
+                    }
+                ]
+
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
+                return {'tier': 'S'} if entity_name == '演员S' else {}
+
+            def list_local_videos_by_actor_name(self, actor_name, refresh_categories=False):
+                return [
+                    {
+                        'code': 'ROE-001',
+                        'title': 'Local Co-Star',
+                        'author': '演员S Alice',
+                        'release_date': '2024-01-01',
+                        'video_category': VIDEO_CATEGORY_CO_STAR,
+                    }
+                ]
+
+            def list_actor_movies(self, actor_name):
+                return [
+                    {
+                        'code': 'ROE-001',
+                        'title': 'Web Co-Star',
+                        'author': '演员S Alice',
+                        'release_date': '2024-01-01',
+                        'javtxt_release_date': '2024-01-01',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'roe001',
+                        'javtxt_url': 'https://example.com/roe001',
+                        'video_category': VIDEO_CATEGORY_CO_STAR,
+                    },
+                    {
+                        'code': 'ROE-002',
+                        'title': 'Web Co-Star 2',
+                        'author': '演员S Alice Beta',
+                        'release_date': '2024-01-02',
+                        'javtxt_release_date': '2024-01-02',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'roe002',
+                        'javtxt_url': 'https://example.com/roe002',
+                        'video_category': VIDEO_CATEGORY_CO_STAR,
+                    },
+                    {
+                        'code': 'ROE-003',
+                        'title': 'Single',
+                        'author': '演员S',
+                        'release_date': '2024-01-03',
+                        'javtxt_release_date': '2024-01-03',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'roe003',
+                        'javtxt_url': 'https://example.com/roe003',
+                        'video_category': VIDEO_CATEGORY_SINGLE,
+                    },
+                ]
+
+            def get_actor_enrichment_record(self, actor_name):
+                return {
+                    'actor_id': 'avfan-s',
+                    'binghuo_enrichment_status': ENRICHED_STATUS,
+                    'avfan_enrichment_status': ENRICHED_STATUS,
+                    'javtxt_enrichment_status': ENRICHED_STATUS,
+                }
+
+            def get_javtxt_actor_cache_by_codes(self, codes):
+                return {}
+
+            def list_code_prefix_enrichment_records(self):
+                return {}
+
+        detail = ActorDetailLibrary(FakeDatabase()).get_actor_detail('演员S')
+
+        self.assertEqual(len(detail['collaborator_sections']), 1)
+        self.assertEqual(detail['collaborator_sections'][0]['actor_name'], '演员S')
+        self.assertEqual(detail['collaborator_sections'][0]['ladder_tier'], 'S')
+        self.assertEqual(
+            detail['collaborator_sections'][0]['collaborators'],
+            [
+                {'actor_name': 'Alice', 'count': 2},
+                {'actor_name': 'Beta', 'count': 1},
+            ],
+        )
 
 
 if __name__ == '__main__':

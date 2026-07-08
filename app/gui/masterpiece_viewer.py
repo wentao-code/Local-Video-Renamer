@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,7 +24,7 @@ from app.backend.client import BackendClient
 from app.core.ladder_board import split_ladder_medals
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
-from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, build_medal_text
+from app.gui.medal_catalog_viewer import MedalSelectionSidebar, build_medal_text
 
 
 def _build_refresh_client(backend_client, minimum_timeout=90):
@@ -47,14 +48,23 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         super().__init__(parent)
         self.backend_client = backend_client
         self.rows = []
+        self.global_medals = []
+        self.active_medal_code = ''
         self._init_async_task_host()
         self.setWindowTitle('名作堂')
-        self.resize(980, 640)
+        self.resize(1120, 640)
         self._init_ui()
         self.load_entries()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(12)
+
+        left_panel = QWidget(self)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
 
         toolbar = QHBoxLayout()
         toolbar.addWidget(QLabel('视频番号'))
@@ -79,19 +89,39 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
 
-        layout.addLayout(toolbar)
-        layout.addWidget(self.summary_label)
-        layout.addWidget(self.table)
+        left_layout.addLayout(toolbar)
+        left_layout.addWidget(self.summary_label)
+        left_layout.addWidget(self.table, 1)
+        layout.addWidget(left_panel, 1)
+
+        self.medal_sidebar = MedalSelectionSidebar(
+            title='勋章侧栏',
+            inactive_hint='点击左侧添加后即可选择或取消勋章。',
+        )
+        self.medal_sidebar.setFixedWidth(220)
+        layout.addWidget(self.medal_sidebar)
 
         self.set_async_busy_widgets([self.code_input, self.btn_add, self.btn_refresh, self.table])
 
     def load_entries(self):
         self.start_async_task(
-            lambda: self.backend_client.list_masterpiece_entries(),
+            self._build_entries_payload,
             self._on_entries_loaded,
             '读取名作堂失败',
         )
+
+    def _build_entries_payload(self):
+        return {
+            'rows': self.backend_client.list_masterpiece_entries(),
+            'global_medals': self.backend_client.list_global_medals(),
+        }
 
     def handle_add_entry(self):
         code = str(self.code_input.text() or '').strip()
@@ -100,14 +130,20 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             return
 
         self.start_async_task(
-            lambda: self.reload_rows_after(
+            lambda: self._reload_entries_after(
                 lambda: self.backend_client.add_masterpiece_entry(code),
-                self.backend_client.list_masterpiece_entries,
                 entry_code=str(code or '').strip().upper(),
             ),
             self._on_rows_reloaded_after_add,
             '添加名作堂失败',
         )
+
+    def _reload_entries_after(self, operation, **payload):
+        operation()
+        return {
+            **self._build_entries_payload(),
+            **payload,
+        }
 
     def _on_rows_reloaded_after_add(self, payload):
         payload = dict(payload or {})
@@ -116,13 +152,19 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         self.code_input.setFocus()
         self._on_entries_loaded(payload)
         if added_code:
-            self.edit_medal(added_code, '')
+            self._begin_medal_edit(added_code, [])
 
     def _on_entries_loaded(self, payload):
         rows = payload
+        medals = self.global_medals
         if isinstance(payload, dict):
             rows = payload.get('rows', payload.get('entries', []))
+            medals = payload.get('global_medals', medals)
         self.rows = [dict(row or {}) for row in (rows or [])]
+        self.global_medals = [dict(row or {}) for row in (medals or [])]
+        self.active_medal_code = ''
+        self.medal_sidebar.set_medals(self.global_medals)
+        self.medal_sidebar.end_edit()
         self._render_rows()
 
     def _render_rows(self):
@@ -139,11 +181,11 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             self.table.setItem(row_index, 1, QTableWidgetItem(title))
             self.table.setItem(row_index, 2, QTableWidgetItem(author))
             self.table.setCellWidget(row_index, 3, self._build_medal_widget(medals))
-            self.table.setCellWidget(row_index, 4, self._build_medal_button(code, medal_text))
+            self.table.setCellWidget(row_index, 4, self._build_medal_button(code))
             self.table.setCellWidget(row_index, 5, self._build_detail_button(code))
 
         self.summary_label.setText(f'共 {len(self.rows)} 条')
-        self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(0, 120)
         self.table.resizeRowsToContents()
 
     def _build_medal_widget(self, medals):
@@ -154,14 +196,9 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         label.setText(self._build_medal_html(medals))
         return label
 
-    def _build_medal_button(self, code, medal_text):
-        button = QPushButton('选择勋章')
-        button.clicked.connect(
-            lambda _checked=False, target_code=code, target_medal=medal_text: self.edit_medal(
-                target_code,
-                target_medal,
-            )
-        )
+    def _build_medal_button(self, code):
+        button = QPushButton('确认' if str(code or '').strip().upper() == self.active_medal_code else '添加')
+        button.clicked.connect(lambda _checked=False, target_code=code: self.edit_medal(target_code))
         return button
 
     def _build_detail_button(self, code):
@@ -187,31 +224,44 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             )
         return ''.join(chips)
 
-    def edit_medal(self, code, medal_text):
-        current_medals = list(split_ladder_medals(medal_text))
-        self.start_async_task(
-            lambda: self.backend_client.list_global_medals(),
-            lambda medals: self._open_medal_picker(code, current_medals, medals),
-            '读取勋章堂失败',
-        )
-
-    def _open_medal_picker(self, code, current_medals, medals):
-        dialog = GlobalMedalPickerDialog(medals, owned_medals=current_medals, parent=self)
-        if dialog.exec_() != QDialog.Accepted:
+    def edit_medal(self, code):
+        normalized_code = str(code or '').strip().upper()
+        row = self._find_row_by_code(normalized_code) or {}
+        current_medals = list((row or {}).get('medals', []) or split_ladder_medals((row or {}).get('medal', '')))
+        if self.active_medal_code != normalized_code:
+            self._begin_medal_edit(normalized_code, current_medals)
             return
 
-        merged_text = build_medal_text(current_medals, dialog.selected_medal_names())
-        if merged_text == str((self._find_row_by_code(code) or {}).get('medal', '') or '').strip():
+        merged_text = build_medal_text(new_medals=self.medal_sidebar.selected_medal_names())
+        if merged_text == str((self._find_row_by_code(normalized_code) or {}).get('medal', '') or '').strip():
+            self._cancel_medal_edit()
             return
 
         self.start_async_task(
-            lambda: self.reload_rows_after(
-                lambda: self.backend_client.update_masterpiece_entry_medal(code, merged_text),
-                self.backend_client.list_masterpiece_entries,
+            lambda: self._reload_entries_after(
+                lambda: self.backend_client.update_masterpiece_entry_medal(normalized_code, merged_text),
             ),
             self._on_entries_loaded,
             '保存勋章失败',
         )
+
+    def _begin_medal_edit(self, code, current_medals):
+        self.active_medal_code = str(code or '').strip().upper()
+        self.medal_sidebar.begin_edit(self.active_medal_code, current_medals)
+        self._refresh_medal_buttons()
+
+    def _cancel_medal_edit(self):
+        self.active_medal_code = ''
+        self.medal_sidebar.end_edit()
+        self._refresh_medal_buttons()
+
+    def _refresh_medal_buttons(self):
+        for row_index, row in enumerate(self.rows):
+            button = self.table.cellWidget(row_index, 4)
+            if button is None:
+                continue
+            code = str((row or {}).get('code', '') or '').strip().upper()
+            button.setText('确认' if code == self.active_medal_code else '添加')
 
     def _find_row_by_code(self, code):
         normalized_code = str(code or '').strip().upper()

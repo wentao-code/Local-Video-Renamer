@@ -20,7 +20,9 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
 from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_dialog import VideoFilterDialog
 from app.gui.video_filter_events import video_filter_event_bus
@@ -395,17 +397,24 @@ class ActionButtonDelegate(QStyledItemDelegate):
         return option.rect.adjusted(6, 4, -6, -4)
 
 
-class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
+class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
         self.refresh_client = BackendClient(
             base_url=backend_client.base_url,
-            timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), 90),
+            timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), 120),
         )
         self.staged_count = 0
         self._filter_dialog = None
+        self._startup_refresh_pending = True
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_block_ui = False
+        self._deferred_allow_deferred_close = False
+        self._suppress_async_error_dialog = False
         self._init_async_task_host()
+        self._init_deferred_reload(self._perform_deferred_load)
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
         video_category_update_event_bus.categories_updated.connect(self.on_video_categories_updated)
         self.init_ui()
@@ -419,6 +428,8 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         layout = QVBoxLayout(self)
         top_layout = QHBoxLayout()
         self.summary_label = QLabel(tr('video.category.summary', count=0, staged_count=0))
+        self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
+        self.last_refresh_duration_label = QLabel(tr('common.duration', value=tr('common.empty')))
         self.btn_tier_first = QPushButton(tr('video.category.tier_first'))
         self.btn_tier_first.setCheckable(True)
         self.btn_tier_first.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_FIRST))
@@ -444,9 +455,11 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.btn_sync = QPushButton(tr('video.category.sync'))
         self.btn_sync.clicked.connect(self.sync_staged_categories)
         self.btn_refresh = QPushButton(tr('video.category.refresh'))
-        self.btn_refresh.clicked.connect(self.load_data)
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
         top_layout.addWidget(self.summary_label)
         top_layout.addStretch()
+        top_layout.addWidget(self.last_refreshed_label)
+        top_layout.addWidget(self.last_refresh_duration_label)
         top_layout.addWidget(self.btn_tier_first)
         top_layout.addWidget(self.btn_tier_second)
         top_layout.addWidget(self.btn_tier_third)
@@ -540,12 +553,51 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         ])
         self._update_summary_label()
 
-    def load_data(self):
+    def load_data(
+        self,
+        force_refresh=False,
+        silent_errors=False,
+        block_ui=True,
+        allow_deferred_close=False,
+    ):
+        if self.is_async_task_running():
+            self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
+            self._deferred_silent_errors = self._deferred_silent_errors or bool(silent_errors)
+            self._deferred_block_ui = self._deferred_block_ui or bool(block_ui)
+            self._deferred_allow_deferred_close = (
+                self._deferred_allow_deferred_close or bool(allow_deferred_close)
+            )
+            self.schedule_deferred_reload(0 if force_refresh else None)
+            return
+        self._suppress_async_error_dialog = bool(silent_errors)
         self.start_async_task(
-            lambda: self.refresh_client.list_videos_requiring_manual_category(),
+            lambda: self._load_overview_payload(force_refresh=force_refresh),
             self._on_load_data_finished,
             tr('common.read_failed'),
+            block_ui=block_ui,
+            allow_deferred_close=allow_deferred_close,
         )
+
+    def _perform_deferred_load(self):
+        force_refresh = self._deferred_force_refresh
+        silent_errors = self._deferred_silent_errors
+        block_ui = self._deferred_block_ui
+        allow_deferred_close = self._deferred_allow_deferred_close
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_block_ui = False
+        self._deferred_allow_deferred_close = False
+        self.load_data(
+            force_refresh=force_refresh,
+            silent_errors=silent_errors,
+            block_ui=block_ui,
+            allow_deferred_close=allow_deferred_close,
+        )
+
+    def _load_overview_payload(self, force_refresh=False):
+        if hasattr(self.refresh_client, 'list_videos_requiring_manual_category_snapshot'):
+            return self.refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=force_refresh)
+        return self.refresh_client.list_videos_requiring_manual_category()
 
     def sync_staged_categories(self):
         if self.staged_count <= 0:
@@ -554,7 +606,7 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
 
         def task():
             sync_result = self.backend_client.sync_staged_video_categories()
-            overview = self.refresh_client.list_videos_requiring_manual_category()
+            overview = self._load_overview_payload(force_refresh=True)
             return {
                 'sync_result': sync_result,
                 'overview': overview,
@@ -653,7 +705,22 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.open_detail_url(index.data(ACTION_URL_ROLE), index.data(ACTION_SOURCE_ROLE))
 
     def _on_load_data_finished(self, result):
+        self._suppress_async_error_dialog = False
         self._apply_overview(result)
+        payload = dict(result or {})
+        refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
+        refresh_duration_text = resolve_refresh_duration_text(payload) or tr('common.empty')
+        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
+        self.last_refresh_duration_label.setText(tr('common.duration', value=refresh_duration_text))
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            if bool(payload.get('cache_hit')):
+                self.load_data(
+                    force_refresh=True,
+                    silent_errors=True,
+                    block_ui=False,
+                    allow_deferred_close=True,
+                )
 
     def _on_stage_category_finished(self, result):
         code = str((result or {}).get('code', '') or '').strip().upper()
@@ -698,6 +765,12 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.staged_count = int(overview.get('staged_count', 0) or 0)
         self.model.set_rows(overview.get('videos', []) or [])
         self._update_summary_label()
+
+    def _handle_async_task_failed(self, message):
+        if self._suppress_async_error_dialog:
+            self._suppress_async_error_dialog = False
+            return
+        super()._handle_async_task_failed(message)
 
     def _set_active_tier(self, tier):
         if self.is_async_task_running():
@@ -790,18 +863,14 @@ class VideoCategoryViewerWindow(AsyncTaskHostMixin, QDialog):
         self.table.viewport().update()
 
     def on_filter_rules_saved(self):
-        if self.is_async_task_running():
-            return
         if not self.isVisible():
             return
-        self.load_data()
+        self.load_data(force_refresh=True)
 
     def on_video_categories_updated(self):
-        if self.is_async_task_running():
-            return
         if not self.isVisible():
             return
-        self.load_data()
+        self.load_data(force_refresh=True)
 
     def closeEvent(self, event):
         if self.block_close_while_async_running(event):

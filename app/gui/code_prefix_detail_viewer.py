@@ -37,6 +37,9 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
         self._deferred_silent_errors = False
         self._deferred_allow_deferred_close = False
         self._suppress_async_error_dialog = False
+        self._detail_request_sequence = 0
+        self._active_request_token = 0
+        self._active_request_prefix = self.prefix
         self._init_async_task_host()
         self._init_deferred_reload(self._perform_deferred_load)
         video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
@@ -205,9 +208,17 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
             )
             self.schedule_deferred_reload(0)
             return
+        request_token = self._next_detail_request_token()
+        requested_prefix = str(self.prefix or '').strip().upper()
+        self._active_request_token = request_token
+        self._active_request_prefix = requested_prefix
         self._suppress_async_error_dialog = bool(silent_errors)
         self.start_async_task(
-            lambda: self._load_detail_payload(force_refresh=force_refresh),
+            lambda: self._load_detail_payload(
+                requested_prefix,
+                force_refresh=force_refresh,
+                request_token=request_token,
+            ),
             self._on_load_data_finished,
             tr('common.read_failed'),
             block_ui=not bool(allow_deferred_close),
@@ -227,18 +238,30 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
             allow_deferred_close=allow_deferred_close,
         )
 
-    def _load_detail_payload(self, force_refresh=False):
+    def _load_detail_payload(self, prefix, force_refresh=False, request_token=0):
+        requested_prefix = str(prefix or '').strip().upper()
         if hasattr(self.refresh_client, 'get_code_prefix_detail_snapshot'):
-            return self.refresh_client.get_code_prefix_detail_snapshot(self.prefix, force_refresh=force_refresh)
-        detail = self.backend_client.get_code_prefix_detail(self.prefix)
+            payload = self.refresh_client.get_code_prefix_detail_snapshot(
+                requested_prefix,
+                force_refresh=force_refresh,
+            )
+        else:
+            detail = self.backend_client.get_code_prefix_detail(requested_prefix)
+            payload = {
+                'prefix_detail': dict(detail or {}),
+                'refreshed_at': '',
+                'cache_hit': False,
+            }
         return {
-            'prefix_detail': dict(detail or {}),
-            'refreshed_at': '',
-            'cache_hit': False,
+            **dict(payload or {}),
+            'request_token': int(request_token or 0),
+            'request_prefix': requested_prefix,
         }
 
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
+        if not self._is_current_detail_response(payload):
+            return
         self.detail = dict(payload.get('prefix_detail', payload.get('detail', payload or {})) or {})
         self._suppress_async_error_dialog = False
         self.last_refreshed_label.setText(
@@ -253,6 +276,22 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
                     silent_errors=True,
                     allow_deferred_close=True,
                 )
+
+    def _next_detail_request_token(self):
+        self._detail_request_sequence += 1
+        return self._detail_request_sequence
+
+    def _is_current_detail_response(self, payload):
+        payload = dict(payload or {})
+        request_token = payload.get('request_token')
+        request_prefix = str(payload.get('request_prefix', '') or '').strip().upper()
+        if request_token is None and not request_prefix:
+            return True
+        return (
+            int(request_token or 0) == int(getattr(self, '_active_request_token', 0) or 0)
+            and request_prefix == str(self.prefix or '').strip().upper()
+            and request_prefix == str(getattr(self, '_active_request_prefix', '') or '').strip().upper()
+        )
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:
@@ -453,6 +492,9 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
         self.detail = {}
         self._startup_refresh_pending = True
         self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self._active_request_prefix = self.prefix
         self.setWindowTitle(tr('code_prefix.detail.title', prefix=self.prefix))
         if hasattr(self.parent(), 'select_prefix_row'):
             self.parent().select_prefix_row(self.prefix)
