@@ -6,6 +6,7 @@ from app.core.runtime_config import get_backend_base_url, get_backend_timeout_se
 
 
 _DEFAULT_TIMEOUT = object()
+DETAIL_SNAPSHOT_REBUILD_TIMEOUT_SECONDS = 20 * 60
 
 
 class BackendClient:
@@ -171,7 +172,7 @@ class BackendClient:
         return self._get('/data-center/summary' + query)
 
     def rebuild_detail_snapshots(self):
-        timeout = max(self.timeout, 600)
+        timeout = max(self.timeout, DETAIL_SNAPSHOT_REBUILD_TIMEOUT_SECONDS)
         return self._post('/snapshots/details/rebuild', timeout=timeout)
 
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
@@ -240,6 +241,7 @@ class BackendClient:
         limit=None,
         offset=0,
         force_refresh=False,
+        include_update_status=True,
     ):
         params = {}
         if search_text:
@@ -254,6 +256,8 @@ class BackendClient:
             params['offset'] = int(offset or 0)
         if force_refresh:
             params['refresh'] = '1'
+        if not include_update_status:
+            params['update_status'] = '0'
         query = ('?' + urlencode(params)) if params else ''
         timeout = max(self.timeout, 120)
         return self._get('/database/actors' + query, timeout=timeout)
@@ -471,6 +475,12 @@ class BackendClient:
             params['refresh'] = '1'
         timeout = max(self.timeout, 180)
         return self._get('/queen-library/detail?' + urlencode(params), timeout=timeout)
+
+    def update_queen_profile(self, queen_name, profile):
+        return self._post(
+            '/queen-library/profile',
+            {'queen_name': queen_name, 'profile': dict(profile or {})},
+        )
 
     def delete_queen_video(self, record_id):
         return self._post('/queen-library/videos/delete', {'record_id': record_id}).get('deleted_count', 0)

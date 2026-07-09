@@ -165,6 +165,29 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
 
         self.assertFalse(result['cache_hit'])
 
+    def test_background_actor_snapshot_can_skip_update_status(self):
+        snapshot_file = Path(tempfile.gettempdir()) / 'actor_snapshot_lightweight_refresh.json'
+        service = self._build_service(snapshot_file)
+        calls = []
+
+        def list_actors(*args, **kwargs):
+            calls.append(kwargs)
+            return {
+                'actors': [{'name': 'Alice'}],
+                'total_count': 1,
+                'offset': 0,
+                'limit': None,
+            }
+
+        service.list_actors = list_actors
+        service._current_snapshot_timestamp = lambda: '2026-07-07 10:00:00'
+        service._append_snapshot_refresh_log = lambda **kwargs: None
+
+        result = BackendService.list_actors_snapshot(service, force_refresh=True, include_update_status=False)
+
+        self.assertFalse(result['cache_hit'])
+        self.assertEqual(calls[-1]['include_update_status'], False)
+
     def test_actor_detail_snapshot_file_uses_safe_encoded_filename(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             snapshot_file = Path(temp_dir) / 'actor_snapshot.json'
@@ -219,6 +242,21 @@ class BackendServiceMasterpieceDetailSnapshotTest(unittest.TestCase):
 
 
 class BackendClientDetailSnapshotTest(unittest.TestCase):
+    def test_list_actor_snapshot_can_request_lightweight_update_status(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        calls = []
+
+        def fake_get(path, timeout=None):
+            calls.append((path, timeout))
+            return {'actors': [], 'refreshed_at': '2026-07-07 10:08:00'}
+
+        client._get = fake_get
+
+        result = client.list_actors_snapshot(force_refresh=True, include_update_status=False)
+
+        self.assertEqual(result['refreshed_at'], '2026-07-07 10:08:00')
+        self.assertEqual(calls, [('/database/actors?refresh=1&update_status=0', 120)])
+
     def test_get_actor_detail_snapshot_passes_refresh_query(self):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
         calls = []
@@ -254,6 +292,21 @@ class BackendClientDetailSnapshotTest(unittest.TestCase):
             calls,
             [('/masterpiece/detail?code=PFSA-001&refresh=1', 120)],
         )
+
+    def test_rebuild_detail_snapshots_uses_twenty_minute_timeout(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        calls = []
+
+        def fake_post(path, payload=None, timeout=None):
+            calls.append((path, payload, timeout))
+            return {'success': True}
+
+        client._post = fake_post
+
+        result = client.rebuild_detail_snapshots()
+
+        self.assertTrue(result['success'])
+        self.assertEqual(calls, [('/snapshots/details/rebuild', None, 1200)])
 
 
 if __name__ == '__main__':

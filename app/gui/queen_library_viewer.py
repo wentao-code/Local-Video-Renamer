@@ -1,5 +1,6 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QComboBox,
     QDialog,
     QGridLayout,
     QHBoxLayout,
@@ -16,9 +17,18 @@ from PyQt5.QtWidgets import (
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
+from app.gui.queen_library_sorting import sort_queen_rows
 
 
 BUTTONS_PER_ROW = 9
+KEYWORDS_PER_ROW = 6
+QUEEN_PROFILE_FIELD_OPTIONS = {
+    'body_type': ('身材', ('苗条', '肥胖')),
+    'style': ('风格', ('温和', '粗暴')),
+    'face': ('露脸', ('是', '否')),
+    'age_group': ('年龄', ('萝莉', '少妇', '熟女')),
+    'like_level': ('喜欢等级', ('A', 'B', 'C', 'D')),
+}
 
 
 class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
@@ -93,7 +103,7 @@ class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
                 'QPushButton:checked { background-color: #0078d4; color: white; }'
             )
             self._keyword_buttons.append(button)
-            self.grid_layout.addWidget(button, index // BUTTONS_PER_ROW, index % BUTTONS_PER_ROW)
+            self.grid_layout.addWidget(button, index // KEYWORDS_PER_ROW, index % KEYWORDS_PER_ROW)
 
     def delete_selected_keywords(self):
         selected = [btn for btn in self._keyword_buttons if btn.isChecked()]
@@ -134,6 +144,8 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.backend_client = backend_client
         self.queen_name = str(queen_name or '').strip()
         self.rows = []
+        self.profile = {}
+        self.profile_fields = {}
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -155,6 +167,24 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_delete_queen)
         top_layout.addWidget(self.btn_refresh)
 
+        profile_layout = QHBoxLayout()
+        profile_layout.addWidget(QLabel('基础栏'))
+        for field_key, (label_text, options) in QUEEN_PROFILE_FIELD_OPTIONS.items():
+            profile_layout.addWidget(QLabel(label_text))
+            combo = QComboBox()
+            combo.addItem('')
+            combo.addItems(list(options))
+            combo.setFixedWidth(86)
+            self.profile_fields[field_key] = combo
+            profile_layout.addWidget(combo)
+        self.btn_confirm_profile = QPushButton('确认')
+        self.btn_confirm_profile.clicked.connect(self.confirm_profile)
+        self.btn_modify_profile = QPushButton('修改')
+        self.btn_modify_profile.clicked.connect(self.modify_profile)
+        profile_layout.addWidget(self.btn_confirm_profile)
+        profile_layout.addWidget(self.btn_modify_profile)
+        profile_layout.addStretch()
+
         self.table = QTableWidget()
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(['视频标题', '原始记录', '操作'])
@@ -166,6 +196,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
         layout.addLayout(top_layout)
+        layout.addLayout(profile_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
         self.set_async_busy_widgets([self.btn_delete_queen, self.btn_refresh, self.table])
@@ -180,8 +211,55 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
         self.rows = list(payload.get('videos', []) or [])
+        self.profile = dict(payload.get('profile', {}) or {})
         self.info_label.setText(f'{self.queen_name} | {len(self.rows)} 条视频')
+        self._apply_profile_to_fields(self.profile)
         self._render_rows()
+
+    def _apply_profile_to_fields(self, profile):
+        payload = dict(profile or {})
+        for field_key, combo in self.profile_fields.items():
+            value = str(payload.get(field_key, '') or '').strip()
+            index = combo.findText(value)
+            combo.setCurrentIndex(index if index >= 0 else 0)
+        self._set_profile_editable(not bool(payload.get('profile_confirmed')))
+
+    def _set_profile_editable(self, editable):
+        editable = bool(editable)
+        for combo in self.profile_fields.values():
+            combo.setEnabled(editable)
+        self.btn_confirm_profile.setEnabled(editable)
+        self.btn_modify_profile.setEnabled(not editable)
+
+    def _collect_profile_payload(self):
+        return {
+            field_key: combo.currentText().strip()
+            for field_key, combo in self.profile_fields.items()
+        }
+
+    def confirm_profile(self):
+        profile = self._collect_profile_payload()
+        missing_labels = [
+            label
+            for field_key, (label, _options) in QUEEN_PROFILE_FIELD_OPTIONS.items()
+            if not profile.get(field_key)
+        ]
+        if missing_labels:
+            QMessageBox.information(self, '提示', f'请先选择：{"、".join(missing_labels)}')
+            return
+        self.start_async_task(
+            lambda: self.backend_client.update_queen_profile(self.queen_name, profile),
+            self._on_profile_saved,
+            '保存女王基础信息失败',
+        )
+
+    def _on_profile_saved(self, result):
+        payload = dict(result or {})
+        self.profile = dict(payload.get('profile', {}) or {})
+        self._apply_profile_to_fields(self.profile)
+
+    def modify_profile(self):
+        self._set_profile_editable(True)
 
     def _render_rows(self):
         self.table.setRowCount(0)
@@ -297,7 +375,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
 
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
-        self.queens = list(payload.get('queens', []) or [])
+        self.queens = sort_queen_rows(payload.get('queens', []) or [])
         self.keywords = list(payload.get('keywords', []) or [])
         self.status_label.setText(f'已收录 {len(self.queens)} 位女王，已保存 {len(self.keywords)} 个关键词')
         self._render_queen_buttons()
@@ -316,6 +394,8 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             queen_name = str((row or {}).get('queen_name', '') or '').strip()
             button = QPushButton(queen_name)
             button.setFixedSize(104, 36)
+            if bool((row or {}).get('profile_confirmed', False)):
+                button.setStyleSheet('QPushButton { background-color: #238636; color: white; }')
             button.clicked.connect(lambda _checked=False, value=queen_name: self.show_queen_detail(value))
             self.grid_layout.addWidget(button, index // BUTTONS_PER_ROW, index % BUTTONS_PER_ROW)
 
@@ -341,7 +421,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
     def _on_search_finished(self, result):
         payload = dict(result or {})
         self.keyword_input.clear()
-        self.queens = list(payload.get('queens', []) or [])
+        self.queens = sort_queen_rows(payload.get('queens', []) or [])
         self.keywords = list(payload.get('keywords', []) or [])
         self.status_label.setText(
             f'搜索完成：扫描 {int(payload.get("scanned_count", 0) or 0)} 条，'
@@ -364,7 +444,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
 
     def _on_crawl_finished(self, result):
         payload = dict(result or {})
-        self.queens = list(payload.get('queens', []) or [])
+        self.queens = sort_queen_rows(payload.get('queens', []) or [])
         self.keywords = list(payload.get('keywords', []) or [])
         log_path = str(payload.get('log_path', '') or '').strip()
         log_text = f'，日志 {log_path}' if log_path else ''

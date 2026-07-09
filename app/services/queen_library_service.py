@@ -1,7 +1,7 @@
 import json
 import os
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +11,13 @@ from app.scraper.queen_search_scraper import QueenSearchScraper
 
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 MEDIA_SUFFIXES = {'.mp4', '.mkv', '.avi', '.wmv', '.mov'}
+QUEEN_PROFILE_FIELDS = {
+    'body_type': ('身材', ('苗条', '肥胖')),
+    'style': ('风格', ('温和', '粗暴')),
+    'face': ('露脸', ('是', '否')),
+    'age_group': ('年龄', ('萝莉', '少妇', '熟女')),
+    'like_level': ('喜欢等级', ('A', 'B', 'C', 'D')),
+}
 
 
 class QueenLibraryService:
@@ -72,6 +79,20 @@ class QueenLibraryService:
                 )
                 '''
             )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_profiles (
+                    queen_name TEXT PRIMARY KEY,
+                    body_type TEXT DEFAULT '',
+                    style TEXT DEFAULT '',
+                    face TEXT DEFAULT '',
+                    age_group TEXT DEFAULT '',
+                    like_level TEXT DEFAULT '',
+                    profile_confirmed INTEGER DEFAULT 0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
             conn.commit()
 
     def search_keyword(self, keyword, show_browser=True):
@@ -99,19 +120,24 @@ class QueenLibraryService:
         imported_count = 0
         skipped_count = 0
 
-        for keyword in keywords:
-            result = self._search_and_import_keyword(keyword, show_browser=show_browser)
-            query_result = {
-                'keyword': keyword,
-                'source_url': result.get('source_url', ''),
-                'scanned_count': int(result.get('scanned_count', 0) or 0),
-                'imported_count': int(result.get('imported_count', 0) or 0),
-                'skipped_count': int(result.get('skipped_count', 0) or 0),
-            }
-            query_results.append(query_result)
-            scanned_count += query_result['scanned_count']
-            imported_count += query_result['imported_count']
-            skipped_count += query_result['skipped_count']
+        session_factory = getattr(self.scraper, 'session', None)
+        session_context = session_factory() if callable(session_factory) else nullcontext(None)
+        # Keep one browser page alive for the whole refresh batch so each
+        # keyword search only navigates to a new URL instead of reopening Chrome.
+        with session_context as page:
+            for keyword in keywords:
+                result = self._search_and_import_keyword(keyword, show_browser=show_browser, page=page)
+                query_result = {
+                    'keyword': keyword,
+                    'source_url': result.get('source_url', ''),
+                    'scanned_count': int(result.get('scanned_count', 0) or 0),
+                    'imported_count': int(result.get('imported_count', 0) or 0),
+                    'skipped_count': int(result.get('skipped_count', 0) or 0),
+                }
+                query_results.append(query_result)
+                scanned_count += query_result['scanned_count']
+                imported_count += query_result['imported_count']
+                skipped_count += query_result['skipped_count']
 
         payload = {
             'started_at': started_at,
@@ -141,12 +167,15 @@ class QueenLibraryService:
                 candidates.append(f'{QUEEN_RECORD_PREFIX}{queen_name}')
         return self._dedupe_keep_order(candidates)
 
-    def _search_and_import_keyword(self, keyword, show_browser=True):
+    def _search_and_import_keyword(self, keyword, show_browser=True, page=None):
         normalized_keyword = str(keyword or '').strip()
         if not normalized_keyword:
             raise ValueError('\u7f3a\u5c11\u5173\u952e\u8bcd')
 
-        scraped = dict(self.scraper.search(normalized_keyword, show_browser=show_browser) or {})
+        if page is None:
+            scraped = dict(self.scraper.search(normalized_keyword, show_browser=show_browser) or {})
+        else:
+            scraped = dict(self.scraper.search(normalized_keyword, show_browser=show_browser, page=page) or {})
         source_url = str(scraped.get('source_url', '') or '').strip()
         records = list(scraped.get('records', []) or [])
         imported_count = 0
@@ -209,10 +238,15 @@ class QueenLibraryService:
         with self._connect() as conn:
             rows = conn.execute(
                 '''
-                SELECT queen_name, COUNT(*) AS video_count, MAX(created_at) AS last_created_at
-                FROM queen_videos
-                GROUP BY queen_name
-                ORDER BY queen_name COLLATE NOCASE ASC
+                SELECT
+                    videos.queen_name,
+                    COUNT(*) AS video_count,
+                    MAX(videos.created_at) AS last_created_at,
+                    COALESCE(profiles.profile_confirmed, 0) AS profile_confirmed
+                FROM queen_videos AS videos
+                LEFT JOIN queen_profiles AS profiles ON profiles.queen_name = videos.queen_name
+                GROUP BY videos.queen_name
+                ORDER BY videos.queen_name COLLATE NOCASE ASC
                 '''
             ).fetchall()
         return [dict(row) for row in rows]
@@ -222,6 +256,7 @@ class QueenLibraryService:
         if not normalized_name:
             raise ValueError('\u7f3a\u5c11\u5973\u738b\u540d\u79f0')
         with self._connect() as conn:
+            profile = self._get_profile_from_connection(conn, normalized_name)
             rows = conn.execute(
                 '''
                 SELECT id, raw_title, queen_name, video_title, source_url, created_at
@@ -233,8 +268,42 @@ class QueenLibraryService:
             ).fetchall()
         return {
             'queen_name': normalized_name,
+            'profile': profile,
             'videos': [dict(row) for row in rows],
         }
+
+    def save_queen_profile(self, queen_name, profile):
+        normalized_name = str(queen_name or '').strip()
+        if not normalized_name:
+            raise ValueError('\u7f3a\u5c11\u5973\u738b\u540d\u79f0')
+        normalized_profile = self._normalize_profile_payload(profile)
+        with self._connect() as conn:
+            conn.execute(
+                '''
+                INSERT INTO queen_profiles(
+                    queen_name, body_type, style, face, age_group, like_level, profile_confirmed, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(queen_name) DO UPDATE SET
+                    body_type = excluded.body_type,
+                    style = excluded.style,
+                    face = excluded.face,
+                    age_group = excluded.age_group,
+                    like_level = excluded.like_level,
+                    profile_confirmed = 1,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    normalized_name,
+                    normalized_profile['body_type'],
+                    normalized_profile['style'],
+                    normalized_profile['face'],
+                    normalized_profile['age_group'],
+                    normalized_profile['like_level'],
+                ),
+            )
+            conn.commit()
+            return self._get_profile_from_connection(conn, normalized_name)
 
     def delete_queen_video(self, record_id):
         normalized_id = int(record_id or 0)
@@ -253,6 +322,7 @@ class QueenLibraryService:
             raise ValueError('\u7f3a\u5c11\u5973\u738b\u540d\u79f0')
         with self._connect() as conn:
             cursor = conn.cursor()
+            cursor.execute('DELETE FROM queen_profiles WHERE queen_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM queen_videos WHERE queen_name = ?', (normalized_name,))
             deleted_count = int(cursor.rowcount or 0)
             conn.commit()
@@ -337,3 +407,43 @@ class QueenLibraryService:
                 handle.write(json.dumps(dict(payload or {}), ensure_ascii=False) + '\n')
         except OSError:
             return
+
+    @staticmethod
+    def _empty_profile(queen_name):
+        return {
+            'queen_name': str(queen_name or '').strip(),
+            'body_type': '',
+            'style': '',
+            'face': '',
+            'age_group': '',
+            'like_level': '',
+            'profile_confirmed': False,
+        }
+
+    @classmethod
+    def _normalize_profile_payload(cls, profile):
+        payload = dict(profile or {})
+        normalized = {}
+        for field_key, (label, choices) in QUEEN_PROFILE_FIELDS.items():
+            value = str(payload.get(field_key, '') or '').strip()
+            if value not in choices:
+                raise ValueError(f'{label}请选择有效选项')
+            normalized[field_key] = value
+        return normalized
+
+    @classmethod
+    def _get_profile_from_connection(cls, conn, queen_name):
+        normalized_name = str(queen_name or '').strip()
+        row = conn.execute(
+            '''
+            SELECT queen_name, body_type, style, face, age_group, like_level, profile_confirmed
+            FROM queen_profiles
+            WHERE queen_name = ?
+            ''',
+            (normalized_name,),
+        ).fetchone()
+        if row is None:
+            return cls._empty_profile(normalized_name)
+        profile = dict(row)
+        profile['profile_confirmed'] = bool(profile.get('profile_confirmed', 0))
+        return profile

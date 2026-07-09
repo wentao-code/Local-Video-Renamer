@@ -56,6 +56,10 @@ from app.gui.video_filter_dialog import VideoFilterDialog
 from app.services.system import NetworkGuardService
 
 
+SNAPSHOT_REFRESH_STARTUP_DELAY_MS = 15000
+SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS = 20 * 60
+
+
 class EnrichmentWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -1667,7 +1671,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def start_snapshot_refresh_scheduler(self):
         self.snapshot_refresh_timer.start()
-        QTimer.singleShot(0, self.schedule_snapshot_refresh_cycle)
+        QTimer.singleShot(SNAPSHOT_REFRESH_STARTUP_DELAY_MS, self.schedule_snapshot_refresh_cycle)
 
     def schedule_snapshot_refresh_cycle(self):
         if self.snapshot_refresh_running:
@@ -1689,7 +1693,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         return True
 
     def _create_snapshot_refresh_worker(self):
-        refresh_client = _build_refresh_client(self.backend_client, minimum_timeout=600)
+        refresh_client = _build_refresh_client(
+            self.backend_client,
+            minimum_timeout=SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+        )
         return SnapshotRefreshWorker(
             lambda progress_callback: self._run_snapshot_refresh_cycle(
                 progress_callback=progress_callback,
@@ -1698,11 +1705,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
 
     def _run_snapshot_refresh_cycle(self, progress_callback=None, refresh_client=None):
-        active_client = refresh_client or _build_refresh_client(self.backend_client, minimum_timeout=600)
+        active_client = refresh_client or _build_refresh_client(
+            self.backend_client,
+            minimum_timeout=SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+        )
         self.snapshot_refresh_running = True
         try:
             VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'actor_library', '演员库')
-            active_client.list_actors_snapshot(force_refresh=True)
+            active_client.list_actors_snapshot(force_refresh=True, include_update_status=False)
             VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'code_prefix_library', '番号库')
             active_client.list_code_prefixes_snapshot(force_refresh=True)
             VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'data_center', '数据中心')

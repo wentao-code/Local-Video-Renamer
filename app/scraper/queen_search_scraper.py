@@ -10,6 +10,8 @@ from app.scraper.browser_window import minimize_browser_window_if_needed
 QUEEN_SEARCH_BASE_URL = 'https://a.1cili.click'
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 TITLE_PATTERN = re.compile(r'\u5957\u8def\u76f4\u64ad_[^<>"\'\r\n\t ]+')
+QUEEN_SEARCH_LOAD_TIMEOUT_MS = 120000
+QUEEN_SEARCH_RELOAD_WAIT_MS = 20000
 
 
 class QueenSearchScraper:
@@ -74,22 +76,58 @@ class QueenSearchScraper:
                     self._playwright = None
                     self._playwright_manager = None
 
-    def search(self, keyword, show_browser=True):
+    def search(self, keyword, show_browser=True, page=None):
         normalized_keyword = str(keyword or '').strip()
         if not normalized_keyword:
             raise ValueError('\u7f3a\u5c11\u5173\u952e\u8bcd')
         target_url = self.build_search_url(normalized_keyword)
-        with self.session() as page:
-            if bool(show_browser) != (not self.headless):
-                # Keep runtime behavior predictable for tests and callers.
-                self.headless = not bool(show_browser)
-            page.goto(target_url, wait_until='domcontentloaded', timeout=60000)
-            wait_for_page_ready(page)
-            records = self.extract_candidate_titles_from_page(page)
+        if page is None:
+            with self.session() as active_page:
+                return self.search(normalized_keyword, show_browser=show_browser, page=active_page)
+        if bool(show_browser) != (not self.headless):
+            # Keep runtime behavior predictable for tests and callers.
+            self.headless = not bool(show_browser)
+        self._open_results_page(page, target_url)
+        records = self.extract_candidate_titles_from_page(page)
         return {
             'source_url': target_url,
             'records': records,
         }
+
+    def _open_results_page(self, page, target_url):
+        has_loaded_target_once = False
+        while True:
+            try:
+                if has_loaded_target_once:
+                    page.reload(wait_until='domcontentloaded', timeout=QUEEN_SEARCH_LOAD_TIMEOUT_MS)
+                else:
+                    page.goto(target_url, wait_until='domcontentloaded', timeout=QUEEN_SEARCH_LOAD_TIMEOUT_MS)
+                    has_loaded_target_once = True
+                wait_for_page_ready(page)
+            except Exception:
+                page.wait_for_timeout(QUEEN_SEARCH_RELOAD_WAIT_MS)
+                continue
+            if self._is_results_page_ready(page):
+                return
+            page.wait_for_timeout(QUEEN_SEARCH_RELOAD_WAIT_MS)
+            has_loaded_target_once = True
+
+    @classmethod
+    def _is_results_page_ready(cls, page):
+        rows = cls.extract_result_row_titles(page)
+        if rows:
+            return True
+        body_text = ''
+        try:
+            body_text = page.locator('body').inner_text(timeout=5000)
+        except Exception:
+            body_text = ''
+        html = ''
+        try:
+            html = page.content()
+        except Exception:
+            html = ''
+        return bool(cls.extract_candidate_titles(body_text=body_text, html=html))
 
     @staticmethod
     def build_search_url(keyword):

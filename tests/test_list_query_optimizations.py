@@ -342,6 +342,155 @@ class LibraryListMetadataTest(unittest.TestCase):
 
         self.assertFalse(service.db.refresh_categories)
 
+    def test_list_actors_batches_update_status_filtering(self):
+        recent_date = (date.today() - timedelta(days=90)).isoformat()
+
+        class FakeDatabase:
+            def list_actors(self, search_text='', sort_field='name', sort_order='asc', limit=None, offset=0):
+                return [
+                    {'name': 'ActorA', 'actor_id': '1', 'birthday': '', 'age': ''},
+                    {'name': 'ActorB', 'actor_id': '2', 'birthday': '', 'age': ''},
+                ]
+
+            def count_actors(self, search_text=''):
+                return 2
+
+            def list_local_videos_by_actor_names(self, actor_names, refresh_categories=True):
+                return [
+                    {
+                        'code': 'AAA-001',
+                        'title': 'Shared Local',
+                        'author': 'ActorA ActorB',
+                        'release_date': recent_date,
+                        'video_category': VIDEO_CATEGORY_SINGLE,
+                    }
+                ]
+
+            def list_actor_movies_by_names(self, actor_names):
+                return {
+                    'ActorA': [
+                        {
+                            'actor_name': 'ActorA',
+                            'code': 'WEB-001',
+                            'title': 'Actor A Web',
+                            'author': 'ActorA',
+                            'release_date': recent_date,
+                            'javtxt_release_date': recent_date,
+                            'video_category': VIDEO_CATEGORY_SINGLE,
+                        }
+                    ],
+                    'ActorB': [
+                        {
+                            'actor_name': 'ActorB',
+                            'code': 'WEB-002',
+                            'title': 'Actor B Web',
+                            'author': 'ActorB',
+                            'release_date': recent_date,
+                            'javtxt_release_date': recent_date,
+                            'video_category': VIDEO_CATEGORY_SINGLE,
+                        }
+                    ],
+                }
+
+            def list_ladder_entries(self, board_key=None, entity_type=None):
+                return []
+
+        class CountingFilterService:
+            def __init__(self):
+                self.calls = 0
+
+            def load_settings(self):
+                return {}
+
+            def filter_video_rows(self, rows, settings=None):
+                self.calls += 1
+                return list(rows or [])
+
+        filter_service = CountingFilterService()
+        service = BackendService.__new__(BackendService)
+        service.db = FakeDatabase()
+        service.video_filter_service = filter_service
+        service.ensure_database_loaded = lambda: None
+
+        result = BackendService.list_actors(service)
+
+        self.assertLessEqual(filter_service.calls, 2)
+        self.assertEqual([row['update_status'] for row in result['actors']], ['active', 'active'])
+
+    def test_list_actors_prefers_aggregated_web_update_dates(self):
+        recent_date = (date.today() - timedelta(days=90)).isoformat()
+
+        class FakeDatabase:
+            def list_actors(self, search_text='', sort_field='name', sort_order='asc', limit=None, offset=0):
+                return [{'name': 'ActorA', 'actor_id': '1', 'birthday': '', 'age': ''}]
+
+            def count_actors(self, search_text=''):
+                return 1
+
+            def list_local_videos_by_actor_names(self, actor_names, refresh_categories=True):
+                return []
+
+            def list_latest_actor_movie_release_dates_by_names(self, actor_names):
+                return {'ActorA': recent_date}
+
+            def list_actor_movies_by_names(self, actor_names):
+                raise AssertionError('actor list should not load every web movie when aggregate dates exist')
+
+            def list_ladder_entries(self, board_key=None, entity_type=None):
+                return []
+
+        service = BackendService.__new__(BackendService)
+        service.db = FakeDatabase()
+        service.video_filter_service = _PassThroughFilterService()
+        service.ensure_database_loaded = lambda: None
+
+        result = BackendService.list_actors(service)
+
+        self.assertEqual(result['actors'][0]['update_status'], 'active')
+
+    def test_list_actors_passes_active_filters_to_aggregated_web_dates(self):
+        recent_date = (date.today() - timedelta(days=90)).isoformat()
+        old_date = (date.today() - timedelta(days=900)).isoformat()
+
+        class FakeDatabase:
+            def __init__(self):
+                self.filter_settings = None
+
+            def list_actors(self, search_text='', sort_field='name', sort_order='asc', limit=None, offset=0):
+                return [{'name': 'ActorA', 'actor_id': '1', 'birthday': '', 'age': ''}]
+
+            def count_actors(self, search_text=''):
+                return 1
+
+            def list_local_videos_by_actor_names(self, actor_names, refresh_categories=True):
+                return []
+
+            def list_latest_actor_movie_release_dates_by_names(self, actor_names, filter_settings=None):
+                self.filter_settings = filter_settings
+                return {'ActorA': old_date}
+
+            def list_actor_movies_by_names(self, actor_names):
+                raise AssertionError('actor list should still use aggregate dates when filters are active')
+
+            def list_ladder_entries(self, board_key=None, entity_type=None):
+                return []
+
+        class ActiveFilterService(_PassThroughFilterService):
+            @staticmethod
+            def load_settings():
+                return {'rules': {'title': ['Hidden']}}
+
+        database = FakeDatabase()
+        service = BackendService.__new__(BackendService)
+        service.db = database
+        service.video_filter_service = ActiveFilterService()
+        service.ensure_database_loaded = lambda: None
+
+        result = BackendService.list_actors(service)
+
+        self.assertEqual(database.filter_settings, {'rules': {'title': ['Hidden']}})
+        self.assertEqual(result['actors'][0]['update_status'], 'inactive')
+
     def test_code_prefix_list_includes_raw_status_and_update_status(self):
         recent_date = (date.today() - timedelta(days=120)).isoformat()
 
@@ -479,6 +628,41 @@ class _PassThroughLadderTagService:
 
 
 class DatabaseIndexCoverageTest(unittest.TestCase):
+    def test_database_lists_latest_actor_movie_release_dates(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            database = VideoDatabase(db_path)
+            with database._connect() as conn:
+                cursor = conn.cursor()
+                cursor.executemany(
+                    '''
+                    INSERT OR REPLACE INTO actor_movies (
+                        actor_name, code, title, author, release_date, javtxt_release_date, video_category
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    [
+                        ('ActorA', 'AAA-001', 'Old', 'ActorA', '2025-01-01', '', VIDEO_CATEGORY_SINGLE),
+                        ('ActorA', 'AAA-002', 'Visible New', 'ActorA', '2025-02-01', '2025-02-03', VIDEO_CATEGORY_SINGLE),
+                        ('ActorA', 'AAA-004', 'Hidden Newer', 'ActorA', '2025-05-01', '2025-05-01', VIDEO_CATEGORY_SINGLE),
+                        ('ActorA', 'AAA-003', 'Collection', 'ActorA', '2025-03-01', '2025-03-01', '合集'),
+                        ('ActorB', 'BBB-001', 'Other', 'ActorB', '2025-04-01', '2025-04-01', VIDEO_CATEGORY_SINGLE),
+                    ],
+                )
+                conn.commit()
+
+            result = database.list_latest_actor_movie_release_dates_by_names(['ActorA'])
+            filtered_result = database.list_latest_actor_movie_release_dates_by_names(
+                ['ActorA'],
+                filter_settings={'rules': {'title': ['Hidden']}},
+            )
+
+            self.assertEqual(result, {'ActorA': '2025-05-01'})
+            self.assertEqual(filtered_result, {'ActorA': '2025-02-03'})
+        finally:
+            shutil.rmtree(temp_dir)
+
     def test_database_initialization_creates_supplement_task_indexes(self):
         temp_dir = tempfile.mkdtemp()
         try:

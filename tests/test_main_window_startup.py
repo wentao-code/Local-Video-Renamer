@@ -74,7 +74,8 @@ class MainWindowStartupTest(unittest.TestCase):
             [item[0] for item in calls],
             ['actor', 'code_prefix', 'data_center'],
         )
-        for _name, kwargs in calls:
+        self.assertEqual(calls[0][1], {'force_refresh': True, 'include_update_status': False})
+        for _name, kwargs in calls[1:]:
             self.assertTrue(kwargs.get('force_refresh'))
 
     def test_run_snapshot_refresh_cycle_emits_target_labels_in_order(self):
@@ -96,6 +97,39 @@ class MainWindowStartupTest(unittest.TestCase):
             [payload.get('target_key') for payload in progress_payloads],
             ['actor_library', 'code_prefix_library', 'data_center'],
         )
+
+    def test_run_snapshot_refresh_cycle_builds_twenty_minute_refresh_client_by_default(self):
+        calls = []
+        refresh_client = SimpleNamespace(
+            list_actors_snapshot=lambda **kwargs: calls.append(('actor', kwargs)),
+            list_code_prefixes_snapshot=lambda **kwargs: calls.append(('code_prefix', kwargs)),
+            get_data_center_summary=lambda **kwargs: calls.append(('data_center', kwargs)),
+        )
+        stub = SimpleNamespace(snapshot_refresh_running=False, backend_client=SimpleNamespace(timeout=30))
+
+        def fake_build_refresh_client(backend_client, minimum_timeout=90):
+            calls.append(('build_client', backend_client, minimum_timeout))
+            return refresh_client
+
+        with patch('app.gui.main_window._build_refresh_client', fake_build_refresh_client):
+            main_window.VidNormApp._run_snapshot_refresh_cycle(stub)
+
+        self.assertEqual(calls[0], ('build_client', stub.backend_client, 1200))
+
+    def test_start_snapshot_refresh_scheduler_delays_startup_refresh(self):
+        started = []
+        stub = SimpleNamespace(
+            snapshot_refresh_timer=SimpleNamespace(start=lambda: started.append('timer')),
+            schedule_snapshot_refresh_cycle=lambda: None,
+        )
+
+        with patch('app.gui.main_window.QTimer.singleShot') as single_shot:
+            main_window.VidNormApp.start_snapshot_refresh_scheduler(stub)
+
+        self.assertEqual(started, ['timer'])
+        delay_ms, callback = single_shot.call_args.args
+        self.assertGreaterEqual(delay_ms, 15000)
+        self.assertIs(callback, stub.schedule_snapshot_refresh_cycle)
 
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []

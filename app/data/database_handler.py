@@ -29,6 +29,7 @@ from app.core.enrichment_sources import (
 )
 from app.core.video_code import standardize_video_code
 from app.core.javtxt_video_state import (
+    JAVTXT_AUTHOR_MIN_RELEASE_DATE,
     build_javtxt_library_status,
     is_javtxt_eligible_movie,
     summarize_javtxt_movies,
@@ -78,6 +79,7 @@ from app.services.video import (
     VIDEO_CATEGORY_COLLECTION,
     VIDEO_CATEGORY_CO_STAR,
     VIDEO_CATEGORY_OPTIONS,
+    VIDEO_CATEGORY_SINGLE,
     classify_manual_category_tier,
     count_video_actors,
     detect_video_category,
@@ -3361,6 +3363,91 @@ class VideoDatabase(
                 )
 
         return results
+
+    def list_latest_actor_movie_release_dates_by_names(self, actor_names, filter_settings=None):
+        normalized_names = []
+        seen = set()
+        for actor_name in actor_names or []:
+            normalized_name = str(actor_name or '').strip()
+            if not normalized_name or normalized_name in seen:
+                continue
+            seen.add(normalized_name)
+            normalized_names.append(normalized_name)
+
+        if not normalized_names:
+            return {}
+
+        placeholders = ','.join('?' for _ in normalized_names)
+        release_date_sql = "COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '')"
+        tracked_categories = (VIDEO_CATEGORY_SINGLE, VIDEO_CATEGORY_CO_STAR)
+        filter_sql, filter_params = self._actor_movie_update_status_filter_sql(filter_settings)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT actor_name, MAX({release_date_sql}) AS latest_release_date
+                FROM actor_movies
+                WHERE actor_name IN ({placeholders})
+                  AND code LIKE '%-%'
+                  AND video_category IN (?, ?)
+                  AND {release_date_sql} >= ?
+                  {filter_sql}
+                GROUP BY actor_name
+                ''',
+                [
+                    *normalized_names,
+                    *tracked_categories,
+                    JAVTXT_AUTHOR_MIN_RELEASE_DATE.isoformat(),
+                    *filter_params,
+                ],
+            )
+            return {
+                str(row[0] or '').strip(): str(row[1] or '').strip()
+                for row in cursor.fetchall()
+                if str(row[0] or '').strip() and str(row[1] or '').strip()
+            }
+
+    @classmethod
+    def _actor_movie_update_status_filter_sql(cls, filter_settings=None):
+        if not isinstance(filter_settings, dict):
+            return '', []
+        rules = filter_settings.get('rules', filter_settings)
+        if not isinstance(rules, dict):
+            return '', []
+
+        clauses = []
+        params = []
+        prefix_expression = cls._code_prefix_expression_sql('code')
+        for field_name in ('code', 'co_star_code'):
+            for prefix in cls._normalized_filter_values(rules.get(field_name, [])):
+                clauses.append(f'{prefix_expression} != ?')
+                params.append(prefix.upper())
+
+        for field_name, column_name in (('title', 'title'), ('javtxt_tags', 'javtxt_tags')):
+            for keyword in cls._normalized_filter_values(rules.get(field_name, [])):
+                clauses.append(f"COALESCE({column_name}, '') NOT LIKE ?")
+                params.append(f'%{keyword}%')
+
+        if not clauses:
+            return '', []
+        return 'AND ' + ' AND '.join(clauses), params
+
+    @staticmethod
+    def _normalized_filter_values(values):
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, (list, tuple, set)):
+            return []
+        normalized_values = []
+        seen = set()
+        for value in values:
+            normalized_value = str(value or '').strip()
+            lowered_value = normalized_value.lower()
+            if not normalized_value or lowered_value in seen:
+                continue
+            seen.add(lowered_value)
+            normalized_values.append(normalized_value)
+        return normalized_values
 
     def reset_video_enrichments(self, codes):
         normalized_codes = [

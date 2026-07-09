@@ -12,6 +12,9 @@ def make_handler(service):
     def _is_truthy_query_value(query, key):
         return str((query.get(key, [''])[0] or '')).strip().lower() in ('1', 'true', 'yes', 'on')
 
+    def _is_falsey_query_value(query, key):
+        return str((query.get(key, [''])[0] or '')).strip().lower() in ('0', 'false', 'no', 'off')
+
     def _int_query_value(query, key, default=None):
         raw_value = str((query.get(key, [''])[0] or '')).strip()
         if not raw_value:
@@ -131,6 +134,7 @@ def make_handler(service):
                     limit=_int_query_value(query, 'limit', default=None),
                     offset=_int_query_value(query, 'offset', default=0),
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
+                    include_update_status=not _is_falsey_query_value(query, 'update_status'),
                 )
             if method == 'GET' and path == '/database/actors/detail':
                 actor_name = query.get('name', [''])[0]
@@ -221,6 +225,8 @@ def make_handler(service):
                     query.get('name', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
+            if method == 'POST' and path == '/queen-library/profile':
+                return service.update_queen_profile(body.get('queen_name'), body.get('profile', {}))
             if method == 'POST' and path == '/queen-library/videos/delete':
                 return service.delete_queen_video(body.get('record_id'))
             if method == 'POST' and path == '/queen-library/queens/delete':

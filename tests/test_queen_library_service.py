@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from app.services.queen_library_service import QueenLibraryService
@@ -18,6 +19,31 @@ class _ScraperStub:
         return {
             'source_url': f'https://a.1cili.click/search?q={keyword}',
             'records': list(records),
+        }
+
+
+class _SessionReuseScraperStub:
+    def __init__(self, records_by_keyword=None):
+        self.records_by_keyword = dict(records_by_keyword or {})
+        self.calls = []
+        self.pages = []
+        self.session_enter_count = 0
+        self.page = object()
+
+    @contextmanager
+    def session(self):
+        self.session_enter_count += 1
+        yield self.page
+
+    def search(self, keyword, show_browser=True, page=None):
+        if page is None:
+            with self.session() as active_page:
+                return self.search(keyword, show_browser=show_browser, page=active_page)
+        self.calls.append((keyword, bool(show_browser)))
+        self.pages.append(page)
+        return {
+            'source_url': f'https://a.1cili.click/search?q={keyword}',
+            'records': list(self.records_by_keyword.get(keyword, [])),
         }
 
 
@@ -123,6 +149,78 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual(log_payload['skipped_count'], 2)
             self.assertTrue(log_payload['show_browser'])
             self.assertEqual([row['keyword'] for row in log_payload['queries']], ['\u521d\u59cb\u8bcd', '\u5957\u8def\u76f4\u64ad_\u5c0f7s'])
+
+    def test_refresh_all_reuses_one_browser_session_across_keywords(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            scraper = _SessionReuseScraperStub(
+                records_by_keyword={
+                    '\u521d\u59cb\u8bcd': ['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u65e7\u6807\u9898.mp4'],
+                    '\u5957\u8def\u76f4\u64ad_\u5c0f7s': ['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u65b0\u6807\u9898_2.mp4'],
+                }
+            )
+            service = QueenLibraryService(db_path, scraper=scraper)
+            service.search_keyword('\u521d\u59cb\u8bcd', show_browser=False)
+            baseline_session_count = scraper.session_enter_count
+            baseline_page_count = len(scraper.pages)
+
+            result = service.refresh_all(show_browser=True)
+
+            self.assertEqual(result['query_count'], 2)
+            self.assertEqual(scraper.session_enter_count, baseline_session_count + 1)
+            self.assertEqual(scraper.pages[baseline_page_count:], [scraper.page, scraper.page])
+
+    def test_save_queen_profile_marks_queen_as_confirmed_and_returns_detail_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub(['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u4e1d\u8db3\u9ad8\u8ddf\u8c03\u6559_2.mp4'])
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('\u5c0f7s')
+
+            profile = service.save_queen_profile(
+                '\u5c0f7s',
+                {
+                    'body_type': '\u82d7\u6761',
+                    'style': '\u7c97\u66b4',
+                    'face': '\u662f',
+                    'age_group': '\u5c11\u5987',
+                    'like_level': 'A',
+                },
+            )
+
+            self.assertTrue(profile['profile_confirmed'])
+            self.assertEqual(profile['body_type'], '\u82d7\u6761')
+            self.assertEqual(service.get_queen_detail('\u5c0f7s')['profile']['like_level'], 'A')
+            queen_rows = service.list_queens()
+            self.assertEqual(queen_rows[0]['queen_name'], '\u5c0f7s')
+            self.assertTrue(queen_rows[0]['profile_confirmed'])
+
+    def test_save_queen_profile_rejects_incomplete_or_unknown_options(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=_ScraperStub())
+
+            with self.assertRaisesRegex(ValueError, '\u8eab\u6750'):
+                service.save_queen_profile(
+                    '\u5c0f7s',
+                    {
+                        'body_type': '',
+                        'style': '\u6e29\u548c',
+                        'face': '\u5426',
+                        'age_group': '\u719f\u5973',
+                        'like_level': 'B',
+                    },
+                )
+
+            with self.assertRaisesRegex(ValueError, '\u559c\u6b22\u7b49\u7ea7'):
+                service.save_queen_profile(
+                    '\u5c0f7s',
+                    {
+                        'body_type': '\u80a5\u80d6',
+                        'style': '\u6e29\u548c',
+                        'face': '\u5426',
+                        'age_group': '\u719f\u5973',
+                        'like_level': 'S',
+                    },
+                )
 
     def test_delete_video_and_delete_queen(self):
         with tempfile.TemporaryDirectory() as temp_dir:

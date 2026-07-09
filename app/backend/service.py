@@ -53,7 +53,7 @@ from app.services.library import (
 )
 from app.services.local_video import LocalVideoLibraryService
 from app.services.queen_library_service import QueenLibraryService
-from app.services.video import VideoFilterService
+from app.services.video import VIDEO_CATEGORY_SINGLE, VideoFilterService
 from app.core.project_paths import QUEEN_LIBRARY_DB_FILE
 
 
@@ -94,6 +94,7 @@ class BackendService:
         self.combo_progress = ComboProgressService()
         self.enrichment_task_state = EnrichmentTaskState()
         self._snapshot_lock = threading.Lock()
+        self._canglangge_snapshot_lock = threading.Lock()
         self._ladder_board_snapshots = {}
         self._path_library_snapshot = None
         self._canglangge_snapshot = None
@@ -419,7 +420,15 @@ class BackendService:
         self._invalidate_video_category_snapshot()
         return result
 
-    def list_actors(self, search_text='', sort_field='name', sort_order='asc', limit=None, offset=0):
+    def list_actors(
+        self,
+        search_text='',
+        sort_field='name',
+        sort_order='asc',
+        limit=None,
+        offset=0,
+        include_update_status=True,
+    ):
         self.ensure_database_loaded()
         normalized_limit = self._normalize_list_limit(limit)
         normalized_offset = self._normalize_list_offset(offset)
@@ -435,7 +444,8 @@ class BackendService:
             )
         )
         self._attach_actor_ladder_tiers(rows)
-        self._attach_actor_update_status(rows)
+        if include_update_status:
+            self._attach_actor_update_status(rows)
         return {
             'actors': rows,
             'total_count': self._count_actors_for_listing(search_text, fallback_rows=rows),
@@ -451,6 +461,7 @@ class BackendService:
         limit=None,
         offset=0,
         force_refresh=False,
+        include_update_status=True,
     ):
         self.ensure_database_loaded()
         normalized_limit = self._normalize_list_limit(limit)
@@ -464,6 +475,7 @@ class BackendService:
             normalized_sort_order,
             normalized_limit,
             normalized_offset,
+            include_update_status=include_update_status,
         )
         with self._snapshot_guard():
             snapshot = (self._actor_library_snapshots or {}).get(snapshot_key)
@@ -480,6 +492,7 @@ class BackendService:
             sort_order=normalized_sort_order,
             limit=normalized_limit,
             offset=normalized_offset,
+            include_update_status=include_update_status,
         )
         refresh_duration_ms = self._build_refresh_duration_ms(started_at)
         snapshot = self._build_snapshot_payload(
@@ -971,13 +984,14 @@ class BackendService:
                 local_rows = list(self.db.list_local_videos_by_actor_names(actor_names, refresh_categories=False))
             except TypeError:
                 local_rows = list(self.db.list_local_videos_by_actor_names(actor_names))
-        web_movies_by_actor = {}
-        if hasattr(self.db, 'list_actor_movies_by_names'):
-            web_movies_by_actor = self.db.list_actor_movies_by_names(actor_names)
-
         local_movies_by_actor = {name: [] for name in actor_names}
         actor_name_set = set(actor_names)
-        for row in local_rows:
+        visible_local_rows = (
+            self.video_filter_service.filter_video_rows(local_rows, settings=filter_settings)
+            if local_rows
+            else []
+        )
+        for row in visible_local_rows:
             current_names = {
                 str(name or '').strip()
                 for name in split_actor_names((row or {}).get('author', ''))
@@ -986,25 +1000,53 @@ class BackendService:
             for actor_name in actor_name_set.intersection(current_names):
                 local_movies_by_actor.setdefault(actor_name, []).append(dict(row or {}))
 
-        for row in rows:
-            actor_name = str((row or {}).get('name', '') or '').strip()
-            local_movies = local_movies_by_actor.get(actor_name, [])
-            web_movies = web_movies_by_actor.get(actor_name, [])
-            visible_local_movies = (
-                self.video_filter_service.filter_video_rows(local_movies, settings=filter_settings)
-                if local_movies
+        web_release_dates_by_actor = {}
+        if hasattr(self.db, 'list_latest_actor_movie_release_dates_by_names'):
+            try:
+                latest_release_dates = self.db.list_latest_actor_movie_release_dates_by_names(
+                    actor_names,
+                    filter_settings=filter_settings,
+                )
+            except TypeError:
+                latest_release_dates = self.db.list_latest_actor_movie_release_dates_by_names(actor_names)
+            web_release_dates_by_actor = {
+                str(actor_name or '').strip(): str(release_date or '').strip()
+                for actor_name, release_date in (latest_release_dates or {}).items()
+                if str(actor_name or '').strip() in actor_name_set and str(release_date or '').strip()
+            }
+        elif hasattr(self.db, 'list_actor_movies_by_names'):
+            web_movies_by_actor = self.db.list_actor_movies_by_names(actor_names)
+            web_rows = []
+            for actor_name, movies in (web_movies_by_actor or {}).items():
+                normalized_actor_name = str(actor_name or '').strip()
+                if normalized_actor_name not in actor_name_set:
+                    continue
+                for movie in movies or []:
+                    current_movie = dict(movie or {})
+                    current_movie['_update_status_actor_name'] = normalized_actor_name
+                    web_rows.append(current_movie)
+            visible_web_rows = (
+                self.video_filter_service.filter_video_rows(web_rows, settings=filter_settings)
+                if web_rows
                 else []
             )
-            eligible_web_movies = [
-                movie
-                for movie in (
-                    self.video_filter_service.filter_video_rows(web_movies, settings=filter_settings)
-                    if web_movies
-                    else []
-                )
-                if is_javtxt_eligible_movie(movie)
-            ]
-            row['update_status'] = resolve_update_status(visible_local_movies + eligible_web_movies)
+            for movie in visible_web_rows:
+                actor_name = str((movie or {}).get('_update_status_actor_name', '') or '').strip()
+                if actor_name not in actor_name_set or not is_javtxt_eligible_movie(movie):
+                    continue
+                release_date = str(
+                    ((movie or {}).get('javtxt_release_date') or (movie or {}).get('release_date', '')) or ''
+                ).strip()
+                if release_date > web_release_dates_by_actor.get(actor_name, ''):
+                    web_release_dates_by_actor[actor_name] = release_date
+
+        for row in rows:
+            actor_name = str((row or {}).get('name', '') or '').strip()
+            status_rows = list(local_movies_by_actor.get(actor_name, []) or [])
+            web_release_date = web_release_dates_by_actor.get(actor_name, '')
+            if web_release_date:
+                status_rows.append({'release_date': web_release_date, 'video_category': VIDEO_CATEGORY_SINGLE})
+            row['update_status'] = resolve_update_status(status_rows)
         return rows
 
     def _attach_actor_ladder_tiers(self, rows):
@@ -1052,6 +1094,13 @@ class BackendService:
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
         return {
             **dict(self.queen_library_service.get_queen_detail(queen_name) or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def update_queen_profile(self, queen_name, profile):
+        saved_profile = self.queen_library_service.save_queen_profile(queen_name, profile)
+        return {
+            'profile': dict(saved_profile or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 
@@ -1175,7 +1224,7 @@ class BackendService:
             )
 
     def _get_canglangge_snapshot(self, force_refresh=False):
-        with self._snapshot_guard():
+        with self._canglangge_snapshot_guard():
             snapshot = getattr(self, '_canglangge_snapshot', None)
             if snapshot is None or force_refresh:
                 rows = self.canglangge_candidate_service.list_candidates()
@@ -1187,7 +1236,7 @@ class BackendService:
             }
 
     def _remove_from_canglangge_snapshot(self, actor_names):
-        with self._snapshot_guard():
+        with self._canglangge_snapshot_guard():
             snapshot = getattr(self, '_canglangge_snapshot', None)
             if snapshot is None:
                 return
@@ -1856,7 +1905,7 @@ class BackendService:
         return json.dumps(normalized_settings, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
-    def _build_actor_list_snapshot_key(search_text, sort_field, sort_order, limit, offset):
+    def _build_actor_list_snapshot_key(search_text, sort_field, sort_order, limit, offset, include_update_status=True):
         return json.dumps(
             {
                 'search_text': str(search_text or '').strip(),
@@ -1864,6 +1913,7 @@ class BackendService:
                 'sort_order': str(sort_order or '').strip(),
                 'limit': None if limit is None else int(limit),
                 'offset': int(offset or 0),
+                'include_update_status': bool(include_update_status),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -2178,6 +2228,9 @@ class BackendService:
 
     def _snapshot_guard(self):
         return getattr(self, '_snapshot_lock', None) or nullcontext()
+
+    def _canglangge_snapshot_guard(self):
+        return getattr(self, '_canglangge_snapshot_lock', None) or nullcontext()
 
     def _build_snapshot_payload(self, **fields):
         refresh_duration_ms = int(fields.pop('refresh_duration_ms', 0) or 0)

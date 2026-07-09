@@ -153,6 +153,13 @@ class CanglanggeCandidateServiceTest(unittest.TestCase):
 
 
 class BackendServiceCanglanggeTest(unittest.TestCase):
+    class _ExplodingLock:
+        def __enter__(self):
+            raise AssertionError('canglangge should not wait on the global snapshot lock')
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
     def test_lists_canglangge_candidates(self):
         service = BackendService.__new__(BackendService)
         service.ensure_database_loaded = lambda: None
@@ -196,6 +203,23 @@ class BackendServiceCanglanggeTest(unittest.TestCase):
         self.assertEqual(first['candidates'], [{'actor_name': 'Actor 1'}])
         self.assertEqual(second['candidates'], [{'actor_name': 'Actor 1'}])
         self.assertEqual(refreshed['candidates'], [{'actor_name': 'Actor 2'}])
+
+    def test_canglangge_snapshot_uses_its_own_lock(self):
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service._canglangge_snapshot = None
+        service._canglangge_snapshot_lock = None
+        service._snapshot_lock = self._ExplodingLock()
+        service.canglangge_candidate_service = type(
+            'CandidateService',
+            (),
+            {'list_candidates': lambda self: [{'actor_name': 'Actor A'}]},
+        )()
+        service._current_snapshot_timestamp = lambda: '2026-06-21 20:00:00'
+
+        result = BackendService.list_canglangge_candidates(service)
+
+        self.assertEqual(result['candidates'], [{'actor_name': 'Actor A'}])
 
     def test_admit_candidates_reuses_actor_add_flow(self):
         class FakeAdminService:
