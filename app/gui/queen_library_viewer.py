@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -22,6 +22,8 @@ from app.gui.queen_library_sorting import sort_queen_rows
 
 BUTTONS_PER_ROW = 9
 KEYWORDS_PER_ROW = 6
+QUEEN_VIDEO_CONTENT_TYPE_OPTIONS = ('\u8fb1\u9a82', '\u804a\u5929', '\u8c03\u6559')
+QUEEN_VIDEO_CONTENT_LEVEL_OPTIONS = ('S', 'A', 'B', 'C')
 QUEEN_PROFILE_FIELD_OPTIONS = {
     'body_type': ('身材', ('苗条', '肥胖')),
     'style': ('风格', ('温和', '粗暴')),
@@ -146,6 +148,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.rows = []
         self.profile = {}
         self.profile_fields = {}
+        self.video_metadata_fields = {}
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -186,12 +189,14 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         profile_layout.addStretch()
 
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(['视频标题', '原始记录', '操作'])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(['视频标题', '原始记录', '内容', '等级', '操作'])
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, self.table.horizontalHeader().Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, self.table.horizontalHeader().Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, self.table.horizontalHeader().ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, self.table.horizontalHeader().ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, self.table.horizontalHeader().ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -263,6 +268,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
 
     def _render_rows(self):
         self.table.setRowCount(0)
+        self.video_metadata_fields.clear()
         for row_index, row_data in enumerate(self.rows):
             self.table.insertRow(row_index)
             values = (
@@ -273,7 +279,62 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
                 item = QTableWidgetItem(str(value or ''))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_index, column_index, item)
-            self.table.setCellWidget(row_index, 2, self._build_delete_button(int(row_data.get('id', 0) or 0)))
+            record_id = int(row_data.get('id', 0) or 0)
+            content_combo = self._build_metadata_combo(
+                row_data.get('content_type', ''),
+                QUEEN_VIDEO_CONTENT_TYPE_OPTIONS,
+            )
+            level_combo = self._build_metadata_combo(
+                row_data.get('content_level', ''),
+                QUEEN_VIDEO_CONTENT_LEVEL_OPTIONS,
+            )
+            self.video_metadata_fields[record_id] = {
+                'content_type': content_combo,
+                'content_level': level_combo,
+            }
+            content_combo.currentTextChanged.connect(
+                lambda _text, value=record_id: self.save_video_metadata(value)
+            )
+            level_combo.currentTextChanged.connect(
+                lambda _text, value=record_id: self.save_video_metadata(value)
+            )
+            self.table.setCellWidget(row_index, 2, content_combo)
+            self.table.setCellWidget(row_index, 3, level_combo)
+            self.table.setCellWidget(row_index, 4, self._build_delete_button(record_id))
+
+    def _build_metadata_combo(self, current_value, options):
+        combo = QComboBox()
+        combo.addItem('')
+        combo.addItems(list(options))
+        value = str(current_value or '').strip()
+        index = combo.findText(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.setFixedWidth(86)
+        return combo
+
+    def save_video_metadata(self, record_id):
+        fields = self.video_metadata_fields.get(int(record_id or 0))
+        if not fields:
+            return
+        content_type = fields['content_type'].currentText().strip()
+        content_level = fields['content_level'].currentText().strip()
+        self.start_async_task(
+            lambda: self.backend_client.update_queen_video_metadata(record_id, content_type, content_level),
+            self._on_video_metadata_saved,
+            tr('common.operation_failed'),
+        )
+
+    def _on_video_metadata_saved(self, result):
+        payload = dict(result or {})
+        video = dict(payload.get('video', payload) or {})
+        record_id = int(video.get('id', 0) or 0)
+        for row in self.rows:
+            if int((row or {}).get('id', 0) or 0) == record_id:
+                row.update({
+                    'content_type': str(video.get('content_type', '') or ''),
+                    'content_level': str(video.get('content_level', '') or ''),
+                })
+                break
 
     def _build_delete_button(self, record_id):
         button = QPushButton(tr('path.viewer.delete'))
@@ -315,6 +376,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.queens = []
         self.keywords = []
         self.keyword_window = None
+        self.crawl_progress_timer = None
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -345,6 +407,9 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_refresh)
 
         self.status_label = QLabel('输入关键词开始搜索')
+        self.crawl_progress_timer = QTimer(self)
+        self.crawl_progress_timer.setInterval(2000)
+        self.crawl_progress_timer.timeout.connect(self.poll_crawl_progress)
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_widget = QWidget()
@@ -440,10 +505,14 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             lambda: self.backend_client.refresh_queen_library(show_browser=True),
             self._on_crawl_finished,
             '女王库批量抓取失败',
+            block_ui=False,
         )
 
     def _on_crawl_finished(self, result):
         payload = dict(result or {})
+        if 'progress' in payload:
+            self._apply_crawl_progress(dict(payload.get('progress', {}) or {}))
+            return
         self.queens = sort_queen_rows(payload.get('queens', []) or [])
         self.keywords = list(payload.get('keywords', []) or [])
         log_path = str(payload.get('log_path', '') or '').strip()
@@ -459,6 +528,61 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             self.keyword_window.keywords = list(self.keywords)
             self.keyword_window._render_keyword_buttons()
             self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+
+    def poll_crawl_progress(self):
+        if self.is_async_task_running():
+            return
+        self.start_async_task(
+            lambda: {'progress': self.backend_client.get_queen_refresh_progress()},
+            self._on_crawl_progress_loaded,
+            tr('common.read_failed'),
+            block_ui=False,
+        )
+
+    def _on_crawl_progress_loaded(self, result):
+        payload = dict(result or {})
+        self._apply_crawl_progress(dict(payload.get('progress', {}) or {}))
+
+    def _apply_crawl_progress(self, progress):
+        payload = dict(progress or {})
+        if not payload:
+            return
+        if bool(payload.get('is_running')):
+            if self.crawl_progress_timer is not None and not self.crawl_progress_timer.isActive():
+                self.crawl_progress_timer.start()
+            processed_count = int(payload.get('processed_count', 0) or 0)
+            total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
+            imported_count = int(payload.get('imported_count', 0) or 0)
+            skipped_count = int(payload.get('skipped_count', 0) or 0)
+            self.status_label.setText(
+                f'批量抓取中：已处理 {processed_count}/{total_count} 个搜索词，'
+                f'新增 {imported_count} 条，跳过 {skipped_count} 条'
+            )
+            return
+
+        if self.crawl_progress_timer is not None and self.crawl_progress_timer.isActive():
+            self.crawl_progress_timer.stop()
+        if bool(payload.get('failed')):
+            self.status_label.setText(str(payload.get('message', '') or payload.get('error', '') or '女王库批量抓取失败'))
+            return
+        if bool(payload.get('completed')):
+            self.queens = sort_queen_rows(payload.get('queens', []) or [])
+            self.keywords = list(payload.get('keywords', []) or [])
+            processed_count = int(payload.get('processed_count', payload.get('query_count', 0)) or 0)
+            total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
+            imported_count = int(payload.get('imported_count', 0) or 0)
+            skipped_count = int(payload.get('skipped_count', 0) or 0)
+            log_path = str(payload.get('log_path', '') or '').strip()
+            log_text = f'，日志 {log_path}' if log_path else ''
+            self.status_label.setText(
+                f'批量抓取完成：处理 {processed_count}/{total_count} 个搜索词，'
+                f'新增 {imported_count} 条，跳过 {skipped_count} 条{log_text}'
+            )
+            self._render_queen_buttons()
+            if self.keyword_window is not None and self.keyword_window.isVisible():
+                self.keyword_window.keywords = list(self.keywords)
+                self.keyword_window._render_keyword_buttons()
+                self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
 
     def show_keyword_library(self):
         self.keyword_window = KeywordLibraryWindow(self.backend_client, self)

@@ -66,6 +66,7 @@ class _QueenBackendStub:
 class _QueenDetailBackendStub:
     def __init__(self, confirmed=False):
         self.saved_profiles = []
+        self.saved_video_metadata = []
         self.confirmed = confirmed
 
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
@@ -82,7 +83,13 @@ class _QueenDetailBackendStub:
             'queen_name': queen_name,
             'profile': profile,
             'videos': [
-                {'id': 1, 'video_title': '\u6807\u9898', 'raw_title': '\u539f\u59cb'},
+                {
+                    'id': 1,
+                    'video_title': '\u6807\u9898',
+                    'raw_title': '\u539f\u59cb',
+                    'content_type': '\u804a\u5929',
+                    'content_level': 'B',
+                },
             ],
         }
 
@@ -93,6 +100,16 @@ class _QueenDetailBackendStub:
         saved['queen_name'] = queen_name
         saved['profile_confirmed'] = True
         return {'profile': saved}
+
+    def update_queen_video_metadata(self, record_id, content_type, content_level):
+        self.saved_video_metadata.append((record_id, content_type, content_level))
+        return {
+            'video': {
+                'id': record_id,
+                'content_type': content_type,
+                'content_level': content_level,
+            }
+        }
 
 
 class _KeywordBackendStub:
@@ -176,6 +193,26 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
                 self.assertTrue(window.profile_fields['body_type'].isEnabled())
                 self.assertTrue(window.btn_confirm_profile.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_detail_rows_render_and_save_content_metadata_dropdowns(self):
+        backend = _QueenDetailBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenDetailWindow(backend, '\u5c0f7s')
+            try:
+                content_combo = window.table.cellWidget(0, 2)
+                level_combo = window.table.cellWidget(0, 3)
+
+                self.assertEqual(content_combo.currentText(), '\u804a\u5929')
+                self.assertEqual(level_combo.currentText(), 'B')
+
+                content_combo.setCurrentText('\u8c03\u6559')
+                level_combo.setCurrentText('S')
+
+                self.assertIn((1, '\u8c03\u6559', 'B'), backend.saved_video_metadata)
+                self.assertIn((1, '\u8c03\u6559', 'S'), backend.saved_video_metadata)
             finally:
                 window.hide()
                 window.deleteLater()

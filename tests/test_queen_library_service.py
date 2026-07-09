@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -52,7 +53,10 @@ class QueenLibraryServiceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = _ScraperStub(
                 [
-                    '\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u4e1d\u8db3\u9ad8\u8ddf\u8c03\u6559_\u8214\u978b\u8214\u811a\u8e22\u88c6_2.mp4',
+                    {
+                        'raw_title': '\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u4e1d\u8db3\u9ad8\u8ddf\u8c03\u6559_\u8214\u978b\u8214\u811a\u8e22\u88c6_2.mp4',
+                        'detail_url': 'https://a.1cili.click/hash/x7s-001',
+                    },
                     '\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u4e1d\u8db3\u9ad8\u8ddf\u8c03\u6559_\u8214\u978b\u8214\u811a\u8e22\u88c6_2.mp4',
                     '\u65e0\u6548\u6807\u9898',
                     '\u5957\u8def\u76f4\u64ad_\u767d\u4e00\u6657_\u5973\u738b\u69a8\u6c41.mp4',
@@ -70,6 +74,8 @@ class QueenLibraryServiceTest(unittest.TestCase):
                 ['\u5c0f7s', '\u767d\u4e00\u6657'],
             )
             self.assertEqual(len(service.list_keywords()), 1)
+            detail = service.get_queen_detail('\u5c0f7s')
+            self.assertEqual(detail['videos'][0]['detail_url'], 'https://a.1cili.click/hash/x7s-001')
 
             with self.assertRaisesRegex(ValueError, '\u5173\u952e\u8bcd\u5df2\u5b58\u5728'):
                 service.search_keyword('\u5c0f7s')
@@ -170,6 +176,39 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual(scraper.session_enter_count, baseline_session_count + 1)
             self.assertEqual(scraper.pages[baseline_page_count:], [scraper.page, scraper.page])
 
+    def test_refresh_all_reports_progress_after_each_fixed_size_batch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            scraper = _ScraperStub(
+                records_by_keyword={
+                    f'\u5173\u952e\u8bcd{index}': [
+                        f'\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u6807\u9898{index}.mp4'
+                    ]
+                    for index in range(1, 24)
+                }
+            )
+            service = QueenLibraryService(db_path, scraper=scraper)
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.executemany(
+                    'INSERT INTO queen_keywords(keyword) VALUES (?)',
+                    [(f'\u5173\u952e\u8bcd{index}',) for index in range(1, 24)],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            progress_updates = []
+            result = service.refresh_all(
+                show_browser=False,
+                batch_size=10,
+                progress_callback=lambda payload: progress_updates.append(dict(payload or {})),
+            )
+
+            self.assertEqual(result['query_count'], 23)
+            self.assertEqual([row['processed_count'] for row in progress_updates], [10, 20, 23])
+            self.assertTrue(progress_updates[-1]['completed'])
+
     def test_save_queen_profile_marks_queen_as_confirmed_and_returns_detail_profile(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = _ScraperStub(['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u4e1d\u8db3\u9ad8\u8ddf\u8c03\u6559_2.mp4'])
@@ -221,6 +260,26 @@ class QueenLibraryServiceTest(unittest.TestCase):
                         'like_level': 'S',
                     },
                 )
+
+    def test_update_queen_video_metadata_saves_content_type_and_level(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub(['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u8c03\u6559_2.mp4'])
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('\u5c0f7s')
+            record_id = service.get_queen_detail('\u5c0f7s')['videos'][0]['id']
+
+            saved = service.update_queen_video_metadata(record_id, '\u8c03\u6559', 'S')
+
+            self.assertEqual(saved['content_type'], '\u8c03\u6559')
+            self.assertEqual(saved['content_level'], 'S')
+            detail = service.get_queen_detail('\u5c0f7s')
+            self.assertEqual(detail['videos'][0]['content_type'], '\u8c03\u6559')
+            self.assertEqual(detail['videos'][0]['content_level'], 'S')
+
+            with self.assertRaisesRegex(ValueError, '\u5185\u5bb9'):
+                service.update_queen_video_metadata(record_id, '\u672a\u77e5', 'S')
+            with self.assertRaisesRegex(ValueError, '\u7b49\u7ea7'):
+                service.update_queen_video_metadata(record_id, '\u8c03\u6559', 'SS')
 
     def test_delete_video_and_delete_queen(self):
         with tempfile.TemporaryDirectory() as temp_dir:

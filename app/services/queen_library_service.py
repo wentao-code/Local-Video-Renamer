@@ -11,6 +11,8 @@ from app.scraper.queen_search_scraper import QueenSearchScraper
 
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 MEDIA_SUFFIXES = {'.mp4', '.mkv', '.avi', '.wmv', '.mov'}
+QUEEN_VIDEO_CONTENT_TYPES = ('\u8fb1\u9a82', '\u804a\u5929', '\u8c03\u6559')
+QUEEN_VIDEO_CONTENT_LEVELS = ('S', 'A', 'B', 'C')
 QUEEN_PROFILE_FIELDS = {
     'body_type': ('身材', ('苗条', '肥胖')),
     'style': ('风格', ('温和', '粗暴')),
@@ -59,12 +61,18 @@ class QueenLibraryService:
                     queen_name TEXT NOT NULL,
                     video_title TEXT NOT NULL,
                     source_url TEXT DEFAULT '',
+                    detail_url TEXT DEFAULT '',
+                    content_type TEXT DEFAULT '',
+                    content_level TEXT DEFAULT '',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(keyword_id) REFERENCES queen_keywords(id),
                     UNIQUE(queen_name, video_title)
                 )
                 '''
             )
+            self._ensure_column(cursor, 'queen_videos', 'detail_url', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'queen_videos', 'content_type', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'queen_videos', 'content_level', "TEXT DEFAULT ''")
             cursor.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS queen_import_logs (
@@ -112,13 +120,15 @@ class QueenLibraryService:
             'queens': self.list_queens(),
         }
 
-    def refresh_all(self, show_browser=True):
+    def refresh_all(self, show_browser=True, batch_size=None, progress_callback=None):
         started_at = self._current_timestamp()
         keywords = self.build_refresh_keywords()
         query_results = []
         scanned_count = 0
         imported_count = 0
         skipped_count = 0
+        processed_count = 0
+        normalized_batch_size = self._normalize_batch_size(batch_size)
 
         session_factory = getattr(self.scraper, 'session', None)
         session_context = session_factory() if callable(session_factory) else nullcontext(None)
@@ -138,12 +148,27 @@ class QueenLibraryService:
                 scanned_count += query_result['scanned_count']
                 imported_count += query_result['imported_count']
                 skipped_count += query_result['skipped_count']
+                processed_count += 1
+                if normalized_batch_size and processed_count % normalized_batch_size == 0:
+                    self._emit_refresh_progress(
+                        progress_callback,
+                        started_at,
+                        show_browser,
+                        keywords,
+                        query_results,
+                        scanned_count,
+                        imported_count,
+                        skipped_count,
+                        processed_count,
+                        completed=False,
+                    )
 
         payload = {
             'started_at': started_at,
             'completed_at': self._current_timestamp(),
             'show_browser': bool(show_browser),
             'query_count': len(keywords),
+            'processed_count': processed_count,
             'scanned_count': scanned_count,
             'imported_count': imported_count,
             'skipped_count': skipped_count,
@@ -153,6 +178,12 @@ class QueenLibraryService:
             'queens': self.list_queens(),
         }
         self._append_crawl_log(payload)
+        if callable(progress_callback):
+            progress_callback({
+                **payload,
+                'total_count': len(keywords),
+                'completed': True,
+            })
         return payload
 
     def build_refresh_keywords(self):
@@ -184,7 +215,8 @@ class QueenLibraryService:
         with self._connect() as conn:
             cursor = conn.cursor()
             keyword_id = self._get_or_create_keyword_id(cursor, normalized_keyword)
-            for raw_title in records:
+            for record in records:
+                raw_title, detail_url = self._normalize_scraped_record(record)
                 parsed = self.parse_record_title(raw_title)
                 if parsed is None:
                     skipped_count += 1
@@ -192,8 +224,8 @@ class QueenLibraryService:
                 try:
                     cursor.execute(
                         '''
-                        INSERT INTO queen_videos(keyword_id, raw_title, queen_name, video_title, source_url)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO queen_videos(keyword_id, raw_title, queen_name, video_title, source_url, detail_url)
+                        VALUES (?, ?, ?, ?, ?, ?)
                         ''',
                         (
                             keyword_id,
@@ -201,10 +233,20 @@ class QueenLibraryService:
                             parsed['queen_name'],
                             parsed['video_title'],
                             source_url,
+                            detail_url,
                         ),
                     )
                     imported_count += 1
                 except sqlite3.IntegrityError:
+                    if detail_url:
+                        cursor.execute(
+                            '''
+                            UPDATE queen_videos
+                            SET detail_url = ?
+                            WHERE queen_name = ? AND video_title = ? AND COALESCE(detail_url, '') = ''
+                            ''',
+                            (detail_url, parsed['queen_name'], parsed['video_title']),
+                        )
                     skipped_count += 1
             cursor.execute(
                 '''
@@ -259,7 +301,8 @@ class QueenLibraryService:
             profile = self._get_profile_from_connection(conn, normalized_name)
             rows = conn.execute(
                 '''
-                SELECT id, raw_title, queen_name, video_title, source_url, created_at
+                SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
+                       content_type, content_level, created_at
                 FROM queen_videos
                 WHERE queen_name = ?
                 ORDER BY created_at DESC, id DESC
@@ -305,6 +348,40 @@ class QueenLibraryService:
             conn.commit()
             return self._get_profile_from_connection(conn, normalized_name)
 
+    def update_queen_video_metadata(self, record_id, content_type='', content_level=''):
+        normalized_id = int(record_id or 0)
+        if normalized_id <= 0:
+            raise ValueError('\u7f3a\u5c11\u8bb0\u5f55\u7f16\u53f7')
+        normalized_content_type = str(content_type or '').strip()
+        normalized_content_level = str(content_level or '').strip()
+        if normalized_content_type and normalized_content_type not in QUEEN_VIDEO_CONTENT_TYPES:
+            raise ValueError('\u5185\u5bb9\u8bf7\u9009\u62e9\u6709\u6548\u9009\u9879')
+        if normalized_content_level and normalized_content_level not in QUEEN_VIDEO_CONTENT_LEVELS:
+            raise ValueError('\u7b49\u7ea7\u8bf7\u9009\u62e9\u6709\u6548\u9009\u9879')
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE queen_videos
+                SET content_type = ?, content_level = ?
+                WHERE id = ?
+                ''',
+                (normalized_content_type, normalized_content_level, normalized_id),
+            )
+            if int(cursor.rowcount or 0) <= 0:
+                raise ValueError('\u8bb0\u5f55\u4e0d\u5b58\u5728')
+            conn.commit()
+            row = conn.execute(
+                '''
+                SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
+                       content_type, content_level, created_at
+                FROM queen_videos
+                WHERE id = ?
+                ''',
+                (normalized_id,),
+            ).fetchone()
+        return dict(row or {})
+
     def delete_queen_video(self, record_id):
         normalized_id = int(record_id or 0)
         if normalized_id <= 0:
@@ -345,6 +422,59 @@ class QueenLibraryService:
             deleted_count = int(cursor.rowcount or 0)
             conn.commit()
         return deleted_count
+
+    @staticmethod
+    def _normalize_batch_size(batch_size):
+        try:
+            normalized = int(batch_size or 0)
+        except (TypeError, ValueError):
+            return 0
+        return normalized if normalized > 0 else 0
+
+    @staticmethod
+    def _emit_refresh_progress(
+        progress_callback,
+        started_at,
+        show_browser,
+        keywords,
+        query_results,
+        scanned_count,
+        imported_count,
+        skipped_count,
+        processed_count,
+        completed=False,
+    ):
+        if not callable(progress_callback):
+            return
+        progress_callback({
+            'started_at': started_at,
+            'show_browser': bool(show_browser),
+            'query_count': len(keywords),
+            'total_count': len(keywords),
+            'processed_count': int(processed_count or 0),
+            'scanned_count': int(scanned_count or 0),
+            'imported_count': int(imported_count or 0),
+            'skipped_count': int(skipped_count or 0),
+            'queries': list(query_results or []),
+            'completed': bool(completed),
+        })
+
+    @staticmethod
+    def _ensure_column(cursor, table_name, column_name, column_sql):
+        columns = {
+            str(row[1] or '')
+            for row in cursor.execute(f'PRAGMA table_info({table_name})').fetchall()
+        }
+        if column_name not in columns:
+            cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}')
+
+    @staticmethod
+    def _normalize_scraped_record(record):
+        if isinstance(record, dict):
+            raw_title = str(record.get('raw_title', record.get('title', '')) or '').strip()
+            detail_url = str(record.get('detail_url', record.get('href', '')) or '').strip()
+            return raw_title, detail_url
+        return str(record or '').strip(), ''
 
     @staticmethod
     def parse_record_title(raw_title):

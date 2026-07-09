@@ -90,6 +90,7 @@ class BackendService:
         self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
         self.queen_library_service = QueenLibraryService(QUEEN_LIBRARY_DB_FILE)
+        self._init_queen_refresh_task_state()
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
         self.enrichment_task_state = EnrichmentTaskState()
@@ -350,6 +351,92 @@ class BackendService:
         ):
             return {'progress': combo_snapshot}
         return {'progress': self.enrichment_progress.snapshot()}
+
+    def _init_queen_refresh_task_state(self):
+        self._queen_refresh_lock = threading.Lock()
+        self._queen_refresh_thread = None
+        self._queen_refresh_progress = self._build_empty_queen_refresh_progress()
+
+    @staticmethod
+    def _build_empty_queen_refresh_progress():
+        return {
+            'is_running': False,
+            'completed': False,
+            'failed': False,
+            'error': '',
+            'message': '',
+            'started_at': '',
+            'completed_at': '',
+            'batch_size': 10,
+            'query_count': 0,
+            'total_count': 0,
+            'processed_count': 0,
+            'scanned_count': 0,
+            'imported_count': 0,
+            'skipped_count': 0,
+            'log_path': '',
+            'queens': [],
+            'keywords': [],
+        }
+
+    def _queen_refresh_progress_snapshot(self):
+        with self._queen_refresh_lock:
+            return dict(self._queen_refresh_progress or {})
+
+    def _update_queen_refresh_progress(self, updates):
+        with self._queen_refresh_lock:
+            current = dict(self._queen_refresh_progress or self._build_empty_queen_refresh_progress())
+            current.update(dict(updates or {}))
+            self._queen_refresh_progress = current
+            return dict(current)
+
+    def _on_queen_refresh_batch_progress(self, payload):
+        payload = dict(payload or {})
+        processed_count = int(payload.get('processed_count', 0) or 0)
+        total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
+        self._update_queen_refresh_progress({
+            **payload,
+            'is_running': True,
+            'completed': False,
+            'failed': False,
+            'total_count': total_count,
+            'processed_count': processed_count,
+            'message': f'已处理 {processed_count}/{total_count} 个搜索词',
+        })
+
+    def _run_queen_library_refresh_task(self, show_browser):
+        try:
+            result = self.queen_library_service.refresh_all(
+                show_browser=show_browser,
+                batch_size=10,
+                progress_callback=self._on_queen_refresh_batch_progress,
+            )
+            payload = dict(result or {})
+            query_count = int(payload.get('query_count', 0) or 0)
+            processed_count = int(payload.get('processed_count', query_count) or 0)
+            self._update_queen_refresh_progress({
+                **payload,
+                'is_running': False,
+                'completed': True,
+                'failed': False,
+                'error': '',
+                'completed_at': self._current_snapshot_timestamp(),
+                'total_count': query_count,
+                'processed_count': processed_count,
+                'message': f'女王库批量抓取完成：处理 {processed_count}/{query_count} 个搜索词',
+            })
+        except Exception as exc:
+            self._update_queen_refresh_progress({
+                'is_running': False,
+                'completed': False,
+                'failed': True,
+                'error': str(exc),
+                'completed_at': self._current_snapshot_timestamp(),
+                'message': f'女王库批量抓取失败：{exc}',
+            })
+
+    def get_queen_library_refresh_progress(self):
+        return {'progress': self._queen_refresh_progress_snapshot()}
 
     def reset_video_enrichments(self, codes, source_key=None):
         self.ensure_database_loaded()
@@ -1085,9 +1172,27 @@ class BackendService:
         }
 
     def refresh_queen_library(self, show_browser=True):
-        result = self.queen_library_service.refresh_all(show_browser=show_browser)
+        progress = self._queen_refresh_progress_snapshot()
+        if progress.get('is_running'):
+            return {'progress': progress, 'refreshed_at': self._current_snapshot_timestamp()}
+
+        started_at = self._current_snapshot_timestamp()
+        self._update_queen_refresh_progress({
+            **self._build_empty_queen_refresh_progress(),
+            'is_running': True,
+            'started_at': started_at,
+            'batch_size': 10,
+            'message': '女王库批量抓取已启动',
+        })
+
+        self._queen_refresh_thread = threading.Thread(
+            target=self._run_queen_library_refresh_task,
+            args=(bool(show_browser),),
+            daemon=True,
+        )
+        self._queen_refresh_thread.start()
         return {
-            **dict(result or {}),
+            'progress': self._queen_refresh_progress_snapshot(),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 
@@ -1101,6 +1206,17 @@ class BackendService:
         saved_profile = self.queen_library_service.save_queen_profile(queen_name, profile)
         return {
             'profile': dict(saved_profile or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def update_queen_video_metadata(self, record_id, content_type='', content_level=''):
+        saved_video = self.queen_library_service.update_queen_video_metadata(
+            record_id,
+            content_type,
+            content_level,
+        )
+        return {
+            'video': dict(saved_video or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 

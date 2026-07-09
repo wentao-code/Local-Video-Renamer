@@ -462,12 +462,15 @@ class BackendClient:
         )
 
     def refresh_queen_library(self, show_browser=True):
-        timeout = max(self.timeout, 1800)
+        timeout = max(self.timeout, 30)
         return self._post(
             '/queen-library/refresh',
             {'show_browser': bool(show_browser)},
             timeout=timeout,
         )
+
+    def get_queen_refresh_progress(self):
+        return self._get('/queen-library/refresh/progress', timeout=max(self.timeout, 30)).get('progress', {})
 
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
         params = {'name': queen_name}
@@ -481,6 +484,16 @@ class BackendClient:
             '/queen-library/profile',
             {'queen_name': queen_name, 'profile': dict(profile or {})},
         )
+
+    def update_queen_video_metadata(self, record_id, content_type='', content_level=''):
+        return self._post(
+            '/queen-library/videos/metadata',
+            {
+                'record_id': record_id,
+                'content_type': content_type,
+                'content_level': content_level,
+            },
+        ).get('video', {})
 
     def delete_queen_video(self, record_id):
         return self._post('/queen-library/videos/delete', {'record_id': record_id}).get('deleted_count', 0)

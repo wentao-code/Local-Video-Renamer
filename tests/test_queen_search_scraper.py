@@ -54,6 +54,8 @@ class _SequencedPageStub:
         return self.current_state.get('html', '')
 
     def evaluate(self, _script):
+        if 'href' in str(_script or ''):
+            return list(self.current_state.get('records', []))
         return list(self.current_state.get('rows', []))
 
 
@@ -70,6 +72,40 @@ class _SearchHarness(QueenSearchScraper):
 
 
 class QueenSearchScraperTest(unittest.TestCase):
+    def test_extract_result_row_records_includes_absolute_detail_urls(self):
+        page = _SequencedPageStub(
+            [
+                {
+                    'records': [
+                        {
+                            'title': f'{QUEEN_PREFIX}QueenA_Title_01.mp4',
+                            'href': '/hash/abc123',
+                        },
+                        {
+                            'title': f'{QUEEN_PREFIX}QueenB_Title.mp4',
+                            'href': 'https://a.1cili.click/hash/def456',
+                        },
+                    ],
+                }
+            ]
+        )
+
+        records = QueenSearchScraper.extract_result_row_records(page)
+
+        self.assertEqual(
+            records,
+            [
+                {
+                    'raw_title': f'{QUEEN_PREFIX}QueenA_Title_01.mp4',
+                    'detail_url': 'https://a.1cili.click/hash/abc123',
+                },
+                {
+                    'raw_title': f'{QUEEN_PREFIX}QueenB_Title.mp4',
+                    'detail_url': 'https://a.1cili.click/hash/def456',
+                },
+            ],
+        )
+
     def test_extract_candidate_titles_from_rows_dedupes_and_preserves_full_title(self):
         rows = [
             f'{QUEEN_PREFIX}QueenA_Title_01.mp4',

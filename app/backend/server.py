@@ -220,6 +220,8 @@ def make_handler(service):
                 )
             if method == 'POST' and path == '/queen-library/refresh':
                 return service.refresh_queen_library(show_browser=bool(body.get('show_browser', True)))
+            if method == 'GET' and path == '/queen-library/refresh/progress':
+                return service.get_queen_library_refresh_progress()
             if method == 'GET' and path == '/queen-library/detail':
                 return service.get_queen_detail_snapshot(
                     query.get('name', [''])[0],
@@ -227,6 +229,12 @@ def make_handler(service):
                 )
             if method == 'POST' and path == '/queen-library/profile':
                 return service.update_queen_profile(body.get('queen_name'), body.get('profile', {}))
+            if method == 'POST' and path == '/queen-library/videos/metadata':
+                return service.update_queen_video_metadata(
+                    body.get('record_id'),
+                    body.get('content_type', ''),
+                    body.get('content_level', ''),
+                )
             if method == 'POST' and path == '/queen-library/videos/delete':
                 return service.delete_queen_video(body.get('record_id'))
             if method == 'POST' and path == '/queen-library/queens/delete':

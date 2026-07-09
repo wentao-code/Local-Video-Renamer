@@ -1,6 +1,6 @@
 import re
 from contextlib import contextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from app.core.runtime_config import get_scraper_browser_channel, get_scraper_locale
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
@@ -135,6 +135,10 @@ class QueenSearchScraper:
 
     @classmethod
     def extract_candidate_titles_from_page(cls, page):
+        structured_records = cls.extract_result_row_records(page)
+        if structured_records:
+            return structured_records
+
         records = cls.extract_candidate_titles_from_rows(cls.extract_result_row_titles(page))
         if records:
             return records
@@ -150,6 +154,49 @@ class QueenSearchScraper:
         except Exception:
             html = ''
         return cls.extract_candidate_titles(body_text=body_text, html=html)
+
+    @classmethod
+    def extract_result_row_records(cls, page):
+        try:
+            rows = page.evaluate(
+                """
+                () => Array.from(document.querySelectorAll('table.file-list tbody tr')).map((row) => {
+                    const link = row.querySelector('a');
+                    if (!link) return null;
+                    const title = Array.from(link.childNodes)
+                        .filter((node) => !(node.nodeType === Node.ELEMENT_NODE && node.matches('p.sample')))
+                        .map((node) => node.textContent || '')
+                        .join('');
+                    return {
+                        title: title.replace(/\\s+/g, ' ').trim(),
+                        href: link.getAttribute('href') || '',
+                    };
+                }).filter(Boolean)
+                """
+            )
+        except Exception:
+            return []
+
+        seen = set()
+        records = []
+        for row in list(rows or []):
+            payload = dict(row or {}) if isinstance(row, dict) else {}
+            raw_title = ' '.join(str(payload.get('title', '') or '').split()).strip()
+            if not raw_title:
+                continue
+            prefix_index = raw_title.find(QUEEN_RECORD_PREFIX)
+            if prefix_index < 0:
+                continue
+            raw_title = raw_title[prefix_index:]
+            if raw_title in seen:
+                continue
+            seen.add(raw_title)
+            detail_url = str(payload.get('href', '') or '').strip()
+            records.append({
+                'raw_title': raw_title,
+                'detail_url': urljoin(QUEEN_SEARCH_BASE_URL, detail_url) if detail_url else '',
+            })
+        return records
 
     @classmethod
     def extract_result_row_titles(cls, page):
