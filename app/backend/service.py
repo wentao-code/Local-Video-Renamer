@@ -380,6 +380,7 @@ class BackendService:
             'log_path': '',
             'queens': [],
             'keywords': [],
+            'stats': {},
         }
 
     def _queen_refresh_progress_snapshot(self):
@@ -457,6 +458,7 @@ class BackendService:
             stopped = bool(payload.get('stopped'))
             self._update_queen_refresh_progress({
                 **payload,
+                'stats': dict(self.queen_library_service.get_library_stats() or {}),
                 'is_running': False,
                 'completed': not stopped,
                 'stopped': stopped,
@@ -1219,6 +1221,7 @@ class BackendService:
     def list_queen_library_snapshot(self, force_refresh=False):
         return {
             'queens': self.queen_library_service.list_queens(),
+            'stats': dict(self.queen_library_service.get_library_stats() or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 
@@ -1228,10 +1231,17 @@ class BackendService:
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 
+    def get_queen_library_stats(self):
+        return {
+            **dict(self.queen_library_service.get_library_stats() or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
     def search_queen_keyword(self, keyword, show_browser=True):
         result = self.queen_library_service.search_keyword(keyword, show_browser=show_browser)
         return {
             **dict(result or {}),
+            'stats': dict(self.queen_library_service.get_library_stats() or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 

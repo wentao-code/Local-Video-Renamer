@@ -237,6 +237,92 @@ class DataCenterJavtxtFilterReuseRegressionTest(unittest.TestCase):
         self.assertEqual(merge_mock.call_count, 1)
 
 
+class DataCenterSummaryBuildCacheRegressionTest(unittest.TestCase):
+    def test_summary_build_reuses_large_library_reads_within_one_refresh(self):
+        movie = {
+            'code': 'AAA-001',
+            'title': 'Movie 1',
+            'author': 'Actor A',
+            'author_raw': 'Actor A',
+            'release_date': '2024-01-01',
+            'avfan_enrichment_status': ENRICHED_STATUS,
+            'javtxt_enrichment_status': NO_SEARCH_RESULTS_STATUS,
+            'javtxt_movie_id': '',
+            'javtxt_url': '',
+            'javtxt_tags': '',
+            'javtxt_release_date': '2024-01-01',
+            'video_category': '',
+        }
+
+        class FakeDatabase:
+            def __init__(self):
+                self.calls = {
+                    'list_video_summary_rows': 0,
+                    'list_actors': 0,
+                    'list_actor_movies_by_names': 0,
+                    'list_code_prefix_movies_by_prefixes': 0,
+                }
+
+            def list_video_summary_rows(self):
+                self.calls['list_video_summary_rows'] += 1
+                return [dict(movie)]
+
+            def list_actors(self):
+                self.calls['list_actors'] += 1
+                return [{'name': 'Actor A'}]
+
+            def list_actor_movies_by_names(self, actor_names):
+                self.calls['list_actor_movies_by_names'] += 1
+                return {'Actor A': [dict(movie)]}
+
+            def list_code_prefix_movies_by_prefixes(self, prefixes):
+                self.calls['list_code_prefix_movies_by_prefixes'] += 1
+                return {'AAA': [dict(movie)]}
+
+            @staticmethod
+            def list_actor_enrichment_records():
+                return {'Actor A': {'avfan_enrichment_status': ENRICHED_STATUS}}
+
+            @staticmethod
+            def list_code_prefix_enrichment_records():
+                return {'AAA': {'avfan_enrichment_status': ENRICHED_STATUS}}
+
+            @staticmethod
+            def get_javtxt_actor_cache_by_codes(codes):
+                return {}
+
+        class FakePrefixLibrary:
+            def __init__(self):
+                self.calls = 0
+
+            def list_prefixes(self):
+                self.calls += 1
+                return [{'prefix': 'AAA'}]
+
+        class FakeFilterService:
+            @staticmethod
+            def load_settings():
+                return {'rules': {'code': [], 'title': [], 'javtxt_tags': [], 'co_star_code': []}}
+
+            @staticmethod
+            def filter_video_rows(rows, settings=None):
+                return list(rows or [])
+
+        database = FakeDatabase()
+        prefix_library = FakePrefixLibrary()
+        service = DataCenterService(database, video_filter_service=FakeFilterService())
+        service.code_prefix_library = prefix_library
+
+        summary = service.get_summary_snapshot(force_refresh=True)['summary']
+
+        self.assertIn('video_library', summary)
+        self.assertEqual(database.calls['list_video_summary_rows'], 1)
+        self.assertEqual(prefix_library.calls, 1)
+        self.assertEqual(database.calls['list_actors'], 1)
+        self.assertEqual(database.calls['list_actor_movies_by_names'], 1)
+        self.assertEqual(database.calls['list_code_prefix_movies_by_prefixes'], 1)
+
+
 class StartupMaintenancePersistenceRegressionTest(unittest.TestCase):
     def test_startup_maintenance_is_skipped_after_it_is_marked_complete(self):
         temp_dir = tempfile.mkdtemp()

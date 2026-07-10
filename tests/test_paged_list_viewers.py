@@ -160,6 +160,7 @@ class PagedListViewerTest(unittest.TestCase):
             window = CodePrefixViewerWindow(backend)
             try:
                 self.assertEqual(backend.snapshot_calls[0], ('', 'prefix', 'asc', window.page_size, 0, False))
+                self.assertEqual(len(backend.snapshot_calls), 1)
                 window.go_to_next_page()
                 self.assertEqual(
                     backend.snapshot_calls[-1],

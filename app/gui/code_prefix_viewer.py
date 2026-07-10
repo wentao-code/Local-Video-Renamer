@@ -161,6 +161,8 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         for index in range(1, 8):
             self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.ResizeToContents)
+        for index in (2, 4, 5):
+            self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -680,12 +682,6 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._update_page_controls()
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
-            self.load_data(
-                force_refresh=True,
-                silent_errors=True,
-                block_ui=False,
-                allow_deferred_close=True,
-            )
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:

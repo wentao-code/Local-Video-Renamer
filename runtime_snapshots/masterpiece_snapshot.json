@@ -1,4 +1,69 @@
 {
   "version": 1,
-  "detail_snapshots": {}
+  "detail_snapshots": {
+    "ROE-420": {
+      "detail": {
+        "code": "ROE-420",
+        "title": "卒業式の後…厳しく指導してくれた女教師へ感謝と憎しみを込めたお礼参り輪●",
+        "author": "桐岡さつき",
+        "display_title": "卒業式の後…厳しく指導してくれた女教師へ感謝と憎しみを込めたお礼参り輪●",
+        "display_author": "桐岡さつき",
+        "primary_source": "code_prefix_library",
+        "primary_detail_url": "https://avfan.com/zh-CN/movies/jrtDIxBI",
+        "medal": "",
+        "medals": [],
+        "actor_details": [
+          {
+            "actor_name": "桐岡さつき",
+            "actor_order": 1,
+            "source_video_code": "ROE-420",
+            "release_date": "2025-11-06",
+            "birthday": "1969/2/16",
+            "current_age": "57",
+            "appearance_age": "56",
+            "height": "160",
+            "bust": "82",
+            "waist": "58",
+            "hip": "90",
+            "cup": "",
+            "measurements_raw": "82-58-90(cm)",
+            "actor_exists_in_library": 1,
+            "ladder_tier": ""
+          }
+        ],
+        "collaborator_sections": [],
+        "references": [
+          {
+            "reference_source": "code_prefix_library",
+            "reference_key": "ROE",
+            "matched_code": "ROE-420",
+            "title": "卒業式の後…厳しく指導してくれた女教師へ感謝と憎しみを込めたお礼参り輪●",
+            "author": "桐岡さつき",
+            "release_date": "2025-11-06",
+            "avfan_movie_id": "",
+            "avfan_url": "https://avfan.com/zh-CN/movies/jrtDIxBI",
+            "javtxt_movie_id": "525212",
+            "javtxt_url": "https://javtxt.top/v/525212",
+            "detail_url": "https://avfan.com/zh-CN/movies/jrtDIxBI"
+          },
+          {
+            "reference_source": "actor_library",
+            "reference_key": "桐岡さつき",
+            "matched_code": "ROE-420",
+            "title": "卒業式の後…厳しく指導してくれた女教師へ感謝と憎しみを込めたお礼参り輪●",
+            "author": "桐岡さつき",
+            "release_date": "2025-11-06",
+            "avfan_movie_id": "",
+            "avfan_url": "https://avfan.com/zh-CN/movies/jrtDIxBI",
+            "javtxt_movie_id": "525212",
+            "javtxt_url": "https://javtxt.top/v/525212",
+            "detail_url": "https://avfan.com/zh-CN/movies/jrtDIxBI"
+          }
+        ]
+      },
+      "refreshed_at": "2026-07-11 00:17:04",
+      "refresh_duration_ms": 1033,
+      "refresh_duration_text": "1秒"
+    }
+  }
 }

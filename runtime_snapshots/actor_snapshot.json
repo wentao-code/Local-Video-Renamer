@@ -30323,8 +30323,8 @@
         {
           "name": "静河真理子",
           "birthday": "1980/7/11",
-          "raw_age": "45",
-          "age": "45",
+          "raw_age": "46",
+          "age": "46",
           "matched": false,
           "actor_id": "qkJJS1A5",
           "avfan_enrichment_status": "已补全",
@@ -31666,8 +31666,8 @@
       "total_count": 1439,
       "offset": 0,
       "limit": null,
-      "refreshed_at": "2026-07-10 13:16:47",
-      "refresh_duration_ms": 122,
+      "refreshed_at": "2026-07-11 02:32:00",
+      "refresh_duration_ms": 74,
       "refresh_duration_text": "0秒"
     }
   }

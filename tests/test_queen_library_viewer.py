@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QApplication
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.main_window import VidNormApp
-from app.gui.queen_library_viewer import KeywordLibraryWindow, QueenDetailWindow, QueenLibraryWindow
+from app.gui.queen_library_viewer import KeywordLibraryWindow, QueenDetailWindow, QueenLibraryDataCenterWindow, QueenLibraryWindow
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -35,7 +35,7 @@ class _QueenBackendStub:
     def list_queen_library_snapshot(self, force_refresh=False):
         return {
             'queens': [
-                {'queen_name': '\u5c0f7s', 'video_count': 1, 'profile_confirmed': True},
+                {'queen_name': '\u5c0f7s', 'video_count': 1, 'like_level': 'A', 'profile_confirmed': True},
                 {'queen_name': '\u767d\u4e00\u6657', 'video_count': 2},
                 {'queen_name': '\u4e00\u8336', 'video_count': 3},
                 {'queen_name': '\u4e00\u8336s', 'video_count': 4},
@@ -50,6 +50,26 @@ class _QueenBackendStub:
 
     def list_queen_keywords_snapshot(self, force_refresh=False):
         return {'keywords': [{'keyword': '\u5957\u8def\u76f4\u64ad_'}]}
+
+    def get_queen_library_stats(self):
+        return {
+            'queen_count': 10,
+            'video_count': 55,
+            'like_level_distribution': [
+                {'level': 'A', 'count': 1},
+                {'level': 'B', 'count': 2},
+                {'level': 'C', 'count': 3},
+                {'level': 'D', 'count': 4},
+                {'level': '', 'count': 0},
+            ],
+            'video_level_distribution': [
+                {'level': 'S', 'count': 5},
+                {'level': 'A', 'count': 6},
+                {'level': 'B', 'count': 7},
+                {'level': 'C', 'count': 8},
+                {'level': '', 'count': 29},
+            ],
+        }
 
     def refresh_queen_library(self, show_browser=True):
         self.refresh_calls.append(bool(show_browser))
@@ -190,15 +210,20 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
                 self.assertEqual(backend.refresh_calls, [True])
                 self.assertIn('0/3', window.status_label.text())
+                self.assertIn('55', window.status_label.text())
                 self.assertIn('抓取', window.btn_start_crawl.text())
                 self.assertTrue(window.btn_stop_crawl.isEnabled())
                 self.assertTrue(window.grid_layout.alignment() & Qt.AlignTop)
                 first_button = window.grid_layout.itemAt(0).widget()
                 self.assertEqual(first_button.text(), '\u767d\u4e00\u6657')
                 self.assertNotIn('\u6761', first_button.text())
-                highlighted_button = window.grid_layout.itemAt(2).widget()
-                self.assertEqual(highlighted_button.text(), '\u5c0f7s')
-                self.assertIn('#238636', highlighted_button.styleSheet())
+                highlighted_button = next(
+                    window.grid_layout.itemAt(index).widget()
+                    for index in range(window.grid_layout.count())
+                    if window.grid_layout.itemAt(index).widget().text() == '\u5c0f7s'
+                )
+                self.assertIn('#E74C3C', highlighted_button.styleSheet())
+                self.assertNotIn('#238636', highlighted_button.styleSheet())
                 self.assertEqual(first_button.width(), 104)
                 self.assertEqual(first_button.height(), 36)
                 self.assertEqual(window.grid_layout.getItemPosition(8)[:2], (0, 8))
@@ -221,6 +246,25 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 self.assertIn('queen_crawl.log', window.status_label.text())
                 self.assertFalse(window.btn_stop_crawl.isEnabled())
             finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_data_center_button_opens_stats_window(self):
+        backend = _QueenBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                window.show_data_center()
+
+                self.assertIsInstance(window.data_center_window, QueenLibraryDataCenterWindow)
+                self.assertEqual(window.data_center_window.queen_count_value.text(), '10')
+                self.assertEqual(window.data_center_window.video_count_value.text(), '55')
+                self.assertEqual(window.data_center_window.like_level_table.item(0, 0).text(), 'A')
+                self.assertEqual(window.data_center_window.video_level_table.item(0, 0).text(), 'S')
+            finally:
+                if window.data_center_window is not None:
+                    window.data_center_window.hide()
+                    window.data_center_window.deleteLater()
                 window.hide()
                 window.deleteLater()
 
@@ -264,6 +308,23 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
                 self.assertTrue(window.profile_fields['body_type'].isEnabled())
                 self.assertTrue(window.btn_confirm_profile.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_detail_like_level_combo_keeps_default_style(self):
+        backend = _QueenDetailBackendStub(confirmed=True)
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenDetailWindow(backend, '\u5c0f7s')
+            try:
+                like_level_combo = window.profile_fields['like_level']
+
+                self.assertEqual(like_level_combo.styleSheet(), '')
+
+                window.modify_profile()
+                like_level_combo.setCurrentText('A')
+
+                self.assertEqual(like_level_combo.styleSheet(), '')
             finally:
                 window.hide()
                 window.deleteLater()

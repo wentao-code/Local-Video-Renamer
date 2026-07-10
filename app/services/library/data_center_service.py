@@ -3,7 +3,7 @@ import json
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime
 from pathlib import Path
-from threading import Lock
+from threading import Lock, local
 from time import perf_counter
 
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRIC_MAP
@@ -73,6 +73,7 @@ class DataCenterService:
         self._summary_cache_lock = Lock()
         self._analysis_cache = {}
         self._analysis_cache_lock = Lock()
+        self._build_cache_state = local()
         self._snapshot_file_lock = Lock()
         self._load_persisted_snapshots()
 
@@ -96,7 +97,7 @@ class DataCenterService:
                 self._summary_cache_refresh_duration_text = ''
 
             started_at = perf_counter()
-            summary = self._build_summary(filter_settings=filter_settings)
+            summary = self._run_with_build_cache(lambda: self._build_summary(filter_settings=filter_settings))
             refresh_duration_ms = self._build_duration_ms(started_at)
             self._summary_cache = summary
             self._summary_cache_refreshed_at = self._current_cache_timestamp()
@@ -129,7 +130,7 @@ class DataCenterService:
                 return dict(cached)
 
             payload = {
-                'analysis': self._build_actor_metric_analysis(config),
+                'analysis': self._run_with_build_cache(lambda: self._build_actor_metric_analysis(config)),
                 'refreshed_at': self._current_cache_timestamp(),
             }
             self._analysis_cache[cache_key] = payload
@@ -176,7 +177,7 @@ class DataCenterService:
                 return dict(cached)
 
             payload = {
-                'analysis': self._build_code_prefix_metric_analysis(config),
+                'analysis': self._run_with_build_cache(lambda: self._build_code_prefix_metric_analysis(config)),
                 'refreshed_at': self._current_cache_timestamp(),
             }
             self._analysis_cache[cache_key] = payload
@@ -354,6 +355,78 @@ class DataCenterService:
         normalized_snapshot['refreshed_at'] = refreshed_at
         return normalized_snapshot
 
+    def _run_with_build_cache(self, builder):
+        previous_cache = getattr(self._build_cache_state, 'cache', None)
+        if previous_cache is None:
+            self._build_cache_state.cache = {}
+        try:
+            return builder()
+        finally:
+            if previous_cache is None:
+                self._build_cache_state.cache = previous_cache
+
+    def _get_cached_build_value(self, key, factory):
+        cache = getattr(self._build_cache_state, 'cache', None)
+        if cache is None:
+            return factory()
+        if key not in cache:
+            cache[key] = factory()
+        return cache[key]
+
+    def _list_code_prefix_rows(self):
+        return list(
+            self._get_cached_build_value(
+                'code_prefix_rows',
+                lambda: [dict(row or {}) for row in self.code_prefix_library.list_prefixes()],
+            )
+            or []
+        )
+
+    def _list_code_prefix_values(self):
+        return [
+            str((row or {}).get('prefix', '') or '').strip().upper()
+            for row in self._list_code_prefix_rows()
+            if str((row or {}).get('prefix', '') or '').strip()
+        ]
+
+    def _list_actor_rows(self):
+        return list(
+            self._get_cached_build_value(
+                'actor_rows',
+                lambda: [dict(row or {}) for row in self.database.list_actors()],
+            )
+            or []
+        )
+
+    def _list_actor_names(self):
+        return [
+            str((row or {}).get('name', '') or '').strip()
+            for row in self._list_actor_rows()
+            if str((row or {}).get('name', '') or '').strip()
+        ]
+
+    def _list_actor_movies_by_names(self, actor_names):
+        normalized_names = tuple(str(name or '').strip() for name in actor_names or [] if str(name or '').strip())
+        if not normalized_names:
+            return {}
+        return self._get_cached_build_value(
+            ('actor_movies_by_names', normalized_names),
+            lambda: self.database.list_actor_movies_by_names(list(normalized_names)),
+        )
+
+    def _list_code_prefix_movies_by_prefixes(self, prefixes):
+        normalized_prefixes = tuple(
+            str(prefix or '').strip().upper()
+            for prefix in prefixes or []
+            if str(prefix or '').strip()
+        )
+        if not normalized_prefixes:
+            return {}
+        return self._get_cached_build_value(
+            ('code_prefix_movies_by_prefixes', normalized_prefixes),
+            lambda: self.database.list_code_prefix_movies_by_prefixes(list(normalized_prefixes)),
+        )
+
     def _build_summary(self, filter_settings=None):
         return {
             'video_library': {
@@ -431,7 +504,11 @@ class DataCenterService:
                 'no_search_count': summary['no_search_count'],
                 'no_detail_count': summary['no_detail_count'],
                 'list_kind': 'video',
-                'issue_groups': self._build_javtxt_video_issue_groups(visible_rows),
+                'issue_groups': self._build_javtxt_video_issue_groups(
+                    visible_rows,
+                    filter_settings=filter_settings,
+                    movies_already_filtered=True,
+                ),
             }
         return self._build_video_status_summary(label, visible_rows, 'avfan_enrichment_status')
 
@@ -462,20 +539,16 @@ class DataCenterService:
 
     def _build_code_prefix_source_summary(self, source_key, filter_settings=None):
         if source_key == JAVTXT_VIDEO_SOURCE:
-            prefixes = [
-                str(row.get('prefix', '')).strip().upper()
-                for row in self.code_prefix_library.list_prefixes()
-                if str(row.get('prefix', '')).strip()
-            ]
+            prefixes = self._list_code_prefix_values()
             return self._build_javtxt_library_video_summary(
                 self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key),
-                self.database.list_code_prefix_movies_by_prefixes(prefixes),
+                self._list_code_prefix_movies_by_prefixes(prefixes),
                 filter_settings=filter_settings,
                 list_kind='video',
             )
 
         records = self.database.list_code_prefix_enrichment_records()
-        prefix_rows = [row for row in self.code_prefix_library.list_prefixes() if row.get('prefix')]
+        prefix_rows = [row for row in self._list_code_prefix_rows() if row.get('prefix')]
         statuses = [
             self._get_source_status(records.get(row.get('prefix', ''), {}), source_key)
             for row in prefix_rows
@@ -490,12 +563,8 @@ class DataCenterService:
         return summary
 
     def _build_code_prefix_supplement_summary(self, filter_settings=None):
-        prefixes = [
-            str(row.get('prefix', '') or '').strip().upper()
-            for row in self.code_prefix_library.list_prefixes()
-            if str(row.get('prefix', '') or '').strip()
-        ]
-        movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(prefixes) if prefixes else {}
+        prefixes = self._list_code_prefix_values()
+        movies_by_prefix = self._list_code_prefix_movies_by_prefixes(prefixes) if prefixes else {}
         filtered_movies_by_prefix = self._filter_grouped_movies(
             movies_by_prefix,
             filter_settings=filter_settings,
@@ -521,20 +590,16 @@ class DataCenterService:
         if source_key == BINGHUO_ACTOR_SOURCE:
             return self._build_actor_binghuo_source_summary()
         if source_key == JAVTXT_VIDEO_SOURCE:
-            actor_names = [
-                str(row.get('name', '')).strip()
-                for row in self.database.list_actors()
-                if str(row.get('name', '')).strip()
-            ]
+            actor_names = self._list_actor_names()
             return self._build_javtxt_library_video_summary(
                 self._build_source_label(ACTOR_LIBRARY_LABEL, source_key),
-                self.database.list_actor_movies_by_names(actor_names),
+                self._list_actor_movies_by_names(actor_names),
                 filter_settings=filter_settings,
                 list_kind='video',
             )
 
         records = self.database.list_actor_enrichment_records()
-        actor_rows = [row for row in self.database.list_actors() if str(row.get('name', '')).strip()]
+        actor_rows = [row for row in self._list_actor_rows() if str(row.get('name', '')).strip()]
         statuses = [
             self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key)
             for row in actor_rows
@@ -549,12 +614,8 @@ class DataCenterService:
         return summary
 
     def _build_actor_supplement_summary(self, filter_settings=None):
-        actor_names = [
-            str(row.get('name', '') or '').strip()
-            for row in self.database.list_actors()
-            if str(row.get('name', '') or '').strip()
-        ]
-        movies_by_actor = self.database.list_actor_movies_by_names(actor_names) if actor_names else {}
+        actor_names = self._list_actor_names()
+        movies_by_actor = self._list_actor_movies_by_names(actor_names) if actor_names else {}
         filtered_movies_by_actor = self._filter_grouped_movies(
             movies_by_actor,
             filter_settings=filter_settings,
@@ -591,7 +652,7 @@ class DataCenterService:
         missing_measurements_items = []
         missing_height_items = []
 
-        for row in self.database.list_actors():
+        for row in self._list_actor_rows():
             actor_name = str((row or {}).get('name', '') or '').strip()
             if not actor_name:
                 continue
@@ -734,7 +795,7 @@ class DataCenterService:
         unknown_count = 0
         enrichment_records = self.database.list_actor_enrichment_records()
 
-        for actor_row in self.database.list_actors():
+        for actor_row in self._list_actor_rows():
             actor_name = str((actor_row or {}).get('name', '') or '').strip()
             if not actor_name:
                 continue
@@ -777,12 +838,8 @@ class DataCenterService:
             raise ValueError(f"Unknown code prefix analysis metric: {config.get('key', '')}")
 
         filter_settings = self._load_filter_settings()
-        code_prefixes = [
-            str((row or {}).get('prefix', '') or '').strip().upper()
-            for row in self.code_prefix_library.list_prefixes()
-            if str((row or {}).get('prefix', '') or '').strip()
-        ]
-        code_prefix_movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(code_prefixes) if code_prefixes else {}
+        code_prefixes = self._list_code_prefix_values()
+        code_prefix_movies_by_prefix = self._list_code_prefix_movies_by_prefixes(code_prefixes) if code_prefixes else {}
         actor_movies_by_prefix = self._group_actor_movies_for_code_prefix_analysis()
         prefixes = sorted(set(code_prefixes) | set(actor_movies_by_prefix))
         distribution_counts = {percent: 0 for percent in range(1, 101)}
@@ -933,7 +990,7 @@ class DataCenterService:
         unknown_count = 0
         enrichment_records = self.database.list_actor_enrichment_records()
 
-        for actor_row in self.database.list_actors():
+        for actor_row in self._list_actor_rows():
             actor_name = str((actor_row or {}).get('name', '') or '').strip()
             if not actor_name:
                 continue
@@ -1096,9 +1153,16 @@ class DataCenterService:
         return f'{str(analysis_type or "").strip()}:{str(metric_key or "").strip()}'
 
     def _list_visible_video_summary_rows(self, filter_settings=None):
-        return self._filter_visible_movies(
-            self.database.list_video_summary_rows(),
-            filter_settings=filter_settings,
+        filter_fingerprint = self._build_filter_settings_fingerprint(filter_settings)
+        return list(
+            self._get_cached_build_value(
+                ('visible_video_summary_rows', filter_fingerprint),
+                lambda: self._filter_visible_movies(
+                    self.database.list_video_summary_rows(),
+                    filter_settings=filter_settings,
+                ),
+            )
+            or []
         )
 
     def _filter_visible_movies(self, rows, filter_settings=None):
@@ -1119,6 +1183,12 @@ class DataCenterService:
     def _group_actor_movies_for_code_prefix_analysis(self):
         if not hasattr(self.database, 'list_all_actor_movies'):
             return {}
+        return self._get_cached_build_value(
+            'actor_movies_grouped_by_code_prefix',
+            self._build_actor_movies_grouped_by_code_prefix,
+        )
+
+    def _build_actor_movies_grouped_by_code_prefix(self):
         grouped_movies = {}
         for row in self.database.list_all_actor_movies():
             prefix = extract_code_prefix((row or {}).get('code', ''))

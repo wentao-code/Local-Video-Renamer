@@ -453,6 +453,10 @@ class BackendClient:
         timeout = max(self.timeout, 180)
         return self._get('/queen-library/keywords' + query, timeout=timeout)
 
+    def get_queen_library_stats(self):
+        timeout = max(self.timeout, 180)
+        return self._get('/queen-library/stats', timeout=timeout)
+
     def search_queen_keyword(self, keyword, show_browser=True):
         timeout = max(self.timeout, 240)
         return self._post(

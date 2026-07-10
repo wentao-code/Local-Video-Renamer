@@ -104,6 +104,15 @@ class QueenLibraryService:
             )
             cursor.execute(
                 '''
+                CREATE TABLE IF NOT EXISTS queen_name_aliases (
+                    alias_name TEXT PRIMARY KEY,
+                    canonical_name TEXT NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cursor.execute(
+                '''
                 CREATE TABLE IF NOT EXISTS queen_crawl_queue_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     keyword TEXT NOT NULL,
@@ -116,6 +125,7 @@ class QueenLibraryService:
                 '''
             )
             self._ensure_column(cursor, 'queen_crawl_queue_log', 'status', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'queen_crawl_queue_log', 'hand_mark', 'INTEGER DEFAULT 0')
             conn.commit()
 
     def search_keyword(self, keyword, show_browser=True):
@@ -143,7 +153,17 @@ class QueenLibraryService:
             should_stop=should_stop,
         )
         started_at = self._current_timestamp()
-        keywords = self.build_refresh_keywords()
+        marked_rows = self._list_hand_marked_crawl_queue_rows()
+        marked_keywords = {
+            str(row.get('keyword', '') or '').strip()
+            for row in marked_rows
+            if str(row.get('keyword', '') or '').strip()
+        }
+        keywords = [
+            keyword
+            for keyword in self.build_refresh_keywords()
+            if str(keyword or '').strip() and str(keyword or '').strip() not in marked_keywords
+        ]
         manual_keywords = {
             str((row or {}).get('keyword', '') or '').strip()
             for row in self.list_keywords()
@@ -231,6 +251,7 @@ class QueenLibraryService:
         for row in self.list_queens():
             queen_name = str((row or {}).get('queen_name', '') or '').strip()
             if queen_name:
+                candidates.append(queen_name)
                 candidates.append(f'{QUEEN_RECORD_PREFIX}{queen_name}')
         return self._dedupe_keep_order(candidates)
 
@@ -355,6 +376,7 @@ class QueenLibraryService:
                 if parsed is None:
                     skipped_count += 1
                     continue
+                parsed['queen_name'] = self._resolve_queen_alias_from_connection(conn, parsed['queen_name'])
                 try:
                     cursor.execute(
                         '''
@@ -419,6 +441,7 @@ class QueenLibraryService:
                     videos.queen_name,
                     COUNT(*) AS video_count,
                     MAX(videos.created_at) AS last_created_at,
+                    COALESCE(profiles.like_level, '') AS like_level,
                     COALESCE(profiles.profile_confirmed, 0) AS profile_confirmed
                 FROM queen_videos AS videos
                 LEFT JOIN queen_profiles AS profiles ON profiles.queen_name = videos.queen_name
@@ -427,6 +450,48 @@ class QueenLibraryService:
                 '''
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_library_stats(self):
+        with self._connect() as conn:
+            queen_count = int(
+                conn.execute(
+                    '''
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT queen_name
+                        FROM queen_videos
+                        GROUP BY queen_name
+                    )
+                    '''
+                ).fetchone()[0]
+                or 0
+            )
+            video_count = int(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0] or 0)
+            like_rows = conn.execute(
+                '''
+                SELECT COALESCE(NULLIF(profiles.like_level, ''), '') AS level, COUNT(*) AS count
+                FROM (
+                    SELECT queen_name
+                    FROM queen_videos
+                    GROUP BY queen_name
+                ) AS queens
+                LEFT JOIN queen_profiles AS profiles ON profiles.queen_name = queens.queen_name
+                GROUP BY COALESCE(NULLIF(profiles.like_level, ''), '')
+                '''
+            ).fetchall()
+            video_level_rows = conn.execute(
+                '''
+                SELECT COALESCE(NULLIF(content_level, ''), '') AS level, COUNT(*) AS count
+                FROM queen_videos
+                GROUP BY COALESCE(NULLIF(content_level, ''), '')
+                '''
+            ).fetchall()
+        return {
+            'queen_count': queen_count,
+            'video_count': video_count,
+            'like_level_distribution': self._build_level_distribution(like_rows, ('A', 'B', 'C', 'D')),
+            'video_level_distribution': self._build_level_distribution(video_level_rows, ('S', 'A', 'B', 'C')),
+        }
 
     def get_queen_detail(self, queen_name):
         normalized_name = str(queen_name or '').strip()
@@ -565,6 +630,8 @@ class QueenLibraryService:
                 )
 
             self._upsert_queen_profile(conn, normalized_new_name, merged_profile)
+            self._upsert_queen_alias(conn, normalized_name, normalized_new_name)
+            self._retarget_queen_aliases(conn, normalized_name, normalized_new_name)
             cursor.execute('DELETE FROM queen_profiles WHERE queen_name = ?', (normalized_name,))
             conn.commit()
         return self.get_queen_detail(normalized_new_name)
@@ -778,15 +845,15 @@ class QueenLibraryService:
 
     def _clear_crawl_queue_log(self):
         with self._connect() as conn:
-            conn.execute('DELETE FROM queen_crawl_queue_log')
+            conn.execute('DELETE FROM queen_crawl_queue_log WHERE COALESCE(hand_mark, 0) = 0')
             conn.commit()
 
     def _insert_crawl_queue_log(self, keyword, source, scanned_count, imported_count, skipped_count):
         with self._connect() as conn:
             conn.execute(
                 '''
-                INSERT INTO queen_crawl_queue_log(keyword, source, scanned_count, imported_count, skipped_count)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO queen_crawl_queue_log(keyword, source, scanned_count, imported_count, skipped_count, hand_mark)
+                VALUES (?, ?, ?, ?, ?, 0)
                 ''',
                 (keyword, source, scanned_count, imported_count, skipped_count),
             )
@@ -809,8 +876,8 @@ class QueenLibraryService:
             if int(cursor.rowcount or 0) <= 0:
                 cursor.execute(
                     '''
-                    INSERT INTO queen_crawl_queue_log(keyword, source, status, scanned_count, imported_count, skipped_count)
-                    VALUES (?, ?, '', ?, ?, ?)
+                    INSERT INTO queen_crawl_queue_log(keyword, source, status, scanned_count, imported_count, skipped_count, hand_mark)
+                    VALUES (?, ?, '', ?, ?, ?, 0)
                     ''',
                     (keyword, source, scanned_count, imported_count, skipped_count),
                 )
@@ -823,8 +890,8 @@ class QueenLibraryService:
             cursor.execute('DELETE FROM queen_crawl_queue_log')
             cursor.executemany(
                 '''
-                INSERT INTO queen_crawl_queue_log(keyword, source, status, scanned_count, imported_count, skipped_count)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO queen_crawl_queue_log(keyword, source, status, scanned_count, imported_count, skipped_count, hand_mark)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''',
                 [
                     (
@@ -834,6 +901,7 @@ class QueenLibraryService:
                         int(row.get('scanned_count', 0) or 0),
                         int(row.get('imported_count', 0) or 0),
                         int(row.get('skipped_count', 0) or 0),
+                        1 if int(row.get('hand_mark', 0) or 0) else 0,
                     )
                     for row in rows
                     if str(row.get('keyword', '') or '').strip()
@@ -850,8 +918,19 @@ class QueenLibraryService:
                 if str(row.get('keyword', '') or '').strip()
             ]
 
-        keywords = self.build_refresh_keywords()
-        self._replace_crawl_queue_log([
+        marked_rows = self._list_hand_marked_crawl_queue_rows()
+        marked_keywords = {
+            str(row.get('keyword', '') or '').strip()
+            for row in marked_rows
+            if str(row.get('keyword', '') or '').strip()
+        }
+        keywords = [
+            keyword
+            for keyword in self.build_refresh_keywords()
+            if str(keyword or '').strip() and str(keyword or '').strip() not in marked_keywords
+        ]
+        queue_rows = list(marked_rows)
+        queue_rows.extend(
             {
                 'keyword': keyword,
                 'source': '鍏抽敭璇嶅簱' if keyword in manual_keywords else '鑷姩鐢熸垚',
@@ -859,21 +938,35 @@ class QueenLibraryService:
                 'scanned_count': 0,
                 'imported_count': 0,
                 'skipped_count': 0,
+                'hand_mark': 0,
             }
             for keyword in keywords
-        ])
+        )
+        self._replace_crawl_queue_log(queue_rows)
         return keywords
 
     def _list_pending_crawl_queue_rows(self):
         with self._connect() as conn:
             rows = conn.execute(
                 '''
-                SELECT id, keyword, source, status, scanned_count, imported_count, skipped_count, created_at
+                SELECT id, keyword, source, status, scanned_count, imported_count, skipped_count, created_at, hand_mark
                 FROM queen_crawl_queue_log
-                WHERE COALESCE(status, '') <> ?
+                WHERE COALESCE(status, '') <> ? AND COALESCE(hand_mark, 0) = 0
                 ORDER BY id ASC
                 ''',
                 (QUEEN_CRAWL_STATUS_OK,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _list_hand_marked_crawl_queue_rows(self):
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''
+                SELECT id, keyword, source, status, scanned_count, imported_count, skipped_count, created_at, hand_mark
+                FROM queen_crawl_queue_log
+                WHERE COALESCE(hand_mark, 0) = 1
+                ORDER BY id ASC
+                '''
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -908,6 +1001,28 @@ class QueenLibraryService:
             seen.add(normalized)
             deduped.append(normalized)
         return deduped
+
+    @staticmethod
+    def _build_level_distribution(rows, ordered_levels):
+        count_by_level = {}
+        for row in rows or []:
+            if isinstance(row, dict):
+                level = row.get('level', '')
+                count = row.get('count', 0)
+            elif isinstance(row, sqlite3.Row):
+                level = row['level']
+                count = row['count']
+            else:
+                level = row[0]
+                count = row[1]
+            count_by_level[str(level or '').strip()] = int(count or 0)
+        return [
+            *[
+                {'level': level, 'count': int(count_by_level.get(level, 0) or 0)}
+                for level in ordered_levels
+            ],
+            {'level': '', 'count': int(count_by_level.get('', 0) or 0)},
+        ]
 
     @staticmethod
     def _current_timestamp():
@@ -1034,6 +1149,61 @@ class QueenLibraryService:
             (normalized_name,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    @classmethod
+    def _resolve_queen_alias_from_connection(cls, conn, queen_name):
+        current_name = str(queen_name or '').strip()
+        seen_names = set()
+        while current_name and current_name not in seen_names:
+            seen_names.add(current_name)
+            row = conn.execute(
+                '''
+                SELECT canonical_name
+                FROM queen_name_aliases
+                WHERE alias_name = ?
+                ''',
+                (current_name,),
+            ).fetchone()
+            if row is None:
+                break
+            raw_canonical_name = row['canonical_name'] if isinstance(row, sqlite3.Row) else row[0]
+            canonical_name = str(raw_canonical_name or '').strip()
+            if not canonical_name:
+                break
+            current_name = canonical_name
+        return current_name
+
+    @staticmethod
+    def _upsert_queen_alias(conn, alias_name, canonical_name):
+        normalized_alias = str(alias_name or '').strip()
+        normalized_canonical = str(canonical_name or '').strip()
+        if not normalized_alias or not normalized_canonical or normalized_alias == normalized_canonical:
+            return
+        conn.execute(
+            '''
+            INSERT INTO queen_name_aliases(alias_name, canonical_name, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(alias_name) DO UPDATE SET
+                canonical_name = excluded.canonical_name,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (normalized_alias, normalized_canonical),
+        )
+
+    @staticmethod
+    def _retarget_queen_aliases(conn, old_canonical_name, new_canonical_name):
+        normalized_old = str(old_canonical_name or '').strip()
+        normalized_new = str(new_canonical_name or '').strip()
+        if not normalized_old or not normalized_new or normalized_old == normalized_new:
+            return
+        conn.execute(
+            '''
+            UPDATE queen_name_aliases
+            SET canonical_name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE canonical_name = ?
+            ''',
+            (normalized_new, normalized_old),
+        )
 
     @staticmethod
     def _upsert_queen_profile(conn, queen_name, profile):

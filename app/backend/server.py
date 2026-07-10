@@ -213,6 +213,8 @@ def make_handler(service):
                 return service.list_queen_library_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'GET' and path == '/queen-library/keywords':
                 return service.list_queen_keywords_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'GET' and path == '/queen-library/stats':
+                return service.get_queen_library_stats()
             if method == 'POST' and path == '/queen-library/search':
                 return service.search_queen_keyword(
                     body.get('keyword'),

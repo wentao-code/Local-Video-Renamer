@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QHeaderView
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
@@ -117,6 +117,29 @@ class _TimeoutAfterSnapshotBackendStub(_BackendStub):
 
 
 class CodePrefixViewerSnapshotTest(unittest.TestCase):
+    def test_table_expands_status_and_release_date_columns(self):
+        backend = _BackendStub()
+
+        with (
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_sync_async_task),
+            patch(
+                'app.gui.code_prefix_viewer.load_code_prefix_library_settings',
+                return_value={'sort_field': 'prefix', 'sort_order': 'asc'},
+            ),
+            patch('app.gui.code_prefix_viewer.save_code_prefix_library_settings'),
+        ):
+            window = CodePrefixViewerWindow(backend)
+            try:
+                header = window.table.horizontalHeader()
+
+                self.assertEqual(header.sectionResizeMode(2), QHeaderView.Stretch)
+                self.assertEqual(header.sectionResizeMode(4), QHeaderView.Stretch)
+                self.assertEqual(header.sectionResizeMode(5), QHeaderView.Stretch)
+                self.assertEqual(header.sectionResizeMode(7), QHeaderView.ResizeToContents)
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_startup_load_uses_snapshot_then_background_refresh(self):
         backend = _BackendStub()
 
@@ -138,7 +161,7 @@ class CodePrefixViewerSnapshotTest(unittest.TestCase):
                     ],
                 )
                 self.assertIn('2026-07-06 14:10:00', window.last_refreshed_label.text())
-                self.assertIn('18秒', window.last_refresh_duration_label.text())
+                self.assertIn('18秒', window.last_refreshed_label.text())
             finally:
                 window.hide()
                 window.deleteLater()

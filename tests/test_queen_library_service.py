@@ -63,6 +63,22 @@ class QueenLibraryServiceTest(unittest.TestCase):
         finally:
             conn.close()
 
+    @staticmethod
+    def _queue_row_dicts(db_path):
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                '''
+                SELECT keyword, status, hand_mark
+                FROM queen_crawl_queue_log
+                ORDER BY id ASC
+                '''
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     def test_search_keyword_imports_unique_records_and_blocks_duplicate_keyword(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = _ScraperStub(
@@ -155,8 +171,11 @@ class QueenLibraryServiceTest(unittest.TestCase):
 
             result = service.refresh_all(show_browser=True)
 
-            self.assertEqual(scraper.calls[-2:], [('\u521d\u59cb\u8bcd', True), ('\u5957\u8def\u76f4\u64ad_\u5c0f7s', True)])
-            self.assertEqual(result['query_count'], 2)
+            self.assertEqual(
+                scraper.calls[-3:],
+                [('\u521d\u59cb\u8bcd', True), ('\u5c0f7s', True), ('\u5957\u8def\u76f4\u64ad_\u5c0f7s', True)],
+            )
+            self.assertEqual(result['query_count'], 3)
             self.assertEqual(result['scanned_count'], 3)
             self.assertEqual(result['imported_count'], 1)
             self.assertEqual(result['skipped_count'], 2)
@@ -164,11 +183,14 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertTrue(log_path.exists())
 
             log_payload = json.loads(log_path.read_text(encoding='utf-8').strip().splitlines()[-1])
-            self.assertEqual(log_payload['query_count'], 2)
+            self.assertEqual(log_payload['query_count'], 3)
             self.assertEqual(log_payload['imported_count'], 1)
             self.assertEqual(log_payload['skipped_count'], 2)
             self.assertTrue(log_payload['show_browser'])
-            self.assertEqual([row['keyword'] for row in log_payload['queries']], ['\u521d\u59cb\u8bcd', '\u5957\u8def\u76f4\u64ad_\u5c0f7s'])
+            self.assertEqual(
+                [row['keyword'] for row in log_payload['queries']],
+                ['\u521d\u59cb\u8bcd', '\u5c0f7s', '\u5957\u8def\u76f4\u64ad_\u5c0f7s'],
+            )
 
     def test_refresh_all_reuses_one_browser_session_across_keywords(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -186,9 +208,9 @@ class QueenLibraryServiceTest(unittest.TestCase):
 
             result = service.refresh_all(show_browser=True)
 
-            self.assertEqual(result['query_count'], 2)
+            self.assertEqual(result['query_count'], 3)
             self.assertEqual(scraper.session_enter_count, baseline_session_count + 1)
-            self.assertEqual(scraper.pages[baseline_page_count:], [scraper.page, scraper.page])
+            self.assertEqual(scraper.pages[baseline_page_count:], [scraper.page, scraper.page, scraper.page])
 
     def test_refresh_all_reports_progress_after_each_fixed_size_batch(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -298,6 +320,70 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual(result['remaining_count'], 0)
             self.assertEqual(self._queue_rows(db_path), [])
 
+    def test_refresh_all_searches_queen_name_and_prefixed_name_without_saving_them_as_keywords(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            scraper = _ScraperStub(
+                records_by_keyword={
+                    '\u521d\u59cb\u8bcd': ['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u6807\u9898A.mp4'],
+                    '\u5c0f7s': ['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u6807\u9898B.mp4'],
+                    '\u5957\u8def\u76f4\u64ad_\u5c0f7s': ['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u6807\u9898C.mp4'],
+                }
+            )
+            service = QueenLibraryService(db_path, scraper=scraper)
+            service.search_keyword('\u521d\u59cb\u8bcd', show_browser=False)
+            scraper.calls.clear()
+
+            result = service.refresh_all(show_browser=False, batch_size=10)
+
+            self.assertEqual(result['query_count'], 3)
+            self.assertEqual(
+                [keyword for keyword, _flag in scraper.calls],
+                ['\u521d\u59cb\u8bcd', '\u5c0f7s', '\u5957\u8def\u76f4\u64ad_\u5c0f7s'],
+            )
+            self.assertEqual(
+                [row['keyword'] for row in service.list_keywords()],
+                ['\u521d\u59cb\u8bcd'],
+            )
+
+    def test_refresh_all_skips_hand_marked_keywords_and_preserves_marks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            scraper = _ScraperStub(
+                records_by_keyword={
+                    'alpha': ['\u5957\u8def\u76f4\u64ad_Alpha_\u6807\u9898A.mp4'],
+                    'beta': ['\u5957\u8def\u76f4\u64ad_Beta_\u6807\u9898B.mp4'],
+                    'gamma': ['\u5957\u8def\u76f4\u64ad_Gamma_\u6807\u9898C.mp4'],
+                }
+            )
+            service = QueenLibraryService(db_path, scraper=scraper)
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.executemany(
+                    'INSERT INTO queen_keywords(keyword) VALUES (?)',
+                    [('alpha',), ('beta',), ('gamma',)],
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO queen_crawl_queue_log(keyword, source, status, scanned_count, imported_count, skipped_count, hand_mark)
+                    VALUES (?, ?, ?, 0, 0, 0, 1)
+                    ''',
+                    ('beta', '\u5173\u952e\u8bcd\u5e93', ''),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            result = service.refresh_all(show_browser=False, batch_size=10)
+
+            self.assertFalse(result['stopped'])
+            self.assertEqual(result['query_count'], 2)
+            self.assertEqual([keyword for keyword, _flag in scraper.calls], ['gamma', 'alpha'])
+            self.assertEqual(
+                self._queue_row_dicts(db_path),
+                [{'keyword': 'beta', 'status': '', 'hand_mark': 1}],
+            )
+
     def test_save_queen_profile_marks_queen_as_confirmed_and_returns_detail_profile(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = _ScraperStub(['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u4e1d\u8db3\u9ad8\u8ddf\u8c03\u6559_2.mp4'])
@@ -321,6 +407,43 @@ class QueenLibraryServiceTest(unittest.TestCase):
             queen_rows = service.list_queens()
             self.assertEqual(queen_rows[0]['queen_name'], '\u5c0f7s')
             self.assertTrue(queen_rows[0]['profile_confirmed'])
+
+    def test_get_library_stats_returns_counts_and_level_distributions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub(
+                [
+                    '\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u6807\u9898A.mp4',
+                    '\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u6807\u9898B.mp4',
+                    '\u5957\u8def\u76f4\u64ad_\u767d\u4e00\u6657_\u6807\u9898C.mp4',
+                ]
+            )
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('\u7edf\u8ba1\u8bcd', show_browser=False)
+            service.save_queen_profile(
+                '\u5c0f7s',
+                {
+                    'body_type': '\u82d7\u6761',
+                    'style': '\u7c97\u66b4',
+                    'face': '\u662f',
+                    'age_group': '\u5c11\u5987',
+                    'like_level': 'A',
+                },
+            )
+            detail = service.get_queen_detail('\u5c0f7s')
+            service.update_queen_video_metadata(detail['videos'][0]['id'], '\u8c03\u6559', 'S')
+
+            stats = service.get_library_stats()
+
+            self.assertEqual(stats['queen_count'], 2)
+            self.assertEqual(stats['video_count'], 3)
+            self.assertEqual(
+                {row['level']: row['count'] for row in stats['like_level_distribution']},
+                {'A': 1, 'B': 0, 'C': 0, 'D': 0, '': 1},
+            )
+            self.assertEqual(
+                {row['level']: row['count'] for row in stats['video_level_distribution']},
+                {'S': 1, 'A': 0, 'B': 0, 'C': 0, '': 2},
+            )
 
     def test_save_queen_profile_rejects_incomplete_or_unknown_options(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -477,6 +600,35 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual([row['queen_name'] for row in service.list_queens()], ['\u65b0\u540d'])
             self.assertEqual(len(renamed['videos']), 1)
             self.assertEqual(renamed['videos'][0]['queen_name'], '\u65b0\u540d')
+
+    def test_renamed_queen_alias_normalizes_future_imports(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub(
+                records_by_keyword={
+                    '\u521d\u59cb\u8bcd': [
+                        '\u5957\u8def\u76f4\u64ad_\u9519\u8bef\u540d_\u6807\u9898A.mp4',
+                    ],
+                    '\u518d\u6b21\u6293\u53d6': [
+                        '\u5957\u8def\u76f4\u64ad_\u9519\u8bef\u540d_\u6807\u9898A.mp4',
+                        '\u5957\u8def\u76f4\u64ad_\u9519\u8bef\u540d_\u6807\u9898B.mp4',
+                    ],
+                }
+            )
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('\u521d\u59cb\u8bcd', show_browser=False)
+
+            service.rename_queen('\u9519\u8bef\u540d', '\u6807\u51c6\u540d')
+            result = service.search_keyword('\u518d\u6b21\u6293\u53d6', show_browser=False)
+
+            self.assertEqual(result['imported_count'], 1)
+            self.assertEqual(result['skipped_count'], 1)
+            self.assertEqual([row['queen_name'] for row in service.list_queens()], ['\u6807\u51c6\u540d'])
+            detail = service.get_queen_detail('\u6807\u51c6\u540d')
+            self.assertEqual(
+                sorted(row['video_title'] for row in detail['videos']),
+                ['\u6807\u9898A', '\u6807\u9898B'],
+            )
+            self.assertEqual({row['queen_name'] for row in detail['videos']}, {'\u6807\u51c6\u540d'})
 
 
 if __name__ == '__main__':
