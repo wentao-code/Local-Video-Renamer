@@ -49,6 +49,9 @@ class _BlockingQueenRefreshService:
             'keywords': [{'keyword': 'K'}],
         }
 
+    def get_library_stats(self):
+        return {'queen_count': 1, 'video_count': 1}
+
 
 class QueenRefreshBackgroundTest(unittest.TestCase):
     def test_refresh_queen_library_starts_background_task_and_reports_progress(self):
@@ -88,7 +91,7 @@ class QueenRefreshBackgroundTest(unittest.TestCase):
 
         cancelled = service.cancel_queen_library_refresh()
         self.assertTrue(cancelled['stopped'])
-        self.assertIn('停止', cancelled['message'])
+        self.assertEqual(cancelled['message_key'], 'queen.backend.stop_requested')
 
         service._queen_refresh_thread.join(timeout=5)
 

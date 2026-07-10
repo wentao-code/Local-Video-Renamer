@@ -406,40 +406,13 @@ class BackendService:
             'failed': False,
             'total_count': total_count,
             'processed_count': processed_count,
-            'message': f'已处理 {processed_count}/{total_count} 个搜索词',
+            'message_key': 'queen.backend.batch_progress',
+            'message_args': {'processed_count': processed_count, 'total_count': total_count},
+            'message': f'Processed {processed_count}/{total_count} search terms',
         })
 
     def _run_queen_library_refresh_task(self, show_browser):
         return self._run_queen_library_refresh_task_with_cancel(show_browser)
-        try:
-            result = self.queen_library_service.refresh_all(
-                show_browser=show_browser,
-                batch_size=10,
-                progress_callback=self._on_queen_refresh_batch_progress,
-            )
-            payload = dict(result or {})
-            query_count = int(payload.get('query_count', 0) or 0)
-            processed_count = int(payload.get('processed_count', query_count) or 0)
-            self._update_queen_refresh_progress({
-                **payload,
-                'is_running': False,
-                'completed': True,
-                'failed': False,
-                'error': '',
-                'completed_at': self._current_snapshot_timestamp(),
-                'total_count': query_count,
-                'processed_count': processed_count,
-                'message': f'女王库批量抓取完成：处理 {processed_count}/{query_count} 个搜索词',
-            })
-        except Exception as exc:
-            self._update_queen_refresh_progress({
-                'is_running': False,
-                'completed': False,
-                'failed': True,
-                'error': str(exc),
-                'completed_at': self._current_snapshot_timestamp(),
-                'message': f'女王库批量抓取失败：{exc}',
-            })
 
     def get_queen_library_refresh_progress(self):
         return {'progress': self._queen_refresh_progress_snapshot()}
@@ -467,10 +440,12 @@ class BackendService:
                 'completed_at': self._current_snapshot_timestamp(),
                 'total_count': query_count,
                 'processed_count': processed_count,
+                'message_key': 'queen.backend.batch_stopped' if stopped else 'queen.backend.batch_completed',
+                'message_args': {'processed_count': processed_count, 'total_count': query_count},
                 'message': (
-                    f'濂崇帇搴撴壒閲忔姄鍙栧凡鍋滄锛氬凡澶勭悊 {processed_count}/{query_count} 涓悳绱㈣瘝'
+                    f'Queen library batch crawl stopped: processed {processed_count}/{query_count} search terms'
                     if stopped
-                    else f'濂崇帇搴撴壒閲忔姄鍙栧畬鎴愶細澶勭悊 {processed_count}/{query_count} 涓悳绱㈣瘝'
+                    else f'Queen library batch crawl completed: processed {processed_count}/{query_count} search terms'
                 ),
             })
         except Exception as exc:
@@ -481,7 +456,9 @@ class BackendService:
                 'failed': True,
                 'error': str(exc),
                 'completed_at': self._current_snapshot_timestamp(),
-                'message': f'濂崇帇搴撴壒閲忔姄鍙栧け璐ワ細{exc}',
+                'message_key': 'queen.backend.batch_failed',
+                'message_args': {'error': str(exc)},
+                'message': f'Queen library batch crawl failed: {exc}',
             })
         finally:
             self._queen_refresh_cancel_event.clear()
@@ -491,16 +468,19 @@ class BackendService:
         if not progress.get('is_running'):
             return {
                 'stopped': False,
-                'message': '当前没有女王库抓取任务在运行。',
+                'message_key': 'queen.backend.no_running_task',
+                'message': 'No queen library crawl task is running.',
                 'refreshed_at': self._current_snapshot_timestamp(),
             }
         self._queen_refresh_cancel_event.set()
         self._update_queen_refresh_progress({
-            'message': '已请求停止女王库抓取，当前批次完成后停止。',
+            'message_key': 'queen.backend.stop_requested',
+            'message': 'Stop requested. The queen library crawl will stop after the current batch.',
         })
         return {
             'stopped': True,
-            'message': '已请求停止女王库抓取，当前批次完成后停止。',
+            'message_key': 'queen.backend.stop_requested',
+            'message': 'Stop requested. The queen library crawl will stop after the current batch.',
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 
@@ -1258,7 +1238,8 @@ class BackendService:
             'stopped': False,
             'started_at': started_at,
             'batch_size': 10,
-            'message': '女王库批量抓取已启动',
+            'message_key': 'queen.backend.batch_started',
+            'message': 'Queen library batch crawl started',
         })
 
         self._queen_refresh_thread = threading.Thread(

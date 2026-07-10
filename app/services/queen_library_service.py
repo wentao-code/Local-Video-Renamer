@@ -6,22 +6,24 @@ from datetime import datetime
 from pathlib import Path
 
 from app.core.project_paths import QUEEN_LIBRARY_CRAWL_LOG_FILE, QUEEN_LIBRARY_DB_FILE
+from app.core.queen_library_domain import (
+    QUEEN_CRAWL_SOURCE_AUTO_GENERATED,
+    QUEEN_CRAWL_SOURCE_KEYWORD_LIBRARY,
+    QUEEN_PROFILE_FIELD_OPTIONS,
+    QUEEN_RECORD_PREFIX,
+    QUEEN_VIDEO_CONTENT_LEVELS,
+    QUEEN_VIDEO_CONTENT_TYPES,
+    normalize_queen_crawl_source,
+    normalize_queen_profile_value,
+    normalize_queen_video_content_level,
+    normalize_queen_video_content_type,
+)
 from app.scraper.queen_search_scraper import QueenSearchScraper
 
 
-QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 MEDIA_SUFFIXES = {'.mp4', '.mkv', '.avi', '.wmv', '.mov'}
-QUEEN_VIDEO_CONTENT_TYPES = ('\u8fb1\u9a82', '\u804a\u5929', '\u8c03\u6559')
-QUEEN_VIDEO_CONTENT_LEVELS = ('S', 'A', 'B', 'C')
 QUEEN_CRAWL_STATUS_OK = 'ok'
-QUEEN_PROFILE_FIELDS = {
-    'body_type': ('身材', ('苗条', '肥胖')),
-    'style': ('风格', ('温和', '粗暴')),
-    'face': ('露脸', ('是', '否')),
-    'age_group': ('年龄', ('萝莉', '少妇', '熟女')),
-    'like_level': ('喜欢等级', ('A', 'B', 'C', 'D')),
-}
-
+QUEEN_PROFILE_FIELDS = QUEEN_PROFILE_FIELD_OPTIONS
 
 class QueenLibraryService:
     def __init__(self, db_path=None, scraper=None, crawl_log_path=None):
@@ -116,7 +118,7 @@ class QueenLibraryService:
                 CREATE TABLE IF NOT EXISTS queen_crawl_queue_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     keyword TEXT NOT NULL,
-                    source TEXT DEFAULT '关键词库',
+                    source TEXT DEFAULT 'keyword_library',
                     scanned_count INTEGER DEFAULT 0,
                     imported_count INTEGER DEFAULT 0,
                     skipped_count INTEGER DEFAULT 0,
@@ -126,6 +128,7 @@ class QueenLibraryService:
             )
             self._ensure_column(cursor, 'queen_crawl_queue_log', 'status', "TEXT DEFAULT ''")
             self._ensure_column(cursor, 'queen_crawl_queue_log', 'hand_mark', 'INTEGER DEFAULT 0')
+            self._migrate_legacy_domain_values(conn)
             conn.commit()
 
     def search_keyword(self, keyword, show_browser=True):
@@ -178,6 +181,9 @@ class QueenLibraryService:
 
         self._clear_crawl_queue_log()
 
+        configure_visibility = getattr(self.scraper, 'configure_browser_visibility', None)
+        if callable(configure_visibility):
+            configure_visibility(show_browser)
         session_factory = getattr(self.scraper, 'session', None)
         session_context = session_factory() if callable(session_factory) else nullcontext(None)
         # Keep one browser page alive for the whole refresh batch so each
@@ -197,7 +203,11 @@ class QueenLibraryService:
                 imported_count += query_result['imported_count']
                 skipped_count += query_result['skipped_count']
                 processed_count += 1
-                source = '关键词库' if keyword in manual_keywords else '自动生成'
+                source = (
+                    QUEEN_CRAWL_SOURCE_KEYWORD_LIBRARY
+                    if keyword in manual_keywords
+                    else QUEEN_CRAWL_SOURCE_AUTO_GENERATED
+                )
                 self._insert_crawl_queue_log(
                     keyword,
                     source,
@@ -273,6 +283,9 @@ class QueenLibraryService:
         normalized_batch_size = self._normalize_batch_size(batch_size)
         completed_batch_keywords = []
 
+        configure_visibility = getattr(self.scraper, 'configure_browser_visibility', None)
+        if callable(configure_visibility):
+            configure_visibility(show_browser)
         session_factory = getattr(self.scraper, 'session', None)
         session_context = session_factory() if callable(session_factory) else nullcontext(None)
         with session_context as page:
@@ -296,7 +309,11 @@ class QueenLibraryService:
                 skipped_count += query_result['skipped_count']
                 processed_count += 1
                 remaining_count = max(0, len(keywords) - processed_count)
-                source = '鍏抽敭璇嶅簱' if keyword in manual_keywords else '鑷姩鐢熸垚'
+                source = (
+                    QUEEN_CRAWL_SOURCE_KEYWORD_LIBRARY
+                    if keyword in manual_keywords
+                    else QUEEN_CRAWL_SOURCE_AUTO_GENERATED
+                )
                 self._upsert_crawl_queue_log(
                     keyword,
                     source,
@@ -512,7 +529,7 @@ class QueenLibraryService:
         return {
             'queen_name': normalized_name,
             'profile': profile,
-            'videos': [dict(row) for row in rows],
+            'videos': [self._normalize_queen_video_row(row) for row in rows],
         }
 
     def save_queen_profile(self, queen_name, profile):
@@ -640,8 +657,8 @@ class QueenLibraryService:
         normalized_id = int(record_id or 0)
         if normalized_id <= 0:
             raise ValueError('\u7f3a\u5c11\u8bb0\u5f55\u7f16\u53f7')
-        normalized_content_type = str(content_type or '').strip()
-        normalized_content_level = str(content_level or '').strip()
+        normalized_content_type = normalize_queen_video_content_type(content_type)
+        normalized_content_level = normalize_queen_video_content_level(content_level)
         if normalized_content_type and normalized_content_type not in QUEEN_VIDEO_CONTENT_TYPES:
             raise ValueError('\u5185\u5bb9\u8bf7\u9009\u62e9\u6709\u6548\u9009\u9879')
         if normalized_content_level and normalized_content_level not in QUEEN_VIDEO_CONTENT_LEVELS:
@@ -788,6 +805,52 @@ class QueenLibraryService:
         if column_name not in columns:
             cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}')
 
+    @classmethod
+    def _migrate_legacy_domain_values(cls, conn):
+        cls._normalize_table_column(
+            conn,
+            'queen_crawl_queue_log',
+            'source',
+            normalize_queen_crawl_source,
+        )
+        for field_key in QUEEN_PROFILE_FIELDS:
+            cls._normalize_table_column(
+                conn,
+                'queen_profiles',
+                field_key,
+                lambda value, key=field_key: normalize_queen_profile_value(key, value),
+            )
+        cls._normalize_table_column(
+            conn,
+            'queen_videos',
+            'content_type',
+            normalize_queen_video_content_type,
+        )
+        cls._normalize_table_column(
+            conn,
+            'queen_videos',
+            'content_level',
+            normalize_queen_video_content_level,
+        )
+
+    @staticmethod
+    def _normalize_table_column(conn, table_name, column_name, normalizer):
+        rows = conn.execute(
+            f'SELECT rowid AS _rowid, {column_name} FROM {table_name} WHERE COALESCE({column_name}, "") <> ""'
+        ).fetchall()
+        updates = []
+        for row in rows:
+            row_id = int(row['_rowid'] if isinstance(row, sqlite3.Row) else row[0])
+            current = row[column_name] if isinstance(row, sqlite3.Row) else row[1]
+            normalized = normalizer(current)
+            if normalized != str(current or '').strip():
+                updates.append((normalized, row_id))
+        if updates:
+            conn.executemany(
+                f'UPDATE {table_name} SET {column_name} = ? WHERE rowid = ?',
+                updates,
+            )
+
     @staticmethod
     def _normalize_scraped_record(record):
         if isinstance(record, dict):
@@ -849,17 +912,19 @@ class QueenLibraryService:
             conn.commit()
 
     def _insert_crawl_queue_log(self, keyword, source, scanned_count, imported_count, skipped_count):
+        normalized_source = normalize_queen_crawl_source(source)
         with self._connect() as conn:
             conn.execute(
                 '''
                 INSERT INTO queen_crawl_queue_log(keyword, source, scanned_count, imported_count, skipped_count, hand_mark)
                 VALUES (?, ?, ?, ?, ?, 0)
                 ''',
-                (keyword, source, scanned_count, imported_count, skipped_count),
+                (keyword, normalized_source, scanned_count, imported_count, skipped_count),
             )
             conn.commit()
 
     def _upsert_crawl_queue_log(self, keyword, source, scanned_count, imported_count, skipped_count):
+        normalized_source = normalize_queen_crawl_source(source)
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -871,7 +936,7 @@ class QueenLibraryService:
                     skipped_count = ?
                 WHERE keyword = ?
                 ''',
-                (source, scanned_count, imported_count, skipped_count, keyword),
+                (normalized_source, scanned_count, imported_count, skipped_count, keyword),
             )
             if int(cursor.rowcount or 0) <= 0:
                 cursor.execute(
@@ -879,7 +944,7 @@ class QueenLibraryService:
                     INSERT INTO queen_crawl_queue_log(keyword, source, status, scanned_count, imported_count, skipped_count, hand_mark)
                     VALUES (?, ?, '', ?, ?, ?, 0)
                     ''',
-                    (keyword, source, scanned_count, imported_count, skipped_count),
+                    (keyword, normalized_source, scanned_count, imported_count, skipped_count),
                 )
             conn.commit()
 
@@ -896,7 +961,7 @@ class QueenLibraryService:
                 [
                     (
                         str(row.get('keyword', '') or '').strip(),
-                        str(row.get('source', '') or '').strip() or '鍏抽敭璇嶅簱',
+                        normalize_queen_crawl_source(row.get('source', '')),
                         str(row.get('status', '') or '').strip(),
                         int(row.get('scanned_count', 0) or 0),
                         int(row.get('imported_count', 0) or 0),
@@ -933,7 +998,11 @@ class QueenLibraryService:
         queue_rows.extend(
             {
                 'keyword': keyword,
-                'source': '鍏抽敭璇嶅簱' if keyword in manual_keywords else '鑷姩鐢熸垚',
+                'source': (
+                    QUEEN_CRAWL_SOURCE_KEYWORD_LIBRARY
+                    if keyword in manual_keywords
+                    else QUEEN_CRAWL_SOURCE_AUTO_GENERATED
+                ),
                 'status': '',
                 'scanned_count': 0,
                 'imported_count': 0,
@@ -1053,10 +1122,10 @@ class QueenLibraryService:
     def _normalize_profile_payload(cls, profile):
         payload = dict(profile or {})
         normalized = {}
-        for field_key, (label, choices) in QUEEN_PROFILE_FIELDS.items():
-            value = str(payload.get(field_key, '') or '').strip()
+        for field_key, choices in QUEEN_PROFILE_FIELDS.items():
+            value = normalize_queen_profile_value(field_key, payload.get(field_key, ''))
             if value not in choices:
-                raise ValueError(f'{label}请选择有效选项')
+                raise ValueError(f'{field_key} must be one of: {", ".join(choices)}')
             normalized[field_key] = value
         return normalized
 
@@ -1064,10 +1133,10 @@ class QueenLibraryService:
     def _normalize_optional_profile_payload(cls, profile):
         payload = dict(profile or {})
         normalized = {}
-        for field_key, (label, choices) in QUEEN_PROFILE_FIELDS.items():
-            value = str(payload.get(field_key, '') or '').strip()
+        for field_key, choices in QUEEN_PROFILE_FIELDS.items():
+            value = normalize_queen_profile_value(field_key, payload.get(field_key, ''))
             if value and value not in choices:
-                raise ValueError(f'{label}璇烽€夋嫨鏈夋晥閫夐」')
+                raise ValueError(f'{field_key} must be one of: {", ".join(choices)}')
             normalized[field_key] = value
         return normalized
 
@@ -1131,9 +1200,16 @@ class QueenLibraryService:
             'raw_title': _pick('raw_title'),
             'source_url': _pick('source_url'),
             'detail_url': _pick('detail_url'),
-            'content_type': _pick('content_type'),
-            'content_level': _pick('content_level'),
+            'content_type': normalize_queen_video_content_type(_pick('content_type')),
+            'content_level': normalize_queen_video_content_level(_pick('content_level')),
         }
+
+    @staticmethod
+    def _normalize_queen_video_row(row):
+        payload = dict(row or {})
+        payload['content_type'] = normalize_queen_video_content_type(payload.get('content_type', ''))
+        payload['content_level'] = normalize_queen_video_content_level(payload.get('content_level', ''))
+        return payload
 
     @staticmethod
     def _load_queen_videos_from_connection(conn, queen_name):
@@ -1248,5 +1324,7 @@ class QueenLibraryService:
         if row is None:
             return cls._empty_profile(normalized_name)
         profile = dict(row)
+        for field_key in QUEEN_PROFILE_FIELDS:
+            profile[field_key] = normalize_queen_profile_value(field_key, profile.get(field_key, ''))
         profile['profile_confirmed'] = bool(profile.get('profile_confirmed', 0))
         return profile

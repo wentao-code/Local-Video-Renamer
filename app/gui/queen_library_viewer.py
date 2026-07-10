@@ -16,6 +16,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.core.queen_library_domain import (
+    QUEEN_PROFILE_FIELD_OPTIONS,
+    QUEEN_VIDEO_CONTENT_LEVELS,
+    QUEEN_VIDEO_CONTENT_TYPES,
+    normalize_queen_profile_value,
+    normalize_queen_video_content_level,
+    normalize_queen_video_content_type,
+)
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 from app.gui.queen_library_sorting import sort_queen_rows
@@ -23,21 +31,54 @@ from app.gui.queen_library_sorting import sort_queen_rows
 
 BUTTONS_PER_ROW = 9
 KEYWORDS_PER_ROW = 6
-QUEEN_VIDEO_CONTENT_TYPE_OPTIONS = ('\u8fb1\u9a82', '\u804a\u5929', '\u8c03\u6559')
-QUEEN_VIDEO_CONTENT_LEVEL_OPTIONS = ('S', 'A', 'B', 'C')
-QUEEN_PROFILE_FIELD_OPTIONS = {
-    'body_type': ('身材', ('苗条', '肥胖')),
-    'style': ('风格', ('温和', '粗暴')),
-    'face': ('露脸', ('是', '否')),
-    'age_group': ('年龄', ('萝莉', '少妇', '熟女')),
-    'like_level': ('喜欢等级', ('A', 'B', 'C', 'D')),
-}
 QUEEN_PROFILE_LIKE_LEVEL_STYLES = {
     'A': {'background': '#E74C3C', 'foreground': '#FFFFFF', 'border': '#C0392B'},
     'B': {'background': '#F39C12', 'foreground': '#FFFFFF', 'border': '#D68910'},
     'C': {'background': '#BDC3C7', 'foreground': '#1F2933', 'border': '#A6ACAF'},
     'D': {'background': '#95A5A6', 'foreground': '#1F2933', 'border': '#7F8C8D'},
 }
+
+
+def _tr_joined_preview(values, limit=10):
+    rows = [str(value or '').strip() for value in values or [] if str(value or '').strip()]
+    preview = '\n'.join(rows[:limit])
+    if len(rows) > limit:
+        preview += tr('queen.keyword.delete_more_suffix', count=len(rows))
+    return preview
+
+
+def _combo_value(combo):
+    data = combo.currentData()
+    return str(data if data is not None else combo.currentText() or '').strip()
+
+
+def _set_combo_value(combo, value):
+    normalized = str(value or '').strip()
+    index = combo.findData(normalized)
+    if index < 0:
+        index = combo.findText(normalized)
+    combo.setCurrentIndex(index if index >= 0 else 0)
+
+
+def _add_empty_and_options(combo, options, label_key_prefix):
+    combo.addItem('', '')
+    for option in options:
+        combo.addItem(tr(f'{label_key_prefix}.{option}'), option)
+
+
+def _profile_label(field_key):
+    return tr(f'queen.profile.field.{field_key}')
+
+
+def _translated_backend_message(payload, fallback_key=''):
+    data = dict(payload or {})
+    message_key = str(data.get('message_key', '') or '').strip()
+    if message_key:
+        return tr(message_key, **dict(data.get('message_args', {}) or {}))
+    message = str(data.get('message', '') or '').strip()
+    if message.startswith('queen.'):
+        return tr(message)
+    return message or (tr(fallback_key) if fallback_key else '')
 
 
 class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
@@ -51,14 +92,14 @@ class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('关键词库')
+        self.setWindowTitle(tr('queen.keyword_library.title'))
         self.resize(980, 520)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
-        self.info_label = QLabel('已保存关键词')
-        self.btn_delete_selected = QPushButton('删除选中')
+        self.info_label = QLabel(tr('queen.keyword.saved'))
+        self.btn_delete_selected = QPushButton(tr('queen.keyword.delete_selected'))
         self.btn_delete_selected.clicked.connect(self.delete_selected_keywords)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
@@ -92,7 +133,7 @@ class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
         self.keywords = list(payload.get('keywords', []) or [])
-        self.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+        self.info_label.setText(tr('queen.keyword.saved_count', count=len(self.keywords)))
         self._render_keyword_buttons()
 
     def _render_keyword_buttons(self):
@@ -117,20 +158,24 @@ class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
     def delete_selected_keywords(self):
         selected = [btn for btn in self._keyword_buttons if btn.isChecked()]
         if not selected:
-            QMessageBox.information(self, '提示', '请先勾选要删除的关键词')
+            QMessageBox.information(self, tr('common.prompt'), tr('queen.keyword.select_delete_first'))
             return
         names = [btn.text() for btn in selected]
         answer = QMessageBox.question(
-            self, '确认删除',
-            f'确定删除 {len(names)} 个关键词吗？\n\n{chr(10).join(names[:10])}'
-            + (f'\n...等共{len(names)}个' if len(names) > 10 else ''),
+            self,
+            tr('queen.common.confirm_delete'),
+            tr(
+                'queen.keyword.delete_confirm',
+                count=len(names),
+                preview=_tr_joined_preview(names),
+            ),
         )
         if answer != QMessageBox.Yes:
             return
         self.start_async_task(
             lambda: self._delete_keywords(names),
             self._on_delete_finished,
-            '删除关键词失败',
+            tr('queen.keyword.delete_failed'),
         )
 
     def _delete_keywords(self, names):
@@ -143,7 +188,7 @@ class KeywordLibraryWindow(AsyncTaskHostMixin, QDialog):
     def _on_delete_finished(self, result):
         payload = dict(result or {})
         deleted = int(payload.get('deleted', 0) or 0)
-        self.info_label.setText(f'已删除 {deleted} 个关键词，正在刷新...')
+        self.info_label.setText(tr('queen.keyword.deleted_refreshing', count=deleted))
         self.load_data(force_refresh=True)
 
 
@@ -161,7 +206,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle(f'女王详情 - {self.queen_name}')
+        self.setWindowTitle(tr('queen.detail.title', queen_name=self.queen_name))
         self.resize(1040, 620)
         self.setWindowModality(Qt.WindowModal)
 
@@ -170,13 +215,13 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.queen_name_input = QLineEdit(self.queen_name)
         self.queen_name_input.setFixedWidth(220)
         self.info_label = QLabel('')
-        self.btn_edit_queen_name = QPushButton('修改名称')
+        self.btn_edit_queen_name = QPushButton(tr('queen.detail.edit_name'))
         self.btn_edit_queen_name.clicked.connect(self.start_edit_queen_name)
-        self.btn_save_queen_name = QPushButton('保存名称')
+        self.btn_save_queen_name = QPushButton(tr('queen.detail.save_name'))
         self.btn_save_queen_name.clicked.connect(self.save_queen_name)
-        self.btn_cancel_queen_name = QPushButton('取消')
+        self.btn_cancel_queen_name = QPushButton(tr('common.cancel'))
         self.btn_cancel_queen_name.clicked.connect(self.cancel_edit_queen_name)
-        self.btn_delete_queen = QPushButton('删除整位女王')
+        self.btn_delete_queen = QPushButton(tr('queen.detail.delete_queen'))
         self.btn_delete_queen.clicked.connect(self.delete_queen)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
@@ -191,18 +236,17 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_refresh)
 
         profile_layout = QHBoxLayout()
-        profile_layout.addWidget(QLabel('基础栏'))
-        for field_key, (label_text, options) in QUEEN_PROFILE_FIELD_OPTIONS.items():
-            profile_layout.addWidget(QLabel(label_text))
+        profile_layout.addWidget(QLabel(tr('queen.profile.basic')))
+        for field_key, options in QUEEN_PROFILE_FIELD_OPTIONS.items():
+            profile_layout.addWidget(QLabel(_profile_label(field_key)))
             combo = QComboBox()
-            combo.addItem('')
-            combo.addItems(list(options))
+            _add_empty_and_options(combo, options, f'queen.profile.{field_key}')
             combo.setFixedWidth(86)
             self.profile_fields[field_key] = combo
             profile_layout.addWidget(combo)
-        self.btn_confirm_profile = QPushButton('确认')
+        self.btn_confirm_profile = QPushButton(tr('queen.profile.confirm'))
         self.btn_confirm_profile.clicked.connect(self.confirm_profile)
-        self.btn_modify_profile = QPushButton('修改')
+        self.btn_modify_profile = QPushButton(tr('queen.profile.modify'))
         self.btn_modify_profile.clicked.connect(self.modify_profile)
         profile_layout.addWidget(self.btn_confirm_profile)
         profile_layout.addWidget(self.btn_modify_profile)
@@ -210,7 +254,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
 
         self.table = QTableWidget()
         self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(['视频标题', '原始记录', '内容', '等级', '操作', '链接'])
+        self.table.setHorizontalHeaderLabels(tr('queen.detail.headers'))
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, self.table.horizontalHeader().Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, self.table.horizontalHeader().Stretch)
@@ -250,10 +294,10 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.queen_name = str(payload.get('queen_name', self.queen_name) or '').strip()
         self.rows = list(payload.get('videos', []) or [])
         self.profile = dict(payload.get('profile', {}) or {})
-        self.setWindowTitle(f'女王详情 - {self.queen_name}')
+        self.setWindowTitle(tr('queen.detail.title', queen_name=self.queen_name))
         self.queen_name_input.setText(self.queen_name)
         self._set_queen_name_editable(False)
-        self.info_label.setText(f'{self.queen_name} | {len(self.rows)} 条视频')
+        self.info_label.setText(tr('queen.detail.video_count', queen_name=self.queen_name, count=len(self.rows)))
         self._apply_profile_to_fields(self.profile)
         self._render_rows()
 
@@ -277,7 +321,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
     def save_queen_name(self):
         new_name = self.queen_name_input.text().strip()
         if not new_name:
-            QMessageBox.information(self, '提示', '请先输入女王名称')
+            QMessageBox.information(self, tr('common.prompt'), tr('queen.detail.name_required'))
             return
         self.start_async_task(
             lambda: self.backend_client.rename_queen(
@@ -286,7 +330,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
                 self._collect_profile_payload(),
             ),
             self._on_queen_renamed,
-            '保存女王名称失败',
+            tr('queen.detail.save_name_failed'),
         )
 
     def _on_queen_renamed(self, result):
@@ -295,9 +339,8 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
     def _apply_profile_to_fields(self, profile):
         payload = dict(profile or {})
         for field_key, combo in self.profile_fields.items():
-            value = str(payload.get(field_key, '') or '').strip()
-            index = combo.findText(value)
-            combo.setCurrentIndex(index if index >= 0 else 0)
+            value = normalize_queen_profile_value(field_key, payload.get(field_key, ''))
+            _set_combo_value(combo, value)
         self._set_profile_editable(not bool(payload.get('profile_confirmed')))
 
     def _set_profile_editable(self, editable):
@@ -308,25 +351,26 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.btn_modify_profile.setEnabled(not editable)
 
     def _collect_profile_payload(self):
-        return {
-            field_key: combo.currentText().strip()
-            for field_key, combo in self.profile_fields.items()
-        }
+        return {field_key: _combo_value(combo) for field_key, combo in self.profile_fields.items()}
 
     def confirm_profile(self):
         profile = self._collect_profile_payload()
         missing_labels = [
-            label
-            for field_key, (label, _options) in QUEEN_PROFILE_FIELD_OPTIONS.items()
+            _profile_label(field_key)
+            for field_key in QUEEN_PROFILE_FIELD_OPTIONS
             if not profile.get(field_key)
         ]
         if missing_labels:
-            QMessageBox.information(self, '提示', f'请先选择：{"、".join(missing_labels)}')
+            QMessageBox.information(
+                self,
+                tr('common.prompt'),
+                tr('queen.profile.select_required', fields=tr('queen.common.list_separator').join(missing_labels)),
+            )
             return
         self.start_async_task(
             lambda: self.backend_client.update_queen_profile(self.queen_name, profile),
             self._on_profile_saved,
-            '保存女王基础信息失败',
+            tr('queen.profile.save_failed'),
         )
 
     def _on_profile_saved(self, result):
@@ -342,45 +386,35 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.video_metadata_fields.clear()
         for row_index, row_data in enumerate(self.rows):
             self.table.insertRow(row_index)
-            values = (
-                row_data.get('video_title', ''),
-                row_data.get('raw_title', ''),
-            )
-            for column_index, value in enumerate(values):
+            for column_index, value in enumerate((row_data.get('video_title', ''), row_data.get('raw_title', ''))):
                 item = QTableWidgetItem(str(value or ''))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_index, column_index, item)
             record_id = int(row_data.get('id', 0) or 0)
-            content_combo = self._build_metadata_combo(
-                row_data.get('content_type', ''),
-                QUEEN_VIDEO_CONTENT_TYPE_OPTIONS,
-            )
-            level_combo = self._build_metadata_combo(
-                row_data.get('content_level', ''),
-                QUEEN_VIDEO_CONTENT_LEVEL_OPTIONS,
-            )
+            content_combo = self._build_content_type_combo(row_data.get('content_type', ''))
+            level_combo = self._build_level_combo(row_data.get('content_level', ''))
             self.video_metadata_fields[record_id] = {
                 'content_type': content_combo,
                 'content_level': level_combo,
             }
-            content_combo.currentTextChanged.connect(
-                lambda _text, value=record_id: self.save_video_metadata(value)
-            )
-            level_combo.currentTextChanged.connect(
-                lambda _text, value=record_id: self.save_video_metadata(value)
-            )
+            content_combo.currentIndexChanged.connect(lambda _index, value=record_id: self.save_video_metadata(value))
+            level_combo.currentIndexChanged.connect(lambda _index, value=record_id: self.save_video_metadata(value))
             self.table.setCellWidget(row_index, 2, content_combo)
             self.table.setCellWidget(row_index, 3, level_combo)
             self.table.setCellWidget(row_index, 4, self._build_delete_button(record_id))
             self.table.setCellWidget(row_index, 5, self._build_detail_indicator(row_data.get('detail_url', '')))
 
-    def _build_metadata_combo(self, current_value, options):
+    def _build_content_type_combo(self, current_value):
         combo = QComboBox()
-        combo.addItem('')
-        combo.addItems(list(options))
-        value = str(current_value or '').strip()
-        index = combo.findText(value)
-        combo.setCurrentIndex(index if index >= 0 else 0)
+        _add_empty_and_options(combo, QUEEN_VIDEO_CONTENT_TYPES, 'queen.video.content_type')
+        _set_combo_value(combo, normalize_queen_video_content_type(current_value))
+        combo.setFixedWidth(86)
+        return combo
+
+    def _build_level_combo(self, current_value):
+        combo = QComboBox()
+        _add_empty_and_options(combo, QUEEN_VIDEO_CONTENT_LEVELS, 'queen.video.content_level')
+        _set_combo_value(combo, normalize_queen_video_content_level(current_value))
         combo.setFixedWidth(86)
         return combo
 
@@ -388,8 +422,8 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         fields = self.video_metadata_fields.get(int(record_id or 0))
         if not fields:
             return
-        content_type = fields['content_type'].currentText().strip()
-        content_level = fields['content_level'].currentText().strip()
+        content_type = _combo_value(fields['content_type'])
+        content_level = _combo_value(fields['content_level'])
         self.start_async_task(
             lambda: self.backend_client.update_queen_video_metadata(record_id, content_type, content_level),
             self._on_video_metadata_saved,
@@ -403,8 +437,8 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         for row in self.rows:
             if int((row or {}).get('id', 0) or 0) == record_id:
                 row.update({
-                    'content_type': str(video.get('content_type', '') or ''),
-                    'content_level': str(video.get('content_level', '') or ''),
+                    'content_type': normalize_queen_video_content_type(video.get('content_type', '')),
+                    'content_level': normalize_queen_video_content_level(video.get('content_level', '')),
                 })
                 break
 
@@ -419,11 +453,10 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         label.setFixedSize(16, 16)
         has_url = bool(str(detail_url or '').strip())
         color = '#f0c040' if has_url else '#d04040'
-        tooltip = '已抓取详情链接' if has_url else '暂无详情链接'
         label.setStyleSheet(
             f'QLabel {{ background-color: {color}; border-radius: 8px; border: 1px solid #666; }}'
         )
-        label.setToolTip(tooltip)
+        label.setToolTip(tr('queen.detail.link_ready') if has_url else tr('queen.detail.link_missing'))
         container = QWidget()
         container_layout = QHBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
@@ -432,7 +465,11 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         return container
 
     def delete_video(self, record_id):
-        answer = QMessageBox.question(self, '确认删除', '确定删除这条视频标题吗？')
+        answer = QMessageBox.question(
+            self,
+            tr('queen.common.confirm_delete'),
+            tr('queen.detail.delete_video_confirm'),
+        )
         if answer != QMessageBox.Yes:
             return
         self.start_async_task(
@@ -442,7 +479,11 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def delete_queen(self):
-        answer = QMessageBox.question(self, '确认删除', f'确定删除女王 {self.queen_name} 的全部标题吗？')
+        answer = QMessageBox.question(
+            self,
+            tr('queen.common.confirm_delete'),
+            tr('queen.detail.delete_queen_confirm', queen_name=self.queen_name),
+        )
         if answer != QMessageBox.Yes:
             return
         self.start_async_task(
@@ -468,17 +509,17 @@ class QueenLibraryDataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('\u5973\u738b\u5e93\u6570\u636e\u4e2d\u5fc3')
+        self.setWindowTitle(tr('queen.data_center.title'))
         self.resize(640, 460)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
         summary_layout = QHBoxLayout()
-        summary_layout.addWidget(QLabel('\u5973\u738b\u6570\u91cf'))
+        summary_layout.addWidget(QLabel(tr('queen.data_center.queen_count')))
         self.queen_count_value = QLabel('0')
         summary_layout.addWidget(self.queen_count_value)
         summary_layout.addSpacing(24)
-        summary_layout.addWidget(QLabel('\u89c6\u9891\u6570\u91cf'))
+        summary_layout.addWidget(QLabel(tr('queen.data_center.video_count')))
         self.video_count_value = QLabel('0')
         summary_layout.addWidget(self.video_count_value)
         summary_layout.addStretch()
@@ -487,10 +528,10 @@ class QueenLibraryDataCenterWindow(AsyncTaskHostMixin, QDialog):
         summary_layout.addWidget(self.btn_refresh_stats)
 
         layout.addLayout(summary_layout)
-        layout.addWidget(QLabel('\u5973\u738b\u559c\u7231\u7b49\u7ea7\u5206\u5e03'))
+        layout.addWidget(QLabel(tr('queen.data_center.like_level_distribution')))
         self.like_level_table = self._build_distribution_table()
         layout.addWidget(self.like_level_table)
-        layout.addWidget(QLabel('\u89c6\u9891\u7b49\u7ea7\u5206\u5e03'))
+        layout.addWidget(QLabel(tr('queen.data_center.video_level_distribution')))
         self.video_level_table = self._build_distribution_table()
         layout.addWidget(self.video_level_table)
         self.setLayout(layout)
@@ -507,20 +548,14 @@ class QueenLibraryDataCenterWindow(AsyncTaskHostMixin, QDialog):
         payload = dict(result or {})
         self.queen_count_value.setText(str(int(payload.get('queen_count', 0) or 0)))
         self.video_count_value.setText(str(int(payload.get('video_count', 0) or 0)))
-        self._render_distribution_table(
-            self.like_level_table,
-            payload.get('like_level_distribution', []) or [],
-        )
-        self._render_distribution_table(
-            self.video_level_table,
-            payload.get('video_level_distribution', []) or [],
-        )
+        self._render_distribution_table(self.like_level_table, payload.get('like_level_distribution', []) or [])
+        self._render_distribution_table(self.video_level_table, payload.get('video_level_distribution', []) or [])
 
     @staticmethod
     def _build_distribution_table():
         table = QTableWidget()
         table.setColumnCount(2)
-        table.setHorizontalHeaderLabels(['\u7b49\u7ea7', '\u6570\u91cf'])
+        table.setHorizontalHeaderLabels(tr('queen.data_center.distribution_headers'))
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -533,7 +568,7 @@ class QueenLibraryDataCenterWindow(AsyncTaskHostMixin, QDialog):
         for row_index, row in enumerate(rows or []):
             payload = dict(row or {})
             table.insertRow(row_index)
-            level = str(payload.get('level', '') or '').strip() or '\u672a\u586b\u5199'
+            level = str(payload.get('level', '') or '').strip() or tr('queen.common.unfilled')
             count = str(int(payload.get('count', 0) or 0))
             table.setItem(row_index, 0, QTableWidgetItem(level))
             table.setItem(row_index, 1, QTableWidgetItem(count))
@@ -554,28 +589,28 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.load_data()
 
     def init_ui(self):
-        self.setWindowTitle('女王库')
+        self.setWindowTitle(tr('queen.library.title'))
         self.resize(1120, 680)
         self.setWindowModality(Qt.WindowModal)
 
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
         self.keyword_input = QLineEdit()
-        self.keyword_input.setPlaceholderText('输入关键词后搜索')
-        self.btn_search = QPushButton('搜索')
+        self.keyword_input.setPlaceholderText(tr('queen.library.search_placeholder'))
+        self.btn_search = QPushButton(tr('queen.library.search'))
         self.btn_search.clicked.connect(self.search_keyword)
-        self.btn_keyword_library = QPushButton('关键词库')
+        self.btn_keyword_library = QPushButton(tr('queen.keyword_library.title'))
         self.btn_keyword_library.clicked.connect(self.show_keyword_library)
-        self.btn_data_center = QPushButton('\u6570\u636e\u4e2d\u5fc3')
+        self.btn_data_center = QPushButton(tr('queen.data_center.button'))
         self.btn_data_center.clicked.connect(self.show_data_center)
-        self.btn_start_crawl = QPushButton('启动抓取')
+        self.btn_start_crawl = QPushButton(tr('queen.library.start_crawl'))
         self.btn_start_crawl.clicked.connect(self.start_crawl)
-        self.btn_stop_crawl = QPushButton('停止抓取')
+        self.btn_stop_crawl = QPushButton(tr('queen.library.stop_crawl'))
         self.btn_stop_crawl.clicked.connect(self.stop_crawl)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
 
-        top_layout.addWidget(QLabel('关键词'))
+        top_layout.addWidget(QLabel(tr('queen.library.keyword_label')))
         top_layout.addWidget(self.keyword_input, 1)
         top_layout.addWidget(self.btn_search)
         top_layout.addWidget(self.btn_keyword_library)
@@ -584,7 +619,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_stop_crawl)
         top_layout.addWidget(self.btn_refresh)
 
-        self.status_label = QLabel('输入关键词开始搜索')
+        self.status_label = QLabel(tr('queen.library.initial_status'))
         self.crawl_progress_timer = QTimer(self)
         self.crawl_progress_timer.setInterval(2000)
         self.crawl_progress_timer.timeout.connect(self.poll_crawl_progress)
@@ -633,16 +668,22 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.stats = dict(payload.get('stats', {}) or {})
         self._update_status_summary()
         self._render_queen_buttons()
+        self._sync_keyword_window()
+
+    def _sync_keyword_window(self):
         if self.keyword_window is not None and self.keyword_window.isVisible():
             self.keyword_window.keywords = list(self.keywords)
             self.keyword_window._render_keyword_buttons()
-            self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+            self.keyword_window.info_label.setText(tr('queen.keyword.saved_count', count=len(self.keywords)))
 
     def _update_status_summary(self):
         self.status_label.setText(
-            f'已收录 {len(self.queens)} 位女王，'
-            f'视频记录 {self._current_video_count()} 条，'
-            f'已保存 {len(self.keywords)} 个关键词'
+            tr(
+                'queen.library.summary',
+                queen_count=len(self.queens),
+                video_count=self._current_video_count(),
+                keyword_count=len(self.keywords),
+            )
         )
 
     def _current_video_count(self):
@@ -687,7 +728,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
     def search_keyword(self):
         keyword = self.keyword_input.text().strip()
         if not keyword:
-            QMessageBox.information(self, tr('common.prompt'), '请输入关键词')
+            QMessageBox.information(self, tr('common.prompt'), tr('queen.library.keyword_required'))
             return
         existing_keywords = {
             str((row or {}).get('keyword', '') or '').strip()
@@ -695,12 +736,12 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             if str((row or {}).get('keyword', '') or '').strip()
         }
         if keyword in existing_keywords:
-            QMessageBox.information(self, tr('common.prompt'), '关键词已存在')
+            QMessageBox.information(self, tr('common.prompt'), tr('queen.library.keyword_exists'))
             return
         self.start_async_task(
             lambda: self.backend_client.search_queen_keyword(keyword, show_browser=True),
             self._on_search_finished,
-            '女王库搜索失败',
+            tr('queen.library.search_failed'),
         )
 
     def _on_search_finished(self, result):
@@ -710,24 +751,24 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.keywords = list(payload.get('keywords', []) or [])
         self.stats = dict(payload.get('stats', {}) or self.stats or {})
         self.status_label.setText(
-            f'搜索完成：扫描 {int(payload.get("scanned_count", 0) or 0)} 条，'
-            f'导入 {int(payload.get("imported_count", 0) or 0)} 条，'
-            f'跳过 {int(payload.get("skipped_count", 0) or 0)} 条，'
-            f'视频记录 {self._current_video_count()} 条'
+            tr(
+                'queen.library.search_completed',
+                scanned_count=int(payload.get('scanned_count', 0) or 0),
+                imported_count=int(payload.get('imported_count', 0) or 0),
+                skipped_count=int(payload.get('skipped_count', 0) or 0),
+                video_count=self._current_video_count(),
+            )
         )
         self._render_queen_buttons()
-        if self.keyword_window is not None and self.keyword_window.isVisible():
-            self.keyword_window.keywords = list(self.keywords)
-            self.keyword_window._render_keyword_buttons()
-            self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+        self._sync_keyword_window()
 
     def start_crawl(self):
         self._set_crawl_running_state(True)
-        self.status_label.setText('正在启动批量抓取...')
+        self.status_label.setText(tr('queen.library.starting_crawl'))
         self.start_async_task(
             lambda: self.backend_client.refresh_queen_library(show_browser=True),
             self._on_crawl_finished,
-            '女王库批量抓取失败',
+            tr('queen.library.crawl_failed'),
             block_ui=False,
         )
 
@@ -738,7 +779,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             QMessageBox.critical(self, tr('common.operation_failed'), str(exc))
             return
         payload = dict(result or {})
-        self.status_label.setText(str(payload.get('message', '') or '已请求停止女王库抓取。'))
+        self.status_label.setText(_translated_backend_message(payload, 'queen.library.stop_requested'))
         self.btn_stop_crawl.setEnabled(False)
 
     def _set_crawl_running_state(self, is_running):
@@ -755,20 +796,23 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.queens = sort_queen_rows(payload.get('queens', []) or [])
         self.keywords = list(payload.get('keywords', []) or [])
         self.stats = dict(payload.get('stats', {}) or self.stats or {})
-        log_path = str(payload.get('log_path', '') or '').strip()
-        log_text = f'，日志 {log_path}' if log_path else ''
-        self.status_label.setText(
-            f'批量抓取完成：处理 {int(payload.get("query_count", 0) or 0)} 个搜索词，'
-            f'扫描 {int(payload.get("scanned_count", 0) or 0)} 条，'
-            f'新增 {int(payload.get("imported_count", 0) or 0)} 条，'
-            f'跳过 {int(payload.get("skipped_count", 0) or 0)} 条，'
-            f'视频记录 {self._current_video_count()} 条{log_text}'
-        )
+        self.status_label.setText(self._format_crawl_completed(payload))
         self._render_queen_buttons()
-        if self.keyword_window is not None and self.keyword_window.isVisible():
-            self.keyword_window.keywords = list(self.keywords)
-            self.keyword_window._render_keyword_buttons()
-            self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+        self._sync_keyword_window()
+
+    def _format_crawl_completed(self, payload):
+        log_path = str(payload.get('log_path', '') or '').strip()
+        log_text = tr('queen.library.log_suffix', log_path=log_path) if log_path else ''
+        return tr(
+            'queen.library.crawl_completed',
+            processed_count=int(payload.get('processed_count', payload.get('query_count', 0)) or 0),
+            total_count=int(payload.get('total_count', payload.get('query_count', 0)) or 0),
+            scanned_count=int(payload.get('scanned_count', 0) or 0),
+            imported_count=int(payload.get('imported_count', 0) or 0),
+            skipped_count=int(payload.get('skipped_count', 0) or 0),
+            video_count=self._current_video_count(),
+            log_text=log_text,
+        )
 
     def poll_crawl_progress(self):
         if self.is_async_task_running():
@@ -797,9 +841,14 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             imported_count = int(payload.get('imported_count', 0) or 0)
             skipped_count = int(payload.get('skipped_count', 0) or 0)
             self.status_label.setText(
-                f'批量抓取中：已处理 {processed_count}/{total_count} 个搜索词，'
-                f'新增 {imported_count} 条，跳过 {skipped_count} 条，'
-                f'视频记录 {self._current_video_count()} 条'
+                tr(
+                    'queen.library.crawl_running',
+                    processed_count=processed_count,
+                    total_count=total_count,
+                    imported_count=imported_count,
+                    skipped_count=skipped_count,
+                    video_count=self._current_video_count(),
+                )
             )
             return
 
@@ -807,35 +856,30 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             self.crawl_progress_timer.stop()
         self._set_crawl_running_state(False)
         if bool(payload.get('failed')):
-            self.status_label.setText(str(payload.get('message', '') or payload.get('error', '') or '女王库批量抓取失败'))
+            self.status_label.setText(
+                _translated_backend_message(payload, 'queen.library.crawl_failed')
+                or str(payload.get('error', '') or '')
+            )
             return
         if bool(payload.get('stopped')):
             processed_count = int(payload.get('processed_count', payload.get('query_count', 0)) or 0)
             total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
             self.status_label.setText(
-                str(payload.get('message', '') or f'批量抓取已停止：已处理 {processed_count}/{total_count} 个搜索词')
+                _translated_backend_message(payload)
+                or tr(
+                    'queen.library.crawl_stopped',
+                    processed_count=processed_count,
+                    total_count=total_count,
+                )
             )
             return
         if bool(payload.get('completed')):
             self.queens = sort_queen_rows(payload.get('queens', []) or [])
             self.keywords = list(payload.get('keywords', []) or [])
             self.stats = dict(payload.get('stats', {}) or self.stats or {})
-            processed_count = int(payload.get('processed_count', payload.get('query_count', 0)) or 0)
-            total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
-            imported_count = int(payload.get('imported_count', 0) or 0)
-            skipped_count = int(payload.get('skipped_count', 0) or 0)
-            log_path = str(payload.get('log_path', '') or '').strip()
-            log_text = f'，日志 {log_path}' if log_path else ''
-            self.status_label.setText(
-                f'批量抓取完成：处理 {processed_count}/{total_count} 个搜索词，'
-                f'新增 {imported_count} 条，跳过 {skipped_count} 条，'
-                f'视频记录 {self._current_video_count()} 条{log_text}'
-            )
+            self.status_label.setText(self._format_crawl_completed(payload))
             self._render_queen_buttons()
-            if self.keyword_window is not None and self.keyword_window.isVisible():
-                self.keyword_window.keywords = list(self.keywords)
-                self.keyword_window._render_keyword_buttons()
-                self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+            self._sync_keyword_window()
 
     def show_data_center(self):
         self.data_center_window = QueenLibraryDataCenterWindow(self.backend_client, self)

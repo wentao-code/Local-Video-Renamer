@@ -15,9 +15,10 @@ QUEEN_SEARCH_RELOAD_WAIT_MS = 20000
 
 
 class QueenSearchScraper:
-    def __init__(self, headless=False, locale=None):
+    def __init__(self, headless=False, locale=None, minimize_window=False):
         self.headless = bool(headless)
         self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
+        self.minimize_window = bool(minimize_window)
         self._playwright_manager = None
         self._playwright = None
         self._browser = None
@@ -25,7 +26,9 @@ class QueenSearchScraper:
         self._page = None
 
     @contextmanager
-    def session(self):
+    def session(self, show_browser=None):
+        if show_browser is not None:
+            self.configure_browser_visibility(show_browser)
         created_here = False
         if self._context is None or self._page is None:
             self.open_session()
@@ -54,8 +57,17 @@ class QueenSearchScraper:
             self._browser = self._playwright.chromium.launch(**launch_options)
         self._context = self._browser.new_context(locale=self.locale, viewport={'width': 1440, 'height': 1200})
         self._page = self._context.new_page()
-        minimize_browser_window_if_needed(self._page, self.headless)
+        if self.minimize_window:
+            minimize_browser_window_if_needed(self._page, self.headless)
         return self._page
+
+    def configure_browser_visibility(self, show_browser):
+        desired_headless = not bool(show_browser)
+        if self.headless == desired_headless:
+            return
+        if self._context is not None or self._browser is not None:
+            self.close_session()
+        self.headless = desired_headless
 
     def close_session(self):
         try:
@@ -82,11 +94,8 @@ class QueenSearchScraper:
             raise ValueError('\u7f3a\u5c11\u5173\u952e\u8bcd')
         target_url = self.build_search_url(normalized_keyword)
         if page is None:
-            with self.session() as active_page:
+            with self.session(show_browser=show_browser) as active_page:
                 return self.search(normalized_keyword, show_browser=show_browser, page=active_page)
-        if bool(show_browser) != (not self.headless):
-            # Keep runtime behavior predictable for tests and callers.
-            self.headless = not bool(show_browser)
         self._open_results_page(page, target_url)
         records = self.extract_candidate_titles_from_page(page)
         return {

@@ -28,8 +28,12 @@ class _SessionReuseScraperStub:
         self.records_by_keyword = dict(records_by_keyword or {})
         self.calls = []
         self.pages = []
+        self.visibility_calls = []
         self.session_enter_count = 0
         self.page = object()
+
+    def configure_browser_visibility(self, show_browser):
+        self.visibility_calls.append(bool(show_browser))
 
     @contextmanager
     def session(self):
@@ -209,6 +213,7 @@ class QueenLibraryServiceTest(unittest.TestCase):
             result = service.refresh_all(show_browser=True)
 
             self.assertEqual(result['query_count'], 3)
+            self.assertEqual(scraper.visibility_calls, [True])
             self.assertEqual(scraper.session_enter_count, baseline_session_count + 1)
             self.assertEqual(scraper.pages[baseline_page_count:], [scraper.page, scraper.page, scraper.page])
 
@@ -402,7 +407,7 @@ class QueenLibraryServiceTest(unittest.TestCase):
             )
 
             self.assertTrue(profile['profile_confirmed'])
-            self.assertEqual(profile['body_type'], '\u82d7\u6761')
+            self.assertEqual(profile['body_type'], 'slim')
             self.assertEqual(service.get_queen_detail('\u5c0f7s')['profile']['like_level'], 'A')
             queen_rows = service.list_queens()
             self.assertEqual(queen_rows[0]['queen_name'], '\u5c0f7s')
@@ -449,7 +454,7 @@ class QueenLibraryServiceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=_ScraperStub())
 
-            with self.assertRaisesRegex(ValueError, '\u8eab\u6750'):
+            with self.assertRaisesRegex(ValueError, 'body_type'):
                 service.save_queen_profile(
                     '\u5c0f7s',
                     {
@@ -461,7 +466,7 @@ class QueenLibraryServiceTest(unittest.TestCase):
                     },
                 )
 
-            with self.assertRaisesRegex(ValueError, '\u559c\u6b22\u7b49\u7ea7'):
+            with self.assertRaisesRegex(ValueError, 'like_level'):
                 service.save_queen_profile(
                     '\u5c0f7s',
                     {
@@ -482,10 +487,10 @@ class QueenLibraryServiceTest(unittest.TestCase):
 
             saved = service.update_queen_video_metadata(record_id, '\u8c03\u6559', 'S')
 
-            self.assertEqual(saved['content_type'], '\u8c03\u6559')
+            self.assertEqual(saved['content_type'], 'discipline')
             self.assertEqual(saved['content_level'], 'S')
             detail = service.get_queen_detail('\u5c0f7s')
-            self.assertEqual(detail['videos'][0]['content_type'], '\u8c03\u6559')
+            self.assertEqual(detail['videos'][0]['content_type'], 'discipline')
             self.assertEqual(detail['videos'][0]['content_level'], 'S')
 
             with self.assertRaisesRegex(ValueError, '\u5185\u5bb9'):
@@ -579,13 +584,13 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual(merged['queen_name'], '\u65b0\u540d')
             self.assertEqual([row['queen_name'] for row in service.list_queens()], ['\u65b0\u540d'])
             self.assertEqual(merged['profile']['like_level'], 'A')
-            self.assertEqual(merged['profile']['body_type'], '\u82d7\u6761')
+            self.assertEqual(merged['profile']['body_type'], 'slim')
             self.assertEqual(len(merged['videos']), 3)
 
             duplicate_rows = [row for row in merged['videos'] if row['video_title'] == '\u91cd\u590d\u6807\u9898']
             self.assertEqual(len(duplicate_rows), 1)
             self.assertEqual(duplicate_rows[0]['detail_url'], 'https://a.1cili.click/hash/dup-detail')
-            self.assertEqual(duplicate_rows[0]['content_type'], '\u8c03\u6559')
+            self.assertEqual(duplicate_rows[0]['content_type'], 'discipline')
             self.assertEqual(duplicate_rows[0]['content_level'], 'S')
 
     def test_rename_queen_moves_records_when_target_name_does_not_exist(self):

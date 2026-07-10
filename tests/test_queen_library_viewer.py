@@ -343,8 +343,8 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 content_combo.setCurrentText('\u8c03\u6559')
                 level_combo.setCurrentText('S')
 
-                self.assertIn((1, '\u8c03\u6559', 'B'), backend.saved_video_metadata)
-                self.assertIn((1, '\u8c03\u6559', 'S'), backend.saved_video_metadata)
+                self.assertIn((1, 'discipline', 'B'), backend.saved_video_metadata)
+                self.assertIn((1, 'discipline', 'S'), backend.saved_video_metadata)
             finally:
                 window.hide()
                 window.deleteLater()

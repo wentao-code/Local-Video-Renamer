@@ -64,9 +64,13 @@ class _SearchHarness(QueenSearchScraper):
         super().__init__(headless=True)
         self._page_stub = page
         self.session_enter_count = 0
+        self.session_show_browser_values = []
 
     @contextmanager
-    def session(self):
+    def session(self, show_browser=None):
+        self.session_show_browser_values.append(show_browser)
+        if show_browser is not None:
+            self.configure_browser_visibility(show_browser)
         self.session_enter_count += 1
         yield self._page_stub
 
@@ -160,6 +164,17 @@ class QueenSearchScraperTest(unittest.TestCase):
 
         self.assertEqual(scraper.session_enter_count, 0)
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenTest_Title.mp4'])
+
+    def test_search_configures_visible_browser_before_opening_session(self):
+        page = _SequencedPageStub([{'rows': [f'{QUEEN_PREFIX}QueenVisible_Title.mp4']}])
+        scraper = _SearchHarness(page)
+
+        with patch('app.scraper.queen_search_scraper.wait_for_page_ready', lambda _page: None):
+            result = scraper.search(f'{QUEEN_PREFIX}visible-query', show_browser=True)
+
+        self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenVisible_Title.mp4'])
+        self.assertFalse(scraper.headless)
+        self.assertEqual(scraper.session_show_browser_values, [True])
 
     def test_search_waits_and_reloads_until_real_results_page_is_ready(self):
         page = _SequencedPageStub(
