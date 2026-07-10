@@ -5506,9 +5506,9 @@
       "total_count": 196,
       "offset": 0,
       "limit": null,
-      "refreshed_at": "2026-07-09 22:14:42",
-      "refresh_duration_ms": 159513,
-      "refresh_duration_text": "160秒"
+      "refreshed_at": "2026-07-10 13:18:08",
+      "refresh_duration_ms": 81520,
+      "refresh_duration_text": "82秒"
     }
   }
 }

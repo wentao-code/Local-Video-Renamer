@@ -3,7 +3,7 @@ from pathlib import Path
 from app.core.filename_rules import DEFAULT_VIDEO_EXTS, build_normalized_filename, extract_code_from_filename
 from app.core.local_video_labels import build_preview_name, build_row_status
 from app.core.video_models import RenamePlan, VideoMetadata, plan_to_dict
-from app.services.library import get_storage_location_name
+from app.services.library import PathLibrary, get_storage_location_name
 from app.services.local_video import read_local_video_media_info
 
 
@@ -35,11 +35,13 @@ class LocalVideoScanService:
             if plan_data['can_rename'] and plan_data['needs_rename']:
                 rename_count += 1
 
+        inventory_sync = self._sync_usb_video_inventory(folder, scanned_files)
         return {
             'plans': plans,
             'count': len(plans),
             'rename_count': rename_count,
             'import_count': import_count,
+            'inventory_sync': inventory_sync,
         }
 
     def _collect_video_files(self, folder):
@@ -59,9 +61,17 @@ class LocalVideoScanService:
                     'code': code,
                     'duration': media_info.duration,
                     'size_on_disk': media_info.size_gb,
+                    'size_bytes': file_path.stat().st_size,
                 }
             )
         return scanned_files
+
+    def _sync_usb_video_inventory(self, folder, scanned_files):
+        try:
+            storage_info = PathLibrary().get_storage_info(folder)
+        except Exception:
+            storage_info = {}
+        return self.database.sync_usb_video_inventory(folder, scanned_files, storage_info=storage_info)
 
     def _build_plan_data(self, entry, db_record, storage_location):
         exists_in_db = bool(db_record)

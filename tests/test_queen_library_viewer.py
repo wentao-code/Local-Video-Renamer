@@ -30,6 +30,7 @@ def _run_sync_async_task(
 class _QueenBackendStub:
     def __init__(self):
         self.refresh_calls = []
+        self.cancel_calls = 0
 
     def list_queen_library_snapshot(self, force_refresh=False):
         return {
@@ -53,13 +54,24 @@ class _QueenBackendStub:
     def refresh_queen_library(self, show_browser=True):
         self.refresh_calls.append(bool(show_browser))
         return {
-            'queens': self.list_queen_library_snapshot(True)['queens'],
-            'keywords': self.list_queen_keywords_snapshot(True)['keywords'],
-            'query_count': 3,
-            'scanned_count': 12,
-            'imported_count': 4,
-            'skipped_count': 8,
-            'log_path': 'D:/tmp/queen_crawl.log',
+            'progress': {
+                'is_running': True,
+                'completed': False,
+                'stopped': False,
+                'processed_count': 0,
+                'total_count': 3,
+                'imported_count': 0,
+                'skipped_count': 0,
+                'scanned_count': 0,
+                'message': '正在启动批量抓取...',
+            }
+        }
+
+    def cancel_queen_library_refresh(self):
+        self.cancel_calls += 1
+        return {
+            'stopped': True,
+            'message': '已请求停止女王库抓取，当前批次完成后停止。',
         }
 
 
@@ -67,6 +79,7 @@ class _QueenDetailBackendStub:
     def __init__(self, confirmed=False):
         self.saved_profiles = []
         self.saved_video_metadata = []
+        self.rename_calls = []
         self.confirmed = confirmed
 
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
@@ -100,6 +113,31 @@ class _QueenDetailBackendStub:
         saved['queen_name'] = queen_name
         saved['profile_confirmed'] = True
         return {'profile': saved}
+
+    def rename_queen(self, queen_name, new_queen_name, profile=None):
+        self.rename_calls.append((queen_name, new_queen_name, dict(profile or {})))
+        return {
+            'queen_name': new_queen_name,
+            'profile': {
+                'queen_name': new_queen_name,
+                'body_type': '\u82d7\u6761',
+                'style': '\u6e29\u548c',
+                'face': '\u5426',
+                'age_group': '\u719f\u5973',
+                'like_level': 'B',
+                'profile_confirmed': True,
+            },
+            'videos': [
+                {
+                    'id': 1,
+                    'queen_name': new_queen_name,
+                    'video_title': '\u6807\u9898',
+                    'raw_title': '\u539f\u59cb',
+                    'content_type': '\u804a\u5929',
+                    'content_level': 'B',
+                },
+            ],
+        }
 
     def update_queen_video_metadata(self, record_id, content_type, content_level):
         self.saved_video_metadata.append((record_id, content_type, content_level))
@@ -151,10 +189,9 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 window.start_crawl()
 
                 self.assertEqual(backend.refresh_calls, [True])
-                self.assertIn('处理 3 个搜索词', window.status_label.text())
-                self.assertIn('新增 4 条', window.status_label.text())
-                self.assertIn('queen_crawl.log', window.status_label.text())
-                self.assertEqual(window.btn_start_crawl.text(), '启动抓取')
+                self.assertIn('0/3', window.status_label.text())
+                self.assertIn('抓取', window.btn_start_crawl.text())
+                self.assertTrue(window.btn_stop_crawl.isEnabled())
                 self.assertTrue(window.grid_layout.alignment() & Qt.AlignTop)
                 first_button = window.grid_layout.itemAt(0).widget()
                 self.assertEqual(first_button.text(), '\u767d\u4e00\u6657')
@@ -166,6 +203,40 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 self.assertEqual(first_button.height(), 36)
                 self.assertEqual(window.grid_layout.getItemPosition(8)[:2], (0, 8))
                 self.assertEqual(window.grid_layout.getItemPosition(9)[:2], (1, 0))
+
+                window._apply_crawl_progress({
+                    'is_running': False,
+                    'completed': True,
+                    'stopped': False,
+                    'processed_count': 3,
+                    'total_count': 3,
+                    'imported_count': 4,
+                    'skipped_count': 8,
+                    'scanned_count': 12,
+                    'log_path': 'D:/tmp/queen_crawl.log',
+                    'queens': backend.list_queen_library_snapshot(True)['queens'],
+                    'keywords': backend.list_queen_keywords_snapshot(True)['keywords'],
+                })
+
+                self.assertIn('queen_crawl.log', window.status_label.text())
+                self.assertFalse(window.btn_stop_crawl.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_stop_button_requests_cancel_and_updates_status(self):
+        backend = _QueenBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                window._set_crawl_running_state(True)
+
+                window.stop_crawl()
+
+                self.assertEqual(backend.cancel_calls, 1)
+                self.assertIn('停止', window.status_label.text())
+                self.assertFalse(window.btn_stop_crawl.isEnabled())
+                self.assertFalse(window.btn_start_crawl.isEnabled())
             finally:
                 window.hide()
                 window.deleteLater()
@@ -213,6 +284,31 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
                 self.assertIn((1, '\u8c03\u6559', 'B'), backend.saved_video_metadata)
                 self.assertIn((1, '\u8c03\u6559', 'S'), backend.saved_video_metadata)
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_detail_name_edit_can_save_and_updates_current_name(self):
+        backend = _QueenDetailBackendStub(confirmed=True)
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenDetailWindow(backend, '\u65e7\u540d')
+            try:
+                self.assertTrue(window.queen_name_input.isReadOnly())
+                self.assertTrue(window.btn_edit_queen_name.isEnabled())
+
+                window.start_edit_queen_name()
+                self.assertFalse(window.queen_name_input.isReadOnly())
+                self.assertTrue(window.btn_save_queen_name.isEnabled())
+
+                window.queen_name_input.setText('\u65b0\u540d')
+                window.save_queen_name()
+
+                self.assertEqual(backend.rename_calls[0][0], '\u65e7\u540d')
+                self.assertEqual(backend.rename_calls[0][1], '\u65b0\u540d')
+                self.assertEqual(window.queen_name, '\u65b0\u540d')
+                self.assertEqual(window.queen_name_input.text(), '\u65b0\u540d')
+                self.assertTrue(window.queen_name_input.isReadOnly())
+                self.assertIn('\u65b0\u540d', window.windowTitle())
             finally:
                 window.hide()
                 window.deleteLater()

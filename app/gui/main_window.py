@@ -1715,8 +1715,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             active_client.list_actors_snapshot(force_refresh=True, include_update_status=False)
             VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'code_prefix_library', '番号库')
             active_client.list_code_prefixes_snapshot(force_refresh=True)
-            VidNormApp._emit_snapshot_refresh_progress(progress_callback, 'data_center', '数据中心')
-            active_client.get_data_center_summary(force_refresh=True)
             return {'success': True}
         finally:
             self.snapshot_refresh_running = False

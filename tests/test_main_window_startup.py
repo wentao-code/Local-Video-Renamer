@@ -72,7 +72,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertFalse(stub.snapshot_refresh_running)
         self.assertEqual(
             [item[0] for item in calls],
-            ['actor', 'code_prefix', 'data_center'],
+            ['actor', 'code_prefix'],
         )
         self.assertEqual(calls[0][1], {'force_refresh': True, 'include_update_status': False})
         for _name, kwargs in calls[1:]:
@@ -95,7 +95,7 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertEqual(
             [payload.get('target_key') for payload in progress_payloads],
-            ['actor_library', 'code_prefix_library', 'data_center'],
+            ['actor_library', 'code_prefix_library'],
         )
 
     def test_run_snapshot_refresh_cycle_builds_twenty_minute_refresh_client_by_default(self):

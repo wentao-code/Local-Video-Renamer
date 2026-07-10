@@ -294,6 +294,49 @@ class VideoDatabase(
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS usb_video_inventory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    folder_path TEXT NOT NULL,
+                    video_code TEXT NOT NULL,
+                    file_path TEXT DEFAULT '',
+                    file_name TEXT DEFAULT '',
+                    size_on_disk TEXT DEFAULT '',
+                    size_bytes INTEGER DEFAULT 0,
+                    first_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(folder_path, video_code)
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS usb_video_scan_states (
+                    folder_path TEXT PRIMARY KEY,
+                    last_total_bytes INTEGER DEFAULT 0,
+                    last_used_bytes INTEGER DEFAULT 0,
+                    last_free_bytes INTEGER DEFAULT 0,
+                    last_scan_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS usb_video_change_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    folder_path TEXT NOT NULL,
+                    video_code TEXT NOT NULL,
+                    change_type TEXT NOT NULL,
+                    previous_file_path TEXT DEFAULT '',
+                    current_file_path TEXT DEFAULT '',
+                    previous_size_on_disk TEXT DEFAULT '',
+                    current_size_on_disk TEXT DEFAULT '',
+                    previous_free_bytes INTEGER DEFAULT 0,
+                    current_free_bytes INTEGER DEFAULT 0,
+                    capacity_delta_bytes INTEGER DEFAULT 0,
+                    capacity_delta_mb REAL DEFAULT 0,
+                    current_capacity_mb REAL DEFAULT 0,
+                    message TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS code_prefix_enrichments (
                     prefix TEXT PRIMARY KEY,
                     enrichment_status TEXT DEFAULT '',
@@ -388,6 +431,8 @@ class VideoDatabase(
             self._ensure_column(cursor, 'path_library', 'last_usage_percent', 'REAL DEFAULT 0')
             self._ensure_column(cursor, 'path_library', 'last_volume_type', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'path_library', 'last_checked_at', 'TEXT')
+            self._ensure_column(cursor, 'usb_video_inventory', 'size_bytes', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'usb_video_change_logs', 'current_capacity_mb', 'REAL DEFAULT 0')
             self._ensure_column(cursor, 'code_prefix_enrichments', 'enrichment_status', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_total_pages', 'INTEGER DEFAULT 0')
             self._ensure_column(cursor, 'code_prefix_enrichments', 'avfan_total_videos', 'INTEGER DEFAULT 0')
@@ -492,6 +537,8 @@ class VideoDatabase(
                 'processed_videos',
                 'javtxt_enrichment_status, release_date, code',
             )
+            self._ensure_index(cursor, 'idx_usb_video_inventory_folder', 'usb_video_inventory', 'folder_path, video_code')
+            self._ensure_index(cursor, 'idx_usb_video_change_logs_folder', 'usb_video_change_logs', 'folder_path, created_at')
             self._ensure_index(cursor, 'idx_code_prefix_movies_code', 'code_prefix_movies', 'code')
             self._ensure_index(cursor, 'idx_code_prefix_movies_category_code', 'code_prefix_movies', 'video_category, code')
             self._ensure_index(cursor, 'idx_code_prefix_movies_prefix_release', 'code_prefix_movies', 'prefix, release_date, code')
@@ -3849,6 +3896,318 @@ class VideoDatabase(
             'last_volume_type': row[7] or '',
             'last_checked_at': row[8] or '',
         }
+
+    def sync_usb_video_inventory(self, folder_path, scanned_videos, storage_info=None):
+        normalized_path = str(Path(folder_path).expanduser())
+        storage_info = storage_info or {}
+        current_total_bytes = int(storage_info.get('total_bytes') or 0)
+        current_used_bytes = int(storage_info.get('used_bytes') or 0)
+        current_free_bytes = int(storage_info.get('free_bytes') or 0)
+        current_capacity_mb = round(current_free_bytes / (1024 * 1024), 2) if current_free_bytes else 0
+
+        current_rows = {}
+        for video in scanned_videos or []:
+            code = standardize_video_code((video or {}).get('code', ''))
+            if not code:
+                continue
+            file_path = str((video or {}).get('file_path', '') or '')
+            current_rows[code] = {
+                'video_code': code,
+                'file_path': file_path,
+                'file_name': Path(file_path).name if file_path else '',
+                'size_on_disk': str((video or {}).get('size_on_disk', '') or ''),
+                'size_bytes': int((video or {}).get('size_bytes', 0) or 0),
+            }
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            previous_rows = self._load_usb_video_inventory_rows(cursor, normalized_path)
+            previous_state = self._load_usb_video_scan_state(cursor, normalized_path)
+            previous_free_bytes = int((previous_state or {}).get('last_free_bytes') or 0)
+            capacity_delta_bytes = current_free_bytes - previous_free_bytes if previous_state else 0
+            capacity_delta_mb = round(capacity_delta_bytes / (1024 * 1024), 2)
+            is_first_scan = previous_state is None and not previous_rows
+
+            change_logs = []
+            if not is_first_scan:
+                previous_codes = set(previous_rows)
+                current_codes = set(current_rows)
+
+                for code in sorted(previous_codes - current_codes):
+                    previous = previous_rows[code]
+                    change_logs.append(
+                        self._build_usb_video_change_log(
+                            normalized_path,
+                            code,
+                            'deleted',
+                            previous,
+                            {},
+                            previous_free_bytes,
+                            current_free_bytes,
+                            capacity_delta_bytes,
+                            capacity_delta_mb,
+                            current_capacity_mb,
+                        )
+                    )
+
+                for code in sorted(current_codes - previous_codes):
+                    current = current_rows[code]
+                    change_logs.append(
+                        self._build_usb_video_change_log(
+                            normalized_path,
+                            code,
+                            'added',
+                            {},
+                            current,
+                            previous_free_bytes,
+                            current_free_bytes,
+                            capacity_delta_bytes,
+                            capacity_delta_mb,
+                            current_capacity_mb,
+                        )
+                    )
+
+                for code in sorted(previous_codes & current_codes):
+                    previous = previous_rows[code]
+                    current = current_rows[code]
+                    if previous.get('file_path') != current.get('file_path') or previous.get('size_on_disk') != current.get('size_on_disk'):
+                        change_logs.append(
+                            self._build_usb_video_change_log(
+                                normalized_path,
+                                code,
+                                'updated',
+                                previous,
+                                current,
+                                previous_free_bytes,
+                                current_free_bytes,
+                                capacity_delta_bytes,
+                                capacity_delta_mb,
+                                current_capacity_mb,
+                            )
+                        )
+
+            self._replace_usb_video_inventory(cursor, normalized_path, current_rows.values())
+            self._upsert_usb_video_scan_state(
+                cursor,
+                normalized_path,
+                current_total_bytes,
+                current_used_bytes,
+                current_free_bytes,
+            )
+            self._insert_usb_video_change_logs(cursor, change_logs)
+            conn.commit()
+
+        return {
+            'folder_path': normalized_path,
+            'inventory_count': len(current_rows),
+            'change_count': len(change_logs),
+            'capacity_delta_mb': capacity_delta_mb,
+            'current_capacity_mb': current_capacity_mb,
+        }
+
+    def get_usb_video_inventory(self, folder_path):
+        normalized_path = str(Path(folder_path).expanduser())
+        with self._connect() as conn:
+            return list(self._load_usb_video_inventory_rows(conn.cursor(), normalized_path).values())
+
+    def list_usb_video_change_logs(self, folder_path=None, limit=200):
+        normalized_path = str(Path(folder_path).expanduser()) if folder_path else ''
+        normalized_limit = max(1, int(limit or 200))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            params = []
+            where_sql = ''
+            if normalized_path:
+                where_sql = 'WHERE folder_path = ?'
+                params.append(normalized_path)
+            params.append(normalized_limit)
+            cursor.execute(
+                f'''
+                SELECT id, folder_path, video_code, change_type, previous_file_path,
+                       current_file_path, previous_size_on_disk, current_size_on_disk,
+                       previous_free_bytes, current_free_bytes, capacity_delta_bytes,
+                       capacity_delta_mb, current_capacity_mb, message, created_at
+                FROM usb_video_change_logs
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ?
+                ''',
+                params,
+            )
+            return [
+                {
+                    'id': row[0],
+                    'folder_path': row[1] or '',
+                    'video_code': row[2] or '',
+                    'change_type': row[3] or '',
+                    'previous_file_path': row[4] or '',
+                    'current_file_path': row[5] or '',
+                    'previous_size_on_disk': row[6] or '',
+                    'current_size_on_disk': row[7] or '',
+                    'previous_free_bytes': row[8] or 0,
+                    'current_free_bytes': row[9] or 0,
+                    'capacity_delta_bytes': row[10] or 0,
+                    'capacity_delta_mb': row[11] or 0,
+                    'current_capacity_mb': row[12] or 0,
+                    'message': row[13] or '',
+                    'created_at': row[14] or '',
+                }
+                for row in cursor.fetchall()
+            ]
+
+    @staticmethod
+    def _load_usb_video_inventory_rows(cursor, folder_path):
+        cursor.execute(
+            '''
+            SELECT video_code, file_path, file_name, size_on_disk, size_bytes
+            FROM usb_video_inventory
+            WHERE folder_path = ?
+            ''',
+            (folder_path,),
+        )
+        return {
+            row[0]: {
+                'video_code': row[0] or '',
+                'file_path': row[1] or '',
+                'file_name': row[2] or '',
+                'size_on_disk': row[3] or '',
+                'size_bytes': row[4] or 0,
+            }
+            for row in cursor.fetchall()
+            if row[0]
+        }
+
+    @staticmethod
+    def _load_usb_video_scan_state(cursor, folder_path):
+        cursor.execute(
+            '''
+            SELECT last_total_bytes, last_used_bytes, last_free_bytes, last_scan_at
+            FROM usb_video_scan_states
+            WHERE folder_path = ?
+            ''',
+            (folder_path,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            'last_total_bytes': row[0] or 0,
+            'last_used_bytes': row[1] or 0,
+            'last_free_bytes': row[2] or 0,
+            'last_scan_at': row[3] or '',
+        }
+
+    @staticmethod
+    def _replace_usb_video_inventory(cursor, folder_path, rows):
+        cursor.execute('DELETE FROM usb_video_inventory WHERE folder_path = ?', (folder_path,))
+        cursor.executemany(
+            '''
+            INSERT INTO usb_video_inventory (
+                folder_path, video_code, file_path, file_name, size_on_disk, size_bytes
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    folder_path,
+                    row.get('video_code', ''),
+                    row.get('file_path', ''),
+                    row.get('file_name', ''),
+                    row.get('size_on_disk', ''),
+                    row.get('size_bytes', 0),
+                )
+                for row in rows
+            ],
+        )
+
+    @staticmethod
+    def _upsert_usb_video_scan_state(cursor, folder_path, total_bytes, used_bytes, free_bytes):
+        cursor.execute(
+            '''
+            INSERT INTO usb_video_scan_states (
+                folder_path, last_total_bytes, last_used_bytes, last_free_bytes, last_scan_at
+            )
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(folder_path) DO UPDATE SET
+                last_total_bytes = excluded.last_total_bytes,
+                last_used_bytes = excluded.last_used_bytes,
+                last_free_bytes = excluded.last_free_bytes,
+                last_scan_at = CURRENT_TIMESTAMP
+            ''',
+            (folder_path, total_bytes, used_bytes, free_bytes),
+        )
+
+    @classmethod
+    def _build_usb_video_change_log(
+        cls,
+        folder_path,
+        code,
+        change_type,
+        previous,
+        current,
+        previous_free_bytes,
+        current_free_bytes,
+        capacity_delta_bytes,
+        capacity_delta_mb,
+        current_capacity_mb,
+    ):
+        return {
+            'folder_path': folder_path,
+            'video_code': code,
+            'change_type': change_type,
+            'previous_file_path': previous.get('file_path', ''),
+            'current_file_path': current.get('file_path', ''),
+            'previous_size_on_disk': previous.get('size_on_disk', ''),
+            'current_size_on_disk': current.get('size_on_disk', ''),
+            'previous_free_bytes': previous_free_bytes,
+            'current_free_bytes': current_free_bytes,
+            'capacity_delta_bytes': capacity_delta_bytes,
+            'capacity_delta_mb': capacity_delta_mb,
+            'current_capacity_mb': current_capacity_mb,
+            'message': cls._format_usb_video_change_message(code, change_type, capacity_delta_mb, current_capacity_mb),
+        }
+
+    @staticmethod
+    def _format_usb_video_change_message(code, change_type, capacity_delta_mb, current_capacity_mb):
+        action_text = {
+            'added': '新增',
+            'deleted': '删除',
+            'updated': '更新',
+        }.get(change_type, change_type)
+        delta_text = '增加' if capacity_delta_mb >= 0 else '减少'
+        return f'视频编号{code}{action_text}，U盘容量{delta_text}{abs(capacity_delta_mb):.0f}MB，当前可用容量为{current_capacity_mb:.0f}MB'
+
+    @staticmethod
+    def _insert_usb_video_change_logs(cursor, logs):
+        cursor.executemany(
+            '''
+            INSERT INTO usb_video_change_logs (
+                folder_path, video_code, change_type, previous_file_path, current_file_path,
+                previous_size_on_disk, current_size_on_disk, previous_free_bytes,
+                current_free_bytes, capacity_delta_bytes, capacity_delta_mb,
+                current_capacity_mb, message
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            [
+                (
+                    log['folder_path'],
+                    log['video_code'],
+                    log['change_type'],
+                    log['previous_file_path'],
+                    log['current_file_path'],
+                    log['previous_size_on_disk'],
+                    log['current_size_on_disk'],
+                    log['previous_free_bytes'],
+                    log['current_free_bytes'],
+                    log['capacity_delta_bytes'],
+                    log['capacity_delta_mb'],
+                    log['current_capacity_mb'],
+                    log['message'],
+                )
+                for log in logs
+            ],
+        )
 
     @staticmethod
     def _build_processed_video_row(row):

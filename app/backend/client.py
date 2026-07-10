@@ -472,6 +472,10 @@ class BackendClient:
     def get_queen_refresh_progress(self):
         return self._get('/queen-library/refresh/progress', timeout=max(self.timeout, 30)).get('progress', {})
 
+    def cancel_queen_library_refresh(self):
+        timeout = max(self.timeout, 30)
+        return self._post('/queen-library/refresh/cancel', timeout=timeout)
+
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
         params = {'name': queen_name}
         if force_refresh:
@@ -483,6 +487,16 @@ class BackendClient:
         return self._post(
             '/queen-library/profile',
             {'queen_name': queen_name, 'profile': dict(profile or {})},
+        )
+
+    def rename_queen(self, queen_name, new_queen_name, profile=None):
+        return self._post(
+            '/queen-library/queens/rename',
+            {
+                'queen_name': queen_name,
+                'new_queen_name': new_queen_name,
+                'profile': dict(profile or {}),
+            },
         )
 
     def update_queen_video_metadata(self, record_id, content_type='', content_level=''):

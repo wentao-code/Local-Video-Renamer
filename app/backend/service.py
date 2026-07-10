@@ -355,6 +355,7 @@ class BackendService:
     def _init_queen_refresh_task_state(self):
         self._queen_refresh_lock = threading.Lock()
         self._queen_refresh_thread = None
+        self._queen_refresh_cancel_event = threading.Event()
         self._queen_refresh_progress = self._build_empty_queen_refresh_progress()
 
     @staticmethod
@@ -362,6 +363,7 @@ class BackendService:
         return {
             'is_running': False,
             'completed': False,
+            'stopped': False,
             'failed': False,
             'error': '',
             'message': '',
@@ -371,6 +373,7 @@ class BackendService:
             'query_count': 0,
             'total_count': 0,
             'processed_count': 0,
+            'remaining_count': 0,
             'scanned_count': 0,
             'imported_count': 0,
             'skipped_count': 0,
@@ -398,6 +401,7 @@ class BackendService:
             **payload,
             'is_running': True,
             'completed': False,
+            'stopped': False,
             'failed': False,
             'total_count': total_count,
             'processed_count': processed_count,
@@ -405,6 +409,7 @@ class BackendService:
         })
 
     def _run_queen_library_refresh_task(self, show_browser):
+        return self._run_queen_library_refresh_task_with_cancel(show_browser)
         try:
             result = self.queen_library_service.refresh_all(
                 show_browser=show_browser,
@@ -437,6 +442,65 @@ class BackendService:
 
     def get_queen_library_refresh_progress(self):
         return {'progress': self._queen_refresh_progress_snapshot()}
+
+    def _run_queen_library_refresh_task_with_cancel(self, show_browser):
+        try:
+            result = self.queen_library_service.refresh_all(
+                show_browser=show_browser,
+                batch_size=10,
+                progress_callback=self._on_queen_refresh_batch_progress,
+                should_stop=self._queen_refresh_cancel_event.is_set,
+            )
+            payload = dict(result or {})
+            query_count = int(payload.get('query_count', 0) or 0)
+            processed_count = int(payload.get('processed_count', query_count) or 0)
+            stopped = bool(payload.get('stopped'))
+            self._update_queen_refresh_progress({
+                **payload,
+                'is_running': False,
+                'completed': not stopped,
+                'stopped': stopped,
+                'failed': False,
+                'error': '',
+                'completed_at': self._current_snapshot_timestamp(),
+                'total_count': query_count,
+                'processed_count': processed_count,
+                'message': (
+                    f'濂崇帇搴撴壒閲忔姄鍙栧凡鍋滄锛氬凡澶勭悊 {processed_count}/{query_count} 涓悳绱㈣瘝'
+                    if stopped
+                    else f'濂崇帇搴撴壒閲忔姄鍙栧畬鎴愶細澶勭悊 {processed_count}/{query_count} 涓悳绱㈣瘝'
+                ),
+            })
+        except Exception as exc:
+            self._update_queen_refresh_progress({
+                'is_running': False,
+                'completed': False,
+                'stopped': False,
+                'failed': True,
+                'error': str(exc),
+                'completed_at': self._current_snapshot_timestamp(),
+                'message': f'濂崇帇搴撴壒閲忔姄鍙栧け璐ワ細{exc}',
+            })
+        finally:
+            self._queen_refresh_cancel_event.clear()
+
+    def cancel_queen_library_refresh(self):
+        progress = self._queen_refresh_progress_snapshot()
+        if not progress.get('is_running'):
+            return {
+                'stopped': False,
+                'message': '当前没有女王库抓取任务在运行。',
+                'refreshed_at': self._current_snapshot_timestamp(),
+            }
+        self._queen_refresh_cancel_event.set()
+        self._update_queen_refresh_progress({
+            'message': '已请求停止女王库抓取，当前批次完成后停止。',
+        })
+        return {
+            'stopped': True,
+            'message': '已请求停止女王库抓取，当前批次完成后停止。',
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
 
     def reset_video_enrichments(self, codes, source_key=None):
         self.ensure_database_loaded()
@@ -1177,9 +1241,11 @@ class BackendService:
             return {'progress': progress, 'refreshed_at': self._current_snapshot_timestamp()}
 
         started_at = self._current_snapshot_timestamp()
+        self._queen_refresh_cancel_event.clear()
         self._update_queen_refresh_progress({
             **self._build_empty_queen_refresh_progress(),
             'is_running': True,
+            'stopped': False,
             'started_at': started_at,
             'batch_size': 10,
             'message': '女王库批量抓取已启动',
@@ -1206,6 +1272,13 @@ class BackendService:
         saved_profile = self.queen_library_service.save_queen_profile(queen_name, profile)
         return {
             'profile': dict(saved_profile or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def rename_queen(self, queen_name, new_queen_name, profile=None):
+        detail = self.queen_library_service.rename_queen(queen_name, new_queen_name, profile=profile)
+        return {
+            **dict(detail or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
 

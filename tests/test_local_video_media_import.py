@@ -46,6 +46,49 @@ class LocalVideoMediaImportTest(unittest.TestCase):
         self.assertEqual(row['duration'], '1:02:03')
         self.assertEqual(row['size'], '0.456')
 
+    def test_scan_updates_usb_inventory_and_records_deleted_video_capacity_change(self):
+        mb = 1024 * 1024
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            deleted_video = folder / 'RCTD-311.mp4'
+            kept_video = folder / 'ABP-123.mp4'
+            deleted_video.write_bytes(b'deleted video')
+            kept_video.write_bytes(b'kept video')
+
+            db = VideoDatabase(folder / 'video_database.db')
+            scan_service = LocalVideoScanService(db)
+            storage_snapshots = [
+                {'total_bytes': 64000 * mb, 'used_bytes': 54000 * mb, 'free_bytes': 10000 * mb},
+                {'total_bytes': 64000 * mb, 'used_bytes': 45200 * mb, 'free_bytes': 18800 * mb},
+            ]
+
+            with patch(
+                'app.services.local_video.local_video_scan_service.read_local_video_media_info',
+                return_value=LocalVideoMediaInfo(duration='1:00:00', size_gb='8.8'),
+            ), patch(
+                'app.services.local_video.local_video_scan_service.PathLibrary.get_storage_info',
+                side_effect=storage_snapshots,
+            ):
+                first_scan = scan_service.scan_folder(folder)
+                deleted_video.unlink()
+                second_scan = scan_service.scan_folder(folder)
+
+            self.assertEqual(first_scan['inventory_sync']['inventory_count'], 2)
+            self.assertEqual(first_scan['inventory_sync']['change_count'], 0)
+            self.assertEqual(second_scan['inventory_sync']['inventory_count'], 1)
+            self.assertEqual(second_scan['inventory_sync']['change_count'], 1)
+
+            inventory_codes = {row['video_code'] for row in db.get_usb_video_inventory(folder)}
+            self.assertEqual(inventory_codes, {'ABP-123'})
+
+            logs = db.list_usb_video_change_logs(folder)
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0]['video_code'], 'RCTD-311')
+            self.assertEqual(logs[0]['change_type'], 'deleted')
+            self.assertEqual(logs[0]['capacity_delta_mb'], 8800)
+            self.assertEqual(logs[0]['current_capacity_mb'], 18800)
+            self.assertIn('视频编号RCTD-311删除', logs[0]['message'])
+
 
 if __name__ == '__main__':
     unittest.main()

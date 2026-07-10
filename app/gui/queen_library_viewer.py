@@ -160,12 +160,25 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
 
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
-        self.info_label = QLabel(self.queen_name)
+        self.queen_name_input = QLineEdit(self.queen_name)
+        self.queen_name_input.setFixedWidth(220)
+        self.info_label = QLabel('')
+        self.btn_edit_queen_name = QPushButton('修改名称')
+        self.btn_edit_queen_name.clicked.connect(self.start_edit_queen_name)
+        self.btn_save_queen_name = QPushButton('保存名称')
+        self.btn_save_queen_name.clicked.connect(self.save_queen_name)
+        self.btn_cancel_queen_name = QPushButton('取消')
+        self.btn_cancel_queen_name.clicked.connect(self.cancel_edit_queen_name)
         self.btn_delete_queen = QPushButton('删除整位女王')
         self.btn_delete_queen.clicked.connect(self.delete_queen)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
+        top_layout.addWidget(self.queen_name_input)
+        top_layout.addWidget(QLabel('|'))
         top_layout.addWidget(self.info_label)
+        top_layout.addWidget(self.btn_save_queen_name)
+        top_layout.addWidget(self.btn_cancel_queen_name)
+        top_layout.addWidget(self.btn_edit_queen_name)
         top_layout.addStretch()
         top_layout.addWidget(self.btn_delete_queen)
         top_layout.addWidget(self.btn_refresh)
@@ -189,14 +202,15 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         profile_layout.addStretch()
 
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(['视频标题', '原始记录', '内容', '等级', '操作'])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(['视频标题', '原始记录', '内容', '等级', '操作', '链接'])
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, self.table.horizontalHeader().Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, self.table.horizontalHeader().Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, self.table.horizontalHeader().ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, self.table.horizontalHeader().ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, self.table.horizontalHeader().ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, self.table.horizontalHeader().ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -204,7 +218,18 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         layout.addLayout(profile_layout)
         layout.addWidget(self.table)
         self.setLayout(layout)
-        self.set_async_busy_widgets([self.btn_delete_queen, self.btn_refresh, self.table])
+        self.set_async_busy_widgets(
+            [
+                self.queen_name_input,
+                self.btn_edit_queen_name,
+                self.btn_save_queen_name,
+                self.btn_cancel_queen_name,
+                self.btn_delete_queen,
+                self.btn_refresh,
+                self.table,
+            ]
+        )
+        self._set_queen_name_editable(False)
 
     def load_data(self, force_refresh=False):
         self.start_async_task(
@@ -215,11 +240,50 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
 
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
+        self.queen_name = str(payload.get('queen_name', self.queen_name) or '').strip()
         self.rows = list(payload.get('videos', []) or [])
         self.profile = dict(payload.get('profile', {}) or {})
+        self.setWindowTitle(f'女王详情 - {self.queen_name}')
+        self.queen_name_input.setText(self.queen_name)
+        self._set_queen_name_editable(False)
         self.info_label.setText(f'{self.queen_name} | {len(self.rows)} 条视频')
         self._apply_profile_to_fields(self.profile)
         self._render_rows()
+
+    def _set_queen_name_editable(self, editable):
+        editable = bool(editable)
+        self.queen_name_input.setReadOnly(not editable)
+        self.btn_edit_queen_name.setEnabled(not editable)
+        self.btn_save_queen_name.setEnabled(editable)
+        self.btn_cancel_queen_name.setEnabled(editable)
+        if editable:
+            self.queen_name_input.setFocus()
+            self.queen_name_input.selectAll()
+
+    def start_edit_queen_name(self):
+        self._set_queen_name_editable(True)
+
+    def cancel_edit_queen_name(self):
+        self.queen_name_input.setText(self.queen_name)
+        self._set_queen_name_editable(False)
+
+    def save_queen_name(self):
+        new_name = self.queen_name_input.text().strip()
+        if not new_name:
+            QMessageBox.information(self, '提示', '请先输入女王名称')
+            return
+        self.start_async_task(
+            lambda: self.backend_client.rename_queen(
+                self.queen_name,
+                new_name,
+                self._collect_profile_payload(),
+            ),
+            self._on_queen_renamed,
+            '保存女王名称失败',
+        )
+
+    def _on_queen_renamed(self, result):
+        self._on_load_data_finished(result)
 
     def _apply_profile_to_fields(self, profile):
         payload = dict(profile or {})
@@ -301,6 +365,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
             self.table.setCellWidget(row_index, 2, content_combo)
             self.table.setCellWidget(row_index, 3, level_combo)
             self.table.setCellWidget(row_index, 4, self._build_delete_button(record_id))
+            self.table.setCellWidget(row_index, 5, self._build_detail_indicator(row_data.get('detail_url', '')))
 
     def _build_metadata_combo(self, current_value, options):
         combo = QComboBox()
@@ -340,6 +405,24 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         button = QPushButton(tr('path.viewer.delete'))
         button.clicked.connect(lambda _checked=False, value=record_id: self.delete_video(value))
         return button
+
+    @staticmethod
+    def _build_detail_indicator(detail_url):
+        label = QLabel()
+        label.setFixedSize(16, 16)
+        has_url = bool(str(detail_url or '').strip())
+        color = '#f0c040' if has_url else '#d04040'
+        tooltip = '已抓取详情链接' if has_url else '暂无详情链接'
+        label.setStyleSheet(
+            f'QLabel {{ background-color: {color}; border-radius: 8px; border: 1px solid #666; }}'
+        )
+        label.setToolTip(tooltip)
+        container = QWidget()
+        container_layout = QHBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setAlignment(Qt.AlignCenter)
+        container_layout.addWidget(label)
+        return container
 
     def delete_video(self, record_id):
         answer = QMessageBox.question(self, '确认删除', '确定删除这条视频标题吗？')
@@ -396,6 +479,8 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_keyword_library.clicked.connect(self.show_keyword_library)
         self.btn_start_crawl = QPushButton('启动抓取')
         self.btn_start_crawl.clicked.connect(self.start_crawl)
+        self.btn_stop_crawl = QPushButton('停止抓取')
+        self.btn_stop_crawl.clicked.connect(self.stop_crawl)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
 
@@ -404,6 +489,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_search)
         top_layout.addWidget(self.btn_keyword_library)
         top_layout.addWidget(self.btn_start_crawl)
+        top_layout.addWidget(self.btn_stop_crawl)
         top_layout.addWidget(self.btn_refresh)
 
         self.status_label = QLabel('输入关键词开始搜索')
@@ -425,8 +511,16 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         layout.addWidget(self.scroll_area)
         self.setLayout(layout)
         self.set_async_busy_widgets(
-            [self.keyword_input, self.btn_search, self.btn_keyword_library, self.btn_start_crawl, self.btn_refresh]
+            [
+                self.keyword_input,
+                self.btn_search,
+                self.btn_keyword_library,
+                self.btn_start_crawl,
+                self.btn_stop_crawl,
+                self.btn_refresh,
+            ]
         )
+        self._set_crawl_running_state(False)
 
     def load_data(self, force_refresh=False):
         self.start_async_task(
@@ -564,6 +658,117 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             self.crawl_progress_timer.stop()
         if bool(payload.get('failed')):
             self.status_label.setText(str(payload.get('message', '') or payload.get('error', '') or '女王库批量抓取失败'))
+            return
+        if bool(payload.get('completed')):
+            self.queens = sort_queen_rows(payload.get('queens', []) or [])
+            self.keywords = list(payload.get('keywords', []) or [])
+            processed_count = int(payload.get('processed_count', payload.get('query_count', 0)) or 0)
+            total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
+            imported_count = int(payload.get('imported_count', 0) or 0)
+            skipped_count = int(payload.get('skipped_count', 0) or 0)
+            log_path = str(payload.get('log_path', '') or '').strip()
+            log_text = f'，日志 {log_path}' if log_path else ''
+            self.status_label.setText(
+                f'批量抓取完成：处理 {processed_count}/{total_count} 个搜索词，'
+                f'新增 {imported_count} 条，跳过 {skipped_count} 条{log_text}'
+            )
+            self._render_queen_buttons()
+            if self.keyword_window is not None and self.keyword_window.isVisible():
+                self.keyword_window.keywords = list(self.keywords)
+                self.keyword_window._render_keyword_buttons()
+                self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+
+    def start_crawl(self):
+        self._set_crawl_running_state(True)
+        self.status_label.setText('正在启动批量抓取...')
+        self.start_async_task(
+            lambda: self.backend_client.refresh_queen_library(show_browser=True),
+            self._on_crawl_finished,
+            '女王库批量抓取失败',
+            block_ui=False,
+        )
+
+    def stop_crawl(self):
+        try:
+            result = self.backend_client.cancel_queen_library_refresh()
+        except Exception as exc:
+            QMessageBox.critical(self, tr('common.operation_failed'), str(exc))
+            return
+        payload = dict(result or {})
+        self.status_label.setText(str(payload.get('message', '') or '已请求停止女王库抓取。'))
+        self.btn_stop_crawl.setEnabled(False)
+
+    def _set_crawl_running_state(self, is_running):
+        running = bool(is_running)
+        self.btn_start_crawl.setEnabled(not running)
+        self.btn_stop_crawl.setEnabled(running)
+
+    def _on_crawl_finished(self, result):
+        payload = dict(result or {})
+        if 'progress' in payload:
+            self._apply_crawl_progress(dict(payload.get('progress', {}) or {}))
+            return
+        self._set_crawl_running_state(False)
+        self.queens = sort_queen_rows(payload.get('queens', []) or [])
+        self.keywords = list(payload.get('keywords', []) or [])
+        log_path = str(payload.get('log_path', '') or '').strip()
+        log_text = f'，日志 {log_path}' if log_path else ''
+        self.status_label.setText(
+            f'批量抓取完成：处理 {int(payload.get("query_count", 0) or 0)} 个搜索词，'
+            f'扫描 {int(payload.get("scanned_count", 0) or 0)} 条，'
+            f'新增 {int(payload.get("imported_count", 0) or 0)} 条，'
+            f'跳过 {int(payload.get("skipped_count", 0) or 0)} 条{log_text}'
+        )
+        self._render_queen_buttons()
+        if self.keyword_window is not None and self.keyword_window.isVisible():
+            self.keyword_window.keywords = list(self.keywords)
+            self.keyword_window._render_keyword_buttons()
+            self.keyword_window.info_label.setText(f'已保存关键词 {len(self.keywords)} 个')
+
+    def poll_crawl_progress(self):
+        if self.is_async_task_running():
+            return
+        self.start_async_task(
+            lambda: {'progress': self.backend_client.get_queen_refresh_progress()},
+            self._on_crawl_progress_loaded,
+            tr('common.read_failed'),
+            block_ui=False,
+        )
+
+    def _on_crawl_progress_loaded(self, result):
+        payload = dict(result or {})
+        self._apply_crawl_progress(dict(payload.get('progress', {}) or {}))
+
+    def _apply_crawl_progress(self, progress):
+        payload = dict(progress or {})
+        if not payload:
+            return
+        if bool(payload.get('is_running')):
+            if self.crawl_progress_timer is not None and not self.crawl_progress_timer.isActive():
+                self.crawl_progress_timer.start()
+            self._set_crawl_running_state(True)
+            processed_count = int(payload.get('processed_count', 0) or 0)
+            total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
+            imported_count = int(payload.get('imported_count', 0) or 0)
+            skipped_count = int(payload.get('skipped_count', 0) or 0)
+            self.status_label.setText(
+                f'批量抓取中：已处理 {processed_count}/{total_count} 个搜索词，'
+                f'新增 {imported_count} 条，跳过 {skipped_count} 条'
+            )
+            return
+
+        if self.crawl_progress_timer is not None and self.crawl_progress_timer.isActive():
+            self.crawl_progress_timer.stop()
+        self._set_crawl_running_state(False)
+        if bool(payload.get('failed')):
+            self.status_label.setText(str(payload.get('message', '') or payload.get('error', '') or '女王库批量抓取失败'))
+            return
+        if bool(payload.get('stopped')):
+            processed_count = int(payload.get('processed_count', payload.get('query_count', 0)) or 0)
+            total_count = int(payload.get('total_count', payload.get('query_count', 0)) or 0)
+            self.status_label.setText(
+                str(payload.get('message', '') or f'批量抓取已停止：已处理 {processed_count}/{total_count} 个搜索词')
+            )
             return
         if bool(payload.get('completed')):
             self.queens = sort_queen_rows(payload.get('queens', []) or [])
