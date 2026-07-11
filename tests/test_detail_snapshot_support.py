@@ -308,6 +308,21 @@ class BackendClientDetailSnapshotTest(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertEqual(calls, [('/snapshots/details/rebuild', None, 1200)])
 
+    def test_enrich_masterpiece_detail_uses_long_timeout_for_two_browser_sources(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        calls = []
+
+        def fake_post(path, payload=None, timeout=None):
+            calls.append((path, payload, timeout))
+            return {'detail': {'code': 'ALDN-514'}, 'enrichment_results': []}
+
+        client._post = fake_post
+
+        result = client.enrich_masterpiece_detail('ALDN-514')
+
+        self.assertEqual(result['detail']['code'], 'ALDN-514')
+        self.assertEqual(calls, [('/masterpiece/detail/enrich', {'code': 'ALDN-514'}, 1200)])
+
 
 if __name__ == '__main__':
     unittest.main()

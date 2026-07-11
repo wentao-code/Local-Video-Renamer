@@ -4,10 +4,11 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtGui import QCloseEvent
-from PyQt5.QtWidgets import QApplication, QGroupBox, QPushButton
+from PyQt5.QtGui import QCloseEvent, QColor
+from PyQt5.QtWidgets import QApplication, QGroupBox, QLabel, QPushButton
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.detail_summary_widgets import DetailSummaryGrid
 from app.gui.masterpiece_viewer import MasterpieceDetailWindow, MasterpieceWindow
 
 
@@ -35,12 +36,24 @@ class MasterpieceBackendStub:
                 'author': 'Alice',
                 'medal': 'Rookie',
                 'medals': ['Rookie'],
+                'avfan_enrichment_status': '已补全',
+                'javtxt_enrichment_status': '已补全',
+            },
+            {
+                'code': 'MISS-001',
+                'title': 'Missing Second Source',
+                'author': 'Beta',
+                'medal': '',
+                'medals': [],
+                'avfan_enrichment_status': '已补全',
+                'javtxt_enrichment_status': '未补全',
             }
         ]
         self.add_calls = []
         self.medal_calls = []
         self.detail_calls = []
         self.detail_refresh_flags = []
+        self.enrich_calls = []
         self.global_medals = [
             {'name': 'Rookie', 'description': 'For debut-level standouts'},
             {'name': 'Evergreen', 'description': 'For long-running elite entries'},
@@ -84,6 +97,12 @@ class MasterpieceBackendStub:
                 'display_author': 'Alice',
                 'primary_source': 'video_library',
                 'primary_detail_url': 'https://avfan.example/movies/avfan-001',
+                'display_tags': 'Drama,Newcomer',
+                'second_source_description': 'Second source plot description',
+                'second_source_title': 'Second Source Title',
+                'second_source_actors': 'Alice Beta',
+                'second_source_tags': 'Drama,Newcomer',
+                'first_source_duration': '130 分钟',
                 'medal': 'Rookie',
                 'medals': ['Rookie'],
                 'actor_details': [
@@ -100,6 +119,15 @@ class MasterpieceBackendStub:
                         'measurements_raw': 'B88(E) W59 H89',
                         'actor_exists_in_library': 1,
                         'ladder_tier': 'S',
+                        'actor_id': 'avfan-1',
+                        'binghuo_person_id': 'binghuo-1',
+                        'update_status_text': '正在更新',
+                        'local_video_count': 2,
+                        'web_total_videos': 915,
+                        'appearance_code_count': 138,
+                        'code_prefix_library_count': 33,
+                        'web_update_frequency_text': '3.64 部/月',
+                        'web_enrichment_status': '天限阁: 已补全 | 辛聚谷: 已补全 | 并火: 无搜索结果 | 保木: 无搜索结果',
                     },
                     {
                         'actor_name': 'Beta',
@@ -168,6 +196,10 @@ class MasterpieceBackendStub:
     def get_masterpiece_detail(self, code):
         return self.get_masterpiece_detail_snapshot(code, force_refresh=True)['detail']
 
+    def enrich_masterpiece_detail(self, code):
+        self.enrich_calls.append(code)
+        return self.get_masterpiece_detail_snapshot(code, force_refresh=True)
+
 
 class MasterpieceViewerTest(unittest.TestCase):
     def test_window_loads_entries(self):
@@ -176,9 +208,21 @@ class MasterpieceViewerTest(unittest.TestCase):
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = MasterpieceWindow(backend)
             try:
-                self.assertEqual(window.table.rowCount(), 1)
+                self.assertEqual(window.table.rowCount(), 2)
                 self.assertEqual(window.table.item(0, 0).text(), 'PFSA-001')
                 self.assertFalse(window.medal_sidebar.medal_buttons['Rookie'].isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_window_marks_fully_enriched_codes_purple(self):
+        backend = MasterpieceBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceWindow(backend)
+            try:
+                self.assertEqual(window.table.item(0, 0).foreground().color(), QColor('#7b1fa2'))
+                self.assertNotEqual(window.table.item(1, 0).foreground().color(), QColor('#7b1fa2'))
             finally:
                 window.hide()
                 window.deleteLater()
@@ -195,7 +239,8 @@ class MasterpieceViewerTest(unittest.TestCase):
                 self.assertEqual(backend.add_calls, ['IPX-001'])
                 self.assertEqual(backend.medal_calls, [])
                 self.assertEqual(window.active_medal_code, 'IPX-001')
-                self.assertEqual(window.table.cellWidget(1, 4).text(), '确认')
+                new_row_index = window.table.rowCount() - 1
+                self.assertEqual(window.table.cellWidget(new_row_index, 4).text(), '确认')
                 self.assertTrue(window.medal_sidebar.medal_buttons['Rookie'].isEnabled())
             finally:
                 window.hide()
@@ -225,7 +270,7 @@ class MasterpieceViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
-    def test_detail_window_renders_grouped_reference_sections(self):
+    def test_detail_window_hides_reference_shortcuts_and_summary_header(self):
         backend = MasterpieceBackendStub()
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = MasterpieceDetailWindow(backend, 'PFSA-001')
@@ -234,26 +279,135 @@ class MasterpieceViewerTest(unittest.TestCase):
                 self.assertEqual(backend.detail_calls, ['PFSA-001', 'PFSA-001'])
                 self.assertIn('2026-07-07 09:32:00', window.last_refreshed_label.text())
                 group_titles = {group.title() for group in window.findChildren(QGroupBox)}
-                self.assertIn(window._source_title('video_library'), group_titles)
-                self.assertIn(window._source_title('actor_library'), group_titles)
-                self.assertIn(window._source_title('code_prefix_library'), group_titles)
+                self.assertNotIn(window._source_title('video_library'), group_titles)
+                self.assertNotIn(window._source_title('actor_library'), group_titles)
+                self.assertNotIn(window._source_title('code_prefix_library'), group_titles)
 
-                detail_buttons = [
-                    button
-                    for button in window.findChildren(QPushButton)
-                    if button.text() == '详情'
-                ]
-                self.assertGreaterEqual(len(detail_buttons), 3)
-                self.assertEqual([button.isEnabled() for button in detail_buttons[-3:]], [True, False, True])
-                self.assertEqual(window.actor_table.rowCount(), 2)
-                self.assertEqual(window.actor_table.item(0, 0).text(), 'Alice')
-                self.assertEqual(window.actor_table.item(0, 3).text(), '24')
-                self.assertEqual(window.actor_table.item(1, 0).text(), 'Beta')
+                self.assertFalse(hasattr(window, 'reference_buttons'))
+                self.assertFalse(hasattr(window, 'summary_label'))
+                self.assertNotIn('详情直达:', [label.text() for label in window.findChildren(QLabel)])
+                self.assertIn('Alice', window.actor_detail_buttons)
+                self.assertEqual(window.actor_detail_buttons['Alice'].text(), '详情')
+                self.assertIn('Second source plot description', window.second_source_label.text())
+                self.assertIn('130 分钟', window.first_source_label.text())
+                self.assertIn('Alice', window.actor_details_label.text())
+                self.assertIn('生日: 2000/4/10', window.actor_details_label.text())
+                self.assertIn('天限阁ID: avfan-1', window.actor_details_label.text())
+                self.assertIn('并火 ID: binghuo-1', window.actor_details_label.text())
+                self.assertIn('演员等级: S', window.actor_details_label.text())
+                self.assertIn('更新状态: 正在更新', window.actor_details_label.text())
+                self.assertIn('年龄: 24', window.actor_details_label.text())
+                self.assertIn('出演年龄: 24', window.actor_details_label.text())
+                self.assertIn('身高: 168', window.actor_details_label.text())
+                self.assertIn('本地视频总数: 2', window.actor_details_label.text())
+                self.assertIn('网页作品总数: 915', window.actor_details_label.text())
+                self.assertIn('出演番号数量: 138', window.actor_details_label.text())
+                self.assertIn('番号库中数量: 33', window.actor_details_label.text())
+                self.assertIn('三围: 88/59/89', window.actor_details_label.text())
+                self.assertIn('罩杯: E', window.actor_details_label.text())
+                self.assertIn('更新频率: 3.64 部/月', window.actor_details_label.text())
+                self.assertIn('补全状态: 天限阁: 已补全', window.actor_details_label.text())
+                self.assertIn('Beta', window.actor_details_label.text())
                 self.assertIn('Alice', window.collaborator_tables)
                 self.assertEqual(window.collaborator_tables['Alice'].columnCount(), 6)
                 self.assertEqual(window.collaborator_tables['Alice'].rowCount(), 2)
                 self.assertEqual(window.collaborator_tables['Alice'].item(0, 0).text(), 'Carol x3')
                 self.assertEqual(window.collaborator_tables['Alice'].item(1, 0).text(), 'Iris x1')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_detail_window_renders_source_blocks_one_above_two_and_actor_union(self):
+        backend = MasterpieceBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceDetailWindow(backend, 'PFSA-001')
+            try:
+                self.assertTrue(window.detail_scroll_area.widgetResizable())
+                self.assertIs(window.detail_scroll_area.widget(), window.detail_scroll_widget)
+                self.assertLess(
+                    window.detail_scroll_layout.indexOf(window.first_source_group),
+                    window.detail_scroll_layout.indexOf(window.second_source_group),
+                )
+                self.assertLess(
+                    window.detail_scroll_layout.indexOf(window.second_source_group),
+                    window.detail_scroll_layout.indexOf(window.actor_details_group),
+                )
+                self.assertIn('第一套系统', window.first_source_group.title())
+                self.assertIn('Perfect First Scene', window.first_source_label.text())
+                self.assertIn('130 分钟', window.first_source_label.text())
+                self.assertIn('Drama,Newcomer', window.first_source_label.text())
+                self.assertIn('Alice', window.first_source_label.text())
+                self.assertIn('第二套系统', window.second_source_group.title())
+                self.assertIn('Second Source Title', window.second_source_label.text())
+                self.assertIn('Alice Beta', window.second_source_label.text())
+                self.assertIn('Drama,Newcomer', window.second_source_label.text())
+                self.assertIn('Second source plot description', window.second_source_label.text())
+                self.assertIn('演员基础信息', window.actor_details_group.title())
+                self.assertIn('Alice', window.actor_details_label.text())
+                self.assertEqual(window.actor_details_label.text().count('Alice'), 1)
+                self.assertIn('Beta', window.actor_details_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_detail_window_uses_actor_detail_grid_layout_for_actor_basic_info(self):
+        backend = MasterpieceBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceDetailWindow(backend, 'PFSA-001')
+            try:
+                self.assertIn('Alice', window.actor_detail_grids)
+                basic_grid = window.actor_detail_grids['Alice']['basic']
+                measurements_grid = window.actor_detail_grids['Alice']['measurements']
+                status_grid = window.actor_detail_grids['Alice']['status']
+
+                self.assertIsInstance(basic_grid, DetailSummaryGrid)
+                self.assertEqual(basic_grid.columns, 4)
+                self.assertEqual(basic_grid.value_labels['name'].text(), 'Alice')
+                self.assertEqual(basic_grid.value_labels['actor_id'].text(), 'avfan-1')
+                self.assertEqual(basic_grid.value_labels['binghuo_person_id'].text(), 'binghuo-1')
+                self.assertEqual(basic_grid.value_labels['local_video_count'].text(), '2')
+                self.assertEqual(measurements_grid.value_labels['measurements'].text(), '88/59/89')
+                self.assertIn('天限阁: 已补全', status_grid.value_labels['web_enrichment_status'].text())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_detail_window_actor_detail_button_opens_actor_detail_page(self):
+        backend = MasterpieceBackendStub()
+        opened = []
+
+        class FakeActorDetailViewerWindow:
+            def __init__(self, backend_client, actor_name, parent=None):
+                opened.append((backend_client, actor_name, parent))
+
+            def exec_(self):
+                opened.append('exec')
+                return 0
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task), patch(
+            'app.gui.masterpiece_viewer.ActorDetailViewerWindow',
+            FakeActorDetailViewerWindow,
+        ):
+            window = MasterpieceDetailWindow(backend, 'PFSA-001')
+            try:
+                self.assertIn('Alice', window.actor_detail_buttons)
+                window.actor_detail_buttons['Alice'].click()
+
+                self.assertEqual(opened[0], (backend, 'Alice', window))
+                self.assertEqual(opened[1], 'exec')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_detail_window_enrich_button_runs_both_sources_and_refreshes(self):
+        backend = MasterpieceBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceDetailWindow(backend, 'PFSA-001')
+            try:
+                window.handle_enrich()
+
+                self.assertEqual(backend.enrich_calls, ['PFSA-001'])
+                self.assertEqual(backend.detail_refresh_flags, [False, True, True])
             finally:
                 window.hide()
                 window.deleteLater()

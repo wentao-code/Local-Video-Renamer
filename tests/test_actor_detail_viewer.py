@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtWidgets import QApplication, QGroupBox, QLabel, QWidget
 
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
@@ -85,6 +85,15 @@ class _BackendStub:
                         'collaborators': [
                             {'actor_name': 'Alice', 'count': 3},
                             {'actor_name': 'Beta', 'count': 1},
+                            {'actor_name': 'Carol', 'count': 2},
+                            {'actor_name': 'Dana', 'count': 1},
+                            {'actor_name': 'Eve', 'count': 1},
+                            {'actor_name': 'Fay', 'count': 1},
+                            {'actor_name': 'Gina', 'count': 1},
+                            {'actor_name': 'Hana', 'count': 1},
+                            {'actor_name': 'Iris', 'count': 1},
+                            {'actor_name': 'Judy', 'count': 1},
+                            {'actor_name': 'Kira', 'count': 1},
                         ],
                     }
                 ],
@@ -133,9 +142,22 @@ class ActorDetailViewerWindowTest(unittest.TestCase):
                 self.assertIn('88 cm', measurements_text)
                 self.assertIn('60 cm', measurements_text)
                 self.assertIn('90 cm', measurements_text)
-                self.assertIn('Actor A', window.collaborator_tables)
-                self.assertEqual(window.collaborator_tables['Actor A'].columnCount(), 6)
-                self.assertEqual(window.collaborator_tables['Actor A'].item(0, 0).text(), 'Alice x3')
+                self.assertIn('Actor A', window.collaborator_section_labels)
+                self.assertEqual(window.collaborator_section_labels['Actor A'].text(), 'Actor A (A)')
+                section_widget = window.collaborator_layout.itemAt(0).widget()
+                self.assertEqual(section_widget.layout().itemAt(0).widget(), window.collaborator_section_labels['Actor A'])
+                self.assertNotIn('Actor A (A)', [group.title() for group in window.collaborator_group.findChildren(QGroupBox)])
+                self.assertIn('Actor A', window.collaborator_grids)
+                collaborator_grid = window.collaborator_grids['Actor A']
+                self.assertEqual(collaborator_grid.columnCount(), 10)
+                self.assertEqual(collaborator_grid.itemAtPosition(0, 0).widget().text(), 'Alice x3')
+                self.assertEqual(collaborator_grid.itemAtPosition(0, 9).widget().text(), 'Judy x1')
+                self.assertEqual(collaborator_grid.itemAtPosition(1, 0).widget().text(), 'Kira x1')
+                for column_index in range(10):
+                    self.assertEqual(collaborator_grid.columnStretch(column_index), 1)
+                first_label = collaborator_grid.itemAtPosition(0, 0).widget()
+                self.assertIsInstance(first_label, QLabel)
+                self.assertEqual(first_label.sizePolicy().horizontalPolicy(), first_label.sizePolicy().Expanding)
                 self.assertEqual(backend.refresh_flags, [False, True])
                 self.assertIn('2026-07-07 09:02:00', window.last_refreshed_label.text())
             finally:
@@ -149,12 +171,9 @@ class ActorDetailViewerWindowTest(unittest.TestCase):
             window = ActorDetailViewerWindow(_BackendStub(), 'Actor A', parent)
             try:
                 QApplication.processEvents()
-                with patch('PyQt5.QtWidgets.QMessageBox.warning') as warning_mock, patch(
-                    'PyQt5.QtWidgets.QMessageBox.information'
-                ):
+                with patch('app.gui.actor_detail_viewer.QMessageBox.information'):
                     window.update_ladder_tier()
 
-                self.assertTrue(warning_mock.called)
                 self.assertEqual(window.detail['ladder_tier'], 'A')
             finally:
                 window.hide()

@@ -5,15 +5,18 @@ from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from app.backend.client import BackendClient
@@ -38,6 +41,8 @@ def _build_refresh_client(backend_client, minimum_timeout=90):
 
 
 class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
+    _COLLABORATOR_COLUMNS = 10
+
     def __init__(self, backend_client, actor_name, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -45,6 +50,8 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.actor_name = str(actor_name or '').strip()
         self.detail = {}
         self.collaborator_tables = {}
+        self.collaborator_grids = {}
+        self.collaborator_section_labels = {}
         self._startup_refresh_pending = True
         self._deferred_force_refresh = False
         self._deferred_silent_errors = False
@@ -579,6 +586,8 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 widget.deleteLater()
 
         self.collaborator_tables = {}
+        self.collaborator_grids = {}
+        self.collaborator_section_labels = {}
         sections = list(self.detail.get('collaborator_sections', []) or [])
         if not sections:
             self.collaborator_group.setVisible(False)
@@ -588,38 +597,45 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         for section in sections:
             actor_name = str((section or {}).get('actor_name', '') or '').strip()
             ladder_tier = str((section or {}).get('ladder_tier', '') or '').strip().upper()
-            group_box = QGroupBox(f'{actor_name} ({ladder_tier})')
-            group_layout = QVBoxLayout(group_box)
+            section_widget = QWidget(self.collaborator_group)
+            group_layout = QVBoxLayout(section_widget)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(6)
+            section_label = QLabel(f'{actor_name} ({ladder_tier})')
+            section_label.setStyleSheet('font-weight: 600; padding-left: 4px;')
+            group_layout.addWidget(section_label)
+            self.collaborator_section_labels[actor_name] = section_label
             rows = list((section or {}).get('collaborators', []) or [])
             if not rows:
                 empty_label = QLabel('暂无共演演员数据')
                 empty_label.setStyleSheet('color: #777777;')
                 group_layout.addWidget(empty_label)
             else:
-                table = QTableWidget()
-                table.setColumnCount(6)
-                table.setEditTriggers(QTableWidget.NoEditTriggers)
-                table.setSelectionMode(QTableWidget.NoSelection)
-                table.verticalHeader().setVisible(False)
-                table.horizontalHeader().setVisible(False)
-                table.setShowGrid(False)
-                row_count = (len(rows) + 5) // 6
-                table.setRowCount(row_count)
+                grid_container = QWidget(section_widget)
+                grid_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                grid_layout = QGridLayout(grid_container)
+                grid_layout.setContentsMargins(8, 6, 8, 6)
+                grid_layout.setHorizontalSpacing(28)
+                grid_layout.setVerticalSpacing(8)
+                for column_index in range(self._COLLABORATOR_COLUMNS):
+                    grid_layout.setColumnStretch(column_index, 1)
                 for index, collaborator in enumerate(rows):
-                    row_index = index // 6
-                    column_index = index % 6
+                    row_index = index // self._COLLABORATOR_COLUMNS
+                    column_index = index % self._COLLABORATOR_COLUMNS
                     label = (
                         f'{str((collaborator or {}).get("actor_name", "") or "")} '
                         f'x{int((collaborator or {}).get("count", 0) or 0)}'
                     )
-                    item = QTableWidgetItem(label)
-                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-                    table.setItem(row_index, column_index, item)
-                table.resizeColumnsToContents()
-                table.resizeRowsToContents()
-                group_layout.addWidget(table)
-                self.collaborator_tables[actor_name] = table
-            self.collaborator_layout.addWidget(group_box)
+                    item_label = QLabel(label)
+                    item_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    item_label.setMinimumWidth(92)
+                    item_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                    item_label.setStyleSheet('padding: 3px 8px;')
+                    grid_layout.addWidget(item_label, row_index, column_index)
+                group_layout.addWidget(grid_container)
+                self.collaborator_grids[actor_name] = grid_layout
+                self.collaborator_tables[actor_name] = grid_layout
+            self.collaborator_layout.addWidget(section_widget)
 
     @staticmethod
     def _format_measurements(bust_text, waist_text, hip_text):

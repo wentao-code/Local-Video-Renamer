@@ -36,7 +36,7 @@ from app.core.local_video_labels import (
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 from app.gui.actor_viewer import ActorViewerWindow
-from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
 from app.gui.canglangge_viewer import CanglanggeViewerWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
@@ -49,7 +49,9 @@ from app.gui.ladder_board_viewer import LadderBoardWindow
 from app.gui.medal_catalog_viewer import MedalCatalogWindow
 from app.gui.masterpiece_viewer import MasterpieceWindow
 from app.gui.path_library_viewer import PathLibraryWindow
-from app.gui.queen_library_viewer import QueenLibraryWindow
+from app.queen_library.viewer import QueenLibraryWindow
+from app.gui.task_queue import get_gui_task_queue
+from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.gui.video_filter_dialog import VideoFilterDialog
@@ -209,9 +211,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.login_thread = None
         self.login_worker = None
         self.login_task_runner = None
+        self.login_task_queued = False
         self.snapshot_refresh_worker = None
         self.snapshot_refresh_task_runner = None
         self.snapshot_refresh_running = False
+        self.snapshot_refresh_queued = False
         self.snapshot_refresh_started_at = 0.0
         self.snapshot_refresh_current_target = ''
         self.snapshot_refresh_last_completed_at = ''
@@ -222,9 +226,15 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.snapshot_refresh_elapsed_timer.setInterval(1000)
         self.snapshot_refresh_elapsed_timer.timeout.connect(self.update_snapshot_refresh_elapsed)
         self._init_async_task_host()
+        self.enrichment_task_queued = False
+        self._queued_enrichment_worker_factory = None
+        self._queued_gui_task_runners = {}
 
         self.ensure_backend_running()
         self.init_ui()
+        self.task_queue = get_gui_task_queue()
+        self.task_queue.changed.connect(self.refresh_task_queue_indicator)
+        self.refresh_task_queue_indicator()
         self.update_enrichment_controls()
         self.reset_progress_widgets()
         self.start_network_guard()
@@ -586,6 +596,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_refresh_detail_snapshots = QPushButton('全量刷新快照')
         self.btn_refresh_detail_snapshots.clicked.connect(self.refresh_detail_snapshots)
 
+        self.btn_task_queue = QPushButton('任务列表')
+        self.btn_task_queue.clicked.connect(self.show_task_queue_viewer)
+
         self.btn_execute = QPushButton(tr('main.execute_rename'))
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
@@ -610,6 +623,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_reset_browser_profile)
         bottom_button_row.addWidget(self.btn_status_sync)
         bottom_button_row.addWidget(self.btn_refresh_detail_snapshots)
+        bottom_button_row.addWidget(self.btn_task_queue)
         bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
 
@@ -659,7 +673,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'show_message': bool(show_message),
             }
 
-        self.start_async_task(task, self._on_scan_finished, tr('common.prompt'))
+        self.start_async_task(task, self._on_scan_finished, tr('common.prompt'), task_title='主界面 扫描本地视频')
         return True
 
     def import_to_database(self):
@@ -677,7 +691,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'scan_result': scan_result,
             }
 
-        self.start_async_task(task, self._on_import_finished, tr('common.prompt'))
+        self.start_async_task(task, self._on_import_finished, tr('common.prompt'), task_title='主界面 导入视频库')
 
     def execute_rename(self):
         if not self.pending_renames:
@@ -702,31 +716,35 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'scan_result': scan_result,
             }
 
-        self.start_async_task(task, self._on_execute_rename_finished, tr('common.prompt'))
+        self.start_async_task(task, self._on_execute_rename_finished, tr('common.prompt'), task_title='主界面 执行重命名')
 
     def auto_login(self):
-        if self.login_thread is not None:
+        if self.login_thread is not None or self.login_task_queued:
             QMessageBox.information(self, tr('main.login_in_progress_title'), tr('main.login_in_progress_message'))
             return
         self.start_auto_login()
 
     def start_auto_login(self):
+        self.login_task_queued = True
         self.btn_auto_login.setEnabled(False)
         self.status_label.setText(tr('main.login_status'))
 
-        self.login_worker = AutoLoginWorker(self.backend_client)
-        self.login_task_runner = GuiTaskRunner(
-            self,
-            self.login_worker,
+        def assign_login_runner(worker, runner):
+            self.login_worker = worker
+            self.login_task_runner = runner
+            self.login_thread = runner.thread
+
+        self._start_queued_gui_runner(
+            '自动登录',
+            lambda: AutoLoginWorker(self.backend_client),
             self.on_auto_login_finished,
             self.on_auto_login_failed,
-            self.cleanup_auto_login_thread,
+            cleanup_handler=self.cleanup_auto_login_thread,
+            assign_runner=assign_login_runner,
         )
-        self.login_thread = self.login_task_runner.thread
-        self.login_task_runner.start()
 
     def enrich_video_info(self):
-        if self.enrichment_thread is not None or self.batch_enrichment_active:
+        if self.enrichment_thread is not None or self.enrichment_task_queued or self.batch_enrichment_active:
             QMessageBox.information(
                 self,
                 tr('main.enrichment_in_progress_title'),
@@ -771,15 +789,18 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, source_key, mode='single'):
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
-        self.enrichment_worker = EnrichmentWorker(
-            self.backend_client,
-            limit,
-            show_browser,
-            cooldown_before_search,
-            target_type,
-            source_key,
-            batch_mode=(mode == 'batch'),
+        self._queued_enrichment_worker_factory = (
+            lambda: EnrichmentWorker(
+                self.backend_client,
+                limit,
+                show_browser,
+                cooldown_before_search,
+                target_type,
+                source_key,
+                batch_mode=(mode == 'batch'),
+            )
         )
+        self.enrichment_worker = None
         if mode == 'batch':
             self.batch_enrichment_round += 1
             self.status_label.setText(
@@ -805,15 +826,18 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     ):
         self.current_enrichment_kind = 'combo'
         self.enrichment_mode = mode
-        self.enrichment_worker = ComboEnrichmentWorker(
-            self.backend_client,
-            combo_key,
-            limit,
-            show_browser,
-            cooldown_before_search,
-            combo_task_settings=combo_task_settings,
-            batch_mode=batch_mode,
+        self._queued_enrichment_worker_factory = (
+            lambda: ComboEnrichmentWorker(
+                self.backend_client,
+                combo_key,
+                limit,
+                show_browser,
+                cooldown_before_search,
+                combo_task_settings=combo_task_settings,
+                batch_mode=batch_mode,
+            )
         )
+        self.enrichment_worker = None
         if mode == 'combo_batch':
             self.batch_enrichment_round += 1
             self.status_label.setText(
@@ -828,19 +852,35 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self._start_enrichment_task_runner()
 
     def _start_enrichment_task_runner(self):
+        self.enrichment_task_queued = True
+        queued_kind = self.current_enrichment_kind
+        queued_mode = self.enrichment_mode
+        worker_factory = self._queued_enrichment_worker_factory
+
+        def before_start():
+            self.current_enrichment_kind = queued_kind
+            self.enrichment_mode = queued_mode
+            self.update_enrichment_controls()
+            self.reset_progress_widgets(keep_visible=True)
+            self.enrichment_progress_timer.start()
+            self.refresh_enrichment_progress()
+
+        def assign_enrichment_runner(worker, runner):
+            self.enrichment_worker = worker
+            self.enrichment_task_runner = runner
+            self.enrichment_thread = runner.thread
+
         self.update_enrichment_controls()
         self.reset_progress_widgets(keep_visible=True)
-        self.enrichment_progress_timer.start()
-        self.refresh_enrichment_progress()
-        self.enrichment_task_runner = GuiTaskRunner(
-            self,
-            self.enrichment_worker,
+        self._start_queued_gui_runner(
+            '信息补全',
+            worker_factory,
             self.on_enrichment_finished,
             self.on_enrichment_failed,
-            self.cleanup_enrichment_thread,
+            cleanup_handler=self.cleanup_enrichment_thread,
+            before_start=before_start,
+            assign_runner=assign_enrichment_runner,
         )
-        self.enrichment_thread = self.enrichment_task_runner.thread
-        self.enrichment_task_runner.start()
 
     def start_batch_enrichment(self, values):
         self.batch_enrichment_active = True
@@ -896,7 +936,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def run_next_batch_enrichment(self):
         if not self.batch_enrichment_active or self.batch_enrichment_config is None:
             return
-        if self.enrichment_thread is not None:
+        if self.enrichment_thread is not None or self.enrichment_task_queued:
             return
 
         self.batch_timer.stop()
@@ -1057,7 +1097,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.batch_countdown_label.setText(tr('main.batch_countdown', countdown_text=countdown_text))
 
     def update_enrichment_controls(self):
-        enrichment_running = self.enrichment_thread is not None
+        enrichment_running = self.enrichment_thread is not None or self.enrichment_task_queued
         self.btn_enrich.setEnabled(not enrichment_running and not self.batch_enrichment_active)
         self.btn_stop_enrich.setEnabled(enrichment_running or self.batch_enrichment_active)
         self.update_network_guard()
@@ -1136,7 +1176,128 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.network_status_label.setToolTip('')
 
     def _has_active_enrichment_plan(self):
-        return bool(self.enrichment_thread is not None or self.batch_enrichment_active)
+        return bool(self.enrichment_thread is not None or self.enrichment_task_queued or self.batch_enrichment_active)
+
+    def _start_queued_gui_runner(
+        self,
+        task_title,
+        worker_factory,
+        finished_handler,
+        failed_handler,
+        cleanup_handler=None,
+        source='主界面',
+        before_start=None,
+        assign_runner=None,
+    ):
+        def start_runner(record):
+            if callable(before_start):
+                before_start()
+            attempt_state = {
+                'failed': False,
+                'message': '',
+            }
+            worker = worker_factory()
+
+            def handle_finished(result):
+                finished_handler(result)
+
+            def handle_failed(message):
+                attempt_state['failed'] = True
+                attempt_state['message'] = str(message or '')
+
+            def handle_cleanup():
+                try:
+                    if callable(cleanup_handler):
+                        cleanup_handler()
+                    if attempt_state['failed']:
+                        final_failure = get_gui_task_queue().mark_failed(record.task_id, attempt_state['message'])
+                        if final_failure:
+                            failed_handler(attempt_state['message'])
+                        return
+                    get_gui_task_queue().mark_completed(record.task_id)
+                finally:
+                    self._queued_gui_task_runners.pop(record.task_id, None)
+
+            runner = GuiTaskRunner(
+                self,
+                worker,
+                handle_finished,
+                handle_failed,
+                handle_cleanup,
+            )
+            self._queued_gui_task_runners[record.task_id] = runner
+            if callable(assign_runner):
+                assign_runner(worker, runner)
+            runner.start()
+
+        get_gui_task_queue().enqueue(task_title, source, start_runner)
+        return True
+
+    def enqueue_startup_refresh_tasks(self):
+        for title, task in VidNormApp._startup_refresh_task_specs(self):
+            self._start_queued_gui_runner(
+                title,
+                lambda task=task: BackendTaskWorker(task),
+                self._on_startup_refresh_task_finished,
+                self._on_startup_refresh_task_failed,
+                source='启动刷新',
+            )
+
+    def _startup_refresh_task_specs(self):
+        return [
+            (
+                '启动刷新 演员库',
+                lambda: self.backend_client.list_actors_snapshot(
+                    force_refresh=True,
+                    include_update_status=False,
+                ),
+            ),
+            (
+                '启动刷新 番号库',
+                lambda: self.backend_client.list_code_prefixes_snapshot(force_refresh=True),
+            ),
+            (
+                '启动刷新 数据中心',
+                lambda: self.backend_client.get_data_center_summary(force_refresh=True),
+            ),
+            (
+                '启动刷新 视频分类',
+                lambda: self.backend_client.list_videos_requiring_manual_category_snapshot(force_refresh=True),
+            ),
+            (
+                '启动刷新 路径库',
+                lambda: self.backend_client.get_path_library_snapshot(force_refresh=True),
+            ),
+            (
+                '启动刷新 女王库',
+                lambda: VidNormApp._refresh_queen_library_startup_payload(self),
+            ),
+            (
+                '启动刷新 名作堂',
+                lambda: self.backend_client.list_masterpiece_entries(),
+            ),
+            (
+                '启动刷新 勋章堂',
+                lambda: self.backend_client.list_global_medals(),
+            ),
+            (
+                '启动刷新 沧浪阁',
+                lambda: self.backend_client.list_canglangge_candidates_snapshot(force_refresh=True),
+            ),
+        ]
+
+    def _refresh_queen_library_startup_payload(self):
+        return {
+            'queens': self.backend_client.list_queen_library_snapshot(force_refresh=True),
+            'keywords': self.backend_client.list_queen_keywords_snapshot(force_refresh=True),
+            'stats': self.backend_client.get_queen_library_stats(),
+        }
+
+    def _on_startup_refresh_task_finished(self, _result):
+        return None
+
+    def _on_startup_refresh_task_failed(self, _message):
+        return None
 
     def handle_network_disconnect(self, probe_result=None):
         failed_targets = ' / '.join((probe_result or {}).get('failed_targets', [])[:3]) or tr('common.unknown')
@@ -1446,6 +1607,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         return '\n'.join(lines)
 
     def cleanup_auto_login_thread(self):
+        self.login_task_queued = False
         self.btn_auto_login.setEnabled(True)
         self.status_label.setText('')
         self.login_worker = None
@@ -1453,11 +1615,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.login_task_runner = None
 
     def cleanup_enrichment_thread(self):
+        self.enrichment_task_queued = False
         self.enrichment_worker = None
         self.enrichment_thread = None
         self.enrichment_task_runner = None
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = None
+        self._queued_enrichment_worker_factory = None
         self.update_enrichment_controls()
         if not self.batch_enrichment_active:
             self.reset_progress_widgets()
@@ -1477,13 +1641,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             lambda: self.backend_client.reset_browser_profile(),
             self._on_reset_browser_profile_finished,
             tr('common.reset_failed'),
+            task_title='主界面 重置浏览器环境',
         )
 
-    def start_async_task(self, task, success_handler, error_title=None, block_ui=True):
-        if self.is_async_task_running():
-            QMessageBox.information(self, tr('common.task_in_progress'), tr('main.new_button_action_wait'))
-            return False
-        return super().start_async_task(task, success_handler, error_title, block_ui=block_ui)
+    def start_async_task(self, task, success_handler, error_title=None, block_ui=True, **kwargs):
+        return super().start_async_task(task, success_handler, error_title, block_ui=block_ui, **kwargs)
 
     def _set_async_busy(self, busy):
         self.btn_browse.setEnabled(not busy)
@@ -1496,6 +1658,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_reset_browser_profile.setEnabled(not busy)
         self.btn_status_sync.setEnabled(not busy)
         self.btn_refresh_detail_snapshots.setEnabled(not busy)
+        self.btn_task_queue.setEnabled(True)
         self.table.setEnabled(not busy)
         self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
 
@@ -1580,6 +1743,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             lambda: self.backend_client.sync_library_statuses(),
             self._on_sync_library_statuses_finished,
             tr('common.operation_failed'),
+            task_title='主界面 同步库状态',
         )
 
     def _on_sync_library_statuses_finished(self, result):
@@ -1605,6 +1769,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             lambda: self.backend_client.rebuild_detail_snapshots(),
             self._on_refresh_detail_snapshots_finished,
             tr('common.operation_failed'),
+            task_title='主界面 全量刷新快照',
         )
 
     def _on_refresh_detail_snapshots_finished(self, result):
@@ -1657,8 +1822,40 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         viewer.exec_()
 
     def show_queen_library_viewer(self):
-        viewer = QueenLibraryWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        viewer = self.__dict__.get('queen_library_window')
+        if viewer is None:
+            viewer = QueenLibraryWindow(backend_client=self.backend_client, parent=self)
+            self.queen_library_window = viewer
+            if hasattr(viewer, 'destroyed'):
+                viewer.destroyed.connect(lambda *_args: setattr(self, 'queen_library_window', None))
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
+
+    def show_task_queue_viewer(self):
+        viewer = self.__dict__.get('task_queue_window')
+        if viewer is None:
+            viewer = TaskQueueViewerWindow(parent=self)
+            self.task_queue_window = viewer
+            if hasattr(viewer, 'destroyed'):
+                viewer.destroyed.connect(lambda *_args: setattr(self, 'task_queue_window', None))
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
+
+    def refresh_task_queue_indicator(self):
+        queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
+        self._update_task_queue_indicator(queue.is_all_done())
+
+    def _update_task_queue_indicator(self, is_done=False):
+        if not hasattr(self, 'btn_task_queue'):
+            return
+        if is_done:
+            self.btn_task_queue.setStyleSheet(
+                'QPushButton { color: #16a34a; font-weight: 700; border: 1px solid #16a34a; }'
+            )
+            return
+        self.btn_task_queue.setStyleSheet('')
 
     def show_video_filter_dialog(self):
         dialog = VideoFilterDialog(self)
@@ -1671,26 +1868,47 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def start_snapshot_refresh_scheduler(self):
         self.snapshot_refresh_timer.start()
-        QTimer.singleShot(SNAPSHOT_REFRESH_STARTUP_DELAY_MS, self.schedule_snapshot_refresh_cycle)
+        QTimer.singleShot(SNAPSHOT_REFRESH_STARTUP_DELAY_MS, lambda: VidNormApp.run_startup_refresh_sequence(self))
+
+    def run_startup_refresh_sequence(self):
+        self.schedule_snapshot_refresh_cycle()
+        self.enqueue_startup_refresh_tasks()
 
     def schedule_snapshot_refresh_cycle(self):
-        if self.snapshot_refresh_running:
+        if self.snapshot_refresh_running or getattr(self, 'snapshot_refresh_queued', False):
             return False
-        if self._has_active_enrichment_plan():
-            return False
-        self.snapshot_refresh_running = True
-        self.snapshot_refresh_worker = self._create_snapshot_refresh_worker()
-        progress_signal = getattr(self.snapshot_refresh_worker, 'progress', None)
-        if progress_signal is not None and hasattr(progress_signal, 'connect'):
-            progress_signal.connect(self._on_snapshot_refresh_progress)
-        self.snapshot_refresh_task_runner = GuiTaskRunner(
-            self,
-            self.snapshot_refresh_worker,
+        self.snapshot_refresh_queued = True
+
+        def worker_factory():
+            worker = self._create_snapshot_refresh_worker()
+            progress_signal = getattr(worker, 'progress', None)
+            if progress_signal is not None and hasattr(progress_signal, 'connect'):
+                progress_signal.connect(self._on_snapshot_refresh_progress)
+            return worker
+
+        def before_start():
+            self.snapshot_refresh_queued = False
+            self.snapshot_refresh_running = True
+
+        def assign_snapshot_runner(worker, runner):
+            self.snapshot_refresh_worker = worker
+            self.snapshot_refresh_task_runner = runner
+
+        self._start_queued_gui_runner(
+            '后台刷新快照',
+            worker_factory,
             self._on_snapshot_refresh_finished,
             self._on_snapshot_refresh_failed,
+            cleanup_handler=self._cleanup_snapshot_refresh_attempt,
+            before_start=before_start,
+            assign_runner=assign_snapshot_runner,
         )
-        self.snapshot_refresh_task_runner.start()
         return True
+
+    def _cleanup_snapshot_refresh_attempt(self):
+        self.snapshot_refresh_running = False
+        self.snapshot_refresh_worker = None
+        self.snapshot_refresh_task_runner = None
 
     def _create_snapshot_refresh_worker(self):
         refresh_client = _build_refresh_client(

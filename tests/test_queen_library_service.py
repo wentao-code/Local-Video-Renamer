@@ -5,7 +5,8 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.services.queen_library_service import QueenLibraryService
+from app.queen_library.scraper import QueenSearchTransientError
+from app.queen_library.service import QueenLibraryService
 
 
 class _ScraperStub:
@@ -46,6 +47,22 @@ class _SessionReuseScraperStub:
                 return self.search(keyword, show_browser=show_browser, page=active_page)
         self.calls.append((keyword, bool(show_browser)))
         self.pages.append(page)
+        return {
+            'source_url': f'https://a.1cili.click/search?q={keyword}',
+            'records': list(self.records_by_keyword.get(keyword, [])),
+        }
+
+
+class _TransientFailureScraperStub(_SessionReuseScraperStub):
+    def __init__(self, records_by_keyword=None, transient_keywords=None):
+        super().__init__(records_by_keyword=records_by_keyword)
+        self.transient_keywords = set(transient_keywords or [])
+
+    def search(self, keyword, show_browser=True, page=None):
+        self.calls.append((keyword, bool(show_browser)))
+        self.pages.append(page)
+        if keyword in self.transient_keywords:
+            raise QueenSearchTransientError('Cloudflare 522 Connection timed out')
         return {
             'source_url': f'https://a.1cili.click/search?q={keyword}',
             'records': list(self.records_by_keyword.get(keyword, [])),
@@ -216,6 +233,38 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual(scraper.visibility_calls, [True])
             self.assertEqual(scraper.session_enter_count, baseline_session_count + 1)
             self.assertEqual(scraper.pages[baseline_page_count:], [scraper.page, scraper.page, scraper.page])
+
+    def test_refresh_all_skips_transient_cloudflare_failure_and_continues_next_keyword(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            scraper = _TransientFailureScraperStub(
+                records_by_keyword={
+                    'good': ['\u5957\u8def\u76f4\u64ad_Good_Title.mp4'],
+                },
+                transient_keywords={'bad'},
+            )
+            service = QueenLibraryService(db_path, scraper=scraper)
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.executemany(
+                    'INSERT INTO queen_keywords(keyword) VALUES (?)',
+                    [('good',), ('bad',)],
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            result = service.refresh_all(show_browser=False, batch_size=10)
+
+            self.assertFalse(result['stopped'])
+            self.assertEqual(result['query_count'], 2)
+            self.assertEqual(result['processed_count'], 2)
+            self.assertEqual(result['imported_count'], 1)
+            self.assertEqual(result['skipped_count'], 1)
+            self.assertEqual([keyword for keyword, _show_browser in scraper.calls], ['bad', 'good'])
+            bad_query = next(row for row in result['queries'] if row['keyword'] == 'bad')
+            self.assertEqual(bad_query['skipped_count'], 1)
+            self.assertIn('Cloudflare 522', bad_query['error'])
 
     def test_refresh_all_reports_progress_after_each_fixed_size_batch(self):
         with tempfile.TemporaryDirectory() as temp_dir:

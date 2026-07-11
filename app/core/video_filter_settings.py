@@ -18,6 +18,7 @@ def load_video_filter_settings(settings_file=None):
 def save_video_filter_settings(settings, settings_file=None):
     target_file = settings_file or VIDEO_FILTER_SETTINGS_FILE
     normalized = normalize_video_filter_settings(settings)
+    target_file.parent.mkdir(parents=True, exist_ok=True)
     target_file.write_text(
         json.dumps(normalized, ensure_ascii=False, indent=2),
         encoding='utf-8',

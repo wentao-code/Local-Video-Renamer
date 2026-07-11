@@ -26,6 +26,7 @@ class VideoSourceEnrichmentService:
         progress_tracker=None,
         logger=None,
         candidate_filter=None,
+        minimize_browser_window=True,
     ):
         self.database = database
         self.source_key = normalize_video_enrichment_source(source_key)
@@ -33,14 +34,20 @@ class VideoSourceEnrichmentService:
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.candidate_filter = candidate_filter if callable(candidate_filter) else None
+        self.minimize_browser_window = bool(minimize_browser_window)
         self.scraper = scraper or self._build_scraper(show_browser, cooldown_before_search)
 
     def _build_scraper(self, show_browser, cooldown_before_search):
         if self.source_key == JAVTXT_VIDEO_SOURCE:
-            return JavtxtScraper(headless=not show_browser, logger=self.logger)
+            return JavtxtScraper(
+                headless=not show_browser,
+                logger=self.logger,
+                minimize_browser_window=self.minimize_browser_window,
+            )
         return AvfanScraper(
             headless=not show_browser,
             cooldown_before_search=cooldown_before_search,
+            minimize_browser_window=self.minimize_browser_window,
         )
 
     def enrich_next_videos(self, limit):
@@ -48,7 +55,7 @@ class VideoSourceEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        candidate_filter = self.candidate_filter if self.source_key == JAVTXT_VIDEO_SOURCE else None
+        candidate_filter = self.candidate_filter
         candidates = self.database.list_videos_for_enrichment(limit, self.source_key, candidate_filter=candidate_filter)
         results = []
         success_count = 0
@@ -77,6 +84,12 @@ class VideoSourceEnrichmentService:
                 log_path=str(getattr(self.logger, 'log_path', '') or ''),
                 task_kind='single',
             )
+
+        if not candidates:
+            result = self._build_result(limit, results, success_count, failed_count, stopped, source_label)
+            self._finish_progress('没有可补全的视频。', stopped=False)
+            self._log('INFO', '视频补全没有候选，跳过浏览器会话', source_key=self.source_key)
+            return result
 
         with self.scraper.session():
             for video in candidates:

@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
-from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.backend_task_worker import AsyncTaskHostMixin, enable_minimize_button
 
 
 def merge_medal_names(existing_medals=None, new_medals=None):
@@ -182,6 +182,7 @@ class MedalSelectionSidebar(QWidget):
 class GlobalMedalPickerDialog(QDialog):
     def __init__(self, medals, owned_medals=None, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self.medals = [dict(row or {}) for row in (medals or [])]
         self.owned_medals = set(str(medal or '').strip() for medal in (owned_medals or []) if str(medal or '').strip())
         self.medal_checkboxes = {}

@@ -38,6 +38,7 @@ from app.core.enrichment_targets import (
     VIDEO_LIBRARY_TARGET,
 )
 from app.core.project_paths import ENRICHMENT_SETTINGS_FILE
+from app.gui.backend_task_worker import enable_minimize_button
 from app.gui.i18n import tr
 
 
@@ -227,6 +228,7 @@ def save_saved_settings(target_type, selected_source_by_target, target_settings,
         'selected_combo_key': normalize_combo_key(selected_combo_key),
         'target_settings': normalize_target_settings({'target_settings': target_settings}),
     }
+    ENRICHMENT_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     ENRICHMENT_SETTINGS_FILE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding='utf-8',
@@ -236,6 +238,7 @@ def save_saved_settings(target_type, selected_source_by_target, target_settings,
 class EnrichmentDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self.action_mode = 'single'
         self.current_target_type = VIDEO_LIBRARY_TARGET
         self.current_source_key = DEFAULT_SOURCE_BY_TARGET[VIDEO_LIBRARY_TARGET]

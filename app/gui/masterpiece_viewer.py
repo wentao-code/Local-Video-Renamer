@@ -1,7 +1,7 @@
 from html import escape
 
 from PyQt5.QtCore import Qt, QUrl
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtGui import QDesktopServices, QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -21,9 +21,12 @@ from PyQt5.QtWidgets import (
 )
 
 from app.backend.client import BackendClient
+from app.core.enrichment_status import ENRICHED_STATUS
 from app.core.ladder_board import split_ladder_medals
+from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
+from app.gui.detail_summary_widgets import DetailSummaryGrid
 from app.gui.medal_catalog_viewer import MedalSelectionSidebar, build_medal_text
 
 
@@ -38,6 +41,7 @@ def _build_refresh_client(backend_client, minimum_timeout=90):
 
 
 class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
+    _FULLY_ENRICHED_CODE_COLOR = QColor('#7b1fa2')
     _MEDAL_STYLES = {
         'border': '#b96a3b',
         'background': '#f6d8c3',
@@ -177,7 +181,10 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             medals = list((row or {}).get('medals', []) or split_ladder_medals(medal_text))
 
             self.table.insertRow(row_index)
-            self.table.setItem(row_index, 0, QTableWidgetItem(code))
+            code_item = QTableWidgetItem(code)
+            if self._is_fully_enriched(row):
+                code_item.setForeground(self._FULLY_ENRICHED_CODE_COLOR)
+            self.table.setItem(row_index, 0, code_item)
             self.table.setItem(row_index, 1, QTableWidgetItem(title))
             self.table.setItem(row_index, 2, QTableWidgetItem(author))
             self.table.setCellWidget(row_index, 3, self._build_medal_widget(medals))
@@ -187,6 +194,13 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         self.summary_label.setText(f'共 {len(self.rows)} 条')
         self.table.setColumnWidth(0, 120)
         self.table.resizeRowsToContents()
+
+    @staticmethod
+    def _is_fully_enriched(row):
+        row = dict(row or {})
+        avfan_status = str(row.get('avfan_enrichment_status', '') or '').strip()
+        javtxt_status = str(row.get('javtxt_enrichment_status', '') or '').strip()
+        return avfan_status == ENRICHED_STATUS and javtxt_status == ENRICHED_STATUS
 
     def _build_medal_widget(self, medals):
         label = QLabel()
@@ -287,7 +301,7 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         'code_prefix_library': '番号库参考',
     }
     _SOURCE_ORDER = ('video_library', 'actor_library', 'code_prefix_library')
-    _ACTOR_HEADERS = ['演员', '生日', '年龄', '出演年龄', '身高', '三围', '罩杯', '原始数据']
+    _ACTOR_HEADERS = ['演员', '生日', '年龄', '出演年龄', '身高', '三围', '罩杯']
 
     def __init__(self, backend_client, code, parent=None):
         super().__init__(parent)
@@ -309,12 +323,16 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.load_detail()
 
     def _init_ui(self):
-        root_layout = QVBoxLayout(self)
+        self.root_layout = QVBoxLayout(self)
+        root_layout = self.root_layout
 
         top_bar = QHBoxLayout()
         self.btn_open_primary = QPushButton('打开主链接')
         self.btn_open_primary.clicked.connect(self.open_primary_link)
         top_bar.addWidget(self.btn_open_primary)
+        self.btn_enrich = QPushButton('补全')
+        self.btn_enrich.clicked.connect(self.handle_enrich)
+        top_bar.addWidget(self.btn_enrich)
         self.btn_refresh = QPushButton('刷新')
         self.btn_refresh.clicked.connect(lambda: self.load_detail(force_refresh=True))
         top_bar.addWidget(self.btn_refresh)
@@ -323,31 +341,53 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         top_bar.addStretch()
         root_layout.addLayout(top_bar)
 
-        self.summary_label = QLabel('')
-        self.summary_label.setWordWrap(True)
-        root_layout.addWidget(self.summary_label)
+        self.detail_scroll_area = QScrollArea()
+        self.detail_scroll_area.setWidgetResizable(True)
+        root_layout.addWidget(self.detail_scroll_area, 1)
 
-        actor_group = QGroupBox('演员信息')
-        actor_layout = QVBoxLayout(actor_group)
-        self.actor_table = QTableWidget()
-        self.actor_table.setColumnCount(len(self._ACTOR_HEADERS))
-        self.actor_table.setHorizontalHeaderLabels(list(self._ACTOR_HEADERS))
-        self.actor_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.actor_table.setSelectionMode(QAbstractItemView.NoSelection)
-        self.actor_table.verticalHeader().setVisible(False)
-        actor_layout.addWidget(self.actor_table)
-        root_layout.addWidget(actor_group)
+        self.detail_scroll_widget = QWidget()
+        self.detail_scroll_layout = QVBoxLayout(self.detail_scroll_widget)
+        self.detail_scroll_layout.setContentsMargins(0, 0, 0, 0)
+        self.detail_scroll_layout.setSpacing(12)
+        self.detail_scroll_area.setWidget(self.detail_scroll_widget)
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        root_layout.addWidget(scroll_area)
+        self.first_source_group = QGroupBox('第一套系统')
+        first_source_layout = QVBoxLayout(self.first_source_group)
+        self.first_source_label = QLabel('暂无')
+        self.first_source_label.setWordWrap(True)
+        first_source_layout.addWidget(self.first_source_label)
+        self.detail_scroll_layout.addWidget(self.first_source_group)
+
+        self.second_source_group = QGroupBox('第二套系统')
+        second_source_layout = QVBoxLayout(self.second_source_group)
+        self.second_source_label = QLabel('暂无')
+        self.second_source_label.setWordWrap(True)
+        second_source_layout.addWidget(self.second_source_label)
+        self.detail_scroll_layout.addWidget(self.second_source_group)
+
+        self.duration_label = QLabel('片长: 暂无')
+        self.duration_label.setWordWrap(True)
+        self.duration_label.setVisible(False)
+        self.detail_scroll_layout.addWidget(self.duration_label)
+        self.description_label = QLabel('剧情描述: 暂无')
+        self.description_label.setWordWrap(True)
+        self.description_label.setVisible(False)
+        self.detail_scroll_layout.addWidget(self.description_label)
+
+        self.actor_details_group = QGroupBox('演员基础信息')
+        self.actor_details_layout = QVBoxLayout(self.actor_details_group)
+        self.actor_details_label = QLabel('暂无')
+        self.actor_details_label.setWordWrap(True)
+        self.actor_detail_grids = {}
+        self.actor_detail_buttons = {}
+        self.detail_scroll_layout.addWidget(self.actor_details_group)
 
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout(self.content_widget)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(12)
-        scroll_area.setWidget(self.content_widget)
-        self.set_async_busy_widgets([self.btn_open_primary, self.btn_refresh])
+        self.detail_scroll_layout.addWidget(self.content_widget)
+        self.set_async_busy_widgets([self.btn_open_primary, self.btn_enrich, self.btn_refresh])
 
     def load_detail(self, force_refresh=False, silent_errors=False, allow_deferred_close=False):
         if self.is_async_task_running():
@@ -390,19 +430,26 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             'cache_hit': False,
         }
 
+    def handle_enrich(self):
+        self.start_async_task(
+            lambda: self.refresh_client.enrich_masterpiece_detail(self.code),
+            self._on_detail_loaded,
+            '补全名作堂详情失败',
+            block_ui=True,
+        )
+
     def _on_detail_loaded(self, result):
         payload = dict(result or {})
         self.detail = dict(payload.get('detail', payload or {}) or {})
         self._suppress_async_error_dialog = False
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or '暂无'
         self.last_refreshed_label.setText(f'上次刷新: {refreshed_at}')
-        display_title = str(self.detail.get('display_title', '') or self.detail.get('title', '') or '')
-        display_author = str(self.detail.get('display_author', '') or self.detail.get('author', '') or '')
-        primary_source = self._source_title(str(self.detail.get('primary_source', '') or ''))
-        self.summary_label.setText(
-            f'番号: {self.detail.get("code", "")} | 标题: {display_title} | 演员: {display_author or "暂无"} | 主来源: {primary_source}'
-        )
         self.btn_open_primary.setEnabled(bool(str(self.detail.get('primary_detail_url', '') or '').strip()))
+        self.duration_label.setText(f'片长: {self.detail.get("first_source_duration", "") or "暂无"}')
+        self.description_label.setText(
+            f'剧情描述: {self.detail.get("second_source_description", "") or "暂无"}'
+        )
+        self._render_source_columns()
         self._render_actor_details()
         self._render_detail_sections()
         if self._startup_refresh_pending:
@@ -416,26 +463,166 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             return
         super()._handle_async_task_failed(message)
 
-    def _render_actor_details(self):
-        actor_rows = list(self.detail.get('actor_details', []) or [])
-        self.actor_table.setRowCount(0)
-        for row_index, actor in enumerate(actor_rows):
-            self.actor_table.insertRow(row_index)
-            values = [
-                str((actor or {}).get('actor_name', '') or ''),
-                str((actor or {}).get('birthday', '') or ''),
-                str((actor or {}).get('current_age', '') or ''),
-                str((actor or {}).get('appearance_age', '') or ''),
-                str((actor or {}).get('height', '') or ''),
-                self._build_measurements_text(actor),
-                str((actor or {}).get('cup', '') or ''),
-                str((actor or {}).get('measurements_raw', '') or ''),
-            ]
-            for column_index, value in enumerate(values):
-                self.actor_table.setItem(row_index, column_index, QTableWidgetItem(value))
+    def _render_source_columns(self):
+        self.first_source_label.setText(
+            '\n'.join(
+                [
+                    f'视频标题: {self.detail.get("first_source_title", "") or self.detail.get("display_title", "") or "暂无"}',
+                    f'片长: {self.detail.get("first_source_duration", "") or "暂无"}',
+                    f'标签: {self.detail.get("first_source_tags", "") or self.detail.get("display_tags", "") or "暂无"}',
+                    f'演员: {self.detail.get("first_source_actors", "") or self.detail.get("display_author", "") or "暂无"}',
+                ]
+            )
+        )
+        self.second_source_label.setText(
+            '\n'.join(
+                [
+                    f'视频标题: {self.detail.get("second_source_title", "") or "暂无"}',
+                    f'出演女优: {self.detail.get("second_source_actors", "") or "暂无"}',
+                    f'类别: {self.detail.get("second_source_tags", "") or self.detail.get("display_tags", "") or "暂无"}',
+                    f'剧情介绍: {self.detail.get("second_source_description", "") or "暂无"}',
+                ]
+            )
+        )
 
-        self.actor_table.resizeColumnsToContents()
-        self.actor_table.resizeRowsToContents()
+    def _render_actor_details(self):
+        self._clear_actor_details_layout()
+        self.actor_detail_grids = {}
+        self.actor_detail_buttons = {}
+        actor_rows = list(self.detail.get('actor_details', []) or [])
+        blocks = []
+        for actor in actor_rows:
+            actor_name = str((actor or {}).get('actor_name', '') or '').strip()
+            if not actor_name:
+                continue
+            values = self._actor_basic_display_values(actor, actor_name)
+            blocks.append(' | '.join(values))
+            self._add_actor_detail_grid(actor, actor_name)
+        summary_text = '\n\n'.join(blocks) if blocks else '暂无'
+        self.actor_details_label.setText(summary_text)
+        if not blocks:
+            empty_label = QLabel('暂无')
+            empty_label.setStyleSheet('color: #777777;')
+            self.actor_details_layout.addWidget(empty_label)
+
+    def _add_actor_detail_grid(self, actor, actor_name):
+        card = QGroupBox(actor_name)
+        card_layout = QVBoxLayout(card)
+
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.addWidget(QLabel(actor_name))
+        detail_button = QPushButton('详情')
+        detail_button.setMinimumWidth(72)
+        detail_button.clicked.connect(lambda _checked=False, name=actor_name: self.show_actor_detail(name))
+        header_layout.addWidget(detail_button)
+        header_layout.addStretch()
+        card_layout.addLayout(header_layout)
+
+        basic_grid = DetailSummaryGrid(columns=4)
+        basic_grid.set_items(
+            [
+                ('name', '姓名:', actor_name),
+                ('actor_id', '天限阁ID:', str((actor or {}).get('actor_id', '') or '暂无')),
+                ('binghuo_person_id', '并火 ID:', str((actor or {}).get('binghuo_person_id', '') or '暂无')),
+                ('ladder_tier', '演员等级:', str((actor or {}).get('ladder_tier', '') or '暂无')),
+                (
+                    'update_status',
+                    '更新状态:',
+                    str(
+                        (actor or {}).get('update_status_text', '')
+                        or self._update_status_text((actor or {}).get('update_status', ''))
+                        or '暂无'
+                    ),
+                ),
+                ('current_age', '年龄:', str((actor or {}).get('current_age', '') or '暂无')),
+                ('birthday', '生日:', str((actor or {}).get('birthday', '') or '暂无')),
+                ('height', '身高:', str((actor or {}).get('height', '') or '暂无')),
+                ('local_video_count', '本地视频总数:', self._display_count((actor or {}).get('local_video_count', ''))),
+                ('web_total_videos', '网页作品总数:', self._display_count((actor or {}).get('web_total_videos', ''))),
+                (
+                    'appearance_code_count',
+                    '出演番号数量:',
+                    self._display_count((actor or {}).get('appearance_code_count', '')),
+                ),
+                (
+                    'code_prefix_library_count',
+                    '番号库中数量:',
+                    self._display_count((actor or {}).get('code_prefix_library_count', '')),
+                ),
+                ('cup', '罩杯:', str((actor or {}).get('cup', '') or '暂无')),
+                (
+                    'web_update_frequency',
+                    '更新频率:',
+                    str(
+                        (actor or {}).get('web_update_frequency_text', '')
+                        or self._format_update_frequency((actor or {}).get('web_update_frequency', {}))
+                        or '暂无'
+                    ),
+                ),
+            ]
+        )
+        card_layout.addWidget(basic_grid)
+
+        measurements_grid = DetailSummaryGrid(columns=1)
+        measurements_grid.set_items(
+            [
+                ('measurements', '三围:', self._build_measurements_text(actor) or '暂无'),
+            ]
+        )
+        card_layout.addWidget(measurements_grid)
+
+        status_grid = DetailSummaryGrid(columns=1)
+        status_grid.set_items(
+            [
+                ('web_enrichment_status', '补全状态:', str((actor or {}).get('web_enrichment_status', '') or '暂无')),
+                ('appearance_age', '出演年龄:', str((actor or {}).get('appearance_age', '') or '暂无')),
+            ]
+        )
+        card_layout.addWidget(status_grid)
+
+        self.actor_details_layout.addWidget(card)
+        self.actor_detail_grids[actor_name] = {
+            'basic': basic_grid,
+            'measurements': measurements_grid,
+            'status': status_grid,
+        }
+        self.actor_detail_buttons[actor_name] = detail_button
+
+    def show_actor_detail(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return
+        viewer = ActorDetailViewerWindow(self.backend_client, normalized_name, self)
+        viewer.exec_()
+
+    def _actor_basic_display_values(self, actor, actor_name):
+        return [
+            f'姓名: {actor_name}',
+            f'天限阁ID: {str((actor or {}).get("actor_id", "") or "暂无")}',
+            f'并火 ID: {str((actor or {}).get("binghuo_person_id", "") or "暂无")}',
+            f'演员等级: {str((actor or {}).get("ladder_tier", "") or "暂无")}',
+            f'更新状态: {str((actor or {}).get("update_status_text", "") or self._update_status_text((actor or {}).get("update_status", "")) or "暂无")}',
+            f'年龄: {str((actor or {}).get("current_age", "") or "暂无")}',
+            f'生日: {str((actor or {}).get("birthday", "") or "暂无")}',
+            f'身高: {str((actor or {}).get("height", "") or "暂无")}',
+            f'本地视频总数: {self._display_count((actor or {}).get("local_video_count", ""))}',
+            f'网页作品总数: {self._display_count((actor or {}).get("web_total_videos", ""))}',
+            f'出演番号数量: {self._display_count((actor or {}).get("appearance_code_count", ""))}',
+            f'番号库中数量: {self._display_count((actor or {}).get("code_prefix_library_count", ""))}',
+            f'三围: {self._build_measurements_text(actor) or "暂无"}',
+            f'罩杯: {str((actor or {}).get("cup", "") or "暂无")}',
+            f'更新频率: {str((actor or {}).get("web_update_frequency_text", "") or self._format_update_frequency((actor or {}).get("web_update_frequency", {})) or "暂无")}',
+            f'补全状态: {str((actor or {}).get("web_enrichment_status", "") or "暂无")}',
+            f'出演年龄: {str((actor or {}).get("appearance_age", "") or "暂无")}',
+        ]
+
+    def _clear_actor_details_layout(self):
+        while self.actor_details_layout.count():
+            item = self.actor_details_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
     @staticmethod
     def _build_measurements_text(actor):
@@ -446,6 +633,27 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             return f'{bust}/{waist}/{hip}'
         return str((actor or {}).get('measurements_raw', '') or '').strip()
 
+    @staticmethod
+    def _update_status_text(update_status):
+        return {
+            'active': '正在更新',
+            'suspect': '疑似更新',
+            'inactive': '断更',
+        }.get(str(update_status or '').strip(), '')
+
+    @staticmethod
+    def _format_update_frequency(stats):
+        rate = dict(stats or {}).get('videos_per_month')
+        if rate is None:
+            return ''
+        return f'{float(rate):.2f} 部/月'
+
+    @staticmethod
+    def _display_count(value):
+        if value == '' or value is None:
+            return '暂无'
+        return str(value)
+
     def _render_detail_sections(self):
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
@@ -455,7 +663,20 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
         self.collaborator_tables = {}
         self._render_collaborator_sections()
-        self._render_reference_groups()
+        self.content_layout.addStretch()
+
+    def _reference_links_by_source(self):
+        links = {}
+        for reference in list(self.detail.get('references', []) or []):
+            source = str((reference or {}).get('reference_source', '') or '').strip()
+            detail_url = str((reference or {}).get('detail_url', '') or '').strip()
+            if source and detail_url and source not in links:
+                links[source] = detail_url
+        return links
+
+    def open_source_reference_link(self, source_name):
+        source = str(source_name or '').strip()
+        self.open_reference_link(self._reference_links_by_source().get(source, ''))
 
     def _render_collaborator_sections(self):
         sections = list(self.detail.get('collaborator_sections', []) or [])

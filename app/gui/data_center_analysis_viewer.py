@@ -15,7 +15,7 @@ from app.backend.client import BackendClient
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRICS
 from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
-from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.backend_task_worker import AsyncTaskHostMixin, enable_minimize_button
 from app.gui.i18n import tr
 
 
@@ -37,14 +37,18 @@ def _join_items_by_line(items, items_per_line=10):
     return '\n'.join(grouped_lines)
 
 
-def _apply_uniform_widget_width(widgets, minimum_width=0):
+def _apply_uniform_widget_width(widgets, minimum_width=0, width_scale=1.0, fixed=False):
     active_widgets = [widget for widget in list(widgets or []) if widget is not None]
     if not active_widgets:
         return
     target_width = max(widget.sizeHint().width() for widget in active_widgets)
     target_width = max(int(minimum_width or 0), int(target_width or 0))
+    target_width = max(1, int(target_width * float(width_scale or 1.0)))
     for widget in active_widgets:
-        widget.setMinimumWidth(target_width)
+        if fixed:
+            widget.setFixedWidth(target_width)
+        else:
+            widget.setMinimumWidth(target_width)
 
 
 def _clear_layout(layout):
@@ -61,6 +65,7 @@ def _clear_layout(layout):
 class DataAnalysisWindow(QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self.backend_client = backend_client
         self.analysis_windows = []
         self.init_ui()
@@ -115,6 +120,7 @@ class DataAnalysisWindow(QDialog):
 class MetricSelectionWindow(QDialog):
     def __init__(self, backend_client, analysis_type, metric_configs, title_key, hint_key, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self.backend_client = backend_client
         self.analysis_type = str(analysis_type or '').strip()
         self.metric_configs = tuple(metric_configs or ())
@@ -330,6 +336,10 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
 
 
 class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
+    _DISTRIBUTION_BUTTON_WIDTH_SCALE = 0.6
+    _DISTRIBUTION_BUTTON_BASE_MIN_WIDTH = 104
+    _RANKING_ITEMS_PER_LINE = 7
+
     def __init__(self, backend_client, analysis_type, metric_config, parent=None):
         super().__init__(parent)
         self.backend_client = backend_client
@@ -431,7 +441,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         ranking_rows = list(analysis.get('ranking_rows', []) or [])
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
         distribution_items_per_line = int(analysis.get('distribution_items_per_line', 10) or 10)
-        ranking_items_per_line = int(analysis.get('ranking_items_per_line', 10) or 10)
+        ranking_items_per_line = self._RANKING_ITEMS_PER_LINE
 
         ranking_items = [
             tr(
@@ -485,7 +495,12 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
                     index % max(1, items_per_line),
                 )
                 self.distribution_buttons.append(button)
-            _apply_uniform_widget_width(self.distribution_buttons, minimum_width=104)
+            _apply_uniform_widget_width(
+                self.distribution_buttons,
+                minimum_width=self._DISTRIBUTION_BUTTON_BASE_MIN_WIDTH,
+                width_scale=self._DISTRIBUTION_BUTTON_WIDTH_SCALE,
+                fixed=True,
+            )
             self.distribution_button_widget.show()
         else:
             self.distribution_button_widget.hide()

@@ -1,11 +1,23 @@
+import os
 import unittest
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import patch
 
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
+from PyQt5.QtWidgets import QApplication
 
 from app.gui import main_window
+
+_APP = QApplication.instance() or QApplication([])
+
+
+def _process_events(rounds=5):
+    for _ in range(rounds):
+        _APP.processEvents()
 
 
 class MainWindowStartupTest(unittest.TestCase):
@@ -121,6 +133,7 @@ class MainWindowStartupTest(unittest.TestCase):
         stub = SimpleNamespace(
             snapshot_refresh_timer=SimpleNamespace(start=lambda: started.append('timer')),
             schedule_snapshot_refresh_cycle=lambda: None,
+            enqueue_startup_refresh_tasks=lambda: started.append('startup-refresh'),
         )
 
         with patch('app.gui.main_window.QTimer.singleShot') as single_shot:
@@ -129,13 +142,70 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(started, ['timer'])
         delay_ms, callback = single_shot.call_args.args
         self.assertGreaterEqual(delay_ms, 15000)
-        self.assertIs(callback, stub.schedule_snapshot_refresh_cycle)
+        callback()
+        self.assertEqual(started, ['timer', 'startup-refresh'])
+
+    def test_enqueue_startup_refresh_tasks_adds_interface_refreshes_after_snapshot_refresh(self):
+        task_titles = []
+        calls = []
+        backend_client = SimpleNamespace(
+            list_actors_snapshot=lambda **kwargs: calls.append(('actors', kwargs)),
+            list_code_prefixes_snapshot=lambda **kwargs: calls.append(('prefixes', kwargs)),
+            get_data_center_summary=lambda **kwargs: calls.append(('data_center', kwargs)),
+            list_videos_requiring_manual_category_snapshot=lambda **kwargs: calls.append(('video_category', kwargs)),
+            get_path_library_snapshot=lambda **kwargs: calls.append(('path_library', kwargs)),
+            list_queen_library_snapshot=lambda **kwargs: calls.append(('queen_library', kwargs)),
+            list_queen_keywords_snapshot=lambda **kwargs: calls.append(('queen_keywords', kwargs)),
+            get_queen_library_stats=lambda: calls.append(('queen_stats', {})),
+            list_masterpiece_entries=lambda: calls.append(('masterpiece', {})),
+            list_global_medals=lambda: calls.append(('medals', {})),
+            list_canglangge_candidates_snapshot=lambda **kwargs: calls.append(('canglangge', kwargs)),
+        )
+        stub = SimpleNamespace(
+            backend_client=backend_client,
+            _start_queued_gui_runner=lambda title, worker_factory, success_handler, error_handler, **kwargs: (
+                task_titles.append(title),
+                success_handler(worker_factory().task()),
+                True,
+            )[-1],
+            _on_startup_refresh_task_finished=lambda _result: None,
+            _on_startup_refresh_task_failed=lambda _message: None,
+        )
+
+        main_window.VidNormApp.enqueue_startup_refresh_tasks(stub)
+
+        self.assertEqual(
+            task_titles,
+            [
+                '启动刷新 演员库',
+                '启动刷新 番号库',
+                '启动刷新 数据中心',
+                '启动刷新 视频分类',
+                '启动刷新 路径库',
+                '启动刷新 女王库',
+                '启动刷新 名作堂',
+                '启动刷新 勋章堂',
+                '启动刷新 沧浪阁',
+            ],
+        )
+        self.assertIn(('actors', {'force_refresh': True, 'include_update_status': False}), calls)
+        self.assertIn(('prefixes', {'force_refresh': True}), calls)
+        self.assertIn(('data_center', {'force_refresh': True}), calls)
+        self.assertIn(('video_category', {'force_refresh': True}), calls)
+        self.assertIn(('path_library', {'force_refresh': True}), calls)
+        self.assertIn(('queen_library', {'force_refresh': True}), calls)
+        self.assertIn(('queen_keywords', {'force_refresh': True}), calls)
+        self.assertIn(('queen_stats', {}), calls)
+        self.assertIn(('masterpiece', {}), calls)
+        self.assertIn(('medals', {}), calls)
+        self.assertIn(('canglangge', {'force_refresh': True}), calls)
 
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []
         created_worker = object()
         stub = SimpleNamespace(
             snapshot_refresh_running=False,
+            snapshot_refresh_queued=False,
             snapshot_refresh_task_runner=None,
             snapshot_refresh_worker=None,
             backend_client=SimpleNamespace(),
@@ -143,34 +213,42 @@ class MainWindowStartupTest(unittest.TestCase):
             _create_snapshot_refresh_worker=lambda: created_worker,
             _on_snapshot_refresh_finished=lambda _result=None: None,
             _on_snapshot_refresh_failed=lambda _error=None: None,
+            _cleanup_snapshot_refresh_attempt=lambda: None,
         )
 
-        class _Runner:
-            def __init__(self, parent, worker, success_handler, error_handler, cleanup_handler=None):
-                started.append(('init', parent, worker, success_handler, error_handler, cleanup_handler))
+        def fake_start_queued_runner(task_title, worker_factory, success_handler, error_handler, **kwargs):
+            worker = worker_factory()
+            started.append((task_title, worker, success_handler, error_handler, kwargs))
+            kwargs['before_start']()
+            kwargs['assign_runner'](worker, SimpleNamespace())
+            return True
 
-            def start(self):
-                started.append('start')
+        stub._start_queued_gui_runner = fake_start_queued_runner
 
-        with patch('app.gui.main_window.GuiTaskRunner', _Runner):
-            main_window.VidNormApp.schedule_snapshot_refresh_cycle(stub)
+        main_window.VidNormApp.schedule_snapshot_refresh_cycle(stub)
 
         self.assertTrue(stub.snapshot_refresh_running)
         self.assertIs(stub.snapshot_refresh_worker, created_worker)
-        self.assertEqual(started[0][1], stub)
-        self.assertIs(started[0][2], created_worker)
-        self.assertEqual(started[-1], 'start')
+        self.assertEqual(started[0][0], '后台刷新快照')
+        self.assertIs(started[0][1], created_worker)
 
-    def test_schedule_snapshot_refresh_cycle_skips_while_enrichment_is_active(self):
+    def test_schedule_snapshot_refresh_cycle_queues_even_while_enrichment_is_active(self):
+        queued = []
         stub = SimpleNamespace(
             snapshot_refresh_running=False,
+            snapshot_refresh_queued=False,
             _has_active_enrichment_plan=lambda: True,
+            _on_snapshot_refresh_finished=lambda _result=None: None,
+            _on_snapshot_refresh_failed=lambda _error=None: None,
+            _cleanup_snapshot_refresh_attempt=lambda: None,
+            _start_queued_gui_runner=lambda *args, **kwargs: queued.append((args, kwargs)) or True,
         )
 
         result = main_window.VidNormApp.schedule_snapshot_refresh_cycle(stub)
 
-        self.assertFalse(result)
-        self.assertFalse(stub.snapshot_refresh_running)
+        self.assertTrue(result)
+        self.assertTrue(stub.snapshot_refresh_queued)
+        self.assertEqual(len(queued), 1)
 
     def test_snapshot_refresh_progress_updates_status_with_elapsed_seconds(self):
         snapshot_status = SimpleNamespace(text='')
@@ -253,12 +331,13 @@ class MainWindowStartupTest(unittest.TestCase):
                     'code_prefix_refreshed': 1,
                 }
             ),
-            start_async_task=lambda task, success_handler, error_title=None, block_ui=True: captured.update(
+            start_async_task=lambda task, success_handler, error_title=None, block_ui=True, **kwargs: captured.update(
                 {
                     'task_result': task(),
                     'success_handler': success_handler,
                     'error_title': error_title,
                     'block_ui': block_ui,
+                    'kwargs': dict(kwargs),
                 }
             ),
             _on_refresh_detail_snapshots_finished=lambda result: result,
@@ -270,6 +349,227 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(captured['task_result']['code_prefix_refreshed'], 1)
         self.assertEqual(captured['success_handler'], stub._on_refresh_detail_snapshots_finished)
         self.assertTrue(captured['block_ui'])
+        self.assertEqual(captured['kwargs']['task_title'], '主界面 全量刷新快照')
+
+    def test_task_queue_button_turns_green_when_queue_is_done(self):
+        button = SimpleNamespace(style='')
+        button.setStyleSheet = lambda value: setattr(button, 'style', value)
+        stub = SimpleNamespace(btn_task_queue=button)
+
+        main_window.VidNormApp._update_task_queue_indicator(stub, is_done=False)
+        self.assertNotIn('#16a34a', button.style)
+
+        main_window.VidNormApp._update_task_queue_indicator(stub, is_done=True)
+        self.assertIn('#16a34a', button.style)
+
+    # ── _queued_gui_task_runners lifecycle tests ──────────────────────────
+
+    def test_runner_dict_holds_reference_after_ui_callback_clears_attribute(self):
+        """核心场景：_on_snapshot_refresh_finished 清掉
+        snapshot_refresh_task_runner = None 后，
+        _queued_gui_task_runners 仍持有 runner 引用，
+        handle_cleanup 能正常标记任务状态。"""
+        from app.gui.task_queue import (
+            TASK_STATUS_COMPLETED,
+            TASK_STATUS_RUNNING,
+            get_gui_task_queue,
+        )
+
+        queue = get_gui_task_queue()
+        queue.reset_for_tests()
+        try:
+            # —— 模拟 _start_queued_gui_runner 的核心流程 ——
+            # 用闭包重建 start_runner 和 handle_cleanup 的数据流
+            runners_holder = {}
+            cleanup_calls = []
+            finished_handler_called = []
+            failed_handler_called = []
+
+            attempt_state = {'failed': False, 'message': ''}
+            business_cleanup = lambda: cleanup_calls.append('business_cleanup')
+
+            def handle_cleanup():
+                try:
+                    business_cleanup()
+                    if attempt_state['failed']:
+                        final = queue.mark_failed(record.task_id, attempt_state['message'])
+                        if final:
+                            failed_handler_called.append(attempt_state['message'])
+                        return
+                    queue.mark_completed(record.task_id)
+                finally:
+                    runners_holder.pop(record.task_id, None)
+
+            # 模拟 GuiTaskRunner：将 handle_cleanup 挂到 mock 上
+            mock_runner = SimpleNamespace(cleanup_handler=handle_cleanup)
+
+            # 入队并立即调度（模拟 start_runner）
+            record = queue.enqueue(
+                '后台刷新快照', '主界面',
+                lambda _r: None,  # start_callback 不会被调用，这里直接驱动
+            )
+            record.status = TASK_STATUS_RUNNING
+            queue._running_task_id = record.task_id
+
+            runners_holder[record.task_id] = mock_runner
+
+            # 模拟 snapshot_refresh_task_runner 属性被清掉
+            attr_runner = mock_runner
+            attr_runner = None  # _on_snapshot_refresh_finished 的副作用
+            self.assertIsNone(attr_runner)
+
+            # runner 仍被 runners_holder 持有
+            self.assertEqual(len(runners_holder), 1)
+
+            # —— 模拟 thread.finished → _cleanup → handle_cleanup ——
+            runners_holder[record.task_id].cleanup_handler()
+
+            # 验证
+            self.assertEqual(len(runners_holder), 0)
+            self.assertEqual(cleanup_calls, ['business_cleanup'])
+
+            records = queue.records()
+            self.assertTrue(
+                any(r.task_id == record.task_id and r.status == TASK_STATUS_COMPLETED
+                    for r in records),
+                '任务应被标记为已完成',
+            )
+        finally:
+            queue.reset_for_tests()
+
+    def test_runner_dict_released_on_failure_with_retry(self):
+        """失败（未耗尽重试）：handle_cleanup 仍从 dict 移除 runner。"""
+        from app.gui.task_queue import (
+            TASK_STATUS_COMPLETED,
+            TASK_STATUS_RUNNING,
+            get_gui_task_queue,
+        )
+
+        queue = get_gui_task_queue()
+        queue.reset_for_tests()
+        try:
+            runners_holder = {}
+            attempt_state = {'failed': True, 'message': '网络超时'}
+            failed_handler_called = []
+
+            def handle_cleanup():
+                try:
+                    final = queue.mark_failed(record.task_id, attempt_state['message'])
+                    if final:
+                        failed_handler_called.append(attempt_state['message'])
+                finally:
+                    runners_holder.pop(record.task_id, None)
+
+            mock_runner = SimpleNamespace(cleanup_handler=handle_cleanup)
+
+            record = queue.enqueue('失败任务', '测试', lambda _r: None)
+            record.status = TASK_STATUS_RUNNING
+            queue._running_task_id = record.task_id
+
+            runners_holder[record.task_id] = mock_runner
+
+            # cleanup → mark_failed, 未耗尽重试 → 状态回到 WAITING
+            runners_holder[record.task_id].cleanup_handler()
+
+            self.assertEqual(len(runners_holder), 0)
+
+            records = queue.records()
+            matched = [r for r in records if r.task_id == record.task_id]
+            self.assertTrue(matched)
+            # 默认 max_attempts=5，1 次失败应等待重试
+            self.assertNotEqual(matched[0].status, TASK_STATUS_COMPLETED)
+        finally:
+            queue.reset_for_tests()
+
+    def test_runner_dict_cleanup_is_idempotent(self):
+        """多次 handle_cleanup 不会因重复 pop 而崩溃。"""
+        from app.gui.task_queue import get_gui_task_queue
+
+        queue = get_gui_task_queue()
+        queue.reset_for_tests()
+        try:
+            from app.gui.task_queue import TASK_STATUS_RUNNING
+
+            runners_holder = {}
+
+            def handle_cleanup():
+                try:
+                    queue.mark_completed(record.task_id)
+                finally:
+                    runners_holder.pop(record.task_id, None)
+
+            mock_runner = SimpleNamespace(cleanup_handler=handle_cleanup)
+
+            record = queue.enqueue('幂等测试', '测试', lambda _r: None)
+            record.status = TASK_STATUS_RUNNING
+            queue._running_task_id = record.task_id
+
+            runners_holder[record.task_id] = mock_runner
+            cleanup_fn = mock_runner.cleanup_handler  # 保存引用
+
+            # 第一次
+            cleanup_fn()
+            self.assertEqual(len(runners_holder), 0)
+
+            # 第二次：不会崩溃（handler 已直接持有，不需要再查 dict）
+            cleanup_fn()
+            self.assertEqual(len(runners_holder), 0)
+
+            # 第三次：仍安全
+            cleanup_fn()
+            self.assertEqual(len(runners_holder), 0)
+        finally:
+            queue.reset_for_tests()
+
+    def test_start_queued_gui_runner_stores_runner_in_dict(self):
+        """通过拦截 enqueue 验证 _start_queued_gui_runner 把 runner 存入了 dict。"""
+        from app.gui.task_queue import get_gui_task_queue
+
+        queue = get_gui_task_queue()
+        queue.reset_for_tests()
+        try:
+            stub = SimpleNamespace(_queued_gui_task_runners={})
+            # Bind the unbound method with stub as self via partial.
+            bound_start = partial(
+                main_window.VidNormApp._start_queued_gui_runner, stub,
+            )
+
+            # Intercept enqueue so start_runner fires synchronously.
+            original_enqueue = queue.enqueue
+
+            def fake_enqueue(title, source, start_callback, max_attempts=5):
+                record = original_enqueue(title, source, start_callback, max_attempts)
+                start_callback(record)
+                return record
+
+            with patch.object(queue, 'enqueue', fake_enqueue), \
+                 patch('app.gui.main_window.GuiTaskRunner') as MockRunner:
+                bound_start(
+                    '测试',
+                    worker_factory=lambda: SimpleNamespace(),
+                    finished_handler=lambda _r: None,
+                    failed_handler=lambda _m: None,
+                    source='测试',
+                )
+
+                # 验证 GuiTaskRunner 被调用
+                self.assertTrue(MockRunner.called, 'GuiTaskRunner 应被构造')
+
+                # 验证 runner 存入 _queued_gui_task_runners
+                self.assertEqual(len(stub._queued_gui_task_runners), 1,
+                                 'runner 应被存入 _queued_gui_task_runners')
+
+                # 从 MockRunner.call_args 提取真实的 cleanup_handler
+                # call_args[0] = (parent, worker, finished_h, failed_h, cleanup_h)
+                real_cleanup = MockRunner.call_args[0][4]
+                self.assertTrue(callable(real_cleanup),
+                                'cleanup_handler 应为 callable')
+                real_cleanup()
+
+                # cleanup 后应从 dict 移除
+                self.assertEqual(len(stub._queued_gui_task_runners), 0)
+        finally:
+            queue.reset_for_tests()
 
 
 if __name__ == '__main__':

@@ -9,6 +9,10 @@ __pycache__/
 .video_library_settings.json
 .actor_library_settings.json
 .code_prefix_library_settings.json
+config/user/*.json
+data/*.db
+data/*.db-shm
+data/*.db-wal
 browser_profiles/
 combo_task_logs/
 *.log

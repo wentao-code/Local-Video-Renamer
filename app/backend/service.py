@@ -10,6 +10,7 @@ from urllib.parse import quote, unquote
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
 from app.core.combo_enrichment import get_combo_label, normalize_combo_key
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
+from app.core.enrichment_sources import DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
@@ -37,6 +38,7 @@ from app.services.enrichment import (
     EnrichmentTaskState,
     LibraryEnrichmentService,
     TaskTraceLogger,
+    VideoSourceEnrichmentService,
 )
 from app.services.identity import split_actor_names
 from app.services.ladder import LadderBoardService, VideoLadderTagService
@@ -52,7 +54,7 @@ from app.services.library import (
     summarize_paths,
 )
 from app.services.local_video import LocalVideoLibraryService
-from app.services.queen_library_service import QueenLibraryService
+from app.queen_library.service import QueenLibraryService
 from app.services.video import VIDEO_CATEGORY_SINGLE, VideoFilterService
 from app.core.project_paths import QUEEN_LIBRARY_DB_FILE
 
@@ -284,6 +286,36 @@ class BackendService:
         return {
             **self._clone_masterpiece_detail_snapshot(snapshot),
             'cache_hit': False,
+        }
+
+    def enrich_masterpiece_detail(self, code):
+        self.ensure_database_loaded()
+        normalized_code = str(code or '').strip().upper()
+        if not normalized_code:
+            raise ValueError('缺少名作堂番号')
+
+        def only_current_video(candidate):
+            return str((candidate or {}).get('code', '') or '').strip().upper() == normalized_code
+
+        self.db.ensure_masterpiece_enrichment_candidate(normalized_code)
+        results = []
+        logger = TaskTraceLogger('masterpiece', normalized_code, '名作堂补全')
+        for source_key in (DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE):
+            service = VideoSourceEnrichmentService(
+                self.db,
+                source_key=source_key,
+                show_browser=True,
+                logger=logger,
+                candidate_filter=only_current_video,
+                minimize_browser_window=False,
+            )
+            results.append(service.enrich_next_videos(1))
+
+        self._invalidate_masterpiece_snapshots()
+        refreshed = self.get_masterpiece_detail_snapshot(normalized_code, force_refresh=True)
+        return {
+            **refreshed,
+            'enrichment_results': results,
         }
 
     def list_global_medals(self):

@@ -1,5 +1,6 @@
 from PyQt5.QtWidgets import QDialog, QVBoxLayout
 
+from app.gui.backend_task_worker import enable_minimize_button
 from app.gui.i18n import tr
 from app.gui.video_detail_table import VideoDetailTableWidget
 
@@ -7,6 +8,7 @@ from app.gui.video_detail_table import VideoDetailTableWidget
 class VideoListDetailWindow(QDialog):
     def __init__(self, title, table_title, rows=None, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self.rows = list(rows or [])
         self.table_title = str(table_title or '').strip()
         self.setWindowTitle(str(title or tr('video.detail.default_title')))

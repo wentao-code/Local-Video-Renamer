@@ -12,6 +12,7 @@ def load_sort_settings(settings_file, normalize):
 
 
 def save_sort_settings(settings_file, settings, normalize):
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
     settings_file.write_text(
         json.dumps(normalize(settings), ensure_ascii=False, indent=2),
         encoding='utf-8',

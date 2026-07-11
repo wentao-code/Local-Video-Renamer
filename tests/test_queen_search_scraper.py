@@ -2,7 +2,7 @@ import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
 
-from app.scraper.queen_search_scraper import QueenSearchScraper
+from app.queen_library.scraper import QueenSearchScraper, QueenSearchTransientError
 
 
 QUEEN_PREFIX = '\u5957\u8def\u76f4\u64ad_'
@@ -144,7 +144,7 @@ class QueenSearchScraperTest(unittest.TestCase):
         )
         scraper = _SearchHarness(page)
 
-        with patch('app.scraper.queen_search_scraper.wait_for_page_ready', lambda _page: None):
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
             result = scraper.search(f'{QUEEN_PREFIX}query', show_browser=False)
 
         self.assertEqual(
@@ -159,7 +159,7 @@ class QueenSearchScraperTest(unittest.TestCase):
         page = _SequencedPageStub([{'rows': [f'{QUEEN_PREFIX}QueenTest_Title.mp4']}])
         scraper = _SearchHarness(page)
 
-        with patch('app.scraper.queen_search_scraper.wait_for_page_ready', lambda _page: None):
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
             result = scraper.search(f'{QUEEN_PREFIX}query', show_browser=False, page=page)
 
         self.assertEqual(scraper.session_enter_count, 0)
@@ -169,7 +169,7 @@ class QueenSearchScraperTest(unittest.TestCase):
         page = _SequencedPageStub([{'rows': [f'{QUEEN_PREFIX}QueenVisible_Title.mp4']}])
         scraper = _SearchHarness(page)
 
-        with patch('app.scraper.queen_search_scraper.wait_for_page_ready', lambda _page: None):
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
             result = scraper.search(f'{QUEEN_PREFIX}visible-query', show_browser=True)
 
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenVisible_Title.mp4'])
@@ -198,7 +198,7 @@ class QueenSearchScraperTest(unittest.TestCase):
         )
         scraper = _SearchHarness(page)
 
-        with patch('app.scraper.queen_search_scraper.wait_for_page_ready', lambda _page: None):
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
             result = scraper.search(f'{QUEEN_PREFIX}slow-query', show_browser=False, page=page)
 
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenReady_Title.mp4'])
@@ -213,13 +213,29 @@ class QueenSearchScraperTest(unittest.TestCase):
         )
         scraper = _SearchHarness(page)
 
-        with patch('app.scraper.queen_search_scraper.wait_for_page_ready', lambda _page: None):
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
             result = scraper.search(f'{QUEEN_PREFIX}recover-query', show_browser=False, page=page)
 
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenRecovered_Title.mp4'])
         self.assertEqual(page.wait_calls, [20000])
         self.assertEqual(len(page.visited_urls), 2)
         self.assertEqual(page.reload_calls, [])
+
+    def test_search_raises_transient_error_for_cloudflare_522_page(self):
+        page = _SequencedPageStub(
+            [
+                {
+                    'body_text': 'Connection timed out Error code 522 Browser Working Cloudflare Working Host Error',
+                    'html': '<title>522: Connection timed out</title>',
+                    'rows': [],
+                },
+            ]
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
+            with self.assertRaises(QueenSearchTransientError):
+                scraper.search(f'{QUEEN_PREFIX}cloudflare-down', show_browser=False, page=page)
 
 
 if __name__ == '__main__':

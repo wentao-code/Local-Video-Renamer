@@ -1,6 +1,6 @@
 import unittest
 
-from app.gui.queen_library_sorting import sort_queen_rows
+from app.queen_library.sorting import sort_queen_rows
 
 
 class QueenLibrarySortingTest(unittest.TestCase):

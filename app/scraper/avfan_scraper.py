@@ -13,6 +13,7 @@ from app.core.runtime_config import (
 from app.core.video_code import compact_video_code
 from app.scraper.browser_window import minimize_browser_window_if_needed
 from app.scraper.exceptions import HumanVerificationRequiredError
+from app.scraper.login_status_service import ensure_logged_in_on_home
 
 
 AVFAN_MOVIE_RE = re.compile(r'/movies/([^/?#]+)')
@@ -140,12 +141,21 @@ def reset_avfan_browser_profile(profile_dir=None):
 
 
 class AvfanScraper:
-    def __init__(self, headless=True, locale=None, profile_dir=None, cooldown_before_search=False):
+    def __init__(
+        self,
+        headless=True,
+        locale=None,
+        profile_dir=None,
+        cooldown_before_search=False,
+        minimize_browser_window=True,
+    ):
         self.headless = headless
         self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
         self.profile_dir = Path(profile_dir) if profile_dir else get_avfan_profile_dir()
         self.cooldown_before_search = cooldown_before_search
+        self.minimize_browser_window = bool(minimize_browser_window)
         self.cooldown_used = False
+        self.login_state_checked = False
         self.home_url = get_setting('SCRAPER_HOME_URL', required=True)
         self._playwright_manager = None
         self._playwright = None
@@ -211,6 +221,7 @@ class AvfanScraper:
             self._context = None
             self._page = None
             self.cooldown_used = False
+            self.login_state_checked = False
             try:
                 if self._playwright is not None:
                     self._playwright.stop()
@@ -288,9 +299,12 @@ class AvfanScraper:
         return fresh_page
 
     def minimize_browser_window_if_needed(self, page):
+        if not self.minimize_browser_window:
+            return
         minimize_browser_window_if_needed(page, self.headless)
 
     def search_movie_url(self, page, code):
+        self.ensure_login_state(page)
         if is_login_page(page) or is_security_verification_page(page) or not can_search_from_current_page(page):
             page.goto(self.home_url, wait_until='domcontentloaded', timeout=60000)
 
@@ -311,6 +325,12 @@ class AvfanScraper:
         if results:
             return results[0]['href']
         return None
+
+    def ensure_login_state(self, page):
+        if self.login_state_checked:
+            return
+        ensure_logged_in_on_home(page, self.headless)
+        self.login_state_checked = True
 
     def wait_before_first_search(self, page):
         if not self.cooldown_before_search or self.cooldown_used:

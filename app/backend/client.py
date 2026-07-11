@@ -151,6 +151,10 @@ class BackendClient:
         timeout = max(self.timeout, 120)
         return self._get('/masterpiece/detail' + query, timeout=timeout)
 
+    def enrich_masterpiece_detail(self, code):
+        timeout = max(self.timeout, DETAIL_SNAPSHOT_REBUILD_TIMEOUT_SECONDS)
+        return self._post('/masterpiece/detail/enrich', {'code': code}, timeout=timeout)
+
     def list_global_medals(self):
         return self._get('/medals').get('medals', [])
 

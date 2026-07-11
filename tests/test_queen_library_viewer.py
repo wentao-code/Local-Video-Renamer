@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QApplication
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.main_window import VidNormApp
-from app.gui.queen_library_viewer import KeywordLibraryWindow, QueenDetailWindow, QueenLibraryDataCenterWindow, QueenLibraryWindow
+from app.queen_library.viewer import KeywordLibraryWindow, QueenDetailWindow, QueenLibraryDataCenterWindow, QueenLibraryWindow
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -93,6 +93,16 @@ class _QueenBackendStub:
             'stopped': True,
             'message': '已请求停止女王库抓取，当前批次完成后停止。',
         }
+
+    def get_queen_refresh_progress(self):
+        return {
+            'is_running': True,
+            'processed_count': 1,
+            'total_count': 3,
+            'imported_count': 0,
+            'skipped_count': 0,
+        }
+
 
 
 class _QueenDetailBackendStub:
@@ -191,8 +201,14 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 created['backend_client'] = backend_client
                 created['parent'] = parent
 
-            def exec_(self):
+            def show(self):
                 created['opened'] = True
+
+            def raise_(self):
+                created['raised'] = True
+
+            def activateWindow(self):
+                created['activated'] = True
 
         with patch('app.gui.main_window.QueenLibraryWindow', FakeViewer):
             VidNormApp.show_queen_library_viewer(app)
@@ -200,6 +216,36 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
         self.assertIs(created.get('backend_client'), app.backend_client)
         self.assertIs(created.get('parent'), app)
         self.assertTrue(created.get('opened'))
+        self.assertTrue(created.get('raised'))
+        self.assertTrue(created.get('activated'))
+
+    def test_main_window_reuses_hidden_queen_library_viewer(self):
+        app = VidNormApp.__new__(VidNormApp)
+        app.backend_client = object()
+        created = []
+
+        class FakeViewer:
+            def __init__(self, backend_client, parent=None):
+                created.append(self)
+                self.show_count = 0
+
+            def show(self):
+                self.show_count += 1
+
+            def raise_(self):
+                pass
+
+            def activateWindow(self):
+                pass
+
+        with patch('app.gui.main_window.QueenLibraryWindow', FakeViewer):
+            VidNormApp.show_queen_library_viewer(app)
+            first = app.queen_library_window
+            VidNormApp.show_queen_library_viewer(app)
+
+        self.assertEqual(len(created), 1)
+        self.assertIs(app.queen_library_window, first)
+        self.assertEqual(first.show_count, 2)
 
     def test_queen_library_refresh_button_runs_batch_crawl_with_visible_browser(self):
         backend = _QueenBackendStub()
@@ -247,6 +293,46 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 self.assertFalse(window.btn_stop_crawl.isEnabled())
             finally:
                 window.hide()
+                window.deleteLater()
+
+    def test_queen_library_window_is_non_modal_and_minimizable(self):
+        backend = _QueenBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                self.assertEqual(window.windowModality(), Qt.NonModal)
+                self.assertTrue(window.windowFlags() & Qt.WindowMinimizeButtonHint)
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_close_hides_window_while_crawl_is_running(self):
+        backend = _QueenBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                window.start_crawl()
+
+                class _CloseEvent:
+                    def __init__(self):
+                        self.ignored = False
+                        self.accepted = False
+
+                    def ignore(self):
+                        self.ignored = True
+
+                    def accept(self):
+                        self.accepted = True
+
+                event = _CloseEvent()
+                window.show()
+                window.closeEvent(event)
+
+                self.assertTrue(event.ignored)
+                self.assertFalse(window.isVisible())
+                self.assertTrue(window.crawl_progress_timer.isActive())
+            finally:
+                window.crawl_progress_timer.stop()
                 window.deleteLater()
 
     def test_queen_library_data_center_button_opens_stats_window(self):

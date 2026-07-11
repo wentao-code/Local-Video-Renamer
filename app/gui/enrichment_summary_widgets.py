@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.gui.backend_task_worker import enable_minimize_button
 from app.gui.i18n import tr
 
 
@@ -276,6 +277,7 @@ class SummaryCard(QFrame):
 class SummaryIssueDialog(QDialog):
     def __init__(self, title, list_kind, issue_groups, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self.setWindowTitle(tr('enrichment.summary.list_title', title=title))
         self.resize(760, 480)
         self.tab_widget = QTabWidget(self)

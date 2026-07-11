@@ -85,6 +85,8 @@ def make_handler(service):
                     query.get('code', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
+            if method == 'POST' and path == '/masterpiece/detail/enrich':
+                return service.enrich_masterpiece_detail(body.get('code'))
             if method == 'GET' and path == '/medals':
                 return service.list_global_medals()
             if method == 'POST' and path == '/medals/add':

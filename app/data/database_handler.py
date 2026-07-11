@@ -67,6 +67,8 @@ from app.data.repositories import (
     MigrationMixin,
     PathRepositoryMixin,
 )
+from app.services.detail.update_frequency_service import calculate_update_frequency
+from app.services.detail.update_status_service import resolve_update_status
 from app.services.identity import IGNORED_ACTOR_NAMES, is_ignored_actor_name, split_actor_names
 from app.services.library import extract_code_prefix
 
@@ -112,6 +114,7 @@ class VideoDatabase(
 ):
     def __init__(self, db_path=None):
         self.db_path = Path(db_path) if db_path else DATABASE_FILE
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._startup_maintenance_completed = False
         self._startup_maintenance_lock = Lock()
         self._init_db()
@@ -153,12 +156,15 @@ class VideoDatabase(
             ''')
             self._ensure_column(cursor, 'processed_videos', 'storage_location', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'avfan_movie_id', 'TEXT')
+            self._ensure_column(cursor, 'processed_videos', 'avfan_actors', 'TEXT')
+            self._ensure_column(cursor, 'processed_videos', 'avfan_tags', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_movie_id', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_url', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_title', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_actors', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_actors_raw', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_tags', 'TEXT')
+            self._ensure_column(cursor, 'processed_videos', 'javtxt_description', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_release_date', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'video_category', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'release_date', 'TEXT')
@@ -269,6 +275,65 @@ class VideoDatabase(
                 'idx_masterpiece_actor_details_code_order',
                 'masterpiece_actor_details',
                 'masterpiece_code, actor_order, actor_name',
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS masterpiece_actor_basic_infos (
+                    masterpiece_code TEXT NOT NULL,
+                    actor_name TEXT NOT NULL,
+                    actor_id TEXT DEFAULT '',
+                    binghuo_person_id TEXT DEFAULT '',
+                    ladder_tier TEXT DEFAULT '',
+                    update_status TEXT DEFAULT '',
+                    local_video_count INTEGER DEFAULT 0,
+                    web_total_videos INTEGER DEFAULT 0,
+                    appearance_code_count INTEGER DEFAULT 0,
+                    code_prefix_library_count INTEGER DEFAULT 0,
+                    web_update_frequency_text TEXT DEFAULT '',
+                    web_enrichment_status TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (masterpiece_code, actor_name)
+                )
+                '''
+            )
+            for column_name, column_type in (
+                ('actor_id', "TEXT DEFAULT ''"),
+                ('binghuo_person_id', "TEXT DEFAULT ''"),
+                ('ladder_tier', "TEXT DEFAULT ''"),
+                ('update_status', "TEXT DEFAULT ''"),
+                ('local_video_count', 'INTEGER DEFAULT 0'),
+                ('web_total_videos', 'INTEGER DEFAULT 0'),
+                ('appearance_code_count', 'INTEGER DEFAULT 0'),
+                ('code_prefix_library_count', 'INTEGER DEFAULT 0'),
+                ('web_update_frequency_text', "TEXT DEFAULT ''"),
+                ('web_enrichment_status', "TEXT DEFAULT ''"),
+            ):
+                self._ensure_column(cursor, 'masterpiece_actor_basic_infos', column_name, column_type)
+            self._ensure_index(
+                cursor,
+                'idx_masterpiece_actor_basic_infos_code_actor',
+                'masterpiece_actor_basic_infos',
+                'masterpiece_code, actor_name',
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS masterpiece_actors (
+                    actor_name TEXT PRIMARY KEY,
+                    status INTEGER DEFAULT 0,
+                    handle_mark INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            self._ensure_column(cursor, 'masterpiece_actors', 'status', 'INTEGER DEFAULT 0')
+            self._ensure_column(cursor, 'masterpiece_actors', 'handle_mark', 'INTEGER DEFAULT 0')
+            self._ensure_index(
+                cursor,
+                'idx_masterpiece_actors_status_handle',
+                'masterpiece_actors',
+                'status, handle_mark, actor_name',
             )
             cursor.execute(
                 '''
@@ -4479,9 +4544,6 @@ class VideoDatabase(
                 for record in self._list_processed_video_javtxt_records(cursor):
                     if not is_javtxt_eligible_movie(record):
                         continue
-                    search_state = classify_search_state(record, cached_row=record)
-                    if not is_retryable_search_state(search_state):
-                        continue
                     candidate = {
                         'code': record['code'],
                         'title': record['title'],
@@ -4489,27 +4551,39 @@ class VideoDatabase(
                     }
                     if candidate_filter is not None and not candidate_filter(candidate):
                         continue
+                    if candidate_filter is None:
+                        search_state = classify_search_state(record, cached_row=record)
+                        if not is_retryable_search_state(search_state):
+                            continue
                     pending_rows.append(candidate)
                     if len(pending_rows) >= int(limit):
                         break
                 return pending_rows
             else:
+                if candidate_filter is not None:
+                    where_sql = ''
+                    sql_params = []
+                    sql_limit = ''
+                else:
+                    where_sql = f'WHERE COALESCE({status_column}, ?) IN (?, ?)'
+                    sql_params = [
+                        UNENRICHED_STATUS,
+                        UNENRICHED_STATUS,
+                        FAILED_STATUS,
+                    ]
+                    sql_params.append(int(limit))
+                    sql_limit = 'LIMIT ?'
                 cursor.execute(
                     f'''
                     SELECT code, title, author
                     FROM processed_videos
-                    WHERE COALESCE({status_column}, ?) IN (?, ?)
+                    {where_sql}
                     ORDER BY code
-                    LIMIT ?
+                    {sql_limit}
                     ''',
-                    (
-                        UNENRICHED_STATUS,
-                        UNENRICHED_STATUS,
-                        FAILED_STATUS,
-                        int(limit),
-                    ),
+                    tuple(sql_params),
                 )
-            return [
+            rows = [
                 {
                     'code': row[0] or '',
                     'title': row[1] or '',
@@ -4517,6 +4591,9 @@ class VideoDatabase(
                 }
                 for row in cursor.fetchall()
             ]
+            if candidate_filter is not None:
+                rows = [row for row in rows if candidate_filter(row)][: int(limit)]
+            return rows
 
     def list_video_supplement_candidates(self, limit):
         limit = max(int(limit or 0), 0)
@@ -4673,6 +4750,7 @@ class VideoDatabase(
             'sanitized_javtxt_actors': sanitized_javtxt_actors,
             'raw_javtxt_actors': raw_javtxt_actors,
             'sanitized_javtxt_tags': str(payload.get('javtxt_tags', '') or '').strip(),
+            'javtxt_description': str(payload.get('javtxt_description', payload.get('description', '')) or '').strip(),
             'title': str(payload.get('title', '') or '').strip(),
             'javtxt_title': str(payload.get('javtxt_title', '') or '').strip(),
             'release_date': str(payload.get('release_date', '') or '').strip(),
@@ -4721,6 +4799,7 @@ class VideoDatabase(
                         javtxt_actors = ?,
                         javtxt_actors_raw = ?,
                         javtxt_tags = ?,
+                        javtxt_description = ?,
                         title = COALESCE(NULLIF(?, ''), title),
                         author = ?,
                         release_date = COALESCE(NULLIF(?, ''), release_date),
@@ -4739,6 +4818,7 @@ class VideoDatabase(
                         normalized_javtxt['sanitized_javtxt_actors'],
                         normalized_javtxt['raw_javtxt_actors'],
                         normalized_javtxt['sanitized_javtxt_tags'],
+                        normalized_javtxt['javtxt_description'],
                         normalized_javtxt['title'],
                         normalized_javtxt['sanitized_author'],
                         normalized_javtxt['release_date'],
@@ -4758,10 +4838,20 @@ class VideoDatabase(
                 )
                 self._propagate_processed_video_javtxt_state_for_codes(cursor, [code])
             else:
+                avfan_title = str(info.get('title', '') or '').strip()
+                avfan_author = sanitize_actor_text(' '.join(info.get('actors', []) or []) or info.get('author', ''))
+                avfan_duration = str(info.get('duration', '') or '').strip()
+                avfan_tags = ' '.join(str(item or '').strip() for item in (info.get('tags', []) or []) if str(item or '').strip())
                 cursor.execute(
                     f'''
                     UPDATE processed_videos
-                    SET avfan_movie_id = ?,
+                    SET title = COALESCE(NULLIF(?, ''), title),
+                        author = COALESCE(NULLIF(?, ''), author),
+                        duration = COALESCE(NULLIF(?, ''), duration),
+                        javtxt_tags = COALESCE(NULLIF(javtxt_tags, ''), ?),
+                        avfan_movie_id = ?,
+                        avfan_actors = ?,
+                        avfan_tags = ?,
                         release_date = ?,
                         maker = ?,
                         publisher = ?,
@@ -4771,7 +4861,13 @@ class VideoDatabase(
                     WHERE code = ?
                     ''',
                     (
+                        avfan_title,
+                        avfan_author,
+                        avfan_duration,
+                        avfan_tags,
                         info.get('avfan_movie_id', ''),
+                        avfan_author,
+                        avfan_tags,
                         info.get('release_date', ''),
                         join_values(info.get('maker')),
                         join_values(info.get('publisher')),
@@ -5173,7 +5269,9 @@ class VideoDatabase(
                        COALESCE(m.created_at, ''),
                        COALESCE(m.updated_at, ''),
                        COALESCE(p.avfan_movie_id, ''),
-                       COALESCE(p.javtxt_url, '')
+                       COALESCE(p.javtxt_url, ''),
+                       COALESCE(p.avfan_enrichment_status, ''),
+                       COALESCE(p.javtxt_enrichment_status, '')
                 FROM masterpiece_entries AS m
                 LEFT JOIN processed_videos AS p
                     ON p.code = m.code
@@ -5201,6 +5299,8 @@ class VideoDatabase(
                     'medals': split_ladder_medals(medal_text),
                     'created_at': row[6] or '',
                     'updated_at': row[7] or '',
+                    'avfan_enrichment_status': row[10] or '',
+                    'javtxt_enrichment_status': row[11] or '',
                 }
             )
         return result
@@ -5280,7 +5380,9 @@ class VideoDatabase(
                        COALESCE(m.created_at, ''),
                        COALESCE(m.updated_at, ''),
                        COALESCE(p.avfan_movie_id, ''),
-                       COALESCE(p.javtxt_url, '')
+                       COALESCE(p.javtxt_url, ''),
+                       COALESCE(p.avfan_enrichment_status, ''),
+                       COALESCE(p.javtxt_enrichment_status, '')
                 FROM masterpiece_entries AS m
                 LEFT JOIN processed_videos AS p
                     ON p.code = m.code
@@ -5308,6 +5410,8 @@ class VideoDatabase(
                     'medals': split_ladder_medals(medal_text),
                     'created_at': row[6] or '',
                     'updated_at': row[7] or '',
+                    'avfan_enrichment_status': row[10] or '',
+                    'javtxt_enrichment_status': row[11] or '',
                 }
             )
         return result
@@ -5361,6 +5465,13 @@ class VideoDatabase(
             cursor.execute(
                 '''
                 DELETE FROM masterpiece_actor_details
+                WHERE masterpiece_code = ?
+                ''',
+                (normalized_code,),
+            )
+            cursor.execute(
+                '''
+                DELETE FROM masterpiece_actor_basic_infos
                 WHERE masterpiece_code = ?
                 ''',
                 (normalized_code,),
@@ -5443,6 +5554,42 @@ class VideoDatabase(
                     for actor_detail in actor_details
                 ],
             )
+            cursor.executemany(
+                '''
+                INSERT INTO masterpiece_actor_basic_infos (
+                    masterpiece_code,
+                    actor_name,
+                    actor_id,
+                    binghuo_person_id,
+                    ladder_tier,
+                    update_status,
+                    local_video_count,
+                    web_total_videos,
+                    appearance_code_count,
+                    code_prefix_library_count,
+                    web_update_frequency_text,
+                    web_enrichment_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        normalized_code,
+                        actor_detail.get('actor_name', ''),
+                        actor_detail.get('actor_id', ''),
+                        actor_detail.get('binghuo_person_id', ''),
+                        actor_detail.get('ladder_tier', ''),
+                        actor_detail.get('update_status', ''),
+                        int(actor_detail.get('local_video_count', 0) or 0),
+                        int(actor_detail.get('web_total_videos', 0) or 0),
+                        int(actor_detail.get('appearance_code_count', 0) or 0),
+                        int(actor_detail.get('code_prefix_library_count', 0) or 0),
+                        actor_detail.get('web_update_frequency_text', ''),
+                        actor_detail.get('web_enrichment_status', ''),
+                    )
+                    for actor_detail in actor_details
+                ],
+            )
             conn.commit()
 
         return self._get_masterpiece_entry(normalized_code)
@@ -5456,6 +5603,95 @@ class VideoDatabase(
                 return dict(row or {})
         return {}
 
+    def ensure_masterpiece_enrichment_candidate(self, code):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return {}
+
+        processed_detail = self.get_video_detail_record(normalized_code)
+        if processed_detail:
+            return processed_detail
+
+        entry = self._get_masterpiece_entry(normalized_code)
+        references = self._collect_masterpiece_references(normalized_code)
+        if not entry and not references:
+            return {}
+
+        primary_reference = self._pick_primary_masterpiece_reference(references)
+        if not primary_reference:
+            primary_reference = {
+                'matched_code': normalized_code,
+                'title': (entry or {}).get('title', '') or normalized_code,
+                'author': (entry or {}).get('author', ''),
+                'release_date': '',
+                'avfan_movie_id': '',
+                'javtxt_movie_id': '',
+                'javtxt_url': '',
+            }
+
+        title = str(primary_reference.get('title', '') or (entry or {}).get('title', '') or normalized_code).strip()
+        author = sanitize_actor_text(primary_reference.get('author', '') or (entry or {}).get('author', ''))
+        release_date = str(primary_reference.get('release_date', '') or '').strip()
+        javtxt_movie_id = str(primary_reference.get('javtxt_movie_id', '') or '').strip()
+        javtxt_url = str(primary_reference.get('javtxt_url', '') or '').strip()
+        avfan_movie_id = str(primary_reference.get('avfan_movie_id', '') or '').strip()
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO processed_videos (
+                    code,
+                    title,
+                    author,
+                    release_date,
+                    avfan_movie_id,
+                    javtxt_movie_id,
+                    javtxt_url,
+                    javtxt_title,
+                    javtxt_actors,
+                    javtxt_actors_raw,
+                    javtxt_release_date,
+                    avfan_enrichment_status,
+                    javtxt_enrichment_status,
+                    enrichment_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code) DO UPDATE SET
+                    title = COALESCE(NULLIF(processed_videos.title, ''), excluded.title),
+                    author = COALESCE(NULLIF(processed_videos.author, ''), excluded.author),
+                    release_date = COALESCE(NULLIF(processed_videos.release_date, ''), excluded.release_date),
+                    avfan_movie_id = COALESCE(NULLIF(processed_videos.avfan_movie_id, ''), excluded.avfan_movie_id),
+                    javtxt_movie_id = COALESCE(NULLIF(processed_videos.javtxt_movie_id, ''), excluded.javtxt_movie_id),
+                    javtxt_url = COALESCE(NULLIF(processed_videos.javtxt_url, ''), excluded.javtxt_url),
+                    javtxt_title = COALESCE(NULLIF(processed_videos.javtxt_title, ''), excluded.javtxt_title),
+                    javtxt_actors = COALESCE(NULLIF(processed_videos.javtxt_actors, ''), excluded.javtxt_actors),
+                    javtxt_actors_raw = COALESCE(NULLIF(processed_videos.javtxt_actors_raw, ''), excluded.javtxt_actors_raw),
+                    javtxt_release_date = COALESCE(NULLIF(processed_videos.javtxt_release_date, ''), excluded.javtxt_release_date),
+                    avfan_enrichment_status = COALESCE(NULLIF(processed_videos.avfan_enrichment_status, ''), excluded.avfan_enrichment_status),
+                    javtxt_enrichment_status = COALESCE(NULLIF(processed_videos.javtxt_enrichment_status, ''), excluded.javtxt_enrichment_status),
+                    enrichment_status = COALESCE(NULLIF(processed_videos.enrichment_status, ''), excluded.enrichment_status)
+                ''',
+                (
+                    normalized_code,
+                    title,
+                    author,
+                    release_date,
+                    avfan_movie_id,
+                    javtxt_movie_id,
+                    javtxt_url,
+                    title,
+                    author,
+                    author,
+                    release_date,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                ),
+            )
+            conn.commit()
+        return self.get_video_detail_record(normalized_code)
+
     def get_masterpiece_detail_record(self, code):
         normalized_code = standardize_video_code(code)
         if not normalized_code:
@@ -5464,6 +5700,7 @@ class VideoDatabase(
         entry = self._get_masterpiece_entry(normalized_code)
         if not entry:
             return {}
+        processed_detail = self.get_video_detail_record(normalized_code)
 
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -5515,6 +5752,25 @@ class VideoDatabase(
                 (normalized_code,),
             )
             actor_rows = cursor.fetchall()
+            cursor.execute(
+                '''
+                SELECT actor_name,
+                       actor_id,
+                       binghuo_person_id,
+                       ladder_tier,
+                       update_status,
+                       local_video_count,
+                       web_total_videos,
+                       appearance_code_count,
+                       code_prefix_library_count,
+                       web_update_frequency_text,
+                       web_enrichment_status
+                FROM masterpiece_actor_basic_infos
+                WHERE masterpiece_code = ?
+                ''',
+                (normalized_code,),
+            )
+            actor_basic_rows = cursor.fetchall()
 
         references = [
             {
@@ -5538,10 +5794,26 @@ class VideoDatabase(
         ]
 
         if not references:
-            processed_detail = self.get_video_detail_record(normalized_code)
             if processed_detail:
                 references = [self._build_processed_masterpiece_reference(processed_detail)]
 
+        actor_basic_by_name = {
+            row[0] or '': {
+                'actor_id': row[1] or '',
+                'binghuo_person_id': row[2] or '',
+                'ladder_tier': row[3] or '',
+                'update_status': row[4] or '',
+                'update_status_text': self._masterpiece_update_status_text(row[4] or ''),
+                'local_video_count': int(row[5] or 0),
+                'web_total_videos': int(row[6] or 0),
+                'appearance_code_count': int(row[7] or 0),
+                'code_prefix_library_count': int(row[8] or 0),
+                'web_update_frequency_text': row[9] or '',
+                'web_enrichment_status': row[10] or '',
+            }
+            for row in actor_basic_rows
+            if row[0]
+        }
         actor_details = [
             {
                 'actor_name': row[0] or '',
@@ -5559,6 +5831,7 @@ class VideoDatabase(
                 'measurements_raw': row[12] or '',
                 'actor_exists_in_library': int(row[13] or 0),
                 'ladder_tier': self._get_masterpiece_actor_ladder_tier(row[0] or ''),
+                **actor_basic_by_name.get(row[0] or '', {}),
             }
             for row in actor_rows
         ]
@@ -5568,6 +5841,15 @@ class VideoDatabase(
                 self._pick_primary_masterpiece_reference(references),
                 references,
             )
+        actor_details = self._merge_masterpiece_actor_details_from_source_texts(
+            normalized_code,
+            actor_details,
+            processed_detail,
+            self._pick_primary_masterpiece_reference(references),
+            references,
+        )
+        actor_details = self._ensure_masterpiece_actor_basic_snapshots(normalized_code, actor_details)
+        actor_details = self._filter_visible_masterpiece_actor_details(actor_details)
 
         return {
             'code': entry.get('code', normalized_code),
@@ -5575,6 +5857,15 @@ class VideoDatabase(
             'author': entry.get('author', ''),
             'display_title': entry.get('display_title', entry.get('title', '')),
             'display_author': entry.get('display_author', entry.get('author', '')),
+            'display_tags': (processed_detail or {}).get('javtxt_tags', ''),
+            'first_source_title': (processed_detail or {}).get('title', ''),
+            'first_source_duration': (processed_detail or {}).get('duration', ''),
+            'first_source_tags': (processed_detail or {}).get('avfan_tags', '') or (processed_detail or {}).get('javtxt_tags', ''),
+            'first_source_actors': (processed_detail or {}).get('avfan_actors', '') or (processed_detail or {}).get('author', ''),
+            'second_source_title': (processed_detail or {}).get('javtxt_title', ''),
+            'second_source_actors': (processed_detail or {}).get('javtxt_actors', ''),
+            'second_source_tags': (processed_detail or {}).get('javtxt_tags', ''),
+            'second_source_description': (processed_detail or {}).get('javtxt_description', ''),
             'primary_source': entry.get('primary_source', ''),
             'primary_detail_url': entry.get('primary_detail_url', ''),
             'medal': entry.get('medal', ''),
@@ -5583,6 +5874,246 @@ class VideoDatabase(
             'collaborator_sections': self._collect_masterpiece_collaborator_sections(actor_details),
             'references': references,
         }
+
+    def _filter_visible_masterpiece_actor_details(self, actor_details):
+        hidden_names = self._hidden_masterpiece_actor_names()
+        return [
+            dict(row or {})
+            for row in (actor_details or [])
+            if str((row or {}).get('actor_name', '') or '').strip() not in hidden_names
+        ]
+
+    def _ensure_masterpiece_actor_basic_snapshots(self, normalized_code, actor_details):
+        enriched_details = []
+        for actor_detail in actor_details or []:
+            row = dict(actor_detail or {})
+            actor_name = str(row.get('actor_name', '') or '').strip()
+            if not actor_name:
+                enriched_details.append(row)
+                continue
+            self._sync_masterpiece_actor_registration(actor_name)
+            snapshot = self._build_masterpiece_actor_basic_snapshot(
+                normalized_code,
+                actor_name,
+                actor_row=self._find_exact_actor_row(actor_name),
+                enrichment_record=self.get_actor_enrichment_record(actor_name),
+            )
+            merged = {**row, **snapshot}
+            enriched_details.append(merged)
+        self._store_masterpiece_actor_basic_snapshots(normalized_code, enriched_details)
+        return enriched_details
+
+    def _store_masterpiece_actor_basic_snapshots(self, normalized_code, actor_details):
+        rows = []
+        for actor_detail in actor_details or []:
+            actor_name = str((actor_detail or {}).get('actor_name', '') or '').strip()
+            if not actor_name:
+                continue
+            rows.append(
+                (
+                    normalized_code,
+                    actor_name,
+                    (actor_detail or {}).get('actor_id', ''),
+                    (actor_detail or {}).get('binghuo_person_id', ''),
+                    (actor_detail or {}).get('ladder_tier', ''),
+                    (actor_detail or {}).get('update_status', ''),
+                    int((actor_detail or {}).get('local_video_count', 0) or 0),
+                    int((actor_detail or {}).get('web_total_videos', 0) or 0),
+                    int((actor_detail or {}).get('appearance_code_count', 0) or 0),
+                    int((actor_detail or {}).get('code_prefix_library_count', 0) or 0),
+                    (actor_detail or {}).get('web_update_frequency_text', ''),
+                    (actor_detail or {}).get('web_enrichment_status', ''),
+                )
+            )
+        if not rows:
+            return
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                '''
+                INSERT INTO masterpiece_actor_basic_infos (
+                    masterpiece_code,
+                    actor_name,
+                    actor_id,
+                    binghuo_person_id,
+                    ladder_tier,
+                    update_status,
+                    local_video_count,
+                    web_total_videos,
+                    appearance_code_count,
+                    code_prefix_library_count,
+                    web_update_frequency_text,
+                    web_enrichment_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(masterpiece_code, actor_name) DO UPDATE SET
+                    actor_id = excluded.actor_id,
+                    binghuo_person_id = excluded.binghuo_person_id,
+                    ladder_tier = excluded.ladder_tier,
+                    update_status = excluded.update_status,
+                    local_video_count = excluded.local_video_count,
+                    web_total_videos = excluded.web_total_videos,
+                    appearance_code_count = excluded.appearance_code_count,
+                    code_prefix_library_count = excluded.code_prefix_library_count,
+                    web_update_frequency_text = excluded.web_update_frequency_text,
+                    web_enrichment_status = excluded.web_enrichment_status,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                rows,
+            )
+            conn.commit()
+
+    def _build_masterpiece_actor_basic_snapshot(
+        self,
+        normalized_code,
+        actor_name,
+        actor_row=None,
+        enrichment_record=None,
+    ):
+        actor_row = dict(actor_row or {})
+        enrichment_record = dict(enrichment_record or {})
+        try:
+            local_rows = self.list_local_videos_by_actor_name(actor_name, refresh_categories=False)
+        except TypeError:
+            local_rows = self.list_local_videos_by_actor_name(actor_name)
+        web_rows = list(self.list_actor_movies(actor_name) or [])
+        eligible_web_rows = [row for row in web_rows if is_javtxt_eligible_movie(row)]
+        cache_rows = self.get_javtxt_actor_cache_by_codes(
+            [standardize_video_code((row or {}).get('code', '')) for row in eligible_web_rows]
+        )
+        appearance_prefixes = self._collect_masterpiece_unique_prefixes(list(local_rows or []) + eligible_web_rows)
+        update_status = resolve_update_status(list(local_rows or []) + eligible_web_rows)
+        return {
+            'actor_id': str((actor_row or {}).get('actor_id', '') or (enrichment_record or {}).get('actor_id', '') or '').strip(),
+            'binghuo_person_id': str((enrichment_record or {}).get('binghuo_person_id', '') or '').strip(),
+            'ladder_tier': self._get_masterpiece_actor_ladder_tier(actor_name),
+            'update_status': update_status,
+            'update_status_text': self._masterpiece_update_status_text(update_status),
+            'local_video_count': len(local_rows or []),
+            'web_total_videos': int((enrichment_record or {}).get('avfan_total_videos', 0) or 0),
+            'appearance_code_count': len(appearance_prefixes),
+            'code_prefix_library_count': self._count_prefixes_in_library(appearance_prefixes),
+            'web_update_frequency': calculate_update_frequency(eligible_web_rows),
+            'web_update_frequency_text': self._format_masterpiece_update_frequency(
+                calculate_update_frequency(eligible_web_rows)
+            ),
+            'web_enrichment_status': self._build_live_masterpiece_actor_enrichment_status(
+                enrichment_record,
+                eligible_web_rows,
+                cache_rows,
+            ),
+        }
+
+    def _build_live_masterpiece_actor_enrichment_status(self, enrichment, movies, cache_rows):
+        avfan_status = str((enrichment or {}).get('avfan_enrichment_status', '')).strip()
+        if not avfan_status:
+            avfan_status = str((enrichment or {}).get('enrichment_status', '')).strip() or UNENRICHED_STATUS
+        javtxt_record_status = str((enrichment or {}).get('javtxt_enrichment_status', '')).strip() or UNENRICHED_STATUS
+        summary = summarize_javtxt_movies(movies, cache_rows=cache_rows)
+        javtxt_status = javtxt_record_status if summary['total_count'] <= 0 else build_javtxt_library_status(
+            movies,
+            cache_rows=cache_rows,
+        )
+        binghuo_status = str((enrichment or {}).get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+        baomu_status = str((enrichment or {}).get('baomu_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+        return build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_status, baomu_status)
+
+    @staticmethod
+    def _format_masterpiece_update_frequency(stats):
+        rate = dict(stats or {}).get('videos_per_month')
+        if rate is None:
+            return ''
+        return f'{float(rate):.2f} 部/月'
+
+    @staticmethod
+    def _masterpiece_update_status_text(update_status):
+        normalized_status = str(update_status or '').strip()
+        return {
+            'active': '正在更新',
+            'suspect': '疑似更新',
+            'inactive': '断更',
+        }.get(normalized_status, '')
+
+    @staticmethod
+    def _collect_masterpiece_unique_prefixes(rows):
+        return {
+            normalized_prefix
+            for normalized_prefix in (
+                extract_code_prefix(standardize_video_code((row or {}).get('code', '')))
+                for row in (rows or [])
+            )
+            if normalized_prefix
+        }
+
+    def _count_prefixes_in_library(self, prefixes):
+        available_prefixes = {
+            str(prefix or '').strip().upper()
+            for prefix in (self.list_code_prefix_enrichment_records() or {}).keys()
+            if str(prefix or '').strip()
+        }
+        return sum(1 for prefix in (prefixes or set()) if str(prefix or '').strip().upper() in available_prefixes)
+
+    def _hidden_masterpiece_actor_names(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT actor_name
+                FROM masterpiece_actors
+                WHERE COALESCE(handle_mark, 0) = 2
+                '''
+            )
+            rows = cursor.fetchall()
+        return {str((row or [''])[0] or '').strip() for row in rows if str((row or [''])[0] or '').strip()}
+
+    def _merge_masterpiece_actor_details_from_source_texts(
+        self,
+        normalized_code,
+        actor_details,
+        processed_detail,
+        primary_reference,
+        references,
+    ):
+        merged_details = [dict(row or {}) for row in (actor_details or [])]
+        hidden_names = self._hidden_masterpiece_actor_names()
+        seen = {
+            str((row or {}).get('actor_name', '') or '').strip()
+            for row in merged_details
+            if str((row or {}).get('actor_name', '') or '').strip()
+        }
+        source_texts = [
+            (processed_detail or {}).get('avfan_actors', ''),
+            (processed_detail or {}).get('author', ''),
+            (processed_detail or {}).get('javtxt_actors', ''),
+        ]
+        release_date = self._resolve_masterpiece_release_date(primary_reference, references)
+        if not release_date:
+            release_date = str((processed_detail or {}).get('release_date', '') or '').strip()
+
+        for source_text in source_texts:
+            for actor_name in split_actor_names(source_text):
+                normalized_name = str(actor_name or '').strip()
+                if not normalized_name or normalized_name in seen:
+                    continue
+                if normalized_name in hidden_names:
+                    seen.add(normalized_name)
+                    continue
+                seen.add(normalized_name)
+                self._sync_masterpiece_actor_registration(normalized_name)
+                actor_row = self._find_exact_actor_row(normalized_name)
+                actor_exists_in_library = 1 if actor_row else 0
+                merged_details.append(
+                    self._build_masterpiece_actor_detail_row(
+                        normalized_code,
+                        normalized_name,
+                        len(merged_details) + 1,
+                        release_date,
+                        actor_exists_in_library,
+                        actor_row=actor_row,
+                        enrichment_record=self.get_actor_enrichment_record(normalized_name),
+                    )
+                )
+        return merged_details
 
     def _collect_masterpiece_references(self, normalized_code):
         references = []
@@ -5718,19 +6249,66 @@ class VideoDatabase(
             ),
         }
 
+    def _sync_masterpiece_actor_registration(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return {'actor_name': '', 'status': 0, 'handle_mark': 0}
+
+        actor_exists = 1 if self._find_exact_actor_row(normalized_name) else 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO masterpiece_actors (actor_name, status, handle_mark)
+                VALUES (?, ?, 0)
+                ON CONFLICT(actor_name) DO UPDATE SET
+                    status = excluded.status,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (normalized_name, actor_exists),
+            )
+            cursor.execute(
+                '''
+                SELECT status, handle_mark
+                FROM masterpiece_actors
+                WHERE actor_name = ?
+                ''',
+                (normalized_name,),
+            )
+            row = cursor.fetchone()
+            conn.commit()
+
+        status = int((row or [actor_exists, 0])[0] or 0)
+        handle_mark = int((row or [0, 0])[1] or 0)
+        if status == 0 and handle_mark == 1:
+            try:
+                self.add_actor(normalized_name, birthday='', age='')
+            except ValueError:
+                pass
+            status = 1 if self._find_exact_actor_row(normalized_name) else 0
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''
+                    UPDATE masterpiece_actors
+                    SET status = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE actor_name = ?
+                    ''',
+                    (status, normalized_name),
+                )
+                conn.commit()
+
+        return {'actor_name': normalized_name, 'status': status, 'handle_mark': handle_mark}
+
     def _collect_masterpiece_actor_details(self, normalized_code, primary_reference, references):
         actor_names = self._collect_masterpiece_actor_names(primary_reference, references)
         release_date = self._resolve_masterpiece_release_date(primary_reference, references)
         actor_details = []
         for actor_order, actor_name in enumerate(actor_names, start=1):
+            self._sync_masterpiece_actor_registration(actor_name)
             actor_row = self._find_exact_actor_row(actor_name)
             actor_exists_in_library = 1 if actor_row else 0
-            if actor_row is None:
-                try:
-                    self.add_actor(actor_name, birthday='', age='')
-                except ValueError:
-                    pass
-                actor_row = self._find_exact_actor_row(actor_name)
             enrichment_record = self.get_actor_enrichment_record(actor_name)
             actor_details.append(
                 self._build_masterpiece_actor_detail_row(
@@ -5784,6 +6362,12 @@ class VideoDatabase(
         actor_row = dict(actor_row or {})
         enrichment_record = dict(enrichment_record or {})
         birthday = self._resolve_masterpiece_actor_birthday(actor_row, enrichment_record)
+        basic_snapshot = self._build_masterpiece_actor_basic_snapshot(
+            normalized_code,
+            actor_name,
+            actor_row=actor_row,
+            enrichment_record=enrichment_record,
+        )
         return {
             'actor_name': actor_name,
             'actor_order': int(actor_order or 0),
@@ -5804,6 +6388,7 @@ class VideoDatabase(
             ),
             'actor_exists_in_library': int(actor_exists_in_library or 0),
             'ladder_tier': self._get_masterpiece_actor_ladder_tier(actor_name),
+            **basic_snapshot,
         }
 
     def _find_exact_actor_row(self, actor_name):
@@ -6066,11 +6651,14 @@ class VideoDatabase(
                        size,
                        storage_location,
                        avfan_movie_id,
+                       avfan_actors,
+                       avfan_tags,
                        javtxt_movie_id,
                        javtxt_url,
                        javtxt_title,
                        javtxt_actors,
                        javtxt_tags,
+                       javtxt_description,
                        video_category,
                        release_date,
                        maker,
@@ -6098,20 +6686,23 @@ class VideoDatabase(
             'size': row[4] or '',
             'storage_location': row[5] or '',
             'avfan_movie_id': row[6] or '',
-            'javtxt_movie_id': row[7] or '',
-            'javtxt_url': row[8] or '',
-            'javtxt_title': row[9] or '',
-            'javtxt_actors': sanitize_actor_text(row[10] or ''),
-            'javtxt_tags': row[11] or '',
-            'video_category': normalize_video_category(row[12]),
-            'release_date': row[13] or '',
-            'maker': row[14] or '',
-            'publisher': row[15] or '',
-            'avfan_enrichment_status': row[16] or '',
-            'javtxt_enrichment_status': row[17] or '',
-            'supplement_enrichment_status': row[18] or '',
-            'supplement_enrichment_error': row[19] or '',
-            'supplement_enriched_at': row[20] or '',
+            'avfan_actors': sanitize_actor_text(row[7] or ''),
+            'avfan_tags': row[8] or '',
+            'javtxt_movie_id': row[9] or '',
+            'javtxt_url': row[10] or '',
+            'javtxt_title': row[11] or '',
+            'javtxt_actors': sanitize_actor_text(row[12] or ''),
+            'javtxt_tags': row[13] or '',
+            'javtxt_description': row[14] or '',
+            'video_category': normalize_video_category(row[15]),
+            'release_date': row[16] or '',
+            'maker': row[17] or '',
+            'publisher': row[18] or '',
+            'avfan_enrichment_status': row[19] or '',
+            'javtxt_enrichment_status': row[20] or '',
+            'supplement_enrichment_status': row[21] or '',
+            'supplement_enrichment_error': row[22] or '',
+            'supplement_enriched_at': row[23] or '',
         }
 
     def bulk_update_processed_videos_for_supplement(self, updates):

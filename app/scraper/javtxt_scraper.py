@@ -32,13 +32,16 @@ MAKER_LABELS = ('片商',)
 PUBLISHER_LABELS = ('厂牌',)
 TAG_LABELS = ('类别',)
 
+DESCRIPTION_LABELS = ('剧情介绍', '剧情简介', '剧情', '简介', '介绍')
+
 
 class JavtxtScraper:
-    def __init__(self, headless=True, locale=None, logger=None):
+    def __init__(self, headless=True, locale=None, logger=None, minimize_browser_window=True):
         self.headless = headless
         self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
         self.base_url = get_javtxt_base_url()
         self.logger = logger
+        self.minimize_browser_window = bool(minimize_browser_window)
         self._playwright_manager = None
         self._playwright = None
         self._browser = None
@@ -75,7 +78,8 @@ class JavtxtScraper:
             self._browser = self._playwright.chromium.launch(**launch_options)
         self._context = self._browser.new_context(locale=self.locale, viewport={'width': 1440, 'height': 1200})
         self._page = self._context.new_page()
-        minimize_browser_window_if_needed(self._page, self.headless)
+        if self.minimize_browser_window:
+            minimize_browser_window_if_needed(self._page, self.headless)
         self._log('INFO', 'JAVTXT 浏览器会话已打开', headless=self.headless, locale=self.locale)
         return self._page
 
@@ -199,6 +203,7 @@ class JavtxtScraper:
         maker = extract_detail_value(lines, MAKER_LABELS)
         publisher = extract_detail_value(lines, PUBLISHER_LABELS)
         tags_text = extract_section_text(lines, TAG_LABELS)
+        description_text = extract_section_text(lines, DESCRIPTION_LABELS)
         self._log(
             'INFO',
             'JAVTXT 页面文本已提取',
@@ -223,6 +228,7 @@ class JavtxtScraper:
             'javtxt_actors': actors_text,
             'javtxt_actors_raw': raw_actors_text,
             'javtxt_tags': tags_text,
+            'javtxt_description': description_text,
             'javtxt_movie_id': movie_id,
             'javtxt_url': final_url,
         }
@@ -427,6 +433,8 @@ def is_next_section_label(text):
     value = strip_leading_section_icons(raw_value)
     if not value:
         return False
+    if value in {'出演女优', '演员', '番号', '类别', '标签', '剧情介绍', '剧情简介', '简介', '介绍'}:
+        return True
     if value in {'出演女优', '演员', '番号', '类别', '标签'}:
         return True
     if value.endswith(('介绍', '简介')):

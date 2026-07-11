@@ -26,6 +26,7 @@ from app.core.video_filter_rules import (
     get_filter_keywords,
 )
 from app.core.video_filter_settings import load_video_filter_settings, save_video_filter_settings
+from app.gui.backend_task_worker import enable_minimize_button
 from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.i18n import tr
 
@@ -107,6 +108,7 @@ class KeywordRuleEditor(QWidget):
 class VideoFilterDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        enable_minimize_button(self)
         self._saved_payload = None
         self.setWindowTitle(tr('video.filter.title'))
         self.resize(1680, 420)

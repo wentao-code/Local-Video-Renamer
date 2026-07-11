@@ -86,7 +86,7 @@ class DataCenterAnalysisViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
-    def test_actor_metric_distribution_renders_clickable_bucket_buttons_in_ten_columns(self):
+    def test_actor_metric_distribution_renders_smaller_clickable_bucket_buttons(self):
         backend = _BackendStub()
         metric_config = {"key": "age", "label_key": "data_center.analysis.age"}
 
@@ -99,11 +99,13 @@ class DataCenterAnalysisViewerTest(unittest.TestCase):
                 self.assertEqual(button_texts[10], "60\u5c81: 11")
                 self.assertIsNotNone(window.distribution_button_layout.itemAtPosition(0, 9))
                 self.assertIsNotNone(window.distribution_button_layout.itemAtPosition(1, 0))
+                self.assertEqual(window.distribution_buttons[0].minimumWidth(), 76)
+                self.assertEqual(window.distribution_buttons[0].maximumWidth(), 76)
             finally:
                 window.hide()
                 window.deleteLater()
 
-    def test_actor_metric_ranking_renders_six_columns_with_aligned_cells(self):
+    def test_actor_metric_ranking_renders_seven_columns_with_aligned_cells(self):
         backend = _BackendStub()
         metric_config = {"key": "age", "label_key": "data_center.analysis.age"}
 
@@ -111,11 +113,28 @@ class DataCenterAnalysisViewerTest(unittest.TestCase):
             window = MetricAnalysisWindow(backend, "actor", metric_config)
             try:
                 self.assertEqual(len(window.ranking_item_widgets), 7)
-                self.assertIsNotNone(window.ranking_grid_layout.itemAtPosition(0, 5))
-                self.assertIsNotNone(window.ranking_grid_layout.itemAtPosition(1, 0))
+                self.assertIsNotNone(window.ranking_grid_layout.itemAtPosition(0, 6))
+                self.assertIsNone(window.ranking_grid_layout.itemAtPosition(1, 0))
 
                 widths = [widget.minimumWidth() for widget in window.ranking_item_widgets]
                 self.assertTrue(all(width == widths[0] for width in widths))
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_other_actor_metric_pages_use_same_layout_as_age(self):
+        backend = _BackendStub()
+        metric_config = {"key": "height", "label_key": "data_center.analysis.height"}
+
+        with patch.object(AsyncTaskHostMixin, "start_async_task", _run_sync_async_task):
+            window = MetricAnalysisWindow(backend, "actor", metric_config)
+            try:
+                self.assertEqual(window.distribution_buttons[0].minimumWidth(), 76)
+                self.assertEqual(window.distribution_buttons[0].maximumWidth(), 76)
+                self.assertIsNotNone(window.distribution_button_layout.itemAtPosition(0, 9))
+                self.assertIsNotNone(window.distribution_button_layout.itemAtPosition(1, 0))
+                self.assertIsNotNone(window.ranking_grid_layout.itemAtPosition(0, 6))
+                self.assertIsNone(window.ranking_grid_layout.itemAtPosition(1, 0))
             finally:
                 window.hide()
                 window.deleteLater()
