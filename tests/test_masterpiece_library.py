@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR
+from app.backend.service import BackendService
 from app.data.database_handler import VideoDatabase
 from app.services.video import VIDEO_CATEGORY_CO_STAR
 
@@ -196,8 +197,30 @@ class MasterpieceLibraryTest(unittest.TestCase):
         self.assertEqual(rows[0]['javtxt_enrichment_status'], '已补全')
 
     def test_add_masterpiece_entry_requires_existing_video(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as context:
             self.db.add_masterpiece_entry('MISS-001')
+
+        self.assertEqual(str(context.exception), '视频不存在: MISS-001')
+
+    def test_add_masterpiece_entry_requires_code(self):
+        with self.assertRaises(ValueError) as context:
+            self.db.add_masterpiece_entry('')
+
+        self.assertEqual(str(context.exception), '缺少视频编号')
+
+    def test_backend_masterpiece_missing_detail_error_is_readable(self):
+        class MissingDetailDatabase:
+            def get_masterpiece_detail_record(self, _code):
+                return {}
+
+        service = object.__new__(BackendService)
+        service.db = MissingDetailDatabase()
+        service.ensure_database_loaded = lambda: None
+
+        with self.assertRaises(FileNotFoundError) as context:
+            service.get_masterpiece_detail('RCTD-729')
+
+        self.assertEqual(str(context.exception), '名作堂详情不存在: RCTD-729')
 
     def test_add_masterpiece_entry_accepts_actor_library_only_match(self):
         self._replace_actor_movies(

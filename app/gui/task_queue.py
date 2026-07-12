@@ -6,7 +6,20 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 TASK_STATUS_WAITING = '等待中'
 TASK_STATUS_RUNNING = '正在执行'
+TASK_STATUS_PAUSED = '已暂停'
 TASK_STATUS_COMPLETED = '已完成'
+
+RUN_MODE_VIEW = 'view'
+RUN_MODE_TASK = 'task'
+
+TASK_CATEGORY_VIEW = '查看任务'
+TASK_CATEGORY_ENRICHMENT = '补全任务'
+TASK_CATEGORY_MAINTENANCE = '维护任务'
+
+PAUSABLE_TASK_CATEGORIES = {
+    TASK_CATEGORY_ENRICHMENT,
+    TASK_CATEGORY_MAINTENANCE,
+}
 
 
 def _now_text():
@@ -18,6 +31,8 @@ class TaskRecord:
     task_id: int
     title: str
     source: str
+    task_category: str = TASK_CATEGORY_VIEW
+    task_kind: str = ''
     status: str = TASK_STATUS_WAITING
     attempts: int = 0
     max_attempts: int = 5
@@ -38,12 +53,15 @@ class GuiTaskQueue(QObject):
         self._start_callbacks = {}
         self._running_task_id = None
         self._next_task_id = 1
+        self._run_mode = RUN_MODE_TASK
 
-    def enqueue(self, title, source, start_callback, max_attempts=5):
+    def enqueue(self, title, source, start_callback, max_attempts=5, task_category=TASK_CATEGORY_VIEW, task_kind=''):
         record = TaskRecord(
             task_id=self._next_task_id,
             title=str(title or '后台任务'),
             source=str(source or ''),
+            task_category=str(task_category or TASK_CATEGORY_VIEW).strip() or TASK_CATEGORY_VIEW,
+            task_kind=str(task_kind or '').strip(),
             max_attempts=max(1, int(max_attempts or 1)),
             created_at=_now_text(),
         )
@@ -54,6 +72,25 @@ class GuiTaskQueue(QObject):
         self.changed.emit()
         self._schedule_start_next()
         return record
+
+    def run_mode(self):
+        return self._run_mode
+
+    def set_run_mode(self, run_mode):
+        normalized_mode = RUN_MODE_VIEW if str(run_mode or '').strip() == RUN_MODE_VIEW else RUN_MODE_TASK
+        if self._run_mode == normalized_mode:
+            return
+        self._run_mode = normalized_mode
+        if normalized_mode == RUN_MODE_TASK:
+            for record in self._waiting_records:
+                if record.status == TASK_STATUS_PAUSED:
+                    record.status = TASK_STATUS_WAITING
+            self._schedule_start_next()
+        else:
+            for record in self._waiting_records:
+                if self._should_pause_record(record):
+                    record.status = TASK_STATUS_PAUSED
+        self.changed.emit()
 
     def mark_completed(self, task_id):
         record = self._find_record(task_id)
@@ -106,6 +143,7 @@ class GuiTaskQueue(QObject):
         self._start_callbacks.clear()
         self._running_task_id = None
         self._next_task_id = 1
+        self._run_mode = RUN_MODE_TASK
         self.changed.emit()
 
     def _schedule_start_next(self):
@@ -117,6 +155,11 @@ class GuiTaskQueue(QObject):
         if not self._waiting_records:
             return
         record = self._waiting_records.pop(0)
+        if self._should_pause_record(record):
+            record.status = TASK_STATUS_PAUSED
+            self._waiting_records.insert(0, record)
+            self.changed.emit()
+            return
         callback = self._start_callbacks.get(record.task_id)
         if callback is None:
             self._schedule_start_next()
@@ -130,6 +173,12 @@ class GuiTaskQueue(QObject):
             callback(record)
         except Exception as exc:
             self.mark_failed(record.task_id, str(exc))
+
+    def _should_pause_record(self, record):
+        return (
+            self._run_mode == RUN_MODE_VIEW
+            and str(getattr(record, 'task_category', '') or '').strip() in PAUSABLE_TASK_CATEGORIES
+        )
 
     def _find_record(self, task_id):
         for record in self._records:

@@ -26,6 +26,7 @@ from app.queen_library.domain import (
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
+from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
 from app.queen_library.sorting import sort_queen_rows
 
 
@@ -792,6 +793,8 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             tr('queen.library.crawl_failed'),
             block_ui=False,
             task_title='女王库 批量抓取',
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            task_kind='queen_crawl',
         )
 
     def stop_crawl(self):

@@ -17,6 +17,9 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 
 
+CANGLANGGE_SOURCE_PREFIX_COLUMN_WIDTH = 220
+
+
 class CanglanggeViewerWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
@@ -55,7 +58,8 @@ class CanglanggeViewerWindow(AsyncTaskHostMixin, QDialog):
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(tr('canglangge.headers'))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table.setColumnWidth(1, CANGLANGGE_SOURCE_PREFIX_COLUMN_WIDTH)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)

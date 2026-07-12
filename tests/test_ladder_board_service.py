@@ -52,6 +52,66 @@ class HiddenDTierBoardService(LadderBoardService):
         return [('ActorS', 5), ('ActorD', 4), ('ActorC', 3)]
 
 
+class ActorCandidatePriorityDatabaseStub:
+    def list_ladder_entries(self, *_args):
+        return [{'entity_name': 'RankedMasterpiece', 'tier': 'S', 'medal': ''}]
+
+    def list_hidden_actors(self):
+        return {'HiddenActor'}
+
+    def list_videos(self):
+        return [
+            {'author': 'OldVideoMore'},
+            {'author': 'OldVideoMore'},
+            {'author': 'OldVideoMore'},
+            {'author': 'OldVideoLess'},
+            {'author': 'YoungVideoMore'},
+            {'author': 'YoungVideoMore'},
+        ]
+
+    def list_actors(self, *_args, **_kwargs):
+        return [
+            {'name': 'OldVideoMore', 'raw_age': '45', 'age': '45'},
+            {'name': 'OldVideoLess', 'raw_age': '46', 'age': '46'},
+            {'name': 'OldNoVideoOlder', 'raw_age': '51', 'age': '51'},
+            {'name': 'OldNoVideoYounger', 'raw_age': '43', 'age': '43'},
+            {'name': 'BetaNoAge', 'raw_age': '', 'age': '未知'},
+            {'name': 'AlphaNoAge', 'raw_age': '', 'age': '未知'},
+            {'name': 'YoungVideoMore', 'raw_age': '30', 'age': '30'},
+            {'name': 'YoungNoVideoOlder', 'raw_age': '40', 'age': '40'},
+            {'name': 'YoungNoVideoYounger', 'raw_age': '28', 'age': '28'},
+            {'name': 'HiddenActor', 'raw_age': '48', 'age': '48'},
+        ]
+
+    def list_masterpiece_ladder_actor_candidates(self):
+        return [
+            {'actor_name': 'RankedMasterpiece'},
+            {'actor_name': 'HiddenActor'},
+            {'actor_name': '暂无'},
+            {'actor_name': 'MasterpieceUnranked'},
+        ]
+
+
+class ActorCandidateLimitDatabaseStub:
+    def list_ladder_entries(self, *_args):
+        return []
+
+    def list_hidden_actors(self):
+        return set()
+
+    def list_videos(self):
+        return []
+
+    def list_actors(self, *_args, **_kwargs):
+        return [
+            {'name': f'Actor{index:03d}', 'raw_age': '', 'age': '未知'}
+            for index in range(1, 201)
+        ]
+
+    def list_masterpiece_ladder_actor_candidates(self):
+        return []
+
+
 class LadderBoardServiceTest(unittest.TestCase):
     def test_medal_text_normalizes_multiple_delimiters(self):
         medal_text = '年度新人，白金常青树\n封面女王；年度新人|传奇系列'
@@ -65,7 +125,7 @@ class LadderBoardServiceTest(unittest.TestCase):
             '年度新人\n白金常青树\n封面女王\n传奇系列',
         )
 
-    def test_actor_candidates_fill_top_20_after_selected_entries_are_excluded(self):
+    def test_actor_candidates_include_all_available_when_below_188_after_selected_entries_are_excluded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
@@ -93,10 +153,86 @@ class LadderBoardServiceTest(unittest.TestCase):
             service.admit_entry(LADDER_BOARD_ACTOR, '演员02', 'A')
             board = service.get_board(LADDER_BOARD_ACTOR)
 
-        self.assertEqual(len(board['candidates']), 20)
+        self.assertEqual(len(board['candidates']), 23)
         self.assertEqual(board['candidates'][0]['entity_name'], '演员03')
-        self.assertEqual(board['candidates'][-1]['entity_name'], '演员22')
+        self.assertEqual(board['candidates'][-1]['entity_name'], '演员25')
         self.assertEqual([item['entity_name'] for item in board['selected']], ['演员01', '演员02'])
+
+    def test_actor_candidates_follow_requested_priority_groups(self):
+        service = LadderBoardService(ActorCandidatePriorityDatabaseStub())
+
+        board = service.get_board(LADDER_BOARD_ACTOR)
+
+        self.assertEqual(
+            [item['entity_name'] for item in board['candidates']],
+            [
+                'MasterpieceUnranked',
+                'OldVideoMore',
+                'OldVideoLess',
+                'OldNoVideoOlder',
+                'OldNoVideoYounger',
+                'AlphaNoAge',
+                'BetaNoAge',
+                'YoungVideoMore',
+                'YoungNoVideoOlder',
+                'YoungNoVideoYounger',
+            ],
+        )
+
+    def test_actor_candidates_are_limited_to_188(self):
+        service = LadderBoardService(ActorCandidateLimitDatabaseStub())
+
+        board = service.get_board(LADDER_BOARD_ACTOR)
+
+        self.assertEqual(len(board['candidates']), 188)
+        self.assertEqual(board['candidates'][0]['entity_name'], 'Actor001')
+        self.assertEqual(board['candidates'][-1]['entity_name'], 'Actor188')
+
+    def test_database_lists_visible_unrated_masterpiece_actor_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.executemany(
+                    '''
+                    INSERT INTO masterpiece_actor_details (masterpiece_code, actor_name)
+                    VALUES (?, ?)
+                    ''',
+                    [
+                        ('AAA-001', 'VisibleMasterpiece'),
+                        ('AAA-002', 'RankedMasterpiece'),
+                        ('AAA-003', 'HiddenMasterpiece'),
+                    ],
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO masterpiece_actor_basic_infos (masterpiece_code, actor_name)
+                    VALUES (?, ?)
+                    ''',
+                    ('AAA-004', 'BasicInfoOnly'),
+                )
+                conn.executemany(
+                    '''
+                    INSERT INTO masterpiece_actors (actor_name, status, handle_mark)
+                    VALUES (?, 0, ?)
+                    ''',
+                    [
+                        ('VisibleMasterpiece', 0),
+                        ('RankedMasterpiece', 0),
+                        ('HiddenMasterpiece', 2),
+                        ('BasicInfoOnly', 0),
+                    ],
+                )
+                conn.commit()
+
+            db.save_ladder_entry(LADDER_BOARD_ACTOR, 'actor', 'RankedMasterpiece', 'S')
+
+            names = [
+                row['actor_name']
+                for row in db.list_masterpiece_ladder_actor_candidates()
+            ]
+
+        self.assertEqual(names, ['BasicInfoOnly', 'VisibleMasterpiece'])
 
     def test_code_prefix_selected_entries_keep_tier_and_medal(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -127,6 +127,7 @@ class ComboEnrichmentService:
         task_label = task_definition['task_label']
         interval_minutes = max(1, int((task_config or {}).get('batch_interval_minutes', 1) or 1))
         interval_seconds = interval_minutes * 60
+        batch_count_limit = max(1, int((task_config or {}).get('batch_count_limit', 1) or 1))
         batch_index = 0
         aggregated_result = self._build_empty_task_result(task_definition)
 
@@ -153,6 +154,9 @@ class ComboEnrichmentService:
 
             if result.get('requires_manual_verification'):
                 self.internal_stop_event.set()
+                break
+
+            if batch_index >= batch_count_limit:
                 break
 
             if self._should_stop() or result.get('stopped') or int(result.get('remaining_count', 0) or 0) <= 0:
@@ -339,6 +343,10 @@ class ComboEnrichmentService:
                     current_settings.get('cooldown_before_search', default_cooldown_before_search)
                 ),
                 'batch_interval_minutes': max(1, int(current_settings.get('batch_interval_minutes', 1) or 1)),
+                'batch_count_limit': max(
+                    1,
+                    int(current_settings.get('batch_count_limit', current_settings.get('batch_count', 1)) or 1),
+                ),
             }
         return normalized
 

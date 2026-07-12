@@ -1,5 +1,6 @@
 import re
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -195,6 +196,7 @@ class VideoDatabase(
                 UPDATE processed_videos
                 SET javtxt_enrichment_status = COALESCE(NULLIF(javtxt_enrichment_status, ''), ?)
             ''', (UNENRICHED_STATUS,))
+            self._ensure_enrichment_batch_plan_tables(cursor)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS actors (
                     name TEXT PRIMARY KEY,
@@ -4595,6 +4597,253 @@ class VideoDatabase(
                 rows = [row for row in rows if candidate_filter(row)][: int(limit)]
             return rows
 
+    _ENRICHMENT_BATCH_ITEM_TABLES = {
+        'video': 'video_enrichment_batch_items',
+        'code_prefix': 'code_prefix_enrichment_batch_items',
+        'actor': 'actor_enrichment_batch_items',
+        'actor_birthday': 'actor_birthday_enrichment_batch_items',
+    }
+
+    def _ensure_enrichment_batch_plan_tables(self, cursor):
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS enrichment_batch_plans (
+                plan_id TEXT PRIMARY KEY,
+                task_kind TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                combo_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'running',
+                batch_limit INTEGER NOT NULL,
+                batch_count_limit INTEGER NOT NULL,
+                completed_batch_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                last_error TEXT NOT NULL DEFAULT ''
+            )
+            '''
+        )
+        for table_name in self._ENRICHMENT_BATCH_ITEM_TABLES.values():
+            cursor.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    plan_id TEXT NOT NULL,
+                    sequence_index INTEGER NOT NULL,
+                    target_key TEXT NOT NULL,
+                    code TEXT NOT NULL DEFAULT '',
+                    prefix TEXT NOT NULL DEFAULT '',
+                    actor_name TEXT NOT NULL DEFAULT '',
+                    source_key TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    started_at TEXT,
+                    completed_at TEXT,
+                    PRIMARY KEY (plan_id, sequence_index)
+                )
+                '''
+            )
+
+    @classmethod
+    def _enrichment_batch_item_table(cls, task_kind):
+        normalized_kind = str(task_kind or '').strip()
+        table_name = cls._ENRICHMENT_BATCH_ITEM_TABLES.get(normalized_kind)
+        if not table_name:
+            raise ValueError(f'未知补全批次任务类型: {task_kind}')
+        return table_name
+
+    @staticmethod
+    def _build_enrichment_batch_item(candidate, source_key):
+        row = dict(candidate or {})
+        code = standardize_video_code(row.get('code', ''))
+        prefix = str(row.get('prefix', '') or '').strip().upper()
+        actor_name = str(row.get('actor_name', '') or row.get('name', '') or '').strip()
+        target_key = str(row.get('target_key', '') or '').strip()
+        if not target_key:
+            target_key = code or prefix or actor_name
+        return {
+            'target_key': target_key,
+            'code': code,
+            'prefix': prefix,
+            'actor_name': actor_name,
+            'source_key': str(row.get('source_key', '') or source_key or '').strip(),
+        }
+
+    def create_enrichment_batch_plan(
+        self,
+        task_kind,
+        target_type,
+        source_key,
+        batch_limit,
+        batch_count_limit,
+        combo_key='',
+        candidates=None,
+    ):
+        table_name = self._enrichment_batch_item_table(task_kind)
+        normalized_batch_limit = max(1, int(batch_limit or 1))
+        normalized_batch_count = max(1, int(batch_count_limit or 1))
+        max_items = normalized_batch_limit * normalized_batch_count
+        plan_id = uuid.uuid4().hex
+        item_rows = [
+            self._build_enrichment_batch_item(candidate, source_key)
+            for candidate in list(candidates or [])[:max_items]
+        ]
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO enrichment_batch_plans (
+                    plan_id, task_kind, target_type, source_key, combo_key,
+                    status, batch_limit, batch_count_limit, started_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'running', ?, ?, CURRENT_TIMESTAMP)
+                ''',
+                (
+                    plan_id,
+                    str(task_kind or '').strip(),
+                    str(target_type or '').strip(),
+                    str(source_key or '').strip(),
+                    str(combo_key or '').strip(),
+                    normalized_batch_limit,
+                    normalized_batch_count,
+                ),
+            )
+            cursor.executemany(
+                f'''
+                INSERT INTO {table_name} (
+                    plan_id, sequence_index, target_key, code, prefix, actor_name, source_key
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                [
+                    (
+                        plan_id,
+                        index,
+                        row['target_key'],
+                        row['code'],
+                        row['prefix'],
+                        row['actor_name'],
+                        row['source_key'],
+                    )
+                    for index, row in enumerate(item_rows, start=1)
+                ],
+            )
+            if not item_rows:
+                cursor.execute(
+                    '''
+                    UPDATE enrichment_batch_plans
+                    SET status = 'completed',
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE plan_id = ?
+                    ''',
+                    (plan_id,),
+                )
+            conn.commit()
+
+        return {
+            'plan_id': plan_id,
+            'task_kind': str(task_kind or '').strip(),
+            'target_type': str(target_type or '').strip(),
+            'source_key': str(source_key or '').strip(),
+            'batch_limit': normalized_batch_limit,
+            'batch_count_limit': normalized_batch_count,
+            'item_count': len(item_rows),
+        }
+
+    def list_enrichment_batch_items(self, plan_id, task_kind, status='pending', limit=None):
+        table_name = self._enrichment_batch_item_table(task_kind)
+        normalized_plan_id = str(plan_id or '').strip()
+        if not normalized_plan_id:
+            return []
+
+        where_parts = ['plan_id = ?']
+        params = [normalized_plan_id]
+        if status is not None:
+            where_parts.append('status = ?')
+            params.append(str(status or '').strip())
+        sql = f'''
+            SELECT plan_id, sequence_index, target_key, code, prefix, actor_name,
+                   source_key, status, last_error, started_at, completed_at
+            FROM {table_name}
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY sequence_index ASC
+        '''
+        normalized_limit = None if limit is None else max(0, int(limit or 0))
+        if normalized_limit is not None:
+            sql += ' LIMIT ?'
+            params.append(normalized_limit)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, params)
+            return [
+                {
+                    'plan_id': row[0],
+                    'sequence_index': row[1],
+                    'target_key': row[2],
+                    'code': row[3],
+                    'prefix': row[4],
+                    'actor_name': row[5],
+                    'source_key': row[6],
+                    'status': row[7],
+                    'last_error': row[8],
+                    'started_at': row[9],
+                    'completed_at': row[10],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def mark_enrichment_batch_item(self, plan_id, task_kind, sequence_index, status, error=''):
+        table_name = self._enrichment_batch_item_table(task_kind)
+        normalized_plan_id = str(plan_id or '').strip()
+        if not normalized_plan_id:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                UPDATE {table_name}
+                SET status = ?,
+                    last_error = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE plan_id = ? AND sequence_index = ?
+                ''',
+                (
+                    str(status or '').strip() or 'completed',
+                    str(error or '').strip(),
+                    normalized_plan_id,
+                    int(sequence_index or 0),
+                ),
+            )
+            updated_count = int(cursor.rowcount or 0)
+            conn.commit()
+            return updated_count
+
+    def finish_enrichment_batch_plan(self, plan_id, status='completed', error=''):
+        normalized_plan_id = str(plan_id or '').strip()
+        if not normalized_plan_id:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE enrichment_batch_plans
+                SET status = ?,
+                    last_error = ?,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE plan_id = ?
+                ''',
+                (
+                    str(status or '').strip() or 'completed',
+                    str(error or '').strip(),
+                    normalized_plan_id,
+                ),
+            )
+            updated_count = int(cursor.rowcount or 0)
+            conn.commit()
+            return updated_count
+
     def list_video_supplement_candidates(self, limit):
         limit = max(int(limit or 0), 0)
         if limit <= 0:
@@ -5419,11 +5668,11 @@ class VideoDatabase(
     def add_masterpiece_entry(self, code):
         normalized_code = standardize_video_code(code)
         if not normalized_code:
-            raise ValueError('缂哄皯瑙嗛缂栧彿')
+            raise ValueError('缺少视频编号')
 
         references = self._collect_masterpiece_references(normalized_code)
         if not references:
-            raise ValueError(f'瑙嗛涓嶅瓨鍦? {normalized_code}')
+            raise ValueError(f'视频不存在: {normalized_code}')
         primary_reference = self._pick_primary_masterpiece_reference(references)
         actor_details = self._collect_masterpiece_actor_details(normalized_code, primary_reference, references)
 

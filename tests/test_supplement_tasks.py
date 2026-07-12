@@ -79,6 +79,107 @@ class _FakeProgressTracker:
 
 
 class SupplementTaskDatabaseTest(unittest.TestCase):
+    def test_enrichment_batch_plan_tables_are_created_at_execution_time(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                plan_count = conn.execute('SELECT COUNT(*) FROM enrichment_batch_plans').fetchone()[0]
+                video_item_count = conn.execute('SELECT COUNT(*) FROM video_enrichment_batch_items').fetchone()[0]
+                code_prefix_item_count = conn.execute(
+                    'SELECT COUNT(*) FROM code_prefix_enrichment_batch_items'
+                ).fetchone()[0]
+                actor_item_count = conn.execute('SELECT COUNT(*) FROM actor_enrichment_batch_items').fetchone()[0]
+                actor_birthday_item_count = conn.execute(
+                    'SELECT COUNT(*) FROM actor_birthday_enrichment_batch_items'
+                ).fetchone()[0]
+
+            self.assertEqual(plan_count, 0)
+            self.assertEqual(video_item_count, 0)
+            self.assertEqual(code_prefix_item_count, 0)
+            self.assertEqual(actor_item_count, 0)
+            self.assertEqual(actor_birthday_item_count, 0)
+
+            video_plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                SUPPLEMENT_TASK_SOURCE,
+                batch_limit=2,
+                batch_count_limit=3,
+                candidates=[
+                    {'code': 'AAA-001'},
+                    {'code': 'AAA-002'},
+                ],
+            )
+            code_prefix_plan = db.create_enrichment_batch_plan(
+                'code_prefix',
+                'code_prefix_library',
+                SUPPLEMENT_TASK_SOURCE,
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[
+                    {'prefix': 'BBB', 'code': 'BBB-001'},
+                ],
+            )
+            actor_plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                SUPPLEMENT_TASK_SOURCE,
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[
+                    {'actor_name': 'Actor A', 'code': 'ACT-001'},
+                ],
+            )
+            actor_birthday_plan = db.create_enrichment_batch_plan(
+                'actor_birthday',
+                'actor_birthday',
+                'binghuo',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[
+                    {'name': 'Actor B'},
+                ],
+            )
+
+            self.assertNotEqual(video_plan['plan_id'], code_prefix_plan['plan_id'])
+            self.assertEqual(video_plan['item_count'], 2)
+            self.assertEqual(code_prefix_plan['item_count'], 1)
+            self.assertEqual(actor_plan['item_count'], 1)
+            self.assertEqual(actor_birthday_plan['item_count'], 1)
+            self.assertEqual(
+                [row['code'] for row in db.list_enrichment_batch_items(video_plan['plan_id'], 'video')],
+                ['AAA-001', 'AAA-002'],
+            )
+            self.assertEqual(
+                [row['prefix'] for row in db.list_enrichment_batch_items(code_prefix_plan['plan_id'], 'code_prefix')],
+                ['BBB'],
+            )
+            self.assertEqual(
+                [row['actor_name'] for row in db.list_enrichment_batch_items(actor_plan['plan_id'], 'actor')],
+                ['Actor A'],
+            )
+            self.assertEqual(
+                [
+                    row['actor_name']
+                    for row in db.list_enrichment_batch_items(actor_birthday_plan['plan_id'], 'actor_birthday')
+                ],
+                ['Actor B'],
+            )
+
+            db.mark_enrichment_batch_item(video_plan['plan_id'], 'video', 1, 'completed')
+
+            video_items = db.list_enrichment_batch_items(video_plan['plan_id'], 'video', status=None)
+            code_prefix_items = db.list_enrichment_batch_items(
+                code_prefix_plan['plan_id'],
+                'code_prefix',
+                status=None,
+            )
+            self.assertEqual(video_items[0]['status'], 'completed')
+            self.assertEqual(video_items[1]['status'], 'pending')
+            self.assertEqual(code_prefix_items[0]['status'], 'pending')
+
     def test_video_supplement_candidates_include_unpublished_actor_rows_as_actor_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

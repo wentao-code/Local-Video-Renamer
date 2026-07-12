@@ -163,7 +163,18 @@ class QueenSearchScraper:
             html = page.content()
         except Exception:
             html = ''
+        if cls._is_zero_results_page(body_text=body_text, html=html):
+            return True
         return bool(cls.extract_candidate_titles(body_text=body_text, html=html))
+
+    @staticmethod
+    def _is_zero_results_page(body_text='', html=''):
+        normalized = f'{body_text}\n{html}'.lower()
+        return bool(
+            re.search(r'\b0\s+results?\b', normalized)
+            or '0个相关资源' in normalized
+            or 'no results' in normalized
+        )
 
     @staticmethod
     def build_search_url(keyword):

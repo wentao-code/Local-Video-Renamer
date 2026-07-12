@@ -5,6 +5,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QShowEvent
 from PyQt5.QtWidgets import QApplication
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
@@ -24,6 +25,8 @@ def _run_sync_async_task(
     allow_deferred_close=False,
     task_title=None,
     show_in_task_queue=True,
+    task_category='查看任务',
+    task_kind='',
 ):
     success_handler(task())
     return True
@@ -310,11 +313,15 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
             allow_deferred_close=False,
             task_title=None,
             show_in_task_queue=True,
+            task_category='查看任务',
+            task_kind='',
         ):
             captured.append(
                 {
                     'task_title': task_title,
                     'show_in_task_queue': show_in_task_queue,
+                    'task_category': task_category,
+                    'task_kind': task_kind,
                 }
             )
             return True
@@ -329,6 +336,8 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 self.assertEqual(len(captured), 1)
                 self.assertEqual(captured[0]['task_title'], '女王库 批量抓取')
                 self.assertTrue(captured[0]['show_in_task_queue'])
+                self.assertEqual(captured[0]['task_category'], '补全任务')
+                self.assertEqual(captured[0]['task_kind'], 'queen_crawl')
             finally:
                 window.hide()
                 window.deleteLater()
@@ -365,6 +374,44 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 self.assertEqual(len(captured), 1)
                 self.assertEqual(captured[0]['error_title'], '读取失败')
                 self.assertFalse(captured[0]['show_in_task_queue'])
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_show_event_does_not_poll_while_initial_load_is_queued(self):
+        backend = _QueenBackendStub()
+        captured = []
+
+        def _capture_async_task(
+            self,
+            task,
+            success_handler,
+            error_title=None,
+            block_ui=True,
+            allow_deferred_close=False,
+            task_title=None,
+            show_in_task_queue=True,
+        ):
+            if show_in_task_queue:
+                self._async_task_pending_queue_count = int(
+                    getattr(self, '_async_task_pending_queue_count', 0) or 0
+                ) + 1
+            captured.append(
+                {
+                    'error_title': error_title,
+                    'show_in_task_queue': show_in_task_queue,
+                }
+            )
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                window.showEvent(QShowEvent())
+
+                self.assertEqual(len(captured), 1)
+                self.assertEqual(captured[0]['error_title'], '读取失败')
+                self.assertTrue(captured[0]['show_in_task_queue'])
             finally:
                 window.hide()
                 window.deleteLater()

@@ -6,6 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtWidgets import QApplication
 
 from app.gui.task_queue import get_gui_task_queue
+from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 
 
@@ -54,6 +55,24 @@ class TaskQueueViewerWindowTest(unittest.TestCase):
 
             self.assertEqual(viewer.table.item(0, 1).foreground().color().name(), '#16a34a')
             self.assertEqual(viewer.table.item(1, 1).foreground().color().name(), '#dc2626')
+        finally:
+            viewer.close()
+            viewer.deleteLater()
+
+    def test_rows_show_task_category(self):
+        viewer = TaskQueueViewerWindow()
+        try:
+            self.queue.enqueue(
+                '补全',
+                'test',
+                lambda _record: None,
+                task_category=TASK_CATEGORY_ENRICHMENT,
+            )
+            _APP.processEvents()
+            viewer.refresh_rows()
+
+            self.assertEqual(viewer.table.horizontalHeaderItem(2).text(), '分类')
+            self.assertEqual(viewer.table.item(0, 2).text(), TASK_CATEGORY_ENRICHMENT)
         finally:
             viewer.close()
             viewer.deleteLater()

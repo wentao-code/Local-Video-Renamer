@@ -8,7 +8,12 @@ from PyQt5.QtWidgets import QApplication, QWidget
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.task_queue import (
+    RUN_MODE_TASK,
+    RUN_MODE_VIEW,
+    TASK_CATEGORY_ENRICHMENT,
+    TASK_CATEGORY_VIEW,
     TASK_STATUS_COMPLETED,
+    TASK_STATUS_PAUSED,
     TASK_STATUS_RUNNING,
     TASK_STATUS_WAITING,
     get_gui_task_queue,
@@ -101,6 +106,44 @@ class GuiTaskQueueTest(unittest.TestCase):
 
         self.assertTrue(self.queue.is_all_done())
 
+    def test_view_mode_pauses_enrichment_tasks_until_task_mode_resumes(self):
+        started = []
+        self.queue.set_run_mode(RUN_MODE_VIEW)
+
+        record = self.queue.enqueue(
+            '补全',
+            'test',
+            lambda task_record: started.append(task_record.task_id),
+            task_category=TASK_CATEGORY_ENRICHMENT,
+        )
+        _process_events()
+
+        self.assertEqual(started, [])
+        records = self.queue.records()
+        self.assertEqual(records[0].task_id, record.task_id)
+        self.assertEqual(records[0].task_category, TASK_CATEGORY_ENRICHMENT)
+        self.assertEqual(records[0].status, TASK_STATUS_PAUSED)
+
+        self.queue.set_run_mode(RUN_MODE_TASK)
+        _process_events()
+
+        self.assertEqual(started, [record.task_id])
+        self.assertEqual(self.queue.records()[0].status, TASK_STATUS_RUNNING)
+
+    def test_view_tasks_still_run_in_view_mode(self):
+        started = []
+        self.queue.set_run_mode(RUN_MODE_VIEW)
+
+        self.queue.enqueue(
+            '查看',
+            'test',
+            lambda task_record: started.append(task_record.task_id),
+            task_category=TASK_CATEGORY_VIEW,
+        )
+        _process_events()
+
+        self.assertEqual(started, [1])
+
     def test_start_async_task_can_run_silently_without_queue_record(self):
         host = _AsyncTaskHost()
         try:
@@ -120,6 +163,27 @@ class GuiTaskQueueTest(unittest.TestCase):
             self.assertEqual(host.results, [{'ok': True}])
             self.assertFalse(host.is_async_task_running())
             self.assertEqual(self.queue.records(), [])
+        finally:
+            host.deleteLater()
+
+    def test_start_async_task_forwards_task_category_to_queue_record(self):
+        host = _AsyncTaskHost()
+        try:
+            self.queue.set_run_mode(RUN_MODE_VIEW)
+
+            host.start_async_task(
+                lambda: {'ok': True},
+                host.results.append,
+                block_ui=False,
+                task_category=TASK_CATEGORY_ENRICHMENT,
+                task_kind='queen_crawl',
+            )
+            _process_events()
+
+            records = self.queue.records()
+            self.assertEqual(records[0].task_category, TASK_CATEGORY_ENRICHMENT)
+            self.assertEqual(records[0].task_kind, 'queen_crawl')
+            self.assertEqual(records[0].status, TASK_STATUS_PAUSED)
         finally:
             host.deleteLater()
 

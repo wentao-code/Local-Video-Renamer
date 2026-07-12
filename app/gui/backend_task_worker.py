@@ -2,7 +2,7 @@ from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
 from app.gui.i18n import tr
-from app.gui.task_queue import get_gui_task_queue
+from app.gui.task_queue import TASK_CATEGORY_VIEW, get_gui_task_queue
 
 
 def enable_minimize_button(widget, detach_parent=True):
@@ -49,10 +49,11 @@ class AsyncTaskHostMixin:
         self._async_task_allows_deferred_close = False
         self._async_close_pending = False
         self._async_task_queue_record = None
+        self._async_task_pending_queue_count = 0
         self._async_task_failed_message = None
 
     def is_async_task_running(self):
-        return self._async_task_thread is not None
+        return self._async_task_thread is not None or int(getattr(self, '_async_task_pending_queue_count', 0) or 0) > 0
 
     def set_async_busy_widgets(self, widgets):
         self._async_busy_widgets = list(widgets or [])
@@ -73,6 +74,8 @@ class AsyncTaskHostMixin:
         allow_deferred_close=False,
         task_title=None,
         show_in_task_queue=True,
+        task_category=TASK_CATEGORY_VIEW,
+        task_kind='',
     ):
         queue_task_title = self._build_async_task_title(
             error_title=error_title,
@@ -81,6 +84,11 @@ class AsyncTaskHostMixin:
         )
 
         def start_task(record=None):
+            if record is not None:
+                self._async_task_pending_queue_count = max(
+                    0,
+                    int(getattr(self, '_async_task_pending_queue_count', 0) or 0) - 1,
+                )
             if self._async_task_thread is not None:
                 if record is not None:
                     get_gui_task_queue().mark_failed(record.task_id, tr('common.task_in_progress'))
@@ -109,7 +117,14 @@ class AsyncTaskHostMixin:
             start_task()
             return True
 
-        get_gui_task_queue().enqueue(queue_task_title, self._async_task_source_name(), start_task)
+        self._async_task_pending_queue_count += 1
+        get_gui_task_queue().enqueue(
+            queue_task_title,
+            self._async_task_source_name(),
+            start_task,
+            task_category=task_category,
+            task_kind=task_kind,
+        )
         return True
 
     def _build_async_task_title(self, error_title=None, success_handler=None, task_title=None):

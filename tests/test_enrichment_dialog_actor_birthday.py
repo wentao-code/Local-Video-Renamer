@@ -145,6 +145,13 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertEqual(dialog.selected_source_key(), BAOMU_ACTOR_SOURCE)
         self.assertTrue(dialog.baomu_source_button.isChecked())
 
+    def test_values_include_batch_count(self):
+        dialog = self._create_dialog()
+
+        dialog.batch_count_input.setValue(3)
+
+        self.assertEqual(dialog.values()['batch_count'], 3)
+
 
 if __name__ == '__main__':
     unittest.main()

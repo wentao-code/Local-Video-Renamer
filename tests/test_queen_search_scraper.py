@@ -17,13 +17,14 @@ class _LocatorStub:
 
 
 class _SequencedPageStub:
-    def __init__(self, states=None, goto_failures=None):
+    def __init__(self, states=None, goto_failures=None, fail_on_wait=False):
         self.states = list(states or [{'body_text': '', 'html': '', 'rows': []}])
         self.current_index = 0
         self.visited_urls = []
         self.reload_calls = []
         self.wait_calls = []
         self.goto_failures = list(goto_failures or [])
+        self.fail_on_wait = bool(fail_on_wait)
 
     @property
     def current_state(self):
@@ -43,6 +44,8 @@ class _SequencedPageStub:
             self.current_index += 1
 
     def wait_for_timeout(self, timeout_ms):
+        if self.fail_on_wait:
+            raise AssertionError(f'unexpected wait: {timeout_ms}')
         self.wait_calls.append(timeout_ms)
 
     def locator(self, selector):
@@ -219,6 +222,25 @@ class QueenSearchScraperTest(unittest.TestCase):
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenRecovered_Title.mp4'])
         self.assertEqual(page.wait_calls, [20000])
         self.assertEqual(len(page.visited_urls), 2)
+        self.assertEqual(page.reload_calls, [])
+
+    def test_search_treats_zero_results_page_as_ready(self):
+        page = _SequencedPageStub(
+            [
+                {
+                    'body_text': "0 results\n我们未能找到关于 '03loveyo' 的资源\n请尝试更短或更宽泛的关键词",
+                    'html': '<title>03loveyo - 0个相关资源 - ØMagnet</title>',
+                    'rows': [],
+                },
+            ],
+            fail_on_wait=True,
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None):
+            result = scraper.search('03loveyo', show_browser=False, page=page)
+
+        self.assertEqual(result['records'], [])
         self.assertEqual(page.reload_calls, [])
 
     def test_search_raises_transient_error_for_cloudflare_522_page(self):

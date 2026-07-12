@@ -2079,7 +2079,7 @@
         {
           "prefix": "RCTD",
           "ladder_tier": "",
-          "video_count": 4,
+          "video_count": 5,
           "enrichment_status": "天限阁: 已补全 | 辛聚谷: 已补全",
           "avfan_enrichment_status": "已补全",
           "javtxt_enrichment_status": "已补全",
@@ -2088,7 +2088,7 @@
           "avfan_total_videos": 676,
           "earliest_release_date": "2017-07-06",
           "latest_release_date": "2026-05-07",
-          "last_enriched_at": "2026-07-11 14:27:49"
+          "last_enriched_at": "2026-07-12 02:28:21"
         },
         {
           "prefix": "RD",
@@ -2752,9 +2752,9 @@
       "total_count": 196,
       "offset": 0,
       "limit": null,
-      "refreshed_at": "2026-07-12 10:04:18",
-      "refresh_duration_ms": 67143,
-      "refresh_duration_text": "67秒"
+      "refreshed_at": "2026-07-12 17:09:38",
+      "refresh_duration_ms": 51150,
+      "refresh_duration_text": "51秒"
     },
     "{\"limit\": 200, \"offset\": 0, \"search_text\": \"\", \"sort_field\": \"latest_release_date\", \"sort_order\": \"asc\"}": {
       "prefixes": [

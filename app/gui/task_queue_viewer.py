@@ -28,10 +28,11 @@ class TaskQueueViewerWindow(QDialog):
         layout = QVBoxLayout()
         self.summary_label = QLabel('')
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels([
             '编号',
             '任务',
+            '分类',
             '来源',
             '状态',
             '次数',
@@ -47,7 +48,8 @@ class TaskQueueViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
 
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table)
@@ -76,6 +78,7 @@ class TaskQueueViewerWindow(QDialog):
             values = [
                 record.task_id,
                 record.title,
+                getattr(record, 'task_category', ''),
                 record.source,
                 record.status,
                 f'{record.attempts}/{record.max_attempts}',

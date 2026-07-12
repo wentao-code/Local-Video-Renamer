@@ -79,6 +79,17 @@ class CanglanggeViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_source_prefix_column_is_kept_narrow(self):
+        backend = CanglanggeBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = CanglanggeViewerWindow(backend)
+            try:
+                self.assertLessEqual(window.table.columnWidth(1), 230)
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_manual_refresh_uses_force_refresh_snapshot(self):
         backend = CanglanggeBackendStub()
 

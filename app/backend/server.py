@@ -261,7 +261,11 @@ def make_handler(service):
                     target_type=body.get('target_type'),
                     source_key=body.get('source_key'),
                     batch_mode=bool(body.get('batch_mode')),
+                    plan_id=body.get('plan_id', ''),
+                    plan_task_kind=body.get('plan_task_kind', ''),
                 )
+            if method == 'POST' and path == '/database/enrich/batch-plan':
+                return service.create_enrichment_batch_plan(body)
             if method == 'POST' and path == '/database/enrich/combo':
                 return service.enrich_combo(
                     body.get('combo_key'),

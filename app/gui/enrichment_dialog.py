@@ -62,6 +62,7 @@ DEFAULT_COMBINATION_SETTINGS = {
     'show_browser': False,
     'cooldown_before_search': False,
     'batch_limit': 5,
+    'batch_count': 1,
     'batch_interval_minutes': 30,
 }
 
@@ -121,6 +122,7 @@ def is_flat_settings_payload(payload):
             'show_browser',
             'cooldown_before_search',
             'batch_limit',
+            'batch_count',
             'batch_interval_minutes',
             'source_key',
         )
@@ -136,6 +138,7 @@ def merge_combination_settings(default_values, loaded_values, source_key):
         'show_browser',
         'cooldown_before_search',
         'batch_limit',
+        'batch_count',
         'batch_interval_minutes',
     ):
         if key in loaded_values:
@@ -352,6 +355,9 @@ class EnrichmentDialog(QDialog):
         self.batch_limit_input = QSpinBox()
         self.batch_limit_input.setRange(1, 999999)
 
+        self.batch_count_input = QSpinBox()
+        self.batch_count_input.setRange(1, 999999)
+
         self.interval_minutes_input = QSpinBox()
         self.interval_minutes_input.setRange(1, 1440)
         self.interval_minutes_input.setSuffix(tr('enrichment.dialog.minutes_suffix'))
@@ -361,6 +367,7 @@ class EnrichmentDialog(QDialog):
 
         form_layout.addRow(tr('enrichment.dialog.limit'), self.limit_input)
         form_layout.addRow(tr('enrichment.dialog.batch_limit'), self.batch_limit_input)
+        form_layout.addRow(tr('enrichment.dialog.batch_count'), self.batch_count_input)
         form_layout.addRow(tr('enrichment.dialog.batch_interval'), self.interval_minutes_input)
         form_layout.addRow('', self.show_browser_checkbox)
         form_layout.addRow('', self.cooldown_checkbox)
@@ -493,6 +500,12 @@ class EnrichmentDialog(QDialog):
             self.batch_limit_input.minimum(),
             self.batch_limit_input.maximum(),
         ))
+        self.batch_count_input.setValue(self._to_bounded_int(
+            settings.get('batch_count', defaults['batch_count']),
+            defaults['batch_count'],
+            self.batch_count_input.minimum(),
+            self.batch_count_input.maximum(),
+        ))
         self.interval_minutes_input.setValue(self._to_bounded_int(
             settings.get('batch_interval_minutes', defaults['batch_interval_minutes']),
             defaults['batch_interval_minutes'],
@@ -532,6 +545,7 @@ class EnrichmentDialog(QDialog):
         self.target_settings[target_type][source_key] = {
             'limit': self.limit_input.value(),
             'batch_limit': self.batch_limit_input.value(),
+            'batch_count': self.batch_count_input.value(),
             'batch_interval_minutes': self.interval_minutes_input.value(),
             'show_browser': self.show_browser_checkbox.isChecked(),
             'cooldown_before_search': self.cooldown_checkbox.isChecked(),
@@ -589,6 +603,15 @@ class EnrichmentDialog(QDialog):
                     DEFAULT_TARGET_SETTINGS[target_type][source_key]['batch_limit'],
                     self.batch_limit_input.minimum(),
                     self.batch_limit_input.maximum(),
+                ),
+                'batch_count': self._to_bounded_int(
+                    source_settings.get(
+                        'batch_count',
+                        DEFAULT_TARGET_SETTINGS[target_type][source_key]['batch_count'],
+                    ),
+                    DEFAULT_TARGET_SETTINGS[target_type][source_key]['batch_count'],
+                    self.batch_count_input.minimum(),
+                    self.batch_count_input.maximum(),
                 ),
                 'batch_interval_minutes': self._to_bounded_int(
                     source_settings.get(

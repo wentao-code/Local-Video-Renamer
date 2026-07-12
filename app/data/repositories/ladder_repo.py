@@ -1,4 +1,10 @@
-from app.core.ladder_board import normalize_ladder_board_key, normalize_ladder_entity_type, normalize_ladder_tier
+from app.core.ladder_board import (
+    LADDER_BOARD_ACTOR,
+    LADDER_ENTITY_ACTOR,
+    normalize_ladder_board_key,
+    normalize_ladder_entity_type,
+    normalize_ladder_tier,
+)
 
 
 class LadderRepositoryMixin:
@@ -110,6 +116,42 @@ class LadderRepositoryMixin:
                 raise ValueError('未找到对应入选者')
             conn.commit()
             return int(cursor.rowcount or 0)
+
+    def list_masterpiece_ladder_actor_candidates(self):
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT combined.actor_name,
+                       COUNT(DISTINCT combined.masterpiece_code) AS masterpiece_count
+                FROM (
+                    SELECT actor_name, masterpiece_code
+                    FROM masterpiece_actor_details
+                    UNION
+                    SELECT actor_name, masterpiece_code
+                    FROM masterpiece_actor_basic_infos
+                ) AS combined
+                LEFT JOIN masterpiece_actors AS ma ON ma.actor_name = combined.actor_name
+                LEFT JOIN ladder_entries AS le
+                    ON le.board_key = ?
+                   AND le.entity_type = ?
+                   AND le.entity_name = combined.actor_name
+                WHERE COALESCE(combined.actor_name, '') <> ''
+                  AND COALESCE(ma.handle_mark, 0) <> 2
+                  AND COALESCE(le.tier, '') = ''
+                GROUP BY combined.actor_name
+                ORDER BY masterpiece_count DESC, UPPER(combined.actor_name) ASC
+                ''',
+                (LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR),
+            )
+            rows = cursor.fetchall()
+        return [
+            {
+                'actor_name': row[0] or '',
+                'masterpiece_count': int(row[1] or 0),
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _ladder_entry_from_row(row):

@@ -9,11 +9,17 @@ from urllib.parse import quote, unquote
 
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
 from app.core.combo_enrichment import get_combo_label, normalize_combo_key
-from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
-from app.core.enrichment_sources import DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE
+from app.core.enrichment_targets import (
+    ACTOR_BIRTHDAY_TARGET,
+    ACTOR_LIBRARY_TARGET,
+    CODE_PREFIX_LIBRARY_TARGET,
+    VIDEO_LIBRARY_TARGET,
+)
+from app.core.enrichment_sources import DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
+from app.core.supplement_task_state import build_supplement_candidate
 from app.core.project_paths import (
     ACTOR_DETAIL_SNAPSHOT_DIR,
     ACTOR_SNAPSHOT_FILE,
@@ -251,7 +257,7 @@ class BackendService:
         self.ensure_database_loaded()
         detail = self.db.get_masterpiece_detail_record(code)
         if not detail:
-            raise FileNotFoundError(f'鍚嶄綔鍫傛潯鐩笉瀛樺湪: {code}')
+            raise FileNotFoundError(f'名作堂详情不存在: {code}')
         return {'detail': detail}
 
     def get_masterpiece_detail_snapshot(self, code, force_refresh=False):
@@ -2510,6 +2516,113 @@ class BackendService:
         total_seconds = max(0, int(round(int(duration_ms or 0) / 1000.0)))
         return f'{total_seconds}\u79d2'
 
+    def create_enrichment_batch_plan(self, payload):
+        self.ensure_database_loaded()
+        request = dict(payload or {})
+        batch_limit = max(1, int(request.get('batch_limit', 1) or 1))
+        batch_count_limit = max(1, int(request.get('batch_count_limit', 1) or 1))
+        max_items = batch_limit * batch_count_limit
+        target_type = str(request.get('target_type') or VIDEO_LIBRARY_TARGET).strip() or VIDEO_LIBRARY_TARGET
+        source_key = str(request.get('source_key') or '').strip()
+        task_kind = str(request.get('task_kind') or self._batch_plan_task_kind_for_target(target_type)).strip()
+        candidates = self._build_enrichment_batch_plan_candidates(
+            task_kind,
+            target_type,
+            source_key,
+            max_items,
+        )
+        plan = self.db.create_enrichment_batch_plan(
+            task_kind,
+            target_type,
+            source_key,
+            batch_limit=batch_limit,
+            batch_count_limit=batch_count_limit,
+            combo_key=request.get('combo_key', ''),
+            candidates=candidates,
+        )
+        return {'plan': plan}
+
+    @staticmethod
+    def _batch_plan_task_kind_for_target(target_type):
+        return {
+            VIDEO_LIBRARY_TARGET: 'video',
+            CODE_PREFIX_LIBRARY_TARGET: 'code_prefix',
+            ACTOR_LIBRARY_TARGET: 'actor',
+            ACTOR_BIRTHDAY_TARGET: 'actor_birthday',
+        }.get(str(target_type or '').strip(), 'video')
+
+    def _build_enrichment_batch_plan_candidates(self, task_kind, target_type, source_key, limit):
+        limit = max(0, int(limit or 0))
+        if limit <= 0:
+            return []
+        active_filter_settings = self.video_filter_service.load_settings()
+        if task_kind == 'video':
+            if source_key == SUPPLEMENT_TASK_SOURCE:
+                return self.db.list_video_supplement_candidates(limit)
+            return self.db.list_videos_for_enrichment(
+                limit,
+                source_key,
+                candidate_filter=self.video_filter_service.build_pre_enrichment_filter(
+                    settings=active_filter_settings
+                ),
+            )
+        if task_kind == 'code_prefix':
+            if source_key == SUPPLEMENT_TASK_SOURCE:
+                return [
+                    {**dict(movie or {}), **build_supplement_candidate(movie, filter_settings=active_filter_settings)}
+                    for movie in self.db.list_all_code_prefix_movies()
+                    if build_supplement_candidate(movie, filter_settings=active_filter_settings)
+                ][:limit]
+            return self.list_code_prefixes(limit=limit).get('prefixes', [])
+        if task_kind == 'actor':
+            if source_key == SUPPLEMENT_TASK_SOURCE:
+                return [
+                    {**dict(movie or {}), **build_supplement_candidate(movie, filter_settings=active_filter_settings)}
+                    for movie in self.db.list_all_actor_movies()
+                    if build_supplement_candidate(movie, filter_settings=active_filter_settings)
+                ][:limit]
+            return self.list_actors(limit=limit).get('actors', [])
+        if task_kind == 'actor_birthday':
+            return self.list_actors(limit=limit).get('actors', [])
+        return []
+
+    def _apply_enrichment_batch_plan_result(self, plan_id, task_kind, result):
+        normalized_plan_id = str(plan_id or '').strip()
+        normalized_task_kind = str(task_kind or '').strip()
+        if not normalized_plan_id or not normalized_task_kind:
+            return result
+        current_result = dict(result or {})
+        processed_count = max(0, int(current_result.get('processed_count', 0) or 0))
+        pending_items = self.db.list_enrichment_batch_items(
+            normalized_plan_id,
+            normalized_task_kind,
+            status='pending',
+            limit=processed_count,
+        )
+        result_rows = list(current_result.get('results', []) or [])
+        for index, item in enumerate(pending_items):
+            row_result = dict(result_rows[index] or {}) if index < len(result_rows) else {}
+            row_status = str(row_result.get('status', '') or '').strip()
+            item_status = 'completed' if row_status == 'ok' else 'failed'
+            error_message = str(row_result.get('error', '') or '').strip()
+            self.db.mark_enrichment_batch_item(
+                normalized_plan_id,
+                normalized_task_kind,
+                item.get('sequence_index'),
+                item_status,
+                error=error_message,
+            )
+        remaining_plan_items = self.db.list_enrichment_batch_items(
+            normalized_plan_id,
+            normalized_task_kind,
+            status='pending',
+            limit=1,
+        )
+        if not remaining_plan_items:
+            self.db.finish_enrichment_batch_plan(normalized_plan_id, 'completed')
+            current_result['has_more_pending'] = False
+        return current_result
+
     def enrich_videos(
         self,
         limit,
@@ -2518,6 +2631,8 @@ class BackendService:
         target_type=None,
         source_key=None,
         batch_mode=False,
+        plan_id='',
+        plan_task_kind='',
     ):
         self._begin_enrichment_task('single')
         logger = TaskTraceLogger(
@@ -2543,6 +2658,7 @@ class BackendService:
                 self.actor_library_sync_service.sync_from_video_library()
 
             result = enrichment_service.run(target_type, limit, source_key=source_key, batch_mode=batch_mode)
+            result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
             result['log_path'] = str(logger.log_path)
 
             if (not target_type or target_type == VIDEO_LIBRARY_TARGET) and result.get('processed_count', 0) > 0:

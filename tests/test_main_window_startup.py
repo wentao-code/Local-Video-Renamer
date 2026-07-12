@@ -13,7 +13,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from app.gui import main_window
 
@@ -387,6 +387,7 @@ class MainWindowStartupTest(unittest.TestCase):
             _on_snapshot_refresh_finished=lambda _result=None: None,
             _on_snapshot_refresh_failed=lambda _error=None: None,
             _cleanup_snapshot_refresh_attempt=lambda: None,
+            _should_run_snapshot_refresh_cycle=lambda: True,
         )
 
         def fake_start_queued_runner(task_title, worker_factory, success_handler, error_handler, **kwargs):
@@ -405,12 +406,38 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(started[0][0], '后台刷新快照')
         self.assertIs(started[0][1], created_worker)
 
+    def test_schedule_snapshot_refresh_cycle_skips_recent_completed_snapshot_refresh(self):
+        stub = SimpleNamespace(
+            snapshot_refresh_running=False,
+            snapshot_refresh_queued=False,
+            _should_run_snapshot_refresh_cycle=lambda: False,
+            _start_queued_gui_runner=lambda *args, **kwargs: self.fail('不应启动后台刷新快照'),
+        )
+
+        result = main_window.VidNormApp.schedule_snapshot_refresh_cycle(stub)
+
+        self.assertFalse(result)
+        self.assertFalse(stub.snapshot_refresh_queued)
+
+    def test_should_run_snapshot_refresh_cycle_uses_existing_component_history(self):
+        stub = SimpleNamespace(
+            _load_startup_refresh_history=lambda: {
+                'actor_library': {'last_completed_at': '2999-01-01 00:00:00'},
+                'code_prefix_library': {'last_completed_at': '2999-01-01 00:00:00'},
+            },
+        )
+
+        result = main_window.VidNormApp._should_run_snapshot_refresh_cycle(stub)
+
+        self.assertFalse(result)
+
     def test_schedule_snapshot_refresh_cycle_queues_even_while_enrichment_is_active(self):
         queued = []
         stub = SimpleNamespace(
             snapshot_refresh_running=False,
             snapshot_refresh_queued=False,
             _has_active_enrichment_plan=lambda: True,
+            _should_run_snapshot_refresh_cycle=lambda: True,
             _on_snapshot_refresh_finished=lambda _result=None: None,
             _on_snapshot_refresh_failed=lambda _error=None: None,
             _cleanup_snapshot_refresh_attempt=lambda: None,
@@ -422,6 +449,34 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue(stub.snapshot_refresh_queued)
         self.assertEqual(len(queued), 1)
+
+    def test_snapshot_refresh_finished_records_88_hour_history(self):
+        recorded = []
+        snapshot_status = SimpleNamespace(text='')
+        snapshot_status.setText = lambda value: setattr(snapshot_status, 'text', value)
+        red_lamp = SimpleNamespace(style='')
+        red_lamp.setStyleSheet = lambda value: setattr(red_lamp, 'style', value)
+        green_lamp = SimpleNamespace(style='')
+        green_lamp.setStyleSheet = lambda value: setattr(green_lamp, 'style', value)
+        elapsed_timer = SimpleNamespace(started=True)
+        elapsed_timer.stop = lambda: setattr(elapsed_timer, 'started', False)
+        stub = SimpleNamespace(
+            snapshot_refresh_running=True,
+            snapshot_refresh_status_label=snapshot_status,
+            snapshot_refresh_red_light_label=red_lamp,
+            snapshot_refresh_green_light_label=green_lamp,
+            snapshot_refresh_elapsed_timer=elapsed_timer,
+            snapshot_refresh_started_at=100.0,
+            snapshot_refresh_current_target='actor-library',
+            snapshot_refresh_worker=object(),
+            snapshot_refresh_task_runner=object(),
+            _record_startup_refresh_completion=lambda task_key, task_title: recorded.append((task_key, task_title)),
+        )
+
+        with patch('app.gui.main_window.time.strftime', return_value='12:34:56'):
+            main_window.VidNormApp._on_snapshot_refresh_finished(stub, {'success': True})
+
+        self.assertEqual(recorded, [('snapshot_refresh', '后台刷新快照')])
 
     def test_snapshot_refresh_progress_updates_status_with_elapsed_seconds(self):
         snapshot_status = SimpleNamespace(text='')
@@ -534,6 +589,299 @@ class MainWindowStartupTest(unittest.TestCase):
 
         main_window.VidNormApp._update_task_queue_indicator(stub, is_done=True)
         self.assertIn('#16a34a', button.style)
+        self.assertIn('background-color', button.style)
+        self.assertNotIn('font-weight', button.style)
+        self.assertNotIn('border', button.style)
+        self.assertNotIn(' color:', button.style)
+
+    def test_switching_to_view_mode_pauses_queue_and_requests_enrichment_stop(self):
+        calls = []
+        mode_label = SimpleNamespace(text='')
+        mode_label.setText = lambda value: setattr(mode_label, 'text', value)
+        queen_window = SimpleNamespace(
+            is_async_task_running=lambda: True,
+            stop_crawl=lambda: calls.append(('stop_queen_crawl', None)),
+        )
+        stub = SimpleNamespace(
+            task_queue=SimpleNamespace(set_run_mode=lambda mode: calls.append(('mode', mode))),
+            runtime_mode_label=mode_label,
+            enrichment_thread=object(),
+            enrichment_task_queued=False,
+            batch_enrichment_active=False,
+            stop_enrichment=lambda: calls.append(('stop_enrichment', None)),
+            queen_library_window=queen_window,
+        )
+
+        main_window.VidNormApp.set_runtime_mode(stub, 'view')
+
+        self.assertIn(('mode', 'view'), calls)
+        self.assertIn(('stop_enrichment', None), calls)
+        self.assertIn(('stop_queen_crawl', None), calls)
+        self.assertEqual(mode_label.text, '查看模式')
+
+    def test_switching_to_task_mode_resumes_queue(self):
+        calls = []
+        mode_label = SimpleNamespace(text='')
+        mode_label.setText = lambda value: setattr(mode_label, 'text', value)
+        stub = SimpleNamespace(
+            task_queue=SimpleNamespace(set_run_mode=lambda mode: calls.append(mode)),
+            runtime_mode_label=mode_label,
+            update_enrichment_controls=lambda: None,
+        )
+
+        main_window.VidNormApp.set_runtime_mode(stub, 'task')
+
+        self.assertEqual(calls, ['task'])
+        self.assertEqual(mode_label.text, '任务模式')
+
+    def test_enrichment_button_stays_enabled_while_task_is_active(self):
+        enrich_button = SimpleNamespace(enabled=None)
+        stop_button = SimpleNamespace(enabled=None)
+        enrich_button.setEnabled = lambda value: setattr(enrich_button, 'enabled', bool(value))
+        stop_button.setEnabled = lambda value: setattr(stop_button, 'enabled', bool(value))
+        stub = SimpleNamespace(
+            enrichment_thread=object(),
+            enrichment_task_queued=False,
+            batch_enrichment_active=False,
+            btn_enrich=enrich_button,
+            btn_stop_enrich=stop_button,
+            update_network_guard=lambda: None,
+        )
+
+        main_window.VidNormApp.update_enrichment_controls(stub)
+
+        self.assertTrue(enrich_button.enabled)
+        self.assertTrue(stop_button.enabled)
+
+    def test_force_exit_cancel_does_not_exit_process(self):
+        with patch('app.gui.main_window.QMessageBox.warning', return_value=QMessageBox.No), \
+             patch('app.gui.main_window.VidNormApp._force_exit_process') as exit_process:
+            result = main_window.VidNormApp.force_exit_application(SimpleNamespace())
+
+        self.assertFalse(result)
+        exit_process.assert_not_called()
+
+    def test_force_exit_confirmation_exits_process_immediately(self):
+        with patch('app.gui.main_window.QMessageBox.warning', return_value=QMessageBox.Yes), \
+             patch('app.gui.main_window.VidNormApp._force_exit_process') as exit_process:
+            result = main_window.VidNormApp.force_exit_application(SimpleNamespace())
+
+        self.assertTrue(result)
+        exit_process.assert_called_once_with(0)
+
+    def test_enrichment_task_queue_titles_describe_task_type_and_settings(self):
+        titles = [
+            main_window.VidNormApp._build_enrichment_task_queue_title(
+                'single',
+                target_type='video_library',
+                source_key='supplement',
+                limit=8,
+            ),
+            main_window.VidNormApp._build_enrichment_task_queue_title(
+                'single',
+                target_type='code_prefix_library',
+                source_key='javtxt',
+                limit=7,
+            ),
+            main_window.VidNormApp._build_enrichment_task_queue_title(
+                'single',
+                target_type='actor_library',
+                source_key='avfan',
+                limit=6,
+            ),
+            main_window.VidNormApp._build_enrichment_task_queue_title(
+                'single',
+                target_type='actor_birthday',
+                source_key='binghuo',
+                limit=5,
+            ),
+            main_window.VidNormApp._build_enrichment_task_queue_title(
+                'batch',
+                target_type='actor_birthday',
+                source_key='baomu',
+                limit=4,
+                batch_round=2,
+                batch_count_limit=9,
+            ),
+        ]
+
+        self.assertEqual(len(set(titles)), len(titles))
+        self.assertEqual(titles[0], '单次补全 - 视频库 / 补充任务 / 8项')
+        self.assertEqual(titles[1], '单次补全 - 番号库 / 辛聚谷 / 7项')
+        self.assertEqual(titles[2], '单次补全 - 演员库 / 天限阁 / 6项')
+        self.assertEqual(titles[3], '单次补全 - 演员生日 / 并火 / 5项')
+        self.assertEqual(titles[4], '分批补全 2/9 - 演员生日 / 保木 / 4项')
+
+    def test_combo_task_queue_title_describes_combo_settings(self):
+        single_title = main_window.VidNormApp._build_combo_task_queue_title(
+            'combo_single',
+            combo_key='kan_shui',
+            combo_task_settings={
+                'code_prefix_avfan': {'limit': 3},
+                'actor_javtxt': {'limit': 5},
+            },
+        )
+        batch_title = main_window.VidNormApp._build_combo_task_queue_title(
+            'combo_batch',
+            combo_key='fu_shui',
+            combo_task_settings={
+                'code_prefix_javtxt': {'limit': 2},
+                'actor_avfan': {'limit': 4},
+            },
+            batch_round=3,
+            batch_count_limit=8,
+        )
+
+        self.assertEqual(single_title, '组合补全 - 坎水 / 2类任务 / 最大5项')
+        self.assertEqual(batch_title, '组合分批补全 3/8 - 府水 / 2类任务 / 最大4项')
+
+    def test_start_batch_enrichment_records_batch_count_limit(self):
+        status_label = SimpleNamespace(text='')
+        status_label.setText = lambda value: setattr(status_label, 'text', value)
+        stub = SimpleNamespace(
+            batch_enrichment_active=False,
+            batch_enrichment_config=None,
+            batch_enrichment_round=None,
+            status_label=status_label,
+            update_enrichment_controls=lambda: None,
+            run_next_batch_enrichment=lambda: None,
+        )
+
+        main_window.VidNormApp.start_batch_enrichment(
+            stub,
+            {
+                'batch_limit': 5,
+                'batch_count': 4,
+                'batch_interval_minutes': 30,
+                'show_browser': False,
+                'cooldown_before_search': False,
+                'target_type': 'video_library',
+                'source_key': 'supplement',
+            },
+        )
+
+        self.assertEqual(stub.batch_enrichment_config['batch_count_limit'], 4)
+
+    def test_batch_plan_stops_at_configured_batch_count(self):
+        stopped = []
+        scheduled = []
+        stub = SimpleNamespace(
+            enrichment_mode='batch',
+            batch_enrichment_active=True,
+            batch_enrichment_round=2,
+            batch_enrichment_config={'batch_count_limit': 2},
+            build_enrichment_summary=lambda result: 'summary',
+            stop_batch_enrichment=lambda message=None: stopped.append(message),
+            schedule_next_batch_enrichment=lambda last_result=None: scheduled.append(last_result),
+            status_label=SimpleNamespace(setText=lambda _value: None),
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+        )
+
+        with patch('app.gui.main_window.QMessageBox.information'):
+            main_window.VidNormApp.on_enrichment_finished(
+                stub,
+                {
+                    'processed_count': 5,
+                    'success_count': 5,
+                    'failed_count': 0,
+                    'remaining_count': 20,
+                    'has_more_pending': True,
+                },
+            )
+
+        self.assertEqual(scheduled, [])
+        self.assertEqual(stopped, ['分批补全已达到设定批次数。'])
+
+    def test_batch_plan_is_created_when_queued_task_starts_not_when_submitted(self):
+        plan_calls = []
+        captured = {}
+
+        class _Timer:
+            def stop(self):
+                return None
+
+            def start(self, *_args):
+                return None
+
+        backend_client = SimpleNamespace(
+            create_enrichment_batch_plan=lambda payload: plan_calls.append(dict(payload)) or {'plan_id': 'plan-1'}
+        )
+
+        def capture_queued_runner(
+            task_title,
+            worker_factory,
+            finished_handler,
+            failed_handler,
+            cleanup_handler=None,
+            source='主界面',
+            before_start=None,
+            assign_runner=None,
+            task_category='查看任务',
+            task_kind='',
+        ):
+            captured['task_title'] = task_title
+            captured['worker_factory'] = worker_factory
+            captured['before_start'] = before_start
+            captured['task_category'] = task_category
+            captured['task_kind'] = task_kind
+            return True
+
+        stub = SimpleNamespace(
+            backend_client=backend_client,
+            batch_enrichment_active=False,
+            batch_enrichment_config=None,
+            batch_enrichment_round=0,
+            batch_timer=_Timer(),
+            batch_countdown_timer=_Timer(),
+            batch_next_run_at=None,
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+            status_label=SimpleNamespace(setText=lambda _value: None),
+            enrichment_thread=None,
+            enrichment_task_queued=False,
+            current_enrichment_kind='single',
+            enrichment_mode=None,
+            enrichment_worker=None,
+            enrichment_task_runner=None,
+            enrichment_progress_timer=_Timer(),
+            update_enrichment_controls=lambda: None,
+            reset_progress_widgets=lambda keep_visible=False: None,
+            refresh_enrichment_progress=lambda: None,
+            on_enrichment_finished=lambda result: None,
+            on_enrichment_failed=lambda message: None,
+            cleanup_enrichment_thread=lambda: None,
+            _start_queued_gui_runner=capture_queued_runner,
+        )
+        stub.run_next_batch_enrichment = lambda: main_window.VidNormApp.run_next_batch_enrichment(stub)
+        stub.start_enrichment = lambda *args, **kwargs: main_window.VidNormApp.start_enrichment(
+            stub,
+            *args,
+            **kwargs,
+        )
+        stub._start_enrichment_task_runner = lambda: main_window.VidNormApp._start_enrichment_task_runner(stub)
+
+        main_window.VidNormApp.start_batch_enrichment(
+            stub,
+            {
+                'batch_limit': 5,
+                'batch_count': 2,
+                'batch_interval_minutes': 30,
+                'show_browser': False,
+                'cooldown_before_search': False,
+                'target_type': 'video_library',
+                'source_key': 'supplement',
+            },
+        )
+
+        self.assertEqual(plan_calls, [])
+        self.assertEqual(captured['task_title'], '分批补全 1/2 - 视频库 / 补充任务 / 5项')
+        self.assertEqual(captured['task_category'], '补全任务')
+        self.assertEqual(captured['task_kind'], 'single')
+
+        captured['before_start']()
+
+        self.assertEqual(len(plan_calls), 1)
+        self.assertEqual(plan_calls[0]['batch_limit'], 5)
+        self.assertEqual(plan_calls[0]['batch_count_limit'], 2)
 
     # ── _queued_gui_task_runners lifecycle tests ──────────────────────────
 
@@ -710,8 +1058,22 @@ class MainWindowStartupTest(unittest.TestCase):
             # Intercept enqueue so start_runner fires synchronously.
             original_enqueue = queue.enqueue
 
-            def fake_enqueue(title, source, start_callback, max_attempts=5):
-                record = original_enqueue(title, source, start_callback, max_attempts)
+            def fake_enqueue(
+                title,
+                source,
+                start_callback,
+                max_attempts=5,
+                task_category='查看任务',
+                task_kind='',
+            ):
+                record = original_enqueue(
+                    title,
+                    source,
+                    start_callback,
+                    max_attempts=max_attempts,
+                    task_category=task_category,
+                    task_kind=task_kind,
+                )
                 start_callback(record)
                 return record
 
