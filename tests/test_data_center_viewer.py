@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QApplication
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.data_center_viewer import DataCenterWindow
+from app.gui.i18n import tr
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -101,7 +102,7 @@ class DataCenterViewerTest(unittest.TestCase):
             try:
                 self.assertEqual(backend.summary_refresh_flags, [False, True])
                 self.assertIn('2026-06-21 12:35:56', window.last_refreshed_label.text())
-                self.assertIn('80秒', window.last_refresh_duration_label.text())
+                self.assertIn('80秒', window.last_refreshed_label.text())
             finally:
                 window.hide()
                 window.deleteLater()
@@ -169,6 +170,65 @@ class DataCenterViewerTest(unittest.TestCase):
                 self.assertEqual(window.code_prefix_supplement_card.title_label.text(), '番号库 · 补充任务')
                 self.assertEqual(window.actor_supplement_card.title_label.text(), '演员库 · 补充任务')
                 self.assertEqual(window.actor_baomu_card.title_label.text(), '演员库 · 保木')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_viewer_shows_full_supplement_detail_counts(self):
+        class BackendWithSupplementCounts(_BackendStub):
+            def get_data_center_summary(self, force_refresh=False):
+                self.summary_refresh_flags.append(bool(force_refresh))
+                return {
+                    'summary': {
+                        'video_library': {
+                            'sources': {
+                                'avfan': {},
+                                'javtxt': {},
+                                'supplement': {
+                                    'label': '视频库 · 补充任务',
+                                    'total_count': 4,
+                                    'completed_count': 2,
+                                    'success_count': 1,
+                                    'pending_count': 1,
+                                    'failed_count': 1,
+                                    'no_search_count': 1,
+                                    'no_detail_count': 0,
+                                    'count_label': '已完成',
+                                    'pending_label': '待补充视频',
+                                    'list_kind': 'video',
+                                    'issue_groups': [],
+                                },
+                            },
+                        },
+                        'code_prefix_library': {
+                            'sources': {'avfan': {}, 'javtxt': {}, 'supplement': {}},
+                        },
+                        'actor_library': {
+                            'sources': {'avfan': {}, 'javtxt': {}, 'binghuo': {}, 'baomu': {}, 'supplement': {}},
+                        },
+                    },
+                    'refreshed_at': '2026-06-21 12:34:56',
+                    'refresh_duration_ms': 55000,
+                    'refresh_duration_text': '55s',
+                }
+
+        backend = BackendWithSupplementCounts()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_sync_async_task):
+            window = DataCenterWindow(backend)
+            try:
+                self.assertEqual(
+                    window.video_supplement_card.detail_label.text(),
+                    tr(
+                        'enrichment.summary.detail_full',
+                        pending_label='待补充视频',
+                        pending_count=1,
+                        success_count=1,
+                        failed_count=1,
+                        no_search_count=1,
+                        no_detail_count=0,
+                    ),
+                )
             finally:
                 window.hide()
                 window.deleteLater()

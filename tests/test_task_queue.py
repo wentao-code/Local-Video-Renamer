@@ -1,10 +1,12 @@
 import os
+import time
 import unittest
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QWidget
 
+from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.task_queue import (
     TASK_STATUS_COMPLETED,
     TASK_STATUS_RUNNING,
@@ -16,9 +18,17 @@ from app.gui.task_queue import (
 _APP = QApplication.instance() or QApplication([])
 
 
-def _process_events():
-    for _ in range(5):
+def _process_events(rounds=5):
+    for _ in range(rounds):
         _APP.processEvents()
+
+
+class _AsyncTaskHost(QWidget, AsyncTaskHostMixin):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Test Host')
+        self._init_async_task_host()
+        self.results = []
 
 
 class GuiTaskQueueTest(unittest.TestCase):
@@ -90,6 +100,28 @@ class GuiTaskQueueTest(unittest.TestCase):
         self.queue.mark_completed(second.task_id)
 
         self.assertTrue(self.queue.is_all_done())
+
+    def test_start_async_task_can_run_silently_without_queue_record(self):
+        host = _AsyncTaskHost()
+        try:
+            host.start_async_task(
+                lambda: {'ok': True},
+                host.results.append,
+                block_ui=False,
+                show_in_task_queue=False,
+            )
+
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                _process_events(5)
+                if host.results and not host.is_async_task_running():
+                    break
+
+            self.assertEqual(host.results, [{'ok': True}])
+            self.assertFalse(host.is_async_task_running())
+            self.assertEqual(self.queue.records(), [])
+        finally:
+            host.deleteLater()
 
 
 if __name__ == '__main__':

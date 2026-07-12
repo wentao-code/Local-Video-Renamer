@@ -31776,8 +31776,8 @@
       "total_count": 1444,
       "offset": 0,
       "limit": null,
-      "refreshed_at": "2026-07-12 07:36:25",
-      "refresh_duration_ms": 48,
+      "refreshed_at": "2026-07-12 10:02:03",
+      "refresh_duration_ms": 51,
       "refresh_duration_text": "0秒"
     },
     "{\"include_update_status\": true, \"limit\": 200, \"offset\": 0, \"search_text\": \"\", \"sort_field\": \"age\", \"sort_order\": \"asc\"}": {

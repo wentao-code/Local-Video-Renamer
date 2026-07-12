@@ -39,6 +39,7 @@ COMPLETED_VIDEO_LABEL = '\u5df2\u5b8c\u6210\u89c6\u9891'
 PENDING_VIDEO_LABEL = '\u5f85\u8865\u5168\u89c6\u9891'
 NO_SEARCH_LABEL = '\u65e0\u7ed3\u679c'
 NO_DETAIL_LABEL = '\u65e0\u8be6\u60c5'
+FAILED_LABEL = '\u5931\u8d25'
 MISSING_AGE_LABEL = '\u65e0\u5e74\u9f84'
 MISSING_MEASUREMENTS_LABEL = '\u65e0\u4e09\u56f4'
 MISSING_HEIGHT_LABEL = '\u65e0\u8eab\u9ad8'
@@ -525,16 +526,10 @@ class DataCenterService:
         return summary
 
     def _build_video_supplement_summary(self, filter_settings=None):
-        pending_rows = [
-            row
-            for row in self._list_visible_video_summary_rows(filter_settings=filter_settings)
-            if build_supplement_candidate(row, filter_settings=filter_settings)
-        ]
-        return self._build_pending_only_summary(
+        return self._build_supplement_summary(
             self._build_source_label(VIDEO_LIBRARY_LABEL, SUPPLEMENT_TASK_SOURCE),
-            pending_rows,
-            list_kind='video',
-            item_builder=self._build_video_issue_item,
+            self._list_visible_video_summary_rows(filter_settings=filter_settings),
+            filter_settings=filter_settings,
         )
 
     def _build_code_prefix_source_summary(self, source_key, filter_settings=None):
@@ -577,13 +572,12 @@ class DataCenterService:
             ]
         )
         pending_movies = [
-            movie for movie in merged_movies if build_supplement_candidate(movie, filter_settings=filter_settings)
+            movie for movie in merged_movies
         ]
-        return self._build_pending_only_summary(
+        return self._build_supplement_summary(
             self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, SUPPLEMENT_TASK_SOURCE),
             pending_movies,
-            list_kind='video',
-            item_builder=self._build_video_issue_item,
+            filter_settings=filter_settings,
         )
 
     def _build_actor_source_summary(self, source_key, filter_settings=None):
@@ -628,13 +622,12 @@ class DataCenterService:
             ]
         )
         pending_movies = [
-            movie for movie in merged_movies if build_supplement_candidate(movie, filter_settings=filter_settings)
+            movie for movie in merged_movies
         ]
-        return self._build_pending_only_summary(
+        return self._build_supplement_summary(
             self._build_source_label(ACTOR_LIBRARY_LABEL, SUPPLEMENT_TASK_SOURCE),
             pending_movies,
-            list_kind='video',
-            item_builder=self._build_video_issue_item,
+            filter_settings=filter_settings,
         )
 
     def _build_actor_binghuo_source_summary(self):
@@ -1383,6 +1376,50 @@ class DataCenterService:
                 self._build_issue_group('no_detail', NO_DETAIL_LABEL, no_detail_items),
             ]
         )
+
+    def _build_supplement_summary(self, label, rows, filter_settings=None):
+        pending_items = []
+        failed_items = []
+        no_search_items = []
+        no_detail_items = []
+        statuses = []
+        for row in rows or []:
+            current_row = dict(row or {})
+            current_status = str(current_row.get('supplement_enrichment_status', '') or '').strip() or UNENRICHED_STATUS
+            is_pending = bool(build_supplement_candidate(current_row, filter_settings=filter_settings))
+            if not is_pending and current_status == UNENRICHED_STATUS:
+                continue
+
+            statuses.append(UNENRICHED_STATUS if is_pending else current_status)
+            item = dict(self._build_video_issue_item(current_row) or {})
+            if not item:
+                continue
+            if is_pending:
+                pending_items.append(item)
+            elif current_status == FAILED_STATUS:
+                failed_items.append(item)
+            elif current_status == NO_SEARCH_RESULTS_STATUS:
+                no_search_items.append(item)
+            elif current_status == NO_VIDEO_DETAIL_STATUS:
+                no_detail_items.append(item)
+
+        summary = self._build_status_summary(label, statuses)
+        summary['completed_count'] = int(summary.get('enriched_count', 0) or 0)
+        if summary['completed_count'] > 0 or int(summary.get('failed_count', 0) or 0) > 0:
+            summary['count_label'] = COMPLETED_LABEL
+        else:
+            summary['count_label'] = '\u5f85\u8865\u5145'
+        summary['pending_label'] = PENDING_VIDEO_LABEL
+        summary['list_kind'] = 'video'
+        summary['issue_groups'] = self._compact_issue_groups(
+            [
+                self._build_issue_group('pending', PENDING_VIDEO_LABEL, pending_items),
+                self._build_issue_group('failed', FAILED_LABEL, failed_items),
+                self._build_issue_group('no_search', NO_SEARCH_LABEL, no_search_items),
+                self._build_issue_group('no_detail', NO_DETAIL_LABEL, no_detail_items),
+            ]
+        )
+        return summary
 
     @classmethod
     def _build_pending_only_summary(cls, label, rows, list_kind, item_builder):

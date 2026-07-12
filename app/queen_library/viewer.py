@@ -791,6 +791,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             self._on_crawl_finished,
             tr('queen.library.crawl_failed'),
             block_ui=False,
+            task_title='女王库 批量抓取',
         )
 
     def stop_crawl(self):
@@ -843,6 +844,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             self._on_crawl_progress_loaded,
             tr('common.read_failed'),
             block_ui=False,
+            show_in_task_queue=False,
         )
 
     def _on_crawl_progress_loaded(self, result):

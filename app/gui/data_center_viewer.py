@@ -135,7 +135,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         )
         self.video_supplement_card.set_summary(
             video_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
-            show_terminal_details=False,
+            show_terminal_details=True,
             live_progress=live_progress_map.get((VIDEO_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
         )
         self.code_prefix_avfan_card.set_summary(
@@ -148,7 +148,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         )
         self.code_prefix_supplement_card.set_summary(
             code_prefix_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
-            show_terminal_details=False,
+            show_terminal_details=True,
             live_progress=live_progress_map.get((CODE_PREFIX_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
         )
         self.actor_avfan_card.set_summary(
@@ -161,7 +161,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         )
         self.actor_supplement_card.set_summary(
             actor_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
-            show_terminal_details=False,
+            show_terminal_details=True,
             live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
         )
         self.actor_binghuo_card.set_summary(

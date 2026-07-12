@@ -246,6 +246,100 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_supplement_summary_includes_success_and_terminal_counts(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+
+            self._seed_processed_video(
+                db_path,
+                code="AAA-011",
+                title="Missing Actor",
+                author="",
+                release_date="2024-01-11",
+                status=ENRICHED_STATUS,
+                movie_id="m11",
+                url="https://example.com/11",
+            )
+            self._seed_processed_video(
+                db_path,
+                code="AAA-012",
+                title="Resolved Video",
+                author="Actor B",
+                release_date="2024-01-12",
+                status=ENRICHED_STATUS,
+                movie_id="m12",
+                url="https://example.com/12",
+            )
+            self._seed_processed_video(
+                db_path,
+                code="AAA-013",
+                title="No Search Video",
+                author="",
+                release_date="2024-01-13",
+                status=NO_SEARCH_RESULTS_STATUS,
+            )
+            db.save_video_supplement_status("AAA-012", ENRICHED_STATUS)
+            db.save_video_supplement_status("AAA-013", NO_SEARCH_RESULTS_STATUS)
+
+            db.replace_code_prefix_movies(
+                "AAA",
+                [
+                    self._build_library_movie("AAA-011", "Missing Actor", "", "2024-01-11", ENRICHED_STATUS, "m11", "https://example.com/11"),
+                    self._build_library_movie("AAA-012", "Resolved Video", "Actor B", "2024-01-12", ENRICHED_STATUS, "m12", "https://example.com/12"),
+                    self._build_library_movie("AAA-013", "No Search Video", "", "2024-01-13", NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+            db.save_code_prefix_movie_supplement_status("AAA", "AAA-012", ENRICHED_STATUS)
+            db.save_code_prefix_movie_supplement_status("AAA", "AAA-013", NO_SEARCH_RESULTS_STATUS)
+
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    ("Actor A",),
+                )
+                conn.commit()
+
+            db.replace_actor_movies(
+                "Actor A",
+                [
+                    self._build_library_movie("AAA-011", "Missing Actor", "", "2024-01-11", ENRICHED_STATUS, "m11", "https://example.com/11"),
+                    self._build_library_movie("AAA-012", "Resolved Video", "Actor A", "2024-01-12", ENRICHED_STATUS, "m12", "https://example.com/12"),
+                    self._build_library_movie("AAA-013", "No Search Video", "", "2024-01-13", NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+            db.save_actor_movie_supplement_status("Actor A", "AAA-012", ENRICHED_STATUS)
+            db.save_actor_movie_supplement_status("Actor A", "AAA-013", NO_SEARCH_RESULTS_STATUS)
+
+            summary = DataCenterService(db).get_summary()
+
+            video_summary = summary["video_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(video_summary["total_count"], 3)
+            self.assertEqual(video_summary["completed_count"], 2)
+            self.assertEqual(video_summary["success_count"], 1)
+            self.assertEqual(video_summary["pending_count"], 1)
+            self.assertEqual(video_summary["no_search_count"], 1)
+            self.assertEqual([group["key"] for group in video_summary["issue_groups"]], ["pending", "no_search"])
+
+            code_prefix_summary = summary["code_prefix_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(code_prefix_summary["total_count"], 3)
+            self.assertEqual(code_prefix_summary["completed_count"], 2)
+            self.assertEqual(code_prefix_summary["success_count"], 1)
+            self.assertEqual(code_prefix_summary["pending_count"], 1)
+            self.assertEqual(code_prefix_summary["no_search_count"], 1)
+            self.assertEqual([group["key"] for group in code_prefix_summary["issue_groups"]], ["pending", "no_search"])
+
+            actor_summary = summary["actor_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
+            self.assertEqual(actor_summary["total_count"], 3)
+            self.assertEqual(actor_summary["completed_count"], 2)
+            self.assertEqual(actor_summary["success_count"], 1)
+            self.assertEqual(actor_summary["pending_count"], 1)
+            self.assertEqual(actor_summary["no_search_count"], 1)
+            self.assertEqual([group["key"] for group in actor_summary["issue_groups"]], ["pending", "no_search"])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_javtxt_summary_keeps_no_detail_separate_from_no_search(self):
         temp_dir = tempfile.mkdtemp()
         try:

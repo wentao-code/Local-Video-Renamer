@@ -1,7 +1,7 @@
 from urllib.parse import quote
 
 from app.core.enrichment_sources import SUPPLEMENT_TASK_SOURCE, get_video_enrichment_source_label
-from app.core.enrichment_status import FAILED_STATUS, NO_SEARCH_RESULTS_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 from app.core.runtime_config import get_avfan_base_url
 from app.core.supplement_task_state import SUPPLEMENT_MODE_ACTORS_ONLY, build_supplement_candidate
@@ -194,6 +194,14 @@ class _SupplementBaseService:
             return {status_key: 'ok'}
         return {status_key: 'failed'}
 
+    def _persist_batch_updates(self, updated_rows, successful_rows, terminal_rows, bulk_updater):
+        if updated_rows:
+            bulk_updater(updated_rows)
+        for success_row in successful_rows or []:
+            self._save_terminal_status(success_row, ENRICHED_STATUS)
+        for terminal_row, status, error_message in terminal_rows or []:
+            self._save_terminal_status(terminal_row, status, error_message)
+
 
 class VideoSupplementEnrichmentService(_SupplementBaseService):
     entity_label = '视频'
@@ -246,6 +254,7 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                             failed_count += 1
                             results.append({'code': code, 'status': 'failed', 'error': error_message})
                         else:
+                            self._save_terminal_status(merged_row, ENRICHED_STATUS)
                             success_count += 1
                             results.append({'code': code, 'status': 'ok'})
                 except HumanVerificationRequiredError as exc:
@@ -333,6 +342,7 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         with self.scraper.session():
             for prefix, rows in candidates:
                 updated_rows = []
+                successful_rows = []
                 terminal_rows = []
                 stop_requested = False
                 try:
@@ -351,14 +361,19 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                                 terminal_rows.append((merged_row, NO_SEARCH_RESULTS_STATUS, error_message))
                                 failed_count += 1
                             else:
+                                successful_rows.append(merged_row)
                                 success_count += 1
                         else:
                             terminal_rows.append((row, NO_SEARCH_RESULTS_STATUS, info.get('error', '')))
                             failed_count += 1
                         self._update_progress(processed_count, success_count, failed_count, code)
                 except HumanVerificationRequiredError as exc:
-                    if updated_rows:
-                        self.database.bulk_update_code_prefix_movies_for_supplement(updated_rows)
+                    self._persist_batch_updates(
+                        updated_rows,
+                        successful_rows,
+                        terminal_rows,
+                        self.database.bulk_update_code_prefix_movies_for_supplement,
+                    )
                     failed_count += 1
                     results.append({'prefix': prefix, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(processed_count, success_count, failed_count, prefix)
@@ -382,6 +397,12 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
+                    self._persist_batch_updates(
+                        updated_rows,
+                        successful_rows,
+                        terminal_rows,
+                        self.database.bulk_update_code_prefix_movies_for_supplement,
+                    )
                     if 'row' in locals():
                         self._save_terminal_status(row, FAILED_STATUS, str(exc))
                     failed_count += 1
@@ -389,10 +410,12 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     self._update_progress(processed_count, success_count, failed_count, prefix)
                     continue
 
-                if updated_rows:
-                    self.database.bulk_update_code_prefix_movies_for_supplement(updated_rows)
-                for terminal_row, status, error_message in terminal_rows:
-                    self._save_terminal_status(terminal_row, status, error_message)
+                self._persist_batch_updates(
+                    updated_rows,
+                    successful_rows,
+                    terminal_rows,
+                    self.database.bulk_update_code_prefix_movies_for_supplement,
+                )
                 if updated_rows and not terminal_rows:
                     results.append({'prefix': prefix, 'status': 'ok'})
                 elif updated_rows or terminal_rows:
@@ -486,6 +509,7 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
         with self.scraper.session():
             for actor_name, rows in candidates:
                 updated_rows = []
+                successful_rows = []
                 terminal_rows = []
                 stop_requested = False
                 try:
@@ -504,14 +528,19 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                                 terminal_rows.append((merged_row, NO_SEARCH_RESULTS_STATUS, error_message))
                                 failed_count += 1
                             else:
+                                successful_rows.append(merged_row)
                                 success_count += 1
                         else:
                             terminal_rows.append((row, NO_SEARCH_RESULTS_STATUS, info.get('error', '')))
                             failed_count += 1
                         self._update_progress(processed_count, success_count, failed_count, code)
                 except HumanVerificationRequiredError as exc:
-                    if updated_rows:
-                        self.database.bulk_update_actor_movies_for_supplement(updated_rows)
+                    self._persist_batch_updates(
+                        updated_rows,
+                        successful_rows,
+                        terminal_rows,
+                        self.database.bulk_update_actor_movies_for_supplement,
+                    )
                     failed_count += 1
                     results.append({'actor_name': actor_name, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(processed_count, success_count, failed_count, actor_name)
@@ -535,6 +564,12 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
+                    self._persist_batch_updates(
+                        updated_rows,
+                        successful_rows,
+                        terminal_rows,
+                        self.database.bulk_update_actor_movies_for_supplement,
+                    )
                     if 'row' in locals():
                         self._save_terminal_status(row, FAILED_STATUS, str(exc))
                     failed_count += 1
@@ -542,10 +577,12 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     self._update_progress(processed_count, success_count, failed_count, actor_name)
                     continue
 
-                if updated_rows:
-                    self.database.bulk_update_actor_movies_for_supplement(updated_rows)
-                for terminal_row, status, error_message in terminal_rows:
-                    self._save_terminal_status(terminal_row, status, error_message)
+                self._persist_batch_updates(
+                    updated_rows,
+                    successful_rows,
+                    terminal_rows,
+                    self.database.bulk_update_actor_movies_for_supplement,
+                )
                 if updated_rows and not terminal_rows:
                     results.append({'actor_name': actor_name, 'status': 'ok'})
                 elif updated_rows or terminal_rows:

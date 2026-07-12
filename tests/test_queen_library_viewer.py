@@ -22,6 +22,8 @@ def _run_sync_async_task(
     error_title=None,
     block_ui=True,
     allow_deferred_close=False,
+    task_title=None,
+    show_in_task_queue=True,
 ):
     success_handler(task())
     return True
@@ -291,6 +293,78 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
                 self.assertIn('queen_crawl.log', window.status_label.text())
                 self.assertFalse(window.btn_stop_crawl.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_start_crawl_uses_single_visible_queue_task(self):
+        backend = _QueenBackendStub()
+        captured = []
+
+        def _capture_async_task(
+            self,
+            task,
+            success_handler,
+            error_title=None,
+            block_ui=True,
+            allow_deferred_close=False,
+            task_title=None,
+            show_in_task_queue=True,
+        ):
+            captured.append(
+                {
+                    'task_title': task_title,
+                    'show_in_task_queue': show_in_task_queue,
+                }
+            )
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                captured.clear()
+
+                window.start_crawl()
+
+                self.assertEqual(len(captured), 1)
+                self.assertEqual(captured[0]['task_title'], '女王库 批量抓取')
+                self.assertTrue(captured[0]['show_in_task_queue'])
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_poll_crawl_progress_stays_out_of_task_queue(self):
+        backend = _QueenBackendStub()
+        captured = []
+
+        def _capture_async_task(
+            self,
+            task,
+            success_handler,
+            error_title=None,
+            block_ui=True,
+            allow_deferred_close=False,
+            task_title=None,
+            show_in_task_queue=True,
+        ):
+            captured.append(
+                {
+                    'error_title': error_title,
+                    'show_in_task_queue': show_in_task_queue,
+                }
+            )
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                captured.clear()
+
+                window.poll_crawl_progress()
+
+                self.assertEqual(len(captured), 1)
+                self.assertEqual(captured[0]['error_title'], '读取失败')
+                self.assertFalse(captured[0]['show_in_task_queue'])
             finally:
                 window.hide()
                 window.deleteLater()

@@ -367,6 +367,47 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(first['remaining_count'], 0)
         self.assertEqual(second['processed_count'], 0)
 
+    def test_video_supplement_success_marks_status_completed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            self._insert_processed_video(
+                db_path,
+                code='AAA-022',
+                title='Filled Video',
+                release_date='2024-01-22',
+                javtxt_status=NO_SEARCH_RESULTS_STATUS,
+                javtxt_title='Filled Video',
+                javtxt_release_date='2024-01-22',
+            )
+            service = VideoSupplementEnrichmentService(
+                db,
+                scraper=_FakeScraper(
+                    payload_by_code={
+                        'AAA-022': {
+                            'found': True,
+                            'title': 'Filled Video',
+                            'actors': ['Actor A'],
+                            'release_date': '2024-01-22',
+                            'maker': ['Maker A'],
+                            'publisher': ['Publisher A'],
+                            'avfan_movie_id': 'av22',
+                        }
+                    }
+                ),
+            )
+
+            result = service.enrich_next_videos(1)
+            rows = {
+                row['code']: row
+                for row in db.list_video_summary_rows()
+                if row.get('code') == 'AAA-022'
+            }
+
+        self.assertEqual(result['success_count'], 1)
+        self.assertEqual(rows['AAA-022']['supplement_enrichment_status'], ENRICHED_STATUS)
+
     def test_code_prefix_supplement_reports_video_progress_counts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -413,6 +454,38 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['success_count'], 2)
         self.assertEqual(result['remaining_count'], 0)
         self.assertEqual(result['count_unit'], '视频')
+
+    def test_code_prefix_supplement_success_marks_status_completed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            db.replace_code_prefix_movies(
+                'AAA',
+                [
+                    self._build_library_movie('AAA-023', 'Need Supplement', '', '2024-01-23', NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+            service = CodePrefixSupplementEnrichmentService(
+                db,
+                scraper=_FakeScraper(
+                    payload_by_code={
+                        'AAA-023': {
+                            'found': True,
+                            'title': 'Need Supplement',
+                            'actors': ['Actor B'],
+                            'release_date': '2024-01-23',
+                            'avfan_url': 'https://example.com/23',
+                        }
+                    }
+                ),
+            )
+
+            result = service.enrich_next_prefixes(1)
+            rows = db.list_code_prefix_movies('AAA')
+
+        self.assertEqual(result['success_count'], 1)
+        self.assertEqual(rows[0]['supplement_enrichment_status'], ENRICHED_STATUS)
 
     def test_code_prefix_supplement_no_result_is_skipped_until_manual_reset(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -698,6 +771,45 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['success_count'], 2)
         self.assertEqual(result['remaining_count'], 0)
         self.assertEqual(result['count_unit'], '视频')
+
+    def test_actor_supplement_success_marks_status_completed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    ('Actor A',),
+                )
+                conn.commit()
+
+            db.replace_actor_movies(
+                'Actor A',
+                [
+                    self._build_library_movie('AAA-024', 'Need Supplement', '', '2024-01-24', NO_SEARCH_RESULTS_STATUS),
+                ],
+            )
+            service = ActorSupplementEnrichmentService(
+                db,
+                scraper=_FakeScraper(
+                    payload_by_code={
+                        'AAA-024': {
+                            'found': True,
+                            'title': 'Need Supplement',
+                            'actors': ['Actor A'],
+                            'release_date': '2024-01-24',
+                            'avfan_url': 'https://example.com/24',
+                        }
+                    }
+                ),
+            )
+
+            result = service.enrich_next_actors(1)
+            rows = db.list_actor_movies('Actor A')
+
+        self.assertEqual(result['success_count'], 1)
+        self.assertEqual(rows[0]['supplement_enrichment_status'], ENRICHED_STATUS)
 
     def test_actor_supplement_no_result_is_skipped_until_manual_reset(self):
         with tempfile.TemporaryDirectory() as temp_dir:

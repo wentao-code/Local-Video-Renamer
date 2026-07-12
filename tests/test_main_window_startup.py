@@ -1,6 +1,11 @@
 import os
+import shutil
+import sqlite3
+import tempfile
 import unittest
+from datetime import datetime
 from functools import partial
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -148,6 +153,7 @@ class MainWindowStartupTest(unittest.TestCase):
     def test_enqueue_startup_refresh_tasks_adds_interface_refreshes_after_snapshot_refresh(self):
         task_titles = []
         calls = []
+        recorded = []
         backend_client = SimpleNamespace(
             list_actors_snapshot=lambda **kwargs: calls.append(('actors', kwargs)),
             list_code_prefixes_snapshot=lambda **kwargs: calls.append(('prefixes', kwargs)),
@@ -163,6 +169,11 @@ class MainWindowStartupTest(unittest.TestCase):
         )
         stub = SimpleNamespace(
             backend_client=backend_client,
+            _load_startup_refresh_history=lambda: {},
+            _should_run_startup_refresh_task=lambda task_key, history, now=None: True,
+            _record_startup_refresh_completion=lambda task_key, task_title, completed_at=None: recorded.append(
+                (task_key, task_title)
+            ),
             _start_queued_gui_runner=lambda title, worker_factory, success_handler, error_handler, **kwargs: (
                 task_titles.append(title),
                 success_handler(worker_factory().task()),
@@ -199,6 +210,168 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertIn(('masterpiece', {}), calls)
         self.assertIn(('medals', {}), calls)
         self.assertIn(('canglangge', {'force_refresh': True}), calls)
+        self.assertEqual(
+            recorded,
+            [
+                ('actor_library', '启动刷新 演员库'),
+                ('code_prefix_library', '启动刷新 番号库'),
+                ('data_center', '启动刷新 数据中心'),
+                ('video_category', '启动刷新 视频分类'),
+                ('path_library', '启动刷新 路径库'),
+                ('queen_library', '启动刷新 女王库'),
+                ('masterpiece', '启动刷新 名作堂'),
+                ('global_medals', '启动刷新 勋章堂'),
+                ('canglangge', '启动刷新 沧浪阁'),
+            ],
+        )
+
+    def test_enqueue_startup_refresh_tasks_skips_recent_tasks_and_records_only_started_ones(self):
+        task_titles = []
+        recorded = []
+        backend_client = SimpleNamespace(
+            list_actors_snapshot=lambda **kwargs: {'actors': []},
+            list_code_prefixes_snapshot=lambda **kwargs: {'prefixes': []},
+            get_data_center_summary=lambda **kwargs: {'stats': {}},
+            list_videos_requiring_manual_category_snapshot=lambda **kwargs: {'videos': []},
+            get_path_library_snapshot=lambda **kwargs: {'paths': []},
+            list_queen_library_snapshot=lambda **kwargs: {'queens': []},
+            list_queen_keywords_snapshot=lambda **kwargs: {'keywords': []},
+            get_queen_library_stats=lambda: {'queen_count': 0},
+            list_masterpiece_entries=lambda: {'entries': []},
+            list_global_medals=lambda: {'medals': []},
+            list_canglangge_candidates_snapshot=lambda **kwargs: {'rows': []},
+        )
+        allowed_task_keys = {'code_prefix_library', 'queen_library'}
+        stub = SimpleNamespace(
+            backend_client=backend_client,
+            _load_startup_refresh_history=lambda: {'actor_library': {'last_completed_at': '2026-07-12 10:00:00'}},
+            _should_run_startup_refresh_task=lambda task_key, history, now=None: task_key in allowed_task_keys,
+            _record_startup_refresh_completion=lambda task_key, task_title, completed_at=None: recorded.append(
+                (task_key, task_title)
+            ),
+            _start_queued_gui_runner=lambda title, worker_factory, success_handler, error_handler, **kwargs: (
+                task_titles.append(title),
+                success_handler(worker_factory().task()),
+                True,
+            )[-1],
+            _on_startup_refresh_task_finished=lambda _result: None,
+            _on_startup_refresh_task_failed=lambda _message: None,
+        )
+
+        main_window.VidNormApp.enqueue_startup_refresh_tasks(stub)
+
+        self.assertEqual(task_titles, ['启动刷新 番号库', '启动刷新 女王库'])
+        self.assertEqual(
+            recorded,
+            [
+                ('code_prefix_library', '启动刷新 番号库'),
+                ('queen_library', '启动刷新 女王库'),
+            ],
+        )
+
+    def test_enqueue_startup_refresh_tasks_uses_long_timeout_client_for_actor_code_prefix_data_center_and_video_category(self):
+        backend_calls = []
+        refresh_calls = []
+        backend_client = SimpleNamespace(
+            base_url='http://127.0.0.1:8766',
+            timeout=30,
+            list_actors_snapshot=lambda **kwargs: backend_calls.append(('actors', kwargs)),
+            list_code_prefixes_snapshot=lambda **kwargs: backend_calls.append(('prefixes', kwargs)),
+            get_data_center_summary=lambda **kwargs: backend_calls.append(('data_center', kwargs)),
+            list_videos_requiring_manual_category_snapshot=lambda **kwargs: backend_calls.append(('video_category', kwargs)),
+            get_path_library_snapshot=lambda **kwargs: backend_calls.append(('path_library', kwargs)),
+            list_queen_library_snapshot=lambda **kwargs: backend_calls.append(('queen_library', kwargs)),
+            list_queen_keywords_snapshot=lambda **kwargs: backend_calls.append(('queen_keywords', kwargs)),
+            get_queen_library_stats=lambda: backend_calls.append(('queen_stats', {})),
+            list_masterpiece_entries=lambda: backend_calls.append(('masterpiece', {})),
+            list_global_medals=lambda: backend_calls.append(('medals', {})),
+            list_canglangge_candidates_snapshot=lambda **kwargs: backend_calls.append(('canglangge', kwargs)),
+        )
+        refresh_client = SimpleNamespace(
+            list_actors_snapshot=lambda **kwargs: refresh_calls.append(('actors', kwargs)),
+            list_code_prefixes_snapshot=lambda **kwargs: refresh_calls.append(('prefixes', kwargs)),
+            get_data_center_summary=lambda **kwargs: refresh_calls.append(('data_center', kwargs)),
+            list_videos_requiring_manual_category_snapshot=lambda **kwargs: refresh_calls.append(('video_category', kwargs)),
+        )
+        stub = SimpleNamespace(
+            backend_client=backend_client,
+            _load_startup_refresh_history=lambda: {},
+            _should_run_startup_refresh_task=lambda task_key, history, now=None: True,
+            _record_startup_refresh_completion=lambda task_key, task_title, completed_at=None: None,
+            _start_queued_gui_runner=lambda title, worker_factory, success_handler, error_handler, **kwargs: (
+                success_handler(worker_factory().task()),
+                True,
+            )[-1],
+            _on_startup_refresh_task_finished=lambda _result: None,
+            _on_startup_refresh_task_failed=lambda _message: None,
+        )
+
+        with patch('app.gui.main_window._build_refresh_client', return_value=refresh_client) as build_refresh_client:
+            main_window.VidNormApp.enqueue_startup_refresh_tasks(stub)
+
+        build_refresh_client.assert_called_once_with(
+            backend_client,
+            minimum_timeout=main_window.SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+        )
+        self.assertIn(('actors', {'force_refresh': True, 'include_update_status': False}), refresh_calls)
+        self.assertIn(('prefixes', {'force_refresh': True}), refresh_calls)
+        self.assertIn(('data_center', {'force_refresh': True}), refresh_calls)
+        self.assertIn(('video_category', {'force_refresh': True}), refresh_calls)
+        self.assertNotIn(('actors', {'force_refresh': True, 'include_update_status': False}), backend_calls)
+        self.assertNotIn(('prefixes', {'force_refresh': True}), backend_calls)
+        self.assertNotIn(('data_center', {'force_refresh': True}), backend_calls)
+        self.assertNotIn(('video_category', {'force_refresh': True}), backend_calls)
+
+    def test_should_run_startup_refresh_task_respects_88_hour_threshold(self):
+        history = {
+            'recent': {'last_completed_at': '2026-07-10 23:00:00'},
+            'expired': {'last_completed_at': '2026-07-08 19:59:59'},
+            'broken': {'last_completed_at': 'not-a-time'},
+        }
+        now = datetime(2026, 7, 12, 12, 0, 0)
+        stub = SimpleNamespace()
+
+        self.assertFalse(
+            main_window.VidNormApp._should_run_startup_refresh_task(stub, 'recent', history, now=now)
+        )
+        self.assertTrue(
+            main_window.VidNormApp._should_run_startup_refresh_task(stub, 'expired', history, now=now)
+        )
+        self.assertTrue(
+            main_window.VidNormApp._should_run_startup_refresh_task(stub, 'missing', history, now=now)
+        )
+        self.assertTrue(
+            main_window.VidNormApp._should_run_startup_refresh_task(stub, 'broken', history, now=now)
+        )
+
+    def test_record_startup_refresh_completion_persists_row_in_database(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'startup_refresh_test.db'
+            stub = SimpleNamespace(
+                _get_startup_refresh_history_db_path=lambda: db_path,
+            )
+
+            main_window.VidNormApp._record_startup_refresh_completion(
+                stub,
+                'actor_library',
+                '启动刷新 演员库',
+                completed_at='2026-07-12 12:34:56',
+            )
+
+            with sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute(
+                    '''
+                    SELECT task_key, task_title, last_completed_at
+                    FROM startup_refresh_history
+                    WHERE task_key = ?
+                    ''',
+                    ('actor_library',),
+                ).fetchone()
+
+            self.assertEqual(row, ('actor_library', '启动刷新 演员库', '2026-07-12 12:34:56'))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []
@@ -568,6 +741,55 @@ class MainWindowStartupTest(unittest.TestCase):
 
                 # cleanup 后应从 dict 移除
                 self.assertEqual(len(stub._queued_gui_task_runners), 0)
+        finally:
+            queue.reset_for_tests()
+
+    def test_start_queued_gui_runner_keeps_runner_until_cleanup_marks_complete(self):
+        from app.gui.task_queue import TASK_STATUS_COMPLETED, get_gui_task_queue
+
+        queue = get_gui_task_queue()
+        queue.reset_for_tests()
+        try:
+            states = []
+            stub = SimpleNamespace(
+                _queued_gui_task_runners={},
+                snapshot_refresh_task_runner=None,
+            )
+
+            def finished_handler(_result):
+                stub.snapshot_refresh_task_runner = None
+                states.append(('attr_cleared', len(stub._queued_gui_task_runners)))
+
+            class FakeRunner:
+                def __init__(self, parent, worker, finished_cb, failed_cb, cleanup_cb):
+                    self.finished_cb = finished_cb
+                    self.cleanup_cb = cleanup_cb
+                    self.thread = SimpleNamespace()
+
+                def start(self):
+                    self.finished_cb({'success': True})
+                    states.append(('before_cleanup', len(stub._queued_gui_task_runners)))
+                    self.cleanup_cb()
+
+            with patch('app.gui.main_window.GuiTaskRunner', FakeRunner):
+                bound_start = partial(main_window.VidNormApp._start_queued_gui_runner, stub)
+                bound_start(
+                    '后台刷新快照',
+                    worker_factory=lambda: SimpleNamespace(),
+                    finished_handler=finished_handler,
+                    failed_handler=lambda _message: self.fail('不应进入失败分支'),
+                    assign_runner=lambda _worker, runner: setattr(stub, 'snapshot_refresh_task_runner', runner),
+                )
+
+                _process_events()
+
+            records = queue.records()
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].status, TASK_STATUS_COMPLETED)
+            self.assertTrue(queue.is_all_done())
+            self.assertEqual(states, [('attr_cleared', 1), ('before_cleanup', 1)])
+            self.assertEqual(len(stub._queued_gui_task_runners), 0)
+            self.assertIsNone(stub.snapshot_refresh_task_runner)
         finally:
             queue.reset_for_tests()
 

@@ -2752,9 +2752,9 @@
       "total_count": 196,
       "offset": 0,
       "limit": null,
-      "refreshed_at": "2026-07-12 07:37:34",
-      "refresh_duration_ms": 69056,
-      "refresh_duration_text": "69秒"
+      "refreshed_at": "2026-07-12 10:04:18",
+      "refresh_duration_ms": 67143,
+      "refresh_duration_text": "67秒"
     },
     "{\"limit\": 200, \"offset\": 0, \"search_text\": \"\", \"sort_field\": \"latest_release_date\", \"sort_order\": \"asc\"}": {
       "prefixes": [

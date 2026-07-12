@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PyQt5.QtGui import QFont
@@ -60,6 +61,8 @@ from app.services.system import NetworkGuardService
 
 SNAPSHOT_REFRESH_STARTUP_DELAY_MS = 15000
 SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS = 20 * 60
+STARTUP_REFRESH_INTERVAL_HOURS = 88
+STARTUP_REFRESH_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
 
 
 class EnrichmentWorker(QObject):
@@ -1196,6 +1199,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'failed': False,
                 'message': '',
             }
+            runner_holder = {}
             worker = worker_factory()
 
             def handle_finished(result):
@@ -1217,6 +1221,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                     get_gui_task_queue().mark_completed(record.task_id)
                 finally:
                     self._queued_gui_task_runners.pop(record.task_id, None)
+                    runner_holder.pop('runner', None)
 
             runner = GuiTaskRunner(
                 self,
@@ -1225,6 +1230,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 handle_failed,
                 handle_cleanup,
             )
+            runner_holder['runner'] = runner
             self._queued_gui_task_runners[record.task_id] = runner
             if callable(assign_runner):
                 assign_runner(worker, runner)
@@ -1234,57 +1240,170 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         return True
 
     def enqueue_startup_refresh_tasks(self):
-        for title, task in VidNormApp._startup_refresh_task_specs(self):
+        history = self._load_startup_refresh_history()
+        startup_refresh_client = _build_refresh_client(
+            self.backend_client,
+            minimum_timeout=SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+        )
+        for task_key, title, task in VidNormApp._startup_refresh_task_specs(
+            self,
+            refresh_client=startup_refresh_client,
+        ):
+            if not self._should_run_startup_refresh_task(task_key, history):
+                continue
+
+            def handle_success(result, task_key=task_key, task_title=title):
+                self._record_startup_refresh_completion(task_key, task_title)
+                self._on_startup_refresh_task_finished(result)
+
             self._start_queued_gui_runner(
                 title,
                 lambda task=task: BackendTaskWorker(task),
-                self._on_startup_refresh_task_finished,
+                handle_success,
                 self._on_startup_refresh_task_failed,
                 source='启动刷新',
             )
 
-    def _startup_refresh_task_specs(self):
+    def _startup_refresh_task_specs(self, refresh_client=None):
+        startup_refresh_client = refresh_client or self.backend_client
         return [
             (
+                'actor_library',
                 '启动刷新 演员库',
-                lambda: self.backend_client.list_actors_snapshot(
+                lambda: startup_refresh_client.list_actors_snapshot(
                     force_refresh=True,
                     include_update_status=False,
                 ),
             ),
             (
+                'code_prefix_library',
                 '启动刷新 番号库',
-                lambda: self.backend_client.list_code_prefixes_snapshot(force_refresh=True),
+                lambda: startup_refresh_client.list_code_prefixes_snapshot(force_refresh=True),
             ),
             (
+                'data_center',
                 '启动刷新 数据中心',
-                lambda: self.backend_client.get_data_center_summary(force_refresh=True),
+                lambda: startup_refresh_client.get_data_center_summary(force_refresh=True),
             ),
             (
+                'video_category',
                 '启动刷新 视频分类',
-                lambda: self.backend_client.list_videos_requiring_manual_category_snapshot(force_refresh=True),
+                lambda: startup_refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=True),
             ),
             (
+                'path_library',
                 '启动刷新 路径库',
                 lambda: self.backend_client.get_path_library_snapshot(force_refresh=True),
             ),
             (
+                'queen_library',
                 '启动刷新 女王库',
                 lambda: VidNormApp._refresh_queen_library_startup_payload(self),
             ),
             (
+                'masterpiece',
                 '启动刷新 名作堂',
                 lambda: self.backend_client.list_masterpiece_entries(),
             ),
             (
+                'global_medals',
                 '启动刷新 勋章堂',
                 lambda: self.backend_client.list_global_medals(),
             ),
             (
+                'canglangge',
                 '启动刷新 沧浪阁',
                 lambda: self.backend_client.list_canglangge_candidates_snapshot(force_refresh=True),
             ),
         ]
+
+    def _get_startup_refresh_history_db_path(self):
+        health = self.get_backend_health() if hasattr(self, 'get_backend_health') else None
+        db_path = str((health or {}).get('db_path') or '').strip()
+        return Path(db_path) if db_path else DATABASE_FILE
+
+    def _ensure_startup_refresh_history_table(self, db_path=None):
+        target_path = Path(db_path or self._get_startup_refresh_history_db_path())
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(target_path), timeout=5) as conn:
+            conn.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS startup_refresh_history (
+                    task_key TEXT PRIMARY KEY,
+                    task_title TEXT NOT NULL DEFAULT '',
+                    last_completed_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+
+    def _load_startup_refresh_history(self):
+        try:
+            db_path = self._get_startup_refresh_history_db_path()
+            VidNormApp._ensure_startup_refresh_history_table(self, db_path)
+            with sqlite3.connect(str(db_path), timeout=5) as conn:
+                rows = conn.execute(
+                    '''
+                    SELECT task_key, task_title, last_completed_at, updated_at
+                    FROM startup_refresh_history
+                    '''
+                ).fetchall()
+        except sqlite3.Error:
+            return {}
+
+        history = {}
+        for task_key, task_title, last_completed_at, updated_at in rows:
+            normalized_key = str(task_key or '').strip()
+            if not normalized_key:
+                continue
+            history[normalized_key] = {
+                'task_key': normalized_key,
+                'task_title': str(task_title or '').strip(),
+                'last_completed_at': str(last_completed_at or '').strip(),
+                'updated_at': str(updated_at or '').strip(),
+            }
+        return history
+
+    def _should_run_startup_refresh_task(self, task_key, history, now=None):
+        row = dict((history or {}).get(str(task_key or '').strip()) or {})
+        last_completed_at = str(row.get('last_completed_at') or '').strip()
+        if not last_completed_at:
+            return True
+        try:
+            completed_at = datetime.strptime(last_completed_at, STARTUP_REFRESH_TIMESTAMP_FORMAT)
+        except ValueError:
+            return True
+        current_time = now if isinstance(now, datetime) else datetime.now()
+        return current_time - completed_at >= timedelta(hours=STARTUP_REFRESH_INTERVAL_HOURS)
+
+    def _record_startup_refresh_completion(self, task_key, task_title, completed_at=None):
+        normalized_key = str(task_key or '').strip()
+        if not normalized_key:
+            return
+        completed_text = str(completed_at or time.strftime(STARTUP_REFRESH_TIMESTAMP_FORMAT)).strip()
+        try:
+            db_path = self._get_startup_refresh_history_db_path()
+            VidNormApp._ensure_startup_refresh_history_table(self, db_path)
+            with sqlite3.connect(str(db_path), timeout=5) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO startup_refresh_history (task_key, task_title, last_completed_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(task_key) DO UPDATE SET
+                        task_title = excluded.task_title,
+                        last_completed_at = excluded.last_completed_at,
+                        updated_at = excluded.updated_at
+                    ''',
+                    (
+                        normalized_key,
+                        str(task_title or '').strip(),
+                        completed_text,
+                        completed_text,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.Error:
+            return
 
     def _refresh_queen_library_startup_payload(self):
         return {

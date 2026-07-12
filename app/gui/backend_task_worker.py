@@ -72,6 +72,7 @@ class AsyncTaskHostMixin:
         block_ui=True,
         allow_deferred_close=False,
         task_title=None,
+        show_in_task_queue=True,
     ):
         queue_task_title = self._build_async_task_title(
             error_title=error_title,
@@ -79,9 +80,10 @@ class AsyncTaskHostMixin:
             task_title=task_title,
         )
 
-        def start_queued_task(record):
+        def start_task(record=None):
             if self._async_task_thread is not None:
-                get_gui_task_queue().mark_failed(record.task_id, tr('common.task_in_progress'))
+                if record is not None:
+                    get_gui_task_queue().mark_failed(record.task_id, tr('common.task_in_progress'))
                 return
             self._async_task_queue_record = record
             self._async_task_failed_message = None
@@ -103,7 +105,11 @@ class AsyncTaskHostMixin:
             self._async_task_thread.finished.connect(self._cleanup_async_task_thread)
             self._async_task_thread.start()
 
-        get_gui_task_queue().enqueue(queue_task_title, self._async_task_source_name(), start_queued_task)
+        if not show_in_task_queue:
+            start_task()
+            return True
+
+        get_gui_task_queue().enqueue(queue_task_title, self._async_task_source_name(), start_task)
         return True
 
     def _build_async_task_title(self, error_title=None, success_handler=None, task_title=None):
@@ -178,6 +184,8 @@ class AsyncTaskHostMixin:
         failed_message = self._async_task_failed_message
         error_title = self._async_task_error_title or tr('common.operation_failed')
         queue_record = self._async_task_queue_record
+        self._async_task_success_handler = None
+        self._async_task_error_title = ''
         self._async_task_worker = None
         self._async_task_thread = None
         if self._async_task_blocks_ui:
@@ -191,8 +199,6 @@ class AsyncTaskHostMixin:
             if failed_message:
                 final_failure = get_gui_task_queue().mark_failed(queue_record.task_id, failed_message)
                 if final_failure:
-                    self._async_task_success_handler = None
-                    self._async_task_error_title = ''
                     QMessageBox.critical(self, error_title, failed_message)
             else:
                 get_gui_task_queue().mark_completed(queue_record.task_id)
