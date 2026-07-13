@@ -142,7 +142,7 @@ class PagedListViewerTest(unittest.TestCase):
             try:
                 self.assertEqual(backend.calls[0], ('', 'name', 'asc', window.page_size, 0))
                 window.go_to_next_page()
-                self.assertEqual(backend.calls[1], ('', 'name', 'asc', window.page_size, window.page_size))
+                self.assertEqual(backend.calls[-1], ('', 'name', 'asc', window.page_size, window.page_size))
             finally:
                 window.hide()
                 window.deleteLater()
@@ -160,7 +160,10 @@ class PagedListViewerTest(unittest.TestCase):
             window = CodePrefixViewerWindow(backend)
             try:
                 self.assertEqual(backend.snapshot_calls[0], ('', 'prefix', 'asc', window.page_size, 0, False))
-                self.assertEqual(len(backend.snapshot_calls), 1)
+                self.assertEqual(
+                    backend.snapshot_calls[1],
+                    ('', 'prefix', 'asc', window.page_size, 0, True),
+                )
                 window.go_to_next_page()
                 self.assertEqual(
                     backend.snapshot_calls[-1],

@@ -634,6 +634,40 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(calls, ['task'])
         self.assertEqual(mode_label.text, '任务模式')
 
+    def test_saved_view_mode_does_not_load_resumable_plans(self):
+        calls = []
+        stub = SimpleNamespace(
+            runtime_mode='view',
+            backend_client=SimpleNamespace(
+                recover_enrichment_plans=lambda reason: calls.append(('recover', reason)),
+                list_enrichment_plans=lambda resumable_only=False: calls.append(('list', resumable_only)) or [],
+            ),
+            task_queue=SimpleNamespace(has_plan=lambda _plan_id: False),
+        )
+
+        plans = main_window.VidNormApp.recover_unfinished_enrichment_plans(stub)
+
+        self.assertEqual(plans, [])
+        self.assertEqual(calls, [('recover', '程序启动恢复')])
+
+    def test_task_mode_rehydrates_resumable_plans(self):
+        captured = []
+        plan = {'plan_id': 'plan-1', 'task_kind': 'video', 'target_type': 'video_library'}
+        stub = SimpleNamespace(
+            runtime_mode='task',
+            backend_client=SimpleNamespace(
+                recover_enrichment_plans=lambda _reason: None,
+                list_enrichment_plans=lambda resumable_only=False: [plan],
+            ),
+            task_queue=SimpleNamespace(has_plan=lambda _plan_id: False),
+            _enqueue_resumed_enrichment_plan=lambda value: captured.append(value),
+        )
+
+        result = main_window.VidNormApp.recover_unfinished_enrichment_plans(stub)
+
+        self.assertEqual(result, [plan])
+        self.assertEqual(captured, [plan])
+
     def test_enrichment_button_stays_enabled_while_task_is_active(self):
         enrich_button = SimpleNamespace(enabled=None)
         stop_button = SimpleNamespace(enabled=None)

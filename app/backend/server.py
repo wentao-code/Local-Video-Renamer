@@ -277,6 +277,23 @@ def make_handler(service):
                 )
             if method == 'GET' and path == '/database/enrich/progress':
                 return service.get_enrichment_progress()
+            if method == 'GET' and path == '/database/enrich/plans':
+                return service.list_enrichment_plans(
+                    resumable_only=_is_truthy_query_value(query, 'resumable'),
+                )
+            if method == 'GET' and path == '/database/enrich/plan-progress':
+                return service.get_enrichment_plan_progress(
+                    query.get('plan_id', [''])[0],
+                    query.get('task_kind', [''])[0],
+                )
+            if method == 'POST' and path == '/database/enrich/recover':
+                return service.recover_enrichment_plans(body.get('reason', '程序启动恢复'))
+            if method == 'POST' and path == '/database/enrich/plan/pause':
+                return service.pause_enrichment_plan(
+                    body.get('plan_id', ''),
+                    body.get('task_kind', ''),
+                    body.get('reason', '补全任务异常暂停'),
+                )
             if method == 'POST' and path == '/database/enrich/cancel':
                 return service.cancel_enrichment()
             if method == 'POST' and path == '/login/auto':

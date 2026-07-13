@@ -16,7 +16,15 @@ from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 _APP = QApplication.instance() or QApplication([])
 
 
-def _run_sync_async_task(self, task, success_handler, error_title=None):
+def _run_sync_async_task(
+    self,
+    task,
+    success_handler,
+    error_title=None,
+    block_ui=True,
+    allow_deferred_close=False,
+    **kwargs,
+):
     success_handler(task())
     return True
 
@@ -131,7 +139,7 @@ class ViewerInlineAddTest(unittest.TestCase):
             try:
                 root_layout = window.layout()
                 first_row = root_layout.itemAt(0).layout()
-                second_row = root_layout.itemAt(1).layout()
+                second_row = root_layout.itemAt(2).layout()
 
                 first_row_widgets = _tracked_layout_widgets(
                     first_row,

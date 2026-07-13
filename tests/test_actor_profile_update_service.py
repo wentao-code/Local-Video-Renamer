@@ -85,8 +85,15 @@ class ActorLibraryAdminUpdateTest(unittest.TestCase):
             self.assertEqual(updated_count, 1)
             rows = db.list_actors('演员A')
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]['birthday'], '2005-07-18')
+            self.assertEqual(rows[0]['birthday'], '2005/7/18')
             self.assertEqual(rows[0]['age'], '20')
+
+            with sqlite3.connect(str(db_path)) as conn:
+                stored_birthday = conn.execute(
+                    'SELECT birthday FROM actors WHERE name = ?',
+                    (rows[0]['name'],),
+                ).fetchone()[0]
+            self.assertEqual(stored_birthday, '2005-07-18')
 
             del rows
             del db

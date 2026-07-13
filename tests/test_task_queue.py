@@ -187,6 +187,53 @@ class GuiTaskQueueTest(unittest.TestCase):
         finally:
             host.deleteLater()
 
+    def test_plan_progress_is_kept_on_queue_record_and_can_be_updated(self):
+        record = self.queue.enqueue(
+            '计划补全',
+            '主界面',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            task_kind='video',
+            plan_id='plan-1',
+            plan_progress={
+                'completed_batch_count': 1,
+                'batch_count_limit': 3,
+                'pending_count': 4,
+                'success_count': 2,
+                'failed_count': 1,
+                'paused_reason': '网络异常',
+            },
+        )
+        self.queue.update_plan_progress('plan-1', {'completed_batch_count': 2, 'pending_count': 3})
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.plan_id, record.plan_id)
+        self.assertEqual(current.batch_current, 2)
+        self.assertEqual(current.batch_total, 3)
+        self.assertEqual(current.plan_pending_count, 3)
+        self.assertEqual(current.plan_success_count, 2)
+        self.assertEqual(current.plan_failed_count, 1)
+        self.assertEqual(current.pause_reason, '网络异常')
+
+    def test_pause_request_keeps_runner_for_later_resume(self):
+        started = []
+        self.queue.enqueue(
+            '计划补全',
+            '主界面',
+            lambda record: started.append(record.task_id),
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            plan_id='plan-1',
+        )
+        _process_events()
+        record = self.queue.records()[0]
+        self.queue.request_pause(record.task_id, '切换查看模式')
+        self.queue.mark_completed(record.task_id)
+        self.assertEqual(self.queue.records()[0].status, TASK_STATUS_PAUSED)
+        self.queue.set_run_mode(RUN_MODE_VIEW)
+        self.queue.set_run_mode(RUN_MODE_TASK)
+        _process_events()
+        self.assertEqual(started, [record.task_id, record.task_id])
+
 
 if __name__ == '__main__':
     unittest.main()

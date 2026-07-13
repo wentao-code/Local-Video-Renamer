@@ -2542,6 +2542,38 @@ class BackendService:
         )
         return {'plan': plan}
 
+    def list_enrichment_plans(self, resumable_only=False):
+        self.ensure_database_loaded()
+        if resumable_only:
+            plans = self.db.list_resumable_enrichment_plans()
+        else:
+            plans = self.db.list_enrichment_batch_plans()
+        return {'plans': plans}
+
+    def recover_enrichment_plans(self, reason='程序启动恢复'):
+        self.ensure_database_loaded()
+        return {'recovered_count': self.db.recover_running_enrichment_plans(reason)}
+
+    def get_enrichment_plan_progress(self, plan_id, task_kind):
+        self.ensure_database_loaded()
+        return {
+            'progress': self.db.get_enrichment_batch_plan_progress(plan_id, task_kind),
+        }
+
+    def pause_enrichment_plan(self, plan_id, task_kind, reason='补全任务异常暂停'):
+        self.ensure_database_loaded()
+        self.db.release_enrichment_batch_items(plan_id, task_kind, error=reason)
+        return {
+            'progress': self.db.update_enrichment_plan_progress(
+                plan_id,
+                task_kind,
+                completed_batch=False,
+                status='paused',
+                paused_reason=reason,
+                last_error=reason,
+            ),
+        }
+
     @staticmethod
     def _batch_plan_task_kind_for_target(target_type):
         return {
@@ -2594,6 +2626,19 @@ class BackendService:
         current_result = dict(result or {})
         processed_count = max(0, int(current_result.get('processed_count', 0) or 0))
         result_rows = list(current_result.get('results', []) or [])
+        running_items = self.db.list_enrichment_batch_items(
+            normalized_plan_id,
+            normalized_task_kind,
+            status='running',
+            limit=None,
+        )
+        if not running_items:
+            running_items = self.db.list_enrichment_batch_items(
+                normalized_plan_id,
+                normalized_task_kind,
+                status='pending',
+                limit=None,
+            )
         mark_by_identity = self._should_mark_plan_items_by_result_identity(normalized_task_kind, result_rows)
         if mark_by_identity:
             self._mark_enrichment_plan_items_by_results(normalized_plan_id, normalized_task_kind, result_rows)
@@ -2604,15 +2649,55 @@ class BackendService:
                 processed_count,
                 result_rows,
             )
-        remaining_plan_items = self.db.list_enrichment_batch_items(
-            normalized_plan_id,
-            normalized_task_kind,
-            status='pending',
-            limit=1,
-        )
-        if not remaining_plan_items:
-            self.db.finish_enrichment_batch_plan(normalized_plan_id, 'completed')
-            current_result['has_more_pending'] = False
+        if hasattr(self.db, 'release_enrichment_batch_items'):
+            self.db.release_enrichment_batch_items(
+                normalized_plan_id,
+                normalized_task_kind,
+                error=(
+                    str(current_result.get('message', '') or '').strip()
+                    if current_result.get('stopped')
+                    else ''
+                ),
+            )
+        if hasattr(self.db, 'get_enrichment_batch_plan_progress'):
+            progress = self.db.get_enrichment_batch_plan_progress(normalized_plan_id, normalized_task_kind)
+            has_more_pending = bool(
+                progress.get('pending_count', 0)
+                or progress.get('running_count', 0)
+                or progress.get('retryable_failed_count', 0)
+            )
+            if current_result.get('stopped'):
+                next_status = 'paused'
+                progress = self.db.update_enrichment_plan_progress(
+                    normalized_plan_id,
+                    normalized_task_kind,
+                    completed_batch=False,
+                    status=next_status,
+                    paused_reason=str(current_result.get('message', '') or '已请求停止').strip(),
+                )
+            else:
+                progress = self.db.update_enrichment_plan_progress(
+                    normalized_plan_id,
+                    normalized_task_kind,
+                    completed_batch=bool(running_items),
+                )
+                has_more_pending = bool(
+                    progress.get('pending_count', 0)
+                    or progress.get('running_count', 0)
+                    or progress.get('retryable_failed_count', 0)
+                )
+            current_result['plan_progress'] = progress
+            current_result['has_more_pending'] = has_more_pending
+        else:
+            remaining_plan_items = self.db.list_enrichment_batch_items(
+                normalized_plan_id,
+                normalized_task_kind,
+                status='pending',
+                limit=1,
+            )
+            if not remaining_plan_items:
+                self.db.finish_enrichment_batch_plan(normalized_plan_id, 'completed')
+                current_result['has_more_pending'] = False
         return current_result
 
     @staticmethod
@@ -2650,9 +2735,16 @@ class BackendService:
         pending_items = self.db.list_enrichment_batch_items(
             plan_id,
             task_kind,
-            status='pending',
+            status='running',
             limit=None,
         )
+        if not pending_items:
+            pending_items = self.db.list_enrichment_batch_items(
+                plan_id,
+                task_kind,
+                status='pending',
+                limit=None,
+            )
         pending_by_identity = {}
         for item in pending_items:
             identity = self._plan_result_identity(item)
@@ -2678,9 +2770,16 @@ class BackendService:
         pending_items = self.db.list_enrichment_batch_items(
             plan_id,
             task_kind,
-            status='pending',
+            status='running',
             limit=processed_count,
         )
+        if not pending_items:
+            pending_items = self.db.list_enrichment_batch_items(
+                plan_id,
+                task_kind,
+                status='pending',
+                limit=processed_count,
+            )
         for index, item in enumerate(pending_items):
             row_result = dict(result_rows[index] or {}) if index < len(result_rows) else {}
             error_message = str(row_result.get('error', '') or '').strip()
@@ -2697,6 +2796,12 @@ class BackendService:
         normalized_task_kind = str(task_kind or '').strip()
         if not normalized_plan_id or not normalized_task_kind:
             return []
+        if hasattr(self.db, 'claim_enrichment_batch_items'):
+            return self.db.claim_enrichment_batch_items(
+                normalized_plan_id,
+                normalized_task_kind,
+                max(0, int(limit or 0)),
+            )
         return self.db.list_enrichment_batch_items(
             normalized_plan_id,
             normalized_task_kind,

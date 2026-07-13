@@ -89,7 +89,7 @@ class ActorViewerSnapshotTest(unittest.TestCase):
                     ],
                 )
                 self.assertIn('2026-07-06 15:00:00', window.last_refreshed_label.text())
-                self.assertIn('12秒', window.last_refresh_duration_label.text())
+                self.assertIn('12秒', window.last_refreshed_label.text())
             finally:
                 window.hide()
                 window.deleteLater()

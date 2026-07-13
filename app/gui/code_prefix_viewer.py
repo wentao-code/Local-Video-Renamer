@@ -682,6 +682,12 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._update_page_controls()
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
+            self.load_data(
+                force_refresh=True,
+                silent_errors=True,
+                block_ui=False,
+                allow_deferred_close=True,
+            )
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:

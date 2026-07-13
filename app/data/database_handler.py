@@ -4603,6 +4603,7 @@ class VideoDatabase(
         'actor': 'actor_enrichment_batch_items',
         'actor_birthday': 'actor_birthday_enrichment_batch_items',
     }
+    _ENRICHMENT_ITEM_MAX_ATTEMPTS = 5
 
     def _ensure_enrichment_batch_plan_tables(self, cursor):
         cursor.execute(
@@ -4620,10 +4621,16 @@ class VideoDatabase(
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 completed_at TEXT,
-                last_error TEXT NOT NULL DEFAULT ''
+                last_error TEXT NOT NULL DEFAULT '',
+                paused_reason TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_started_at TEXT
             )
             '''
         )
+        self._ensure_column(cursor, 'enrichment_batch_plans', 'paused_reason', "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(cursor, 'enrichment_batch_plans', 'updated_at', 'TEXT')
+        self._ensure_column(cursor, 'enrichment_batch_plans', 'last_started_at', 'TEXT')
         for table_name in self._ENRICHMENT_BATCH_ITEM_TABLES.values():
             cursor.execute(
                 f'''
@@ -4639,10 +4646,16 @@ class VideoDatabase(
                     last_error TEXT NOT NULL DEFAULT '',
                     started_at TEXT,
                     completed_at TEXT,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    claimed_at TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (plan_id, sequence_index)
                 )
                 '''
             )
+            self._ensure_column(cursor, table_name, 'attempt_count', 'INTEGER NOT NULL DEFAULT 0')
+            self._ensure_column(cursor, table_name, 'claimed_at', 'TEXT')
+            self._ensure_column(cursor, table_name, 'updated_at', 'TEXT')
 
     @classmethod
     def _enrichment_batch_item_table(cls, task_kind):
@@ -4764,7 +4777,8 @@ class VideoDatabase(
             params.append(str(status or '').strip())
         sql = f'''
             SELECT plan_id, sequence_index, target_key, code, prefix, actor_name,
-                   source_key, status, last_error, started_at, completed_at
+                   source_key, status, last_error, started_at, completed_at,
+                   attempt_count, claimed_at, updated_at
             FROM {table_name}
             WHERE {' AND '.join(where_parts)}
             ORDER BY sequence_index ASC
@@ -4790,9 +4804,305 @@ class VideoDatabase(
                     'last_error': row[8],
                     'started_at': row[9],
                     'completed_at': row[10],
+                    'attempt_count': int(row[11] or 0),
+                    'claimed_at': row[12] or '',
+                    'updated_at': row[13] or '',
                 }
                 for row in cursor.fetchall()
             ]
+
+    def claim_enrichment_batch_items(self, plan_id, task_kind, batch_limit):
+        table_name = self._enrichment_batch_item_table(task_kind)
+        normalized_plan_id = str(plan_id or '').strip()
+        normalized_limit = max(0, int(batch_limit or 0))
+        if not normalized_plan_id or normalized_limit <= 0:
+            return []
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('BEGIN IMMEDIATE')
+            cursor.execute(
+                '''
+                SELECT batch_limit, batch_count_limit, completed_batch_count
+                FROM enrichment_batch_plans
+                WHERE plan_id = ? AND task_kind = ?
+                ''',
+                (normalized_plan_id, str(task_kind or '').strip()),
+            )
+            plan_row = cursor.fetchone()
+            if plan_row is None or int(plan_row[2] or 0) >= int(plan_row[1] or 0):
+                conn.commit()
+                return []
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {table_name} WHERE plan_id = ? AND status = 'running'",
+                (normalized_plan_id,),
+            )
+            running_count = int(cursor.fetchone()[0] or 0)
+            normalized_limit = min(normalized_limit, max(0, int(plan_row[0] or 0) - running_count))
+            if normalized_limit <= 0:
+                conn.commit()
+                return []
+            cursor.execute(
+                f'''
+                SELECT plan_id, sequence_index, target_key, code, prefix, actor_name,
+                       source_key, status, last_error, started_at, completed_at,
+                       attempt_count, claimed_at, updated_at
+                FROM {table_name}
+                WHERE plan_id = ?
+                  AND (status = 'pending' OR (status = 'failed' AND attempt_count < ?))
+                ORDER BY sequence_index ASC
+                LIMIT ?
+                ''',
+                (normalized_plan_id, self._ENRICHMENT_ITEM_MAX_ATTEMPTS, normalized_limit),
+            )
+            rows = cursor.fetchall()
+            claimed = []
+            for row in rows:
+                cursor.execute(
+                    f'''
+                    UPDATE {table_name}
+                    SET status = 'running',
+                        claimed_at = CURRENT_TIMESTAMP,
+                        started_at = CURRENT_TIMESTAMP,
+                        attempt_count = attempt_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE plan_id = ? AND sequence_index = ?
+                      AND (status = 'pending' OR (status = 'failed' AND attempt_count < ?))
+                    ''',
+                    (normalized_plan_id, int(row[1]), self._ENRICHMENT_ITEM_MAX_ATTEMPTS),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                cursor.execute(
+                    f'''
+                    SELECT plan_id, sequence_index, target_key, code, prefix, actor_name,
+                           source_key, status, last_error, started_at, completed_at,
+                           attempt_count, claimed_at, updated_at
+                    FROM {table_name}
+                    WHERE plan_id = ? AND sequence_index = ?
+                    ''',
+                    (normalized_plan_id, int(row[1])),
+                )
+                claimed_row = cursor.fetchone()
+                claimed.append({
+                    'plan_id': claimed_row[0],
+                    'sequence_index': claimed_row[1],
+                    'target_key': claimed_row[2],
+                    'code': claimed_row[3],
+                    'prefix': claimed_row[4],
+                    'actor_name': claimed_row[5],
+                    'source_key': claimed_row[6],
+                    'status': claimed_row[7],
+                    'last_error': claimed_row[8] or '',
+                    'started_at': claimed_row[9] or '',
+                    'completed_at': claimed_row[10] or '',
+                    'attempt_count': int(claimed_row[11] or 0),
+                    'claimed_at': claimed_row[12] or '',
+                    'updated_at': claimed_row[13] or '',
+                })
+            if claimed:
+                cursor.execute(
+                    '''
+                    UPDATE enrichment_batch_plans
+                    SET status = 'running',
+                        paused_reason = '',
+                        last_started_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE plan_id = ?
+                    ''',
+                    (normalized_plan_id,),
+                )
+            conn.commit()
+            return claimed
+
+    def release_enrichment_batch_items(self, plan_id, task_kind, error=''):
+        table_name = self._enrichment_batch_item_table(task_kind)
+        normalized_plan_id = str(plan_id or '').strip()
+        if not normalized_plan_id:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                UPDATE {table_name}
+                SET status = 'pending',
+                    last_error = ?,
+                    claimed_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE plan_id = ? AND status = 'running'
+                ''',
+                (str(error or '').strip(), normalized_plan_id),
+            )
+            count = int(cursor.rowcount or 0)
+            conn.commit()
+            return count
+
+    def get_enrichment_batch_plan_progress(self, plan_id, task_kind):
+        table_name = self._enrichment_batch_item_table(task_kind)
+        normalized_plan_id = str(plan_id or '').strip()
+        if not normalized_plan_id:
+            return {}
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT plan_id, task_kind, target_type, source_key, combo_key, status,
+                       batch_limit, batch_count_limit, completed_batch_count,
+                       created_at, started_at, completed_at, last_error,
+                       paused_reason, updated_at, last_started_at
+                FROM enrichment_batch_plans
+                WHERE plan_id = ?
+                ''',
+                (normalized_plan_id,),
+            )
+            plan_row = cursor.fetchone()
+            if plan_row is None:
+                return {}
+            cursor.execute(
+                f'''
+                SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'failed' AND attempt_count < ? THEN 1 ELSE 0 END)
+                FROM {table_name}
+                WHERE plan_id = ?
+                ''',
+                (self._ENRICHMENT_ITEM_MAX_ATTEMPTS, normalized_plan_id),
+            )
+            counts = cursor.fetchone()
+        total_count, pending_count, running_count, completed_count, failed_count, retryable_failed_count = [
+            int(value or 0) for value in counts
+        ]
+        return {
+            'plan_id': plan_row[0],
+            'task_kind': plan_row[1],
+            'target_type': plan_row[2],
+            'source_key': plan_row[3],
+            'combo_key': plan_row[4],
+            'status': plan_row[5],
+            'batch_limit': int(plan_row[6] or 0),
+            'batch_count_limit': int(plan_row[7] or 0),
+            'completed_batch_count': int(plan_row[8] or 0),
+            'created_at': plan_row[9] or '',
+            'started_at': plan_row[10] or '',
+            'completed_at': plan_row[11] or '',
+            'last_error': plan_row[12] or '',
+            'paused_reason': plan_row[13] or '',
+            'updated_at': plan_row[14] or '',
+            'last_started_at': plan_row[15] or '',
+            'total_count': total_count,
+            'pending_count': pending_count,
+            'running_count': running_count,
+            'completed_count': completed_count,
+            'success_count': completed_count,
+            'failed_count': failed_count,
+            'retryable_failed_count': retryable_failed_count,
+        }
+
+    def update_enrichment_plan_progress(
+        self,
+        plan_id,
+        task_kind,
+        completed_batch=False,
+        status=None,
+        paused_reason='',
+        last_error='',
+    ):
+        progress = self.get_enrichment_batch_plan_progress(plan_id, task_kind)
+        if not progress:
+            return {}
+        if status is None:
+            has_unfinished = bool(
+                progress['pending_count']
+                or progress['running_count']
+                or progress['retryable_failed_count']
+            )
+            status = 'running' if has_unfinished else ('failed' if progress['failed_count'] else 'completed')
+        normalized_status = str(status or '').strip() or 'running'
+        next_batch_count = min(
+            progress['batch_count_limit'],
+            progress['completed_batch_count'] + (1 if completed_batch else 0),
+        )
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE enrichment_batch_plans
+                SET completed_batch_count = ?,
+                    status = ?,
+                    paused_reason = ?,
+                    last_error = ?,
+                    completed_at = CASE WHEN ? IN ('completed', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE plan_id = ?
+                ''',
+                (
+                    next_batch_count,
+                    normalized_status,
+                    str(paused_reason or '').strip(),
+                    str(last_error or '').strip(),
+                    normalized_status,
+                    str(plan_id or '').strip(),
+                ),
+            )
+            conn.commit()
+        return self.get_enrichment_batch_plan_progress(plan_id, task_kind)
+
+    def list_enrichment_batch_plans(self, statuses=None):
+        normalized_statuses = [
+            str(status or '').strip() for status in (statuses or []) if str(status or '').strip()
+        ]
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            sql = 'SELECT plan_id, task_kind FROM enrichment_batch_plans'
+            params = []
+            if normalized_statuses:
+                sql += ' WHERE status IN (' + ','.join('?' for _ in normalized_statuses) + ')'
+                params.extend(normalized_statuses)
+            sql += ' ORDER BY created_at ASC, plan_id ASC'
+            cursor.execute(sql, params)
+            identities = cursor.fetchall()
+        return [self.get_enrichment_batch_plan_progress(plan_id, task_kind) for plan_id, task_kind in identities]
+
+    def list_resumable_enrichment_plans(self):
+        rows = self.list_enrichment_batch_plans(statuses=['running', 'paused'])
+        return [
+            row for row in rows
+            if row.get('pending_count', 0) or row.get('running_count', 0) or row.get('retryable_failed_count', 0)
+        ]
+
+    def recover_running_enrichment_plans(self, reason='程序重启恢复'):
+        normalized_reason = str(reason or '').strip()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            recovered_items = 0
+            for table_name in self._ENRICHMENT_BATCH_ITEM_TABLES.values():
+                cursor.execute(
+                    f'''
+                    UPDATE {table_name}
+                    SET status = 'pending',
+                        claimed_at = NULL,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE status = 'running'
+                    ''',
+                )
+                recovered_items += int(cursor.rowcount or 0)
+            cursor.execute(
+                '''
+                UPDATE enrichment_batch_plans
+                SET status = 'paused',
+                    paused_reason = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE status = 'running'
+                ''',
+                (normalized_reason,),
+            )
+            recovered_plans = int(cursor.rowcount or 0)
+            conn.commit()
+        return recovered_plans if recovered_plans else recovered_items
 
     def mark_enrichment_batch_item(self, plan_id, task_kind, sequence_index, status, error=''):
         table_name = self._enrichment_batch_item_table(task_kind)
@@ -4806,12 +5116,15 @@ class VideoDatabase(
                 UPDATE {table_name}
                 SET status = ?,
                     last_error = ?,
-                    completed_at = CURRENT_TIMESTAMP
+                    completed_at = CASE WHEN ? IN ('completed', 'failed') THEN CURRENT_TIMESTAMP ELSE completed_at END,
+                    claimed_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE plan_id = ? AND sequence_index = ?
                 ''',
                 (
                     str(status or '').strip() or 'completed',
                     str(error or '').strip(),
+                    str(status or '').strip() or 'completed',
                     normalized_plan_id,
                     int(sequence_index or 0),
                 ),
@@ -4831,12 +5144,17 @@ class VideoDatabase(
                 UPDATE enrichment_batch_plans
                 SET status = ?,
                     last_error = ?,
-                    completed_at = CURRENT_TIMESTAMP
+                    paused_reason = CASE WHEN ? = 'paused' THEN ? ELSE paused_reason END,
+                    completed_at = CASE WHEN ? IN ('completed', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE plan_id = ?
                 ''',
                 (
                     str(status or '').strip() or 'completed',
                     str(error or '').strip(),
+                    str(status or '').strip() or 'completed',
+                    str(error or '').strip(),
+                    str(status or '').strip() or 'completed',
                     normalized_plan_id,
                 ),
             )

@@ -28,7 +28,7 @@ class TaskQueueViewerWindow(QDialog):
         layout = QVBoxLayout()
         self.summary_label = QLabel('')
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(15)
         self.table.setHorizontalHeaderLabels([
             '编号',
             '任务',
@@ -36,9 +36,15 @@ class TaskQueueViewerWindow(QDialog):
             '来源',
             '状态',
             '次数',
+            '计划编号',
+            '批次进度',
+            '待处理',
+            '成功',
+            '失败',
             '创建时间',
             '开始时间',
             '完成时间/错误',
+            '暂停原因',
         ])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
@@ -47,9 +53,10 @@ class TaskQueueViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.Stretch)
+        for column in range(6, 13):
+            self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(13, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(14, QHeaderView.Stretch)
 
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table)
@@ -82,9 +89,15 @@ class TaskQueueViewerWindow(QDialog):
                 record.source,
                 record.status,
                 f'{record.attempts}/{record.max_attempts}',
+                record.plan_id,
+                f'{record.batch_current}/{record.batch_total}' if record.batch_total else '',
+                record.plan_pending_count if record.plan_id else '',
+                record.plan_success_count if record.plan_id else '',
+                record.plan_failed_count if record.plan_id else '',
                 record.created_at,
                 record.started_at,
                 error_text,
+                record.pause_reason,
             ]
             row_brush = self._row_foreground(record)
             for column, value in enumerate(values):

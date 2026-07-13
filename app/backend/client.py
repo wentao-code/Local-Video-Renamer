@@ -212,6 +212,23 @@ class BackendClient:
     def get_enrichment_progress(self):
         return self._get('/database/enrich/progress').get('progress', {})
 
+    def list_enrichment_plans(self, resumable_only=False):
+        query = '?resumable=1' if resumable_only else ''
+        return self._get('/database/enrich/plans' + query).get('plans', [])
+
+    def recover_enrichment_plans(self, reason='程序启动恢复'):
+        return self._post('/database/enrich/recover', {'reason': reason})
+
+    def get_enrichment_plan_progress(self, plan_id, task_kind):
+        query = '?' + urlencode({'plan_id': plan_id, 'task_kind': task_kind})
+        return self._get('/database/enrich/plan-progress' + query).get('progress', {})
+
+    def pause_enrichment_plan(self, plan_id, task_kind, reason='补全任务异常暂停'):
+        return self._post(
+            '/database/enrich/plan/pause',
+            {'plan_id': plan_id, 'task_kind': task_kind, 'reason': reason},
+        ).get('progress', {})
+
     def reset_video_enrichments(self, codes, source_key=None):
         return self._post('/database/videos/reset', {'codes': codes, 'source_key': source_key}).get('reset_count', 0)
 

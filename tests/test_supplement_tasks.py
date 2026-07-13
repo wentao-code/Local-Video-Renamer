@@ -180,6 +180,68 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
             self.assertEqual(video_items[1]['status'], 'pending')
             self.assertEqual(code_prefix_items[0]['status'], 'pending')
 
+    def test_enrichment_plan_claim_and_progress_are_persisted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+            plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                'avfan',
+                batch_limit=2,
+                batch_count_limit=2,
+                candidates=[{'code': 'AAA-001'}, {'code': 'AAA-002'}, {'code': 'AAA-003'}],
+            )
+
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2)
+            self.assertEqual([row['sequence_index'] for row in claimed], [1, 2])
+            self.assertEqual([row['status'] for row in claimed], ['running', 'running'])
+            self.assertTrue(claimed[0]['started_at'])
+            self.assertTrue(claimed[0]['claimed_at'])
+            self.assertEqual(claimed[0]['attempt_count'], 1)
+            self.assertEqual(db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2), [])
+
+            db.mark_enrichment_batch_item(plan['plan_id'], 'video', 1, 'completed')
+            db.mark_enrichment_batch_item(plan['plan_id'], 'video', 2, 'failed', error='temporary')
+            progress = db.update_enrichment_plan_progress(
+                plan['plan_id'],
+                'video',
+                completed_batch=True,
+                status='running',
+            )
+
+            self.assertEqual(progress['completed_batch_count'], 1)
+            self.assertEqual(progress['pending_count'], 1)
+            self.assertEqual(progress['completed_count'], 1)
+            self.assertEqual(progress['failed_count'], 1)
+            self.assertEqual(progress['running_count'], 0)
+
+    def test_recover_running_enrichment_plan_releases_only_running_items(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+            plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                'avfan',
+                batch_limit=2,
+                batch_count_limit=1,
+                candidates=[{'code': 'AAA-001'}, {'code': 'AAA-002'}],
+            )
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2)
+            db.mark_enrichment_batch_item(plan['plan_id'], 'video', claimed[0]['sequence_index'], 'completed')
+
+            recovered = db.recover_running_enrichment_plans('程序重启恢复')
+            self.assertEqual(recovered, 1)
+            progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'video')
+            self.assertEqual(progress['status'], 'paused')
+            self.assertEqual(progress['paused_reason'], '程序重启恢复')
+            self.assertEqual(progress['completed_count'], 1)
+            self.assertEqual(progress['pending_count'], 1)
+            self.assertEqual(progress['running_count'], 0)
+            self.assertEqual(
+                db.list_enrichment_batch_items(plan['plan_id'], 'video', status='completed')[0]['sequence_index'],
+                1,
+            )
+
     def test_video_supplement_candidates_include_unpublished_actor_rows_as_actor_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
