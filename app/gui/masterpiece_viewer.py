@@ -28,6 +28,7 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid
 from app.gui.medal_catalog_viewer import MedalSelectionSidebar, build_medal_text
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
 def _build_refresh_client(backend_client, minimum_timeout=90):
@@ -48,9 +49,10 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         'text': '#7a3513',
     }
 
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.rows = []
         self.global_medals = []
         self.active_medal_code = ''
@@ -285,6 +287,13 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         return None
 
     def show_detail(self, code):
+        if self.coordinator is not None:
+            reference = EntityReference(EntityType.MASTERPIECE, code, display_name=code)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='masterpiece', entity=reference),
+            )
+            return
         dialog = MasterpieceDetailWindow(self.backend_client, code, self)
         dialog.exec_()
 
@@ -303,9 +312,10 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     _SOURCE_ORDER = ('video_library', 'actor_library', 'code_prefix_library')
     _ACTOR_HEADERS = ['演员', '生日', '年龄', '出演年龄', '身高', '三围', '罩杯']
 
-    def __init__(self, backend_client, code, parent=None):
+    def __init__(self, backend_client, code, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.code = str(code or '').strip().upper()
         self.detail = {}
@@ -592,6 +602,13 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def show_actor_detail(self, actor_name):
         normalized_name = str(actor_name or '').strip()
         if not normalized_name:
+            return
+        if self.coordinator is not None:
+            reference = EntityReference(EntityType.ACTOR, normalized_name, display_name=normalized_name)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='masterpiece_detail', entity=reference),
+            )
             return
         viewer = ActorDetailViewerWindow(self.backend_client, normalized_name, self)
         viewer.exec_()

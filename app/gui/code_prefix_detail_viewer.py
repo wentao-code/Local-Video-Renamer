@@ -26,9 +26,10 @@ from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
 
 class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
-    def __init__(self, backend_client, prefix, parent=None):
+    def __init__(self, backend_client, prefix, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.prefix = str(prefix or '').strip().upper()
         self.detail = {}

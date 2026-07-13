@@ -134,6 +134,10 @@ class BackendClient:
         query = ('?' + urlencode(params)) if params else ''
         return self._get('/database/videos' + query)
 
+    def search_all(self, search_text='', limit=20):
+        params = {'q': str(search_text or ''), 'limit': int(limit or 20)}
+        return self._get('/search/unified?' + urlencode(params), timeout=max(self.timeout, 60))
+
     def get_video_enrichment_summary(self):
         return self._get('/database/videos/summary').get('summary', {})
 

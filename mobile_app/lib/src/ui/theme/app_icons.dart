@@ -20,4 +20,8 @@ class LucideIcons {
   static const IconData playCircle = Icons.play_circle_outline_rounded;
   static const IconData searchX = Icons.search_off_rounded;
   static const IconData inbox = Icons.inbox_rounded;
+  static const IconData chartNoAxesCombined = Icons.analytics_outlined;
+  static const IconData trophy = Icons.emoji_events_outlined;
+  static const IconData medal = Icons.military_tech_outlined;
+  static const IconData circleAlert = Icons.error_outline_rounded;
 }

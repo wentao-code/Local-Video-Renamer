@@ -33,6 +33,7 @@ from app.gui.actor_library_sorting import (
     sort_actor_rows,
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 from app.gui.data_center_analysis_viewer import _build_refresh_client
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
@@ -53,9 +54,10 @@ DEFAULT_ACTOR_PAGE_SIZE = 200
 
 
 class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.all_rows = []
         self.rows = []
@@ -85,7 +87,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def init_ui(self):
         self.setWindowTitle(tr('actor.viewer.title'))
         self.resize(1220, 540)
-        self.setWindowModality(Qt.WindowModal)
+        self.setWindowModality(Qt.NonModal)
 
         layout = QVBoxLayout()
         filter_layout = QHBoxLayout()
@@ -340,6 +342,13 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def show_actor_detail(self, actor_name):
         if not actor_name:
             return
+        if self.coordinator is not None:
+            reference = EntityReference(EntityType.ACTOR, actor_name, display_name=actor_name)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='actor_library', entity=reference),
+            )
+            return
         viewer = ActorDetailViewerWindow(self.backend_client, actor_name, self)
         viewer.exec_()
 
@@ -490,6 +499,18 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.clear_edit_state()
         self.current_offset = 0
         self.schedule_deferred_reload()
+
+    def apply_query_context(self, context):
+        entity = getattr(context, 'entity', None)
+        entity_key = str(getattr(entity, 'entity_key', '') or '').strip()
+        search_text = entity_key if getattr(entity, 'entity_type', '') == EntityType.ACTOR and entity_key else str(
+            getattr(context, 'search_text', '') or ''
+        )
+        if self.search_input.text() != search_text:
+            self.search_input.setText(search_text)
+        else:
+            self.current_offset = 0
+            self.load_data()
 
     def apply_sort_settings(self):
         if self.adding_actor:

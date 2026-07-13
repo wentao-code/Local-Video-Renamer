@@ -22,9 +22,10 @@ from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
 
 
 class DataCenterWindow(AsyncTaskHostMixin, QDialog):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self._pending_close = False
         self._startup_refresh_pending = True
@@ -37,7 +38,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
     def init_ui(self):
         self.setWindowTitle(tr('data_center.title'))
         self.resize(1240, 640)
-        self.setWindowModality(Qt.WindowModal)
+        self.setWindowModality(Qt.NonModal)
 
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
@@ -200,7 +201,14 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         super().closeEvent(event)
 
     def show_analysis_window(self):
-        self.analysis_window = DataAnalysisWindow(self.backend_client, self)
+        if self.coordinator is None:
+            self.analysis_window = DataAnalysisWindow(self.backend_client, self)
+        else:
+            self.analysis_window = DataAnalysisWindow(
+                self.backend_client,
+                self,
+                coordinator=self.coordinator,
+            )
         self.analysis_window.show()
 
     def _build_live_progress_map(self, progress):

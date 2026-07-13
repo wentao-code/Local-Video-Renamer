@@ -43,9 +43,10 @@ def _build_refresh_client(backend_client, minimum_timeout=90):
 class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     _COLLABORATOR_COLUMNS = 10
 
-    def __init__(self, backend_client, actor_name, parent=None):
+    def __init__(self, backend_client, actor_name, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.actor_name = str(actor_name or '').strip()
         self.detail = {}

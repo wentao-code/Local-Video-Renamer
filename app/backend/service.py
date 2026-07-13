@@ -59,6 +59,7 @@ from app.services.library import (
     PathLibrary,
     summarize_paths,
 )
+from app.services.library.unified_search_service import UnifiedSearchService
 from app.services.local_video import LocalVideoLibraryService
 from app.queen_library.service import QueenLibraryService
 from app.services.video import VIDEO_CATEGORY_SINGLE, VideoFilterService
@@ -75,6 +76,7 @@ class BackendService:
         self._migrate_legacy_snapshot_file(LEGACY_CODE_PREFIX_SNAPSHOT_FILE, CODE_PREFIX_SNAPSHOT_FILE)
         self.db = VideoDatabase(DATABASE_FILE)
         self.video_filter_service = VideoFilterService()
+        self.unified_search_service = UnifiedSearchService(self)
         self.video_ladder_tag_service = VideoLadderTagService(self.db)
         self.local_video_library = LocalVideoLibraryService(self.db)
         self.actor_detail_library = ActorDetailLibrary(self.db, self.video_ladder_tag_service, self.video_filter_service)
@@ -623,6 +625,10 @@ class BackendService:
             'offset': normalized_offset,
             'limit': normalized_limit,
         }
+
+    def search_unified(self, search_text='', limit=20):
+        self.ensure_database_loaded()
+        return self.unified_search_service.search(search_text, limit=limit)
 
     def list_actors_snapshot(
         self,

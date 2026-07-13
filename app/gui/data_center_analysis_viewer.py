@@ -17,6 +17,7 @@ from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, enable_minimize_button
 from app.gui.i18n import tr
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
 def _build_refresh_client(backend_client, minimum_timeout=90):
@@ -63,10 +64,11 @@ def _clear_layout(layout):
 
 
 class DataAnalysisWindow(QDialog):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(parent)
         enable_minimize_button(self)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.analysis_windows = []
         self.init_ui()
 
@@ -103,10 +105,10 @@ class DataAnalysisWindow(QDialog):
         layout.addStretch()
 
     def show_actor_analysis_window(self):
-        self._open_analysis_window(ActorDataAnalysisWindow(self.backend_client, self))
+        self._open_analysis_window(ActorDataAnalysisWindow(self.backend_client, self, coordinator=self.coordinator))
 
     def show_code_prefix_analysis_window(self):
-        self._open_analysis_window(CodePrefixDataAnalysisWindow(self.backend_client, self))
+        self._open_analysis_window(CodePrefixDataAnalysisWindow(self.backend_client, self, coordinator=self.coordinator))
 
     def _open_analysis_window(self, window):
         self.analysis_windows.append(window)
@@ -118,10 +120,11 @@ class DataAnalysisWindow(QDialog):
 
 
 class MetricSelectionWindow(QDialog):
-    def __init__(self, backend_client, analysis_type, metric_configs, title_key, hint_key, parent=None):
+    def __init__(self, backend_client, analysis_type, metric_configs, title_key, hint_key, parent=None, coordinator=None):
         super().__init__(parent)
         enable_minimize_button(self)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.analysis_type = str(analysis_type or '').strip()
         self.metric_configs = tuple(metric_configs or ())
         self.title_key = str(title_key or '').strip()
@@ -158,7 +161,13 @@ class MetricSelectionWindow(QDialog):
         layout.addStretch()
 
     def open_metric_window(self, metric_config):
-        window = MetricAnalysisWindow(self.backend_client, self.analysis_type, metric_config, self)
+        window = MetricAnalysisWindow(
+            self.backend_client,
+            self.analysis_type,
+            metric_config,
+            self,
+            coordinator=self.coordinator,
+        )
         self.metric_windows.append(window)
         window.finished.connect(lambda _result, current=window: self._forget_metric_window(current))
         window.show()
@@ -168,7 +177,7 @@ class MetricSelectionWindow(QDialog):
 
 
 class ActorDataAnalysisWindow(MetricSelectionWindow):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(
             backend_client,
             'actor',
@@ -176,11 +185,12 @@ class ActorDataAnalysisWindow(MetricSelectionWindow):
             'data_center.analysis.actor_title',
             'data_center.analysis.actor_hint',
             parent=parent,
+            coordinator=coordinator,
         )
 
 
 class CodePrefixDataAnalysisWindow(MetricSelectionWindow):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(
             backend_client,
             'code_prefix',
@@ -188,13 +198,15 @@ class CodePrefixDataAnalysisWindow(MetricSelectionWindow):
             'data_center.analysis.code_prefix_title',
             'data_center.analysis.code_prefix_hint',
             parent=parent,
+            coordinator=coordinator,
         )
 
 
 class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
-    def __init__(self, backend_client, metric_config, bucket_value, bucket_label, parent=None):
+    def __init__(self, backend_client, metric_config, bucket_value, bucket_label, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.metric_config = dict(metric_config or {})
         self.metric_key = str(self.metric_config.get('key', '') or '').strip()
@@ -305,6 +317,13 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
     def show_actor_detail(self, actor_name):
         if not actor_name:
             return
+        if self.coordinator is not None:
+            reference = EntityReference(EntityType.ACTOR, actor_name, display_name=actor_name)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='data_center_analysis', entity=reference),
+            )
+            return
         viewer = ActorDetailViewerWindow(self.backend_client, actor_name, self)
         self.detail_windows.append(viewer)
         if hasattr(viewer, 'finished'):
@@ -340,9 +359,10 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
     _DISTRIBUTION_BUTTON_BASE_MIN_WIDTH = 104
     _RANKING_ITEMS_PER_LINE = 7
 
-    def __init__(self, backend_client, analysis_type, metric_config, parent=None):
+    def __init__(self, backend_client, analysis_type, metric_config, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.analysis_type = str(analysis_type or '').strip()
         self.metric_config = dict(metric_config or {})
@@ -560,6 +580,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
             bucket_value,
             bucket_label,
             self,
+            coordinator=self.coordinator,
         )
         self.bucket_windows.append(window)
         window.finished.connect(lambda _result, current=window: self._forget_bucket_window(current))

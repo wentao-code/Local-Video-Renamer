@@ -31811,9 +31811,9 @@
           "raw_age": "",
           "age": "未知",
           "matched": false,
-          "actor_id": "",
-          "avfan_enrichment_status": "未补全",
-          "javtxt_enrichment_status": "未补全",
+          "actor_id": "BjPLQSz0",
+          "avfan_enrichment_status": "已补全",
+          "javtxt_enrichment_status": "已补全",
           "binghuo_enrichment_status": "未补全",
           "baomu_enrichment_status": "未补全",
           "binghuo_person_id": "",
@@ -31824,9 +31824,9 @@
           "binghuo_waist": "",
           "binghuo_hip": "",
           "baomu_birthday": "",
-          "enrichment_status": "天限阁: 未补全 | 辛聚谷: 未补全 | 并火: 未补全 | 保木: 未补全",
+          "enrichment_status": "天限阁: 已补全 | 辛聚谷: 已补全 | 并火: 未补全 | 保木: 未补全",
           "ladder_tier": "",
-          "update_status": "inactive"
+          "update_status": "active"
         },
         {
           "name": "あずま鈴",
@@ -31857,8 +31857,8 @@
           "raw_age": "",
           "age": "未知",
           "matched": false,
-          "actor_id": "",
-          "avfan_enrichment_status": "未补全",
+          "actor_id": "jLrTxBIb",
+          "avfan_enrichment_status": "已补全",
           "javtxt_enrichment_status": "未补全",
           "binghuo_enrichment_status": "未补全",
           "baomu_enrichment_status": "未补全",
@@ -31870,9 +31870,9 @@
           "binghuo_waist": "",
           "binghuo_hip": "",
           "baomu_birthday": "",
-          "enrichment_status": "天限阁: 未补全 | 辛聚谷: 未补全 | 并火: 未补全 | 保木: 未补全",
+          "enrichment_status": "天限阁: 已补全 | 辛聚谷: 未补全 | 并火: 未补全 | 保木: 未补全",
           "ladder_tier": "",
-          "update_status": "inactive"
+          "update_status": "active"
         },
         {
           "name": "ここな友紀",
@@ -31903,8 +31903,8 @@
           "raw_age": "",
           "age": "未知",
           "matched": false,
-          "actor_id": "",
-          "avfan_enrichment_status": "未补全",
+          "actor_id": "rMFlLv1S",
+          "avfan_enrichment_status": "已补全",
           "javtxt_enrichment_status": "未补全",
           "binghuo_enrichment_status": "未补全",
           "baomu_enrichment_status": "未补全",
@@ -31916,9 +31916,9 @@
           "binghuo_waist": "",
           "binghuo_hip": "",
           "baomu_birthday": "",
-          "enrichment_status": "天限阁: 未补全 | 辛聚谷: 未补全 | 并火: 未补全 | 保木: 未补全",
+          "enrichment_status": "天限阁: 已补全 | 辛聚谷: 未补全 | 并火: 未补全 | 保木: 未补全",
           "ladder_tier": "",
-          "update_status": "inactive"
+          "update_status": "active"
         },
         {
           "name": "フランクフルト林",
@@ -36386,9 +36386,9 @@
       "total_count": 1444,
       "offset": 0,
       "limit": 200,
-      "refreshed_at": "2026-07-12 04:47:28",
-      "refresh_duration_ms": 15980,
-      "refresh_duration_text": "16秒"
+      "refreshed_at": "2026-07-13 19:54:04",
+      "refresh_duration_ms": 29107,
+      "refresh_duration_text": "29秒"
     }
   }
 }

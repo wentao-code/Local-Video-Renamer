@@ -38,21 +38,23 @@ from app.core.local_video_labels import (
 from app.core.combo_enrichment import get_combo_label
 from app.core.enrichment_sources import get_video_enrichment_source_label
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
-from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
+from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
 from app.gui.canglangge_viewer import CanglanggeViewerWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
+from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.data_center_analysis_viewer import _build_refresh_client
+from app.gui.comparison_viewer import ComparisonWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
 from app.gui.gui_task_runner import GuiTaskRunner
 from app.gui.i18n import tr
 from app.gui.ladder_board_viewer import LadderBoardWindow
 from app.gui.medal_catalog_viewer import MedalCatalogWindow
-from app.gui.masterpiece_viewer import MasterpieceWindow
+from app.gui.masterpiece_viewer import MasterpieceDetailWindow, MasterpieceWindow
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.queen_library.viewer import QueenLibraryWindow
 from app.gui.task_queue import (
@@ -66,6 +68,11 @@ from app.gui.task_queue import (
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.runtime_settings import load_runtime_mode, save_runtime_mode
+from app.gui.query_context import EntityReference, EntityType, QueryContext
+from app.gui.query_history import QueryHistoryStore
+from app.gui.single_instance import SingleInstanceGuard
+from app.gui.unified_search_viewer import UnifiedSearchWindow
+from app.gui.window_coordinator import WindowCoordinator
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.gui.video_filter_dialog import VideoFilterDialog
 from app.services.system import NetworkGuardService
@@ -257,6 +264,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self._active_enrichment_batch_plan_state = None
         self._queued_gui_task_runners = {}
         self.runtime_mode = load_runtime_mode()
+        self.window_coordinator = WindowCoordinator(parent=self)
+        self.query_history = QueryHistoryStore()
+        self._configure_window_coordinator()
 
         self.ensure_backend_running()
         self.init_ui()
@@ -577,6 +587,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_video_library = QPushButton(tr('main.video_library'))
         self.btn_video_library.clicked.connect(self.show_video_library)
 
+        self.btn_unified_search = QPushButton('统一查询')
+        self.btn_unified_search.clicked.connect(self.show_unified_search)
+
         self.btn_database = QPushButton(tr('main.data_center'))
         self.btn_database.clicked.connect(self.show_data_center)
 
@@ -641,6 +654,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_force_exit.clicked.connect(self.force_exit_application)
         self.btn_force_exit.setStyleSheet('QPushButton { color: #b42318; font-weight: 700; }')
 
+        top_button_row.addWidget(self.btn_unified_search)
         top_button_row.addWidget(self.btn_video_library)
         top_button_row.addWidget(self.btn_database)
         top_button_row.addWidget(self.btn_view_actors)
@@ -2241,20 +2255,25 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
 
     def show_data_center(self):
-        viewer = DataCenterWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        key = ('data_center', 'summary')
+        viewer = self.window_coordinator.get_window(key)
+        if viewer is None:
+            viewer = DataCenterWindow(
+                backend_client=self.backend_client,
+                parent=self,
+                coordinator=self.window_coordinator,
+            )
+            self.window_coordinator.register_window(key, viewer)
+        self.window_coordinator.activate(viewer)
 
     def show_video_library(self):
-        viewer = DatabaseViewerWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        self.window_coordinator.open_list(EntityType.VIDEO, QueryContext(source='main_video_library'))
 
     def show_actor_viewer(self):
-        viewer = ActorViewerWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        self.window_coordinator.open_list(EntityType.ACTOR, QueryContext(source='main_actor_library'))
 
     def show_code_prefix_viewer(self):
-        viewer = CodePrefixViewerWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        self.window_coordinator.open_list(EntityType.CODE_PREFIX, QueryContext(source='main_code_prefix_library'))
 
     def show_canglangge_viewer(self):
         viewer = CanglanggeViewerWindow(backend_client=self.backend_client, parent=self)
@@ -2265,12 +2284,77 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         viewer.exec_()
 
     def show_ladder_board_viewer(self):
-        viewer = LadderBoardWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        self.window_coordinator.open_list(EntityType.LADDER, QueryContext(source='main_ladder'))
 
     def show_masterpiece_viewer(self):
-        viewer = MasterpieceWindow(backend_client=self.backend_client, parent=self)
-        viewer.exec_()
+        self.window_coordinator.open_list(EntityType.MASTERPIECE, QueryContext(source='main_masterpiece'))
+
+    def show_unified_search(self):
+        key = ('search', 'unified')
+        viewer = self.window_coordinator.get_window(key)
+        if viewer is None:
+            viewer = UnifiedSearchWindow(
+                self.backend_client,
+                self.window_coordinator,
+                self,
+                history_store=self.query_history,
+            )
+            self.window_coordinator.register_window(key, viewer)
+        self.window_coordinator.activate(viewer)
+
+    def _configure_window_coordinator(self):
+        self.window_coordinator.set_factory(EntityType.VIDEO, self._create_video_entity_window)
+        self.window_coordinator.set_factory(EntityType.ACTOR, self._create_actor_entity_window)
+        self.window_coordinator.set_factory(EntityType.CODE_PREFIX, self._create_code_prefix_entity_window)
+        self.window_coordinator.set_factory(EntityType.MASTERPIECE, self._create_masterpiece_entity_window)
+        self.window_coordinator.set_comparison_factory(self._create_comparison_window)
+        self.window_coordinator.set_factory('list:video', lambda _context: DatabaseViewerWindow(self.backend_client, self))
+        self.window_coordinator.set_factory(
+            'list:actor',
+            lambda _context: ActorViewerWindow(self.backend_client, self, coordinator=self.window_coordinator),
+        )
+        self.window_coordinator.set_factory(
+            'list:code_prefix',
+            lambda _context: CodePrefixViewerWindow(self.backend_client, self, coordinator=self.window_coordinator),
+        )
+        self.window_coordinator.set_factory(
+            'list:ladder',
+            lambda _context: LadderBoardWindow(self.backend_client, self, coordinator=self.window_coordinator),
+        )
+        self.window_coordinator.set_factory(
+            'list:masterpiece',
+            lambda _context: MasterpieceWindow(self.backend_client, self, coordinator=self.window_coordinator),
+        )
+
+    def _create_video_entity_window(self, _reference, _context):
+        return DatabaseViewerWindow(self.backend_client, self)
+
+    def _create_actor_entity_window(self, reference, _context):
+        return ActorDetailViewerWindow(
+            self.backend_client,
+            reference.entity_key,
+            self,
+            coordinator=self.window_coordinator,
+        )
+
+    def _create_code_prefix_entity_window(self, reference, _context):
+        return CodePrefixDetailViewerWindow(
+            self.backend_client,
+            reference.entity_key,
+            self,
+            coordinator=self.window_coordinator,
+        )
+
+    def _create_masterpiece_entity_window(self, reference, _context):
+        return MasterpieceDetailWindow(
+            self.backend_client,
+            reference.entity_key,
+            self,
+            coordinator=self.window_coordinator,
+        )
+
+    def _create_comparison_window(self, first, second):
+        return ComparisonWindow(self.backend_client, first, second, self)
 
     def show_medal_catalog_viewer(self):
         viewer = MedalCatalogWindow(backend_client=self.backend_client, parent=self)
@@ -2657,9 +2741,14 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     configure_application_font(app)
+    instance_guard = SingleInstanceGuard(GUI_INSTANCE_LOCK_FILE)
+    if not instance_guard.acquire():
+        QMessageBox.information(None, '程序已运行', '客户端已经在运行中，请使用已有窗口。')
+        return 0
     try:
         window = VidNormApp()
     except Exception as exc:
+        instance_guard.release()
         QMessageBox.critical(
             None,
             tr('main.start_failed_title'),
@@ -2667,7 +2756,10 @@ def main():
         )
         return 1
     window.show()
-    return app.exec_()
+    try:
+        return app.exec_()
+    finally:
+        instance_guard.release()
 
 
 if __name__ == '__main__':

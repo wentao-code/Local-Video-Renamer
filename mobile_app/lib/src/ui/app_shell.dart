@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../database/database_status.dart';
 import 'actor_library_screen.dart';
 import 'code_prefix_library_screen.dart';
+import 'insights_screen.dart';
 import 'theme/app_design.dart';
 import 'theme/app_icons.dart';
 import 'video_library_screen.dart';
@@ -56,6 +57,7 @@ class _AppShellState extends State<AppShell> {
               databaseStatus: widget.databaseStatus,
               onRefreshDatabaseStatus: widget.onRefreshDatabaseStatus,
             ),
+            InsightsScreen(databasePath: widget.databaseStatus.databasePath),
           ],
         ),
       ),
@@ -94,6 +96,11 @@ class _AppShellState extends State<AppShell> {
                   selectedIcon: Icon(LucideIcons.layoutGrid, size: 20),
                   label: '番号库',
                 ),
+                NavigationDestination(
+                  icon: Icon(LucideIcons.chartNoAxesCombined, size: 20),
+                  selectedIcon: Icon(LucideIcons.chartNoAxesCombined, size: 20),
+                  label: '洞察',
+                ),
               ],
             ),
           ),
@@ -108,6 +115,8 @@ class _AppShellState extends State<AppShell> {
         return '演员库';
       case 2:
         return '番号库';
+      case 3:
+        return '洞察';
       case 0:
       default:
         return '视频库';

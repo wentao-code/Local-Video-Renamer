@@ -72,6 +72,11 @@ def make_handler(service):
                     limit=_int_query_value(query, 'limit', default=None),
                     offset=_int_query_value(query, 'offset', default=0),
                 )
+            if method == 'GET' and path == '/search/unified':
+                return service.search_unified(
+                    query.get('q', [''])[0],
+                    limit=_int_query_value(query, 'limit', default=20),
+                )
             if method == 'GET' and path == '/database/videos/summary':
                 return service.get_video_enrichment_summary()
             if method == 'GET' and path == '/masterpiece/entries':

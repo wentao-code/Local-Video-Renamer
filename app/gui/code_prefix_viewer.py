@@ -21,6 +21,7 @@ from app.core.enrichment_sources import (
     get_video_enrichment_source_label,
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 from app.gui.code_prefix_library_settings import (
     load_code_prefix_library_settings,
     save_code_prefix_library_settings,
@@ -47,9 +48,10 @@ DEFAULT_CODE_PREFIX_PAGE_SIZE = 200
 
 
 class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.refresh_client = _build_refresh_client(backend_client)
         self.all_rows = []
         self.rows = []
@@ -77,7 +79,7 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def init_ui(self):
         self.setWindowTitle(tr('code_prefix.viewer.title'))
         self.resize(1160, 560)
-        self.setWindowModality(Qt.WindowModal)
+        self.setWindowModality(Qt.NonModal)
 
         layout = QVBoxLayout()
         filter_layout = QHBoxLayout()
@@ -296,6 +298,13 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def show_prefix_detail(self, prefix):
         if not prefix:
             return
+        if self.coordinator is not None:
+            reference = EntityReference(EntityType.CODE_PREFIX, prefix, display_name=prefix)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='code_prefix_library', entity=reference),
+            )
+            return
         viewer = CodePrefixDetailViewerWindow(self.backend_client, prefix, self)
         viewer.exec_()
 
@@ -426,6 +435,18 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.clear_edit_state()
         self.current_offset = 0
         self.schedule_deferred_reload()
+
+    def apply_query_context(self, context):
+        entity = getattr(context, 'entity', None)
+        entity_key = str(getattr(entity, 'entity_key', '') or '').strip()
+        search_text = entity_key if getattr(entity, 'entity_type', '') == EntityType.CODE_PREFIX and entity_key else str(
+            getattr(context, 'search_text', '') or ''
+        )
+        if self.search_input.text() != search_text:
+            self.search_input.setText(search_text)
+        else:
+            self.current_offset = 0
+            self.load_data()
 
     def apply_sort_settings(self):
         if self.adding_prefix:

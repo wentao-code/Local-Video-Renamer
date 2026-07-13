@@ -61,7 +61,7 @@ class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def init_ui(self):
         self.setWindowTitle(tr('db.viewer.title'))
         self.resize(1440, 720)
-        self.setWindowModality(Qt.WindowModal)
+        self.setWindowModality(Qt.NonModal)
 
         layout = QVBoxLayout()
 
@@ -240,6 +240,18 @@ class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def filter_data(self, text):
         self.current_offset = 0
         self.schedule_deferred_reload()
+
+    def apply_query_context(self, context):
+        entity = getattr(context, 'entity', None)
+        entity_key = str(getattr(entity, 'entity_key', '') or '').strip()
+        search_text = entity_key if getattr(entity, 'entity_type', '') == 'video' and entity_key else str(
+            getattr(context, 'search_text', '') or ''
+        )
+        if self.search_input.text() != search_text:
+            self.search_input.setText(search_text)
+        else:
+            self.current_offset = 0
+            self.load_data()
 
     def apply_sort_settings(self):
         self.sort_settings = normalize_video_sort_settings({

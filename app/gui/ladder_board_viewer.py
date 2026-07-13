@@ -22,12 +22,14 @@ from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.i18n import tr
 from app.gui.ladder_candidate_panel import LadderCandidatePanel
 from app.gui.ladder_selected_panel import LadderSelectedPanel
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
 class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
-    def __init__(self, backend_client, parent=None):
+    def __init__(self, backend_client, parent=None, coordinator=None):
         super().__init__(parent)
         self.backend_client = backend_client
+        self.coordinator = coordinator
         self.current_board_key = LADDER_BOARD_ACTOR
         self.current_view_key = LADDER_VIEW_CANDIDATES
         self.current_board_data = {}
@@ -39,7 +41,7 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
     def init_ui(self):
         self.setWindowTitle(tr('ladder.title'))
         self.resize(1180, 720)
-        self.setWindowModality(Qt.WindowModal)
+        self.setWindowModality(Qt.NonModal)
 
         layout = QVBoxLayout(self)
 
@@ -165,6 +167,14 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         if not entity_name:
             return
         entity_type = str((self.current_board_data or {}).get('entity_type', '') or '').strip()
+        if self.coordinator is not None:
+            target_type = EntityType.ACTOR if entity_type == LADDER_ENTITY_ACTOR else EntityType.CODE_PREFIX
+            reference = EntityReference(target_type, entity_name, display_name=entity_name)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='ladder', entity=reference),
+            )
+            return
         if entity_type == LADDER_ENTITY_ACTOR:
             viewer = ActorDetailViewerWindow(self.backend_client, entity_name, self)
         else:
