@@ -8,17 +8,38 @@ from app.services.resolvers import MovieAuthorResolver
 
 
 class ActorJavtxtEnrichmentService:
-    def __init__(self, database, show_browser=False, should_stop=None, progress_tracker=None, logger=None):
+    def __init__(
+        self,
+        database,
+        show_browser=False,
+        should_stop=None,
+        progress_tracker=None,
+        logger=None,
+        planned_actor_names=None,
+    ):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
+        self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
         self.author_resolver = MovieAuthorResolver(
             database,
             headless=not show_browser,
             should_stop=self.should_stop,
             logger=self.logger,
         )
+
+    @staticmethod
+    def _normalize_planned_actor_names(planned_actor_names):
+        actor_names = []
+        seen = set()
+        for actor_name in planned_actor_names or []:
+            normalized = str(actor_name or '').strip()
+            if not normalized or normalized in seen:
+                continue
+            actor_names.append(normalized)
+            seen.add(normalized)
+        return actor_names
 
     def enrich_next_actors(self, limit):
         limit = int(limit or 0)
@@ -162,8 +183,11 @@ class ActorJavtxtEnrichmentService:
     def _ready_actor_infos(self):
         records = self.database.list_actor_enrichment_records()
         actor_infos = []
-        for row in self.database.list_actors():
-            actor_name = str(row.get('name', '')).strip()
+        source_names = self.planned_actor_names or [
+            str((row or {}).get('name', '') or '').strip()
+            for row in self.database.list_actors()
+        ]
+        for actor_name in source_names:
             if not actor_name:
                 continue
             record = records.get(actor_name, {})

@@ -70,6 +70,7 @@ class _SupplementBaseService:
         progress_tracker=None,
         logger=None,
         filter_settings=None,
+        planned_items=None,
     ):
         self.database = database
         self.scraper = scraper or AvfanScraper(headless=not show_browser)
@@ -77,6 +78,45 @@ class _SupplementBaseService:
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.filter_settings = filter_settings
+        self.planned_items = [dict(item or {}) for item in (planned_items or [])]
+
+    @staticmethod
+    def _unique_planned_values(planned_items, key_name):
+        values = []
+        seen = set()
+        for item in planned_items or []:
+            value = str((item or {}).get(key_name, '') or '').strip()
+            if not value or value in seen:
+                continue
+            values.append(value)
+            seen.add(value)
+        return values
+
+    def _planned_codes(self):
+        return self._unique_planned_values(self.planned_items, 'code')
+
+    def _planned_prefixes(self):
+        return self._unique_planned_values(self.planned_items, 'prefix')
+
+    def _planned_actor_names(self):
+        return self._unique_planned_values(self.planned_items, 'actor_name')
+
+    def _select_planned_rows(self, rows, key_name, limit):
+        planned_values = self._unique_planned_values(self.planned_items, key_name)
+        if not planned_values:
+            return list(rows or [])[: max(0, int(limit or 0))]
+        by_value = {}
+        for row in rows or []:
+            value = str((row or {}).get(key_name, '') or '').strip()
+            if value and value not in by_value:
+                by_value[value] = dict(row or {})
+        selected = []
+        for value in planned_values:
+            if value in by_value:
+                selected.append(by_value[value])
+            if len(selected) >= int(limit or 0):
+                break
+        return selected
 
     def _start_progress(self, total_count):
         if self.progress_tracker is None:
@@ -214,7 +254,9 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
         limit = int(limit or 0)
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
-        candidates = self.database.list_video_supplement_candidates(limit)
+        candidate_limit = 999999 if self._planned_codes() else limit
+        candidates = self.database.list_video_supplement_candidates(candidate_limit)
+        candidates = self._select_planned_rows(candidates, 'code', limit)
         results = []
         success_count = 0
         failed_count = 0
@@ -317,6 +359,7 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         progress_tracker=None,
         logger=None,
         filter_settings=None,
+        planned_items=None,
     ):
         super().__init__(
             database,
@@ -326,6 +369,7 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
             progress_tracker=progress_tracker,
             logger=logger,
             filter_settings=filter_settings,
+            planned_items=planned_items,
         )
         self.prefix_library = CodePrefixLibrary(database)
 
@@ -465,6 +509,8 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         ]
 
     def _candidate_prefix_batches(self, limit):
+        if self.planned_items:
+            return self._planned_prefix_batches(limit)
         batches = []
         remaining_limit = max(0, int(limit or 0))
         for row in self.prefix_library.list_prefixes():
@@ -479,6 +525,42 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
             selected_rows = candidate_rows[:remaining_limit]
             batches.append((prefix, selected_rows))
             remaining_limit -= len(selected_rows)
+        return batches
+
+    def _planned_prefix_batches(self, limit):
+        batches = []
+        remaining_limit = max(0, int(limit or 0))
+        rows_by_prefix = {}
+        used_codes = set()
+        for item in self.planned_items:
+            if remaining_limit <= 0:
+                break
+            prefix = str((item or {}).get('prefix', '') or '').strip().upper()
+            code = str((item or {}).get('code', '') or '').strip()
+            if not prefix:
+                continue
+            if prefix not in rows_by_prefix:
+                rows_by_prefix[prefix] = self._candidate_rows_for_prefix(prefix)
+            candidates = rows_by_prefix[prefix]
+            selected_row = None
+            for row in candidates:
+                row_code = str((row or {}).get('code', '') or '').strip()
+                if code and row_code != code:
+                    continue
+                if row_code and row_code in used_codes:
+                    continue
+                selected_row = row
+                break
+            if not selected_row:
+                continue
+            selected_code = str((selected_row or {}).get('code', '') or '').strip()
+            if selected_code:
+                used_codes.add(selected_code)
+            if batches and batches[-1][0] == prefix:
+                batches[-1][1].append(selected_row)
+            else:
+                batches.append((prefix, [selected_row]))
+            remaining_limit -= 1
         return batches
 
     def _remaining_video_count(self):
@@ -632,6 +714,8 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
         ]
 
     def _candidate_actor_batches(self, limit):
+        if self.planned_items:
+            return self._planned_actor_batches(limit)
         batches = []
         remaining_limit = max(0, int(limit or 0))
         for row in self.database.list_actors():
@@ -646,6 +730,42 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
             selected_rows = candidate_rows[:remaining_limit]
             batches.append((actor_name, selected_rows))
             remaining_limit -= len(selected_rows)
+        return batches
+
+    def _planned_actor_batches(self, limit):
+        batches = []
+        remaining_limit = max(0, int(limit or 0))
+        rows_by_actor = {}
+        used_codes = set()
+        for item in self.planned_items:
+            if remaining_limit <= 0:
+                break
+            actor_name = str((item or {}).get('actor_name', '') or '').strip()
+            code = str((item or {}).get('code', '') or '').strip()
+            if not actor_name:
+                continue
+            if actor_name not in rows_by_actor:
+                rows_by_actor[actor_name] = self._candidate_rows_for_actor(actor_name)
+            candidates = rows_by_actor[actor_name]
+            selected_row = None
+            for row in candidates:
+                row_code = str((row or {}).get('code', '') or '').strip()
+                if code and row_code != code:
+                    continue
+                if row_code and row_code in used_codes:
+                    continue
+                selected_row = row
+                break
+            if not selected_row:
+                continue
+            selected_code = str((selected_row or {}).get('code', '') or '').strip()
+            if selected_code:
+                used_codes.add(selected_code)
+            if batches and batches[-1][0] == actor_name:
+                batches[-1][1].append(selected_row)
+            else:
+                batches.append((actor_name, [selected_row]))
+            remaining_limit -= 1
         return batches
 
     def _remaining_video_count(self):

@@ -883,6 +883,86 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(plan_calls[0]['batch_limit'], 5)
         self.assertEqual(plan_calls[0]['batch_count_limit'], 2)
 
+    def test_single_enrichment_creates_resume_plan_when_queued_task_starts(self):
+        plan_calls = []
+        captured = {}
+
+        class _Timer:
+            def start(self, *_args):
+                return None
+
+        backend_client = SimpleNamespace(
+            create_enrichment_batch_plan=lambda payload: plan_calls.append(dict(payload)) or {'plan_id': 'single-plan'}
+        )
+
+        def capture_queued_runner(
+            task_title,
+            worker_factory,
+            finished_handler,
+            failed_handler,
+            cleanup_handler=None,
+            source='主界面',
+            before_start=None,
+            assign_runner=None,
+            task_category='查看任务',
+            task_kind='',
+        ):
+            captured['task_title'] = task_title
+            captured['worker_factory'] = worker_factory
+            captured['before_start'] = before_start
+            captured['task_category'] = task_category
+            captured['task_kind'] = task_kind
+            return True
+
+        stub = SimpleNamespace(
+            backend_client=backend_client,
+            batch_enrichment_active=False,
+            batch_enrichment_config=None,
+            batch_enrichment_round=0,
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+            status_label=SimpleNamespace(setText=lambda _value: None),
+            enrichment_thread=None,
+            enrichment_task_queued=False,
+            current_enrichment_kind='single',
+            enrichment_mode=None,
+            enrichment_worker=None,
+            enrichment_task_runner=None,
+            enrichment_progress_timer=_Timer(),
+            update_enrichment_controls=lambda: None,
+            reset_progress_widgets=lambda keep_visible=False: None,
+            refresh_enrichment_progress=lambda: None,
+            on_enrichment_finished=lambda result: None,
+            on_enrichment_failed=lambda message: None,
+            cleanup_enrichment_thread=lambda: None,
+            _start_queued_gui_runner=capture_queued_runner,
+        )
+        stub._start_enrichment_task_runner = lambda: main_window.VidNormApp._start_enrichment_task_runner(stub)
+
+        main_window.VidNormApp.start_enrichment(
+            stub,
+            7,
+            False,
+            False,
+            'actor_library',
+            'javtxt',
+            mode='single',
+        )
+
+        self.assertEqual(plan_calls, [])
+        self.assertEqual(captured['task_title'], '单次补全 - 演员库 / 辛聚谷 / 7项')
+
+        captured['before_start']()
+        worker = captured['worker_factory']()
+
+        self.assertEqual(len(plan_calls), 1)
+        self.assertEqual(plan_calls[0]['task_kind'], 'actor')
+        self.assertEqual(plan_calls[0]['target_type'], 'actor_library')
+        self.assertEqual(plan_calls[0]['source_key'], 'javtxt')
+        self.assertEqual(plan_calls[0]['batch_limit'], 7)
+        self.assertEqual(plan_calls[0]['batch_count_limit'], 1)
+        self.assertEqual(worker.plan_id, 'single-plan')
+        self.assertEqual(worker.plan_task_kind, 'actor')
+
     # ── _queued_gui_task_runners lifecycle tests ──────────────────────────
 
     def test_runner_dict_holds_reference_after_ui_callback_clears_attribute(self):

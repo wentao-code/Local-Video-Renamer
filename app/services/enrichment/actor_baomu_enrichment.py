@@ -23,6 +23,7 @@ class ActorBaomuEnrichmentService:
         should_stop=None,
         progress_tracker=None,
         logger=None,
+        planned_actor_names=None,
     ):
         self.database = database
         self.scraper = scraper or BaomuActorScraper(headless=not show_browser)
@@ -30,6 +31,25 @@ class ActorBaomuEnrichmentService:
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
+        self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
+
+    @staticmethod
+    def _normalize_planned_actor_names(planned_actor_names):
+        actor_names = []
+        seen = set()
+        for actor_name in planned_actor_names or []:
+            normalized = str(actor_name or '').strip()
+            if not normalized or normalized in seen:
+                continue
+            actor_names.append(normalized)
+            seen.add(normalized)
+        return actor_names
+
+    def _filter_planned_candidates(self, candidates):
+        if not self.planned_actor_names:
+            return candidates
+        by_name = {item.get('actor_name'): item for item in candidates}
+        return [by_name[name] for name in self.planned_actor_names if name in by_name]
 
     def enrich_next_actors(self, limit):
         limit = int(limit or 0)
@@ -115,7 +135,7 @@ class ActorBaomuEnrichmentService:
                 candidates.append({'actor_name': actor_name, 'priority': 2})
                 seen.add(actor_name)
 
-        return sorted(candidates, key=lambda item: (item['priority'], item['actor_name']))
+        return self._filter_planned_candidates(sorted(candidates, key=lambda item: (item['priority'], item['actor_name'])))
 
     def _is_candidate(self, actor_row, record):
         current = dict(record or {})

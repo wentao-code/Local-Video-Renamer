@@ -29,6 +29,7 @@ class ActorBinghuoEnrichmentService:
         should_stop=None,
         progress_tracker=None,
         logger=None,
+        planned_actor_names=None,
     ):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
@@ -36,6 +37,25 @@ class ActorBinghuoEnrichmentService:
         self.logger = logger
         self.scraper = scraper or BinghuoActorScraper(headless=not show_browser, logger=logger)
         self.canglangge_candidate_service = candidate_service or CanglanggeCandidateService(database)
+        self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
+
+    @staticmethod
+    def _normalize_planned_actor_names(planned_actor_names):
+        actor_names = []
+        seen = set()
+        for actor_name in planned_actor_names or []:
+            normalized = str(actor_name or '').strip()
+            if not normalized or normalized in seen:
+                continue
+            actor_names.append(normalized)
+            seen.add(normalized)
+        return actor_names
+
+    def _filter_planned_candidates(self, candidates):
+        if not self.planned_actor_names:
+            return candidates
+        by_name = {item.get('actor_name'): item for item in candidates}
+        return [by_name[name] for name in self.planned_actor_names if name in by_name]
 
     def enrich_next_actors(self, limit):
         limit = int(limit or 0)
@@ -171,7 +191,7 @@ class ActorBinghuoEnrichmentService:
                 candidates.append({'actor_name': actor_name, 'priority': 4})
                 seen.add(actor_name)
 
-        return sorted(candidates, key=lambda item: item['priority'])
+        return self._filter_planned_candidates(sorted(candidates, key=lambda item: item['priority']))
 
     def _remaining_actor_count(self):
         return len(self._candidate_actors())

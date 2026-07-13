@@ -341,6 +341,56 @@ class BackendReuseDecisionTest(unittest.TestCase):
         self.assertIn(('schedule', unittest.mock.ANY), calls)
         self.assertFalse(info_mock.called)
 
+    def test_batch_plan_marks_javtxt_group_results_by_identity(self):
+        from app.backend.service import BackendService
+
+        class FakeDatabase:
+            def __init__(self):
+                self.items = [
+                    {'sequence_index': 1, 'prefix': 'AAA', 'status': 'pending'},
+                    {'sequence_index': 2, 'prefix': 'BBB', 'status': 'pending'},
+                ]
+                self.marked = []
+                self.finished = []
+
+            def list_enrichment_batch_items(self, plan_id, task_kind, status='pending', limit=None):
+                rows = [dict(row) for row in self.items if status is None or row.get('status') == status]
+                return rows if limit is None else rows[:limit]
+
+            def mark_enrichment_batch_item(self, plan_id, task_kind, sequence_index, status, error=''):
+                self.marked.append((sequence_index, status, error))
+                for item in self.items:
+                    if item['sequence_index'] == sequence_index:
+                        item['status'] = status
+                return 1
+
+            def finish_enrichment_batch_plan(self, plan_id, status='completed', error=''):
+                self.finished.append((plan_id, status, error))
+                return 1
+
+        service = BackendService.__new__(BackendService)
+        service.db = FakeDatabase()
+
+        result = service._apply_enrichment_batch_plan_result(
+            'plan-1',
+            'code_prefix',
+            {
+                'processed_count': 5,
+                'results': [
+                    {
+                        'prefix': 'AAA',
+                        'status': 'ok',
+                        'processed_video_count': 5,
+                        'count_unit': '视频',
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(service.db.marked, [(1, 'completed', '')])
+        self.assertEqual(service.db.finished, [])
+        self.assertNotEqual(result.get('has_more_pending'), False)
+
     def test_batch_running_shows_countdown_hint_before_waiting_phase(self):
         calls = []
         stub = SimpleNamespace(

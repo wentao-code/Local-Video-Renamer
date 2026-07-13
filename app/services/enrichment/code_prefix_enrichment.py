@@ -17,6 +17,7 @@ class CodePrefixEnrichmentService:
         should_stop=None,
         progress_tracker=None,
         logger=None,
+        planned_prefixes=None,
     ):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
@@ -24,6 +25,19 @@ class CodePrefixEnrichmentService:
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.scraper = scraper or AvfanCodePrefixScraper(headless=not show_browser)
+        self.planned_prefixes = self._normalize_planned_prefixes(planned_prefixes)
+
+    @staticmethod
+    def _normalize_planned_prefixes(planned_prefixes):
+        prefixes = []
+        seen = set()
+        for prefix in planned_prefixes or []:
+            normalized = str(prefix or '').strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            prefixes.append(normalized)
+            seen.add(normalized)
+        return prefixes
 
     def enrich_next_prefixes(self, limit):
         limit = int(limit or 0)
@@ -185,8 +199,11 @@ class CodePrefixEnrichmentService:
     def _candidate_prefixes(self, limit):
         records = self.database.list_code_prefix_enrichment_records()
         prefixes = []
-        for row in self.prefix_library.list_prefixes():
-            prefix = row.get('prefix', '')
+        source_prefixes = self.planned_prefixes or [
+            str((row or {}).get('prefix', '') or '').strip().upper()
+            for row in self.prefix_library.list_prefixes()
+        ]
+        for prefix in source_prefixes:
             status = records.get(prefix, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
             if status in (UNENRICHED_STATUS, FAILED_STATUS):
                 prefixes.append(prefix)

@@ -817,15 +817,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def start_enrichment(self, limit, show_browser, cooldown_before_search, target_type, source_key, mode='single'):
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
-        batch_plan_payload = (
-            VidNormApp._build_enrichment_batch_plan_payload(
-                target_type,
-                source_key,
-                limit,
-                (self.batch_enrichment_config or {}).get('batch_count_limit', 1),
-            )
+        plan_batch_count_limit = (
+            (self.batch_enrichment_config or {}).get('batch_count_limit', 1)
             if mode == 'batch'
-            else None
+            else 1
+        )
+        batch_plan_payload = VidNormApp._build_enrichment_batch_plan_payload(
+            target_type,
+            source_key,
+            limit,
+            plan_batch_count_limit,
         )
         batch_plan_state = {}
         self._queued_enrichment_worker_factory = (

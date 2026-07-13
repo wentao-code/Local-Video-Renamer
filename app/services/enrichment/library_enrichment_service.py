@@ -39,6 +39,7 @@ class LibraryEnrichmentService:
         logger=None,
         video_candidate_filter=None,
         video_filter_settings=None,
+        planned_items=None,
     ):
         self.database = database
         self.show_browser = show_browser
@@ -48,6 +49,42 @@ class LibraryEnrichmentService:
         self.logger = logger
         self.video_candidate_filter = video_candidate_filter
         self.video_filter_settings = video_filter_settings
+        self.planned_items = [dict(item or {}) for item in (planned_items or [])]
+
+    @staticmethod
+    def _unique_values(items, key_name):
+        values = []
+        seen = set()
+        for item in items or []:
+            value = str((item or {}).get(key_name, '') or '').strip()
+            if not value or value in seen:
+                continue
+            values.append(value)
+            seen.add(value)
+        return values
+
+    def _planned_codes(self):
+        return self._unique_values(self.planned_items, 'code')
+
+    def _planned_prefixes(self):
+        return self._unique_values(self.planned_items, 'prefix')
+
+    def _planned_actor_names(self):
+        return self._unique_values(self.planned_items, 'actor_name')
+
+    def _planned_video_candidate_filter(self):
+        planned_codes = set(self._planned_codes())
+        existing_filter = self.video_candidate_filter
+        if not planned_codes:
+            return existing_filter
+
+        def candidate_filter(row):
+            code = str((row or {}).get('code', '') or '').strip()
+            if code not in planned_codes:
+                return False
+            return bool(existing_filter(row)) if callable(existing_filter) else True
+
+        return candidate_filter
 
     def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, batch_mode=False):
         if not target_type:
@@ -73,6 +110,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     filter_settings=self.video_filter_settings,
+                    planned_items=self.planned_items,
                 )
                 result = service.enrich_next_videos(limit, estimate_remaining=batch_mode)
             else:
@@ -84,7 +122,7 @@ class LibraryEnrichmentService:
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
-                    candidate_filter=self.video_candidate_filter,
+                    candidate_filter=self._planned_video_candidate_filter(),
                 )
                 result = service.enrich_next_videos(limit)
             result.setdefault('entity_label', '视频')
@@ -99,6 +137,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     filter_settings=self.video_filter_settings,
+                    planned_items=self.planned_items,
                 )
             elif source_key == JAVTXT_VIDEO_SOURCE:
                 service = CodePrefixJavtxtEnrichmentService(
@@ -107,6 +146,7 @@ class LibraryEnrichmentService:
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
+                    planned_prefixes=self._planned_prefixes(),
                 )
             else:
                 service = CodePrefixEnrichmentService(
@@ -115,6 +155,7 @@ class LibraryEnrichmentService:
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
+                    planned_prefixes=self._planned_prefixes(),
                 )
             if source_key == SUPPLEMENT_TASK_SOURCE:
                 result = service.enrich_next_prefixes(limit, estimate_remaining=batch_mode)
@@ -135,6 +176,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     filter_settings=self.video_filter_settings,
+                    planned_items=self.planned_items,
                 )
             elif source_key == JAVTXT_VIDEO_SOURCE:
                 service = ActorJavtxtEnrichmentService(
@@ -143,6 +185,7 @@ class LibraryEnrichmentService:
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
+                    planned_actor_names=self._planned_actor_names(),
                 )
             else:
                 service = ActorEnrichmentService(
@@ -151,6 +194,7 @@ class LibraryEnrichmentService:
                     should_stop=self.should_stop,
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
+                    planned_actor_names=self._planned_actor_names(),
                 )
             if source_key == SUPPLEMENT_TASK_SOURCE:
                 result = service.enrich_next_actors(limit, estimate_remaining=batch_mode)
@@ -170,6 +214,7 @@ class LibraryEnrichmentService:
                 should_stop=self.should_stop,
                 progress_tracker=self.progress_tracker,
                 logger=self.logger,
+                planned_actor_names=self._planned_actor_names(),
             )
             result = service.enrich_next_actors(limit)
             result.setdefault('source_key', source_key or BINGHUO_ACTOR_SOURCE)

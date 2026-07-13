@@ -2593,24 +2593,16 @@ class BackendService:
             return result
         current_result = dict(result or {})
         processed_count = max(0, int(current_result.get('processed_count', 0) or 0))
-        pending_items = self.db.list_enrichment_batch_items(
-            normalized_plan_id,
-            normalized_task_kind,
-            status='pending',
-            limit=processed_count,
-        )
         result_rows = list(current_result.get('results', []) or [])
-        for index, item in enumerate(pending_items):
-            row_result = dict(result_rows[index] or {}) if index < len(result_rows) else {}
-            row_status = str(row_result.get('status', '') or '').strip()
-            item_status = 'completed' if row_status == 'ok' else 'failed'
-            error_message = str(row_result.get('error', '') or '').strip()
-            self.db.mark_enrichment_batch_item(
+        mark_by_identity = self._should_mark_plan_items_by_result_identity(normalized_task_kind, result_rows)
+        if mark_by_identity:
+            self._mark_enrichment_plan_items_by_results(normalized_plan_id, normalized_task_kind, result_rows)
+        else:
+            self._mark_enrichment_plan_items_by_processed_count(
                 normalized_plan_id,
                 normalized_task_kind,
-                item.get('sequence_index'),
-                item_status,
-                error=error_message,
+                processed_count,
+                result_rows,
             )
         remaining_plan_items = self.db.list_enrichment_batch_items(
             normalized_plan_id,
@@ -2622,6 +2614,108 @@ class BackendService:
             self.db.finish_enrichment_batch_plan(normalized_plan_id, 'completed')
             current_result['has_more_pending'] = False
         return current_result
+
+    @staticmethod
+    def _should_mark_plan_items_by_result_identity(task_kind, result_rows):
+        normalized_task_kind = str(task_kind or '').strip()
+        if normalized_task_kind not in {'code_prefix', 'actor'}:
+            return False
+        return any(
+            int((row or {}).get('processed_video_count', 0) or 0) > 0
+            or str((row or {}).get('count_unit', '') or '').strip() == '视频'
+            for row in result_rows or []
+        )
+
+    @staticmethod
+    def _plan_result_identity(row):
+        current = dict(row or {})
+        code = str(current.get('code', '') or '').strip()
+        prefix = str(current.get('prefix', '') or '').strip().upper()
+        actor_name = str(current.get('actor_name', '') or '').strip()
+        if code:
+            return ('code', code)
+        if prefix:
+            return ('prefix', prefix)
+        if actor_name:
+            return ('actor_name', actor_name)
+        return ('', '')
+
+    @staticmethod
+    def _plan_result_item_status(row):
+        status = str((row or {}).get('status', '') or '').strip()
+        failed_statuses = {'failed', '补全失败', '未搜索到', '无搜索结果', '无详情页'}
+        return 'failed' if status in failed_statuses else 'completed'
+
+    def _mark_enrichment_plan_items_by_results(self, plan_id, task_kind, result_rows):
+        pending_items = self.db.list_enrichment_batch_items(
+            plan_id,
+            task_kind,
+            status='pending',
+            limit=None,
+        )
+        pending_by_identity = {}
+        for item in pending_items:
+            identity = self._plan_result_identity(item)
+            if identity[0]:
+                pending_by_identity.setdefault(identity, []).append(item)
+        for result_row in result_rows or []:
+            identity = self._plan_result_identity(result_row)
+            if not identity[0] or not pending_by_identity.get(identity):
+                continue
+            item = pending_by_identity[identity].pop(0)
+            self.db.mark_enrichment_batch_item(
+                plan_id,
+                task_kind,
+                item.get('sequence_index'),
+                self._plan_result_item_status(result_row),
+                error=str((result_row or {}).get('error', '') or '').strip(),
+            )
+
+    def _mark_enrichment_plan_items_by_processed_count(self, plan_id, task_kind, processed_count, result_rows):
+        processed_count = max(0, int(processed_count or 0))
+        if processed_count <= 0:
+            return
+        pending_items = self.db.list_enrichment_batch_items(
+            plan_id,
+            task_kind,
+            status='pending',
+            limit=processed_count,
+        )
+        for index, item in enumerate(pending_items):
+            row_result = dict(result_rows[index] or {}) if index < len(result_rows) else {}
+            error_message = str(row_result.get('error', '') or '').strip()
+            self.db.mark_enrichment_batch_item(
+                plan_id,
+                task_kind,
+                item.get('sequence_index'),
+                self._plan_result_item_status(row_result),
+                error=error_message,
+            )
+
+    def _pending_enrichment_plan_items_for_run(self, plan_id, task_kind, limit):
+        normalized_plan_id = str(plan_id or '').strip()
+        normalized_task_kind = str(task_kind or '').strip()
+        if not normalized_plan_id or not normalized_task_kind:
+            return []
+        return self.db.list_enrichment_batch_items(
+            normalized_plan_id,
+            normalized_task_kind,
+            status='pending',
+            limit=max(0, int(limit or 0)),
+        )
+
+    def _empty_enrichment_plan_result(self, limit, target_type, source_key):
+        return {
+            'requested': max(0, int(limit or 0)),
+            'processed_count': 0,
+            'success_count': 0,
+            'failed_count': 0,
+            'remaining_count': 0,
+            'results': [],
+            'stopped': False,
+            'target_type': str(target_type or ''),
+            'source_key': str(source_key or ''),
+        }
 
     def enrich_videos(
         self,
@@ -2642,6 +2736,13 @@ class BackendService:
         )
         active_filter_settings = self.video_filter_service.load_settings()
         try:
+            planned_items = self._pending_enrichment_plan_items_for_run(plan_id, plan_task_kind, limit)
+            if str(plan_id or '').strip() and str(plan_task_kind or '').strip() and not planned_items:
+                result = self._empty_enrichment_plan_result(limit, target_type, source_key)
+                result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
+                result['log_path'] = str(logger.log_path)
+                return result
+            effective_limit = len(planned_items) if planned_items else limit
             enrichment_service = LibraryEnrichmentService(
                 self.db,
                 show_browser=show_browser,
@@ -2653,11 +2754,12 @@ class BackendService:
                     settings=active_filter_settings
                 ),
                 video_filter_settings=active_filter_settings,
+                planned_items=planned_items,
             )
             if target_type == ACTOR_LIBRARY_TARGET:
                 self.actor_library_sync_service.sync_from_video_library()
 
-            result = enrichment_service.run(target_type, limit, source_key=source_key, batch_mode=batch_mode)
+            result = enrichment_service.run(target_type, effective_limit, source_key=source_key, batch_mode=batch_mode)
             result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
             result['log_path'] = str(logger.log_path)
 

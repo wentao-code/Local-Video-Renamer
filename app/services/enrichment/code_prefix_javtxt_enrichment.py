@@ -7,18 +7,39 @@ from app.services.resolvers import MovieAuthorResolver
 
 
 class CodePrefixJavtxtEnrichmentService:
-    def __init__(self, database, show_browser=False, should_stop=None, progress_tracker=None, logger=None):
+    def __init__(
+        self,
+        database,
+        show_browser=False,
+        should_stop=None,
+        progress_tracker=None,
+        logger=None,
+        planned_prefixes=None,
+    ):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
+        self.planned_prefixes = self._normalize_planned_prefixes(planned_prefixes)
         self.author_resolver = MovieAuthorResolver(
             database,
             headless=not show_browser,
             should_stop=self.should_stop,
             logger=self.logger,
         )
+
+    @staticmethod
+    def _normalize_planned_prefixes(planned_prefixes):
+        prefixes = []
+        seen = set()
+        for prefix in planned_prefixes or []:
+            normalized = str(prefix or '').strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            prefixes.append(normalized)
+            seen.add(normalized)
+        return prefixes
 
     def enrich_next_prefixes(self, limit):
         limit = int(limit or 0)
@@ -159,8 +180,11 @@ class CodePrefixJavtxtEnrichmentService:
     def _ready_prefix_infos(self):
         records = self.database.list_code_prefix_enrichment_records()
         prefix_infos = []
-        for row in self.prefix_library.list_prefixes():
-            prefix = row.get('prefix', '')
+        source_prefixes = self.planned_prefixes or [
+            str((row or {}).get('prefix', '') or '').strip().upper()
+            for row in self.prefix_library.list_prefixes()
+        ]
+        for prefix in source_prefixes:
             record = records.get(prefix, {})
             if not self._is_ready_for_javtxt(record):
                 continue

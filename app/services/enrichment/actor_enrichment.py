@@ -16,12 +16,26 @@ class ActorEnrichmentService:
         should_stop=None,
         progress_tracker=None,
         logger=None,
+        planned_actor_names=None,
     ):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.scraper = scraper or AvfanActorScraper(headless=not show_browser)
+        self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
+
+    @staticmethod
+    def _normalize_planned_actor_names(planned_actor_names):
+        actor_names = []
+        seen = set()
+        for actor_name in planned_actor_names or []:
+            normalized = str(actor_name or '').strip()
+            if not normalized or normalized in seen:
+                continue
+            actor_names.append(normalized)
+            seen.add(normalized)
+        return actor_names
 
     def enrich_next_actors(self, limit):
         limit = int(limit or 0)
@@ -183,8 +197,11 @@ class ActorEnrichmentService:
     def _candidate_actors(self, limit):
         records = self.database.list_actor_enrichment_records()
         actors = []
-        for row in self.database.list_actors():
-            actor_name = str(row.get('name', '')).strip()
+        source_names = self.planned_actor_names or [
+            str((row or {}).get('name', '') or '').strip()
+            for row in self.database.list_actors()
+        ]
+        for actor_name in source_names:
             if not actor_name:
                 continue
             status = records.get(actor_name, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
