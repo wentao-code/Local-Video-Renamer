@@ -2330,6 +2330,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         return DatabaseViewerWindow(self.backend_client, self)
 
     def _create_actor_entity_window(self, reference, _context):
+        from app.gui.actor_detail_viewer import ActorDetailViewerWindow
+
         return ActorDetailViewerWindow(
             self.backend_client,
             reference.entity_key,

@@ -1,5 +1,10 @@
 from app.gui.query_context import EntityReference, EntityType, QueryContext
 
+try:
+    from PyQt5 import sip
+except ImportError:  # pragma: no cover - only relevant to alternate PyQt packaging
+    sip = None
+
 
 class WindowCoordinator:
     """Routes typed navigation requests and reuses open desktop viewers."""
@@ -28,7 +33,12 @@ class WindowCoordinator:
         self._windows.pop(self._normalize_key(key), None)
 
     def get_window(self, key):
-        return self._windows.get(self._normalize_key(key))
+        normalized_key = self._normalize_key(key)
+        window = self._windows.get(normalized_key)
+        if window is not None and self._is_deleted(window):
+            self._windows.pop(normalized_key, None)
+            return None
+        return window
 
     def open_entity(self, reference, context=None):
         if not isinstance(reference, EntityReference):
@@ -100,6 +110,17 @@ class WindowCoordinator:
         if isinstance(key, tuple):
             return tuple(str(part or '').strip() for part in key)
         return str(key or '').strip()
+
+    @staticmethod
+    def _is_deleted(window):
+        if sip is None:
+            return False
+        try:
+            return bool(sip.isdeleted(window))
+        except TypeError:
+            return False
+        except RuntimeError:
+            return True
 
     @staticmethod
     def _apply_context(window, context):

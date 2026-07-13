@@ -1,5 +1,6 @@
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -68,6 +69,28 @@ class _BackendStub:
 
 
 class ActorViewerSnapshotTest(unittest.TestCase):
+    def test_detail_button_works_without_window_coordinator(self):
+        created = {}
+
+        class FakeViewer:
+            def __init__(self, backend_client, actor_name, parent=None):
+                created['backend_client'] = backend_client
+                created['actor_name'] = actor_name
+                created['parent'] = parent
+
+            def exec_(self):
+                created['opened'] = True
+
+        host = SimpleNamespace(coordinator=None, backend_client=object())
+        with (
+            patch('app.gui.actor_viewer.ActorDetailViewerWindow', None),
+            patch('app.gui.actor_detail_viewer.ActorDetailViewerWindow', FakeViewer),
+        ):
+            ActorViewerWindow.show_actor_detail(host, 'Actor A')
+
+        self.assertEqual(created['actor_name'], 'Actor A')
+        self.assertTrue(created['opened'])
+
     def test_startup_load_uses_snapshot_then_background_refresh(self):
         backend = _BackendStub()
 

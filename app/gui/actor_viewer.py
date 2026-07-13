@@ -1,4 +1,7 @@
+import logging
+
 from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -37,6 +40,7 @@ from app.gui.query_context import EntityReference, EntityType, QueryContext
 from app.gui.data_center_analysis_viewer import _build_refresh_client
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.gui.library_update_status_colors import update_status_foreground
 from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
 from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
@@ -51,6 +55,7 @@ ACTOR_COLUMN_STATUS = 3
 ACTOR_COLUMN_DETAIL = 4
 ACTOR_COLUMN_ACTIONS = 5
 DEFAULT_ACTOR_PAGE_SIZE = 200
+LOGGER = logging.getLogger(__name__)
 
 
 class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
@@ -302,6 +307,8 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             )
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
+                if col_idx == ACTOR_COLUMN_NAME:
+                    item.setForeground(QColor(update_status_foreground(row_data.get('update_status', ''))))
                 if col_idx in (ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
                     item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -343,13 +350,19 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         if not actor_name:
             return
         if self.coordinator is not None:
-            reference = EntityReference(EntityType.ACTOR, actor_name, display_name=actor_name)
-            self.coordinator.open_entity(
-                reference,
-                QueryContext(source='actor_library', entity=reference),
-            )
+            try:
+                reference = EntityReference(EntityType.ACTOR, actor_name, display_name=actor_name)
+                self.coordinator.open_entity(
+                    reference,
+                    QueryContext(source='actor_library', entity=reference),
+                )
+            except Exception as exc:
+                LOGGER.exception('打开演员详情失败: %s', actor_name)
+                QMessageBox.critical(self, tr('common.operation_failed'), str(exc))
             return
-        viewer = ActorDetailViewerWindow(self.backend_client, actor_name, self)
+        from app.gui.actor_detail_viewer import ActorDetailViewerWindow as DetailWindow
+
+        viewer = DetailWindow(self.backend_client, actor_name, self)
         viewer.exec_()
 
     def handle_add_button(self):

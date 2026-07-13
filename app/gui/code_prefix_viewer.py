@@ -1,4 +1,5 @@
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -37,6 +38,7 @@ from app.gui.code_prefix_library_sorting import (
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
+from app.gui.library_update_status_colors import update_status_foreground
 from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
 from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
@@ -259,6 +261,8 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             )
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
+                if col_idx == 0:
+                    item.setForeground(QColor(update_status_foreground(row_data.get('update_status', ''))))
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_idx, col_idx, item)

@@ -26,6 +26,30 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_actor_detail_window_factory_resolves_detail_viewer(self):
+        app = main_window.VidNormApp.__new__(main_window.VidNormApp)
+        app.backend_client = object()
+        app.window_coordinator = object()
+        created = {}
+
+        class FakeActorDetailViewerWindow:
+            def __init__(self, backend_client, actor_name, parent=None, coordinator=None):
+                created['backend_client'] = backend_client
+                created['actor_name'] = actor_name
+                created['parent'] = parent
+                created['coordinator'] = coordinator
+
+        reference = main_window.EntityReference(main_window.EntityType.ACTOR, 'Actor A')
+        with patch(
+            'app.gui.actor_detail_viewer.ActorDetailViewerWindow',
+            FakeActorDetailViewerWindow,
+        ):
+            viewer = main_window.VidNormApp._create_actor_entity_window(app, reference, None)
+
+        self.assertIsInstance(viewer, FakeActorDetailViewerWindow)
+        self.assertEqual(created['actor_name'], 'Actor A')
+        self.assertIs(created['coordinator'], app.window_coordinator)
+
     def test_configure_qt_application_enables_high_dpi_attributes(self):
         with patch('app.gui.main_window.QCoreApplication.setAttribute') as set_attribute_mock:
             main_window.configure_qt_application()

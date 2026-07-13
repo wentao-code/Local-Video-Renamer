@@ -1,3 +1,5 @@
+import logging
+
 from PyQt5.QtCore import QUrl
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QDesktopServices
@@ -25,6 +27,7 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary, format_update_frequency_summary
 from app.gui.i18n import tr
+from app.gui.query_context import EntityType
 from app.gui.video_category_update_events import video_category_update_event_bus
 from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
@@ -42,6 +45,7 @@ def _build_refresh_client(backend_client, minimum_timeout=90):
 
 class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     _COLLABORATOR_COLUMNS = 10
+    _LOGGER = logging.getLogger(__name__)
 
     def __init__(self, backend_client, actor_name, parent=None, coordinator=None):
         super().__init__(parent)
@@ -71,6 +75,7 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
     def init_ui(self):
         self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
         self.resize(1380, 980)
+        self.setWindowModality(Qt.NonModal)
 
         root_layout = QVBoxLayout(self)
         scroll_area = QScrollArea()
@@ -265,6 +270,14 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             ]
         )
 
+    def apply_query_context(self, context):
+        entity = getattr(context, 'entity', None)
+        if getattr(entity, 'entity_type', '') != 'actor':
+            return
+        actor_name = str(getattr(entity, 'entity_key', '') or '').strip()
+        if actor_name and actor_name != self.actor_name:
+            self._switch_actor(actor_name)
+
     def load_data(self, force_refresh=False, silent_errors=False, allow_deferred_close=False):
         if self.is_async_task_running():
             self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
@@ -332,7 +345,12 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._suppress_async_error_dialog = False
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
         self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
-        self._apply_detail_to_widgets()
+        try:
+            self._apply_detail_to_widgets()
+        except Exception as exc:
+            self._LOGGER.exception('渲染演员详情失败: %s', self.actor_name)
+            QMessageBox.critical(self, tr('common.operation_failed'), str(exc))
+            return
         if self._startup_refresh_pending:
             self._startup_refresh_pending = False
             if bool(payload.get('cache_hit')):
@@ -514,6 +532,10 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             self.load_data(force_refresh=True)
 
     def _detail_host(self):
+        if self.coordinator is not None:
+            detail_host = self.coordinator.get_window(('list', EntityType.ACTOR))
+            if detail_host is not None and hasattr(detail_host, 'neighbor_detail_key'):
+                return detail_host
         detail_host = self.parent()
         if detail_host is None:
             return None
@@ -550,8 +572,9 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._deferred_allow_deferred_close = False
         self._active_request_actor_name = self.actor_name
         self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
-        if hasattr(self.parent(), 'select_actor_row'):
-            self.parent().select_actor_row(self.actor_name)
+        detail_host = self._detail_host()
+        if detail_host is not None and hasattr(detail_host, 'select_actor_row'):
+            detail_host.select_actor_row(self.actor_name)
         self.load_data()
 
     def _sync_tier_combo(self):
