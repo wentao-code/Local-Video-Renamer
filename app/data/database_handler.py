@@ -2,7 +2,7 @@ import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from threading import Lock
 from urllib.parse import quote
@@ -14,6 +14,11 @@ from app.core.enrichment_status import (
     NO_VIDEO_DETAIL_STATUS,
     UNENRICHED_STATUS,
     is_no_result_status,
+)
+from app.core.library_refresh_expiry import is_library_refresh_expired
+from app.core.actor_profile_completion_status import (
+    build_actor_final_completion_status,
+    build_actor_source_completion_status,
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
@@ -577,6 +582,7 @@ class VideoDatabase(
             self._ensure_column(cursor, 'actor_movies', 'supplement_enrichment_status', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'actor_movies', 'supplement_enrichment_error', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'supplement_enriched_at', 'TEXT')
+            self._ensure_library_refresh_tracking_tables(cursor)
             self._ensure_column(cursor, 'ladder_entries', 'tier', 'TEXT NOT NULL DEFAULT ""')
             self._ensure_column(cursor, 'ladder_entries', 'medal', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'ladder_entries', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
@@ -638,6 +644,83 @@ class VideoDatabase(
             )
             self._ensure_index(cursor, 'idx_ladder_entries_board', 'ladder_entries', 'board_key, entity_type, tier, entity_name')
             conn.commit()
+
+    @staticmethod
+    def _ensure_library_refresh_tracking_tables(cursor):
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS actor_enrichment_refresh_times (
+                actor_name TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                last_completed_at TEXT NOT NULL,
+                update_status TEXT DEFAULT '',
+                PRIMARY KEY (actor_name, source_key)
+            )
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS code_prefix_enrichment_refresh_times (
+                prefix TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                last_completed_at TEXT NOT NULL,
+                update_status TEXT DEFAULT '',
+                PRIMARY KEY (prefix, source_key)
+            )
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS actor_expired_refresh_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_name TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                previous_video_count INTEGER NOT NULL DEFAULT 0,
+                current_video_count INTEGER NOT NULL DEFAULT 0,
+                added_video_count INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS code_prefix_expired_refresh_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prefix TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                previous_video_count INTEGER NOT NULL DEFAULT 0,
+                current_video_count INTEGER NOT NULL DEFAULT 0,
+                added_video_count INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        for source_key, timestamp_column in (
+            (AVFAN_VIDEO_SOURCE, 'avfan_last_enriched_at'),
+            (JAVTXT_VIDEO_SOURCE, 'javtxt_last_enriched_at'),
+        ):
+            cursor.execute(
+                f'''
+                INSERT OR IGNORE INTO actor_enrichment_refresh_times (
+                    actor_name, source_key, last_completed_at
+                )
+                SELECT actor_name, ?, {timestamp_column}
+                FROM actor_enrichments
+                WHERE TRIM(COALESCE({timestamp_column}, '')) <> ''
+                ''',
+                (source_key,),
+            )
+            cursor.execute(
+                f'''
+                INSERT OR IGNORE INTO code_prefix_enrichment_refresh_times (
+                    prefix, source_key, last_completed_at
+                )
+                SELECT UPPER(prefix), ?, {timestamp_column}
+                FROM code_prefix_enrichments
+                WHERE TRIM(COALESCE({timestamp_column}, '')) <> ''
+                ''',
+                (source_key,),
+            )
 
     def ensure_startup_maintenance(self):
         if self._startup_maintenance_completed:
@@ -2194,11 +2277,37 @@ class VideoDatabase(
         javtxt_enrichment_status = normalize_source_enrichment_status(row[6] or UNENRICHED_STATUS, JAVTXT_VIDEO_SOURCE)
         binghuo_enrichment_status = normalize_source_enrichment_status(row[7] or UNENRICHED_STATUS, BINGHUO_ACTOR_SOURCE)
         baomu_enrichment_status = normalize_source_enrichment_status(row[8] or UNENRICHED_STATUS, BAOMU_ACTOR_SOURCE)
+        completion_record = {
+            'binghuo_enrichment_status': binghuo_enrichment_status,
+            'binghuo_person_id': row[9] or '',
+            'binghuo_birthday': row[10] or '',
+            'binghuo_height': row[12] or '',
+            'binghuo_bust': row[13] or '',
+            'binghuo_waist': row[14] or '',
+            'binghuo_hip': row[15] or '',
+            'baomu_enrichment_status': baomu_enrichment_status,
+            'baomu_birthday': row[16] or '',
+            'binghuo_cup': row[17] or '',
+            'baomu_height': row[18] or '',
+            'baomu_bust': row[19] or '',
+            'baomu_cup': row[20] or '',
+            'baomu_waist': row[21] or '',
+            'baomu_hip': row[22] or '',
+        }
+        binghuo_completion_status = build_actor_source_completion_status(
+            completion_record,
+            BINGHUO_ACTOR_SOURCE,
+        )
+        baomu_completion_status = build_actor_source_completion_status(
+            completion_record,
+            BAOMU_ACTOR_SOURCE,
+        )
+        final_completion_status = build_actor_final_completion_status(completion_record)
         enrichment_status = build_library_enrichment_status_text(
             avfan_enrichment_status,
             javtxt_enrichment_status,
-            binghuo_enrichment_status,
-            baomu_enrichment_status,
+            binghuo_completion_status,
+            baomu_completion_status,
         )
         return {
             'name': actor_name,
@@ -2219,6 +2328,15 @@ class VideoDatabase(
             'binghuo_waist': row[14] or '',
             'binghuo_hip': row[15] or '',
             'baomu_birthday': row[16] or '',
+            'binghuo_cup': row[17] or '',
+            'baomu_height': row[18] or '',
+            'baomu_bust': row[19] or '',
+            'baomu_cup': row[20] or '',
+            'baomu_waist': row[21] or '',
+            'baomu_hip': row[22] or '',
+            'binghuo_completion_status': binghuo_completion_status,
+            'baomu_completion_status': baomu_completion_status,
+            'final_completion_status': final_completion_status,
             'enrichment_status': enrichment_status or UNENRICHED_STATUS,
         }
 
@@ -2253,7 +2371,13 @@ class VideoDatabase(
                        COALESCE(e.binghuo_bust, '') AS binghuo_bust,
                        COALESCE(e.binghuo_waist, '') AS binghuo_waist,
                        COALESCE(e.binghuo_hip, '') AS binghuo_hip,
-                       COALESCE(e.baomu_birthday, '') AS baomu_birthday
+                       COALESCE(e.baomu_birthday, '') AS baomu_birthday,
+                       COALESCE(e.binghuo_cup, '') AS binghuo_cup,
+                       COALESCE(e.baomu_height, '') AS baomu_height,
+                       COALESCE(e.baomu_bust, '') AS baomu_bust,
+                       COALESCE(e.baomu_cup, '') AS baomu_cup,
+                       COALESCE(e.baomu_waist, '') AS baomu_waist,
+                       COALESCE(e.baomu_hip, '') AS baomu_hip
                 FROM actors a
                 LEFT JOIN actor_enrichments e ON e.actor_name = a.name
                 {where_sql}
@@ -3069,6 +3193,321 @@ class VideoDatabase(
                 )
             self._refresh_actor_combined_status(cursor, normalized_name)
             conn.commit()
+
+    def list_actor_enrichment_refresh_times(self, actor_names=None):
+        return self._list_library_enrichment_refresh_times(
+            'actor_enrichment_refresh_times',
+            'actor_name',
+            actor_names,
+            uppercase=False,
+        )
+
+    def list_code_prefix_enrichment_refresh_times(self, prefixes=None):
+        return self._list_library_enrichment_refresh_times(
+            'code_prefix_enrichment_refresh_times',
+            'prefix',
+            prefixes,
+            uppercase=True,
+        )
+
+    def _list_library_enrichment_refresh_times(self, table_name, entity_column, entities, uppercase=False):
+        normalized_entities = []
+        seen = set()
+        for entity in entities or []:
+            normalized = str(entity or '').strip()
+            if uppercase:
+                normalized = normalized.upper()
+            if not normalized or normalized in seen:
+                continue
+            normalized_entities.append(normalized)
+            seen.add(normalized)
+
+        where_sql = ''
+        parameters = []
+        if entities is not None:
+            if not normalized_entities:
+                return {}
+            placeholders = ','.join('?' for _ in normalized_entities)
+            where_sql = f'WHERE {entity_column} IN ({placeholders})'
+            parameters.extend(normalized_entities)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT {entity_column}, source_key, last_completed_at, update_status
+                FROM {table_name}
+                {where_sql}
+                ''',
+                parameters,
+            )
+            return {
+                (str(row[0] or ''), str(row[1] or '')): {
+                    entity_column: str(row[0] or ''),
+                    'source_key': str(row[1] or ''),
+                    'last_completed_at': str(row[2] or ''),
+                    'update_status': str(row[3] or ''),
+                }
+                for row in cursor.fetchall()
+            }
+
+    def record_actor_enrichment_refresh_completion(
+        self,
+        actor_name,
+        source_key,
+        update_status='',
+        completed_at=None,
+    ):
+        self._record_library_enrichment_refresh_completion(
+            'actor_enrichment_refresh_times',
+            'actor_name',
+            actor_name,
+            source_key,
+            update_status,
+            completed_at,
+            uppercase=False,
+        )
+
+    def record_code_prefix_enrichment_refresh_completion(
+        self,
+        prefix,
+        source_key,
+        update_status='',
+        completed_at=None,
+    ):
+        self._record_library_enrichment_refresh_completion(
+            'code_prefix_enrichment_refresh_times',
+            'prefix',
+            prefix,
+            source_key,
+            update_status,
+            completed_at,
+            uppercase=True,
+        )
+
+    def _record_library_enrichment_refresh_completion(
+        self,
+        table_name,
+        entity_column,
+        entity,
+        source_key,
+        update_status,
+        completed_at,
+        uppercase,
+    ):
+        normalized_entity = str(entity or '').strip()
+        if uppercase:
+            normalized_entity = normalized_entity.upper()
+        if not normalized_entity:
+            return
+        normalized_source = normalize_video_enrichment_source(source_key)
+        timestamp = str(completed_at or '').strip() or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        normalized_update_status = str(update_status or '').strip()
+        with self._connect() as conn:
+            conn.execute(
+                f'''
+                INSERT INTO {table_name} ({entity_column}, source_key, last_completed_at, update_status)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT({entity_column}, source_key) DO UPDATE SET
+                    last_completed_at = excluded.last_completed_at,
+                    update_status = CASE
+                        WHEN excluded.update_status <> '' THEN excluded.update_status
+                        ELSE {table_name}.update_status
+                    END
+                ''',
+                (normalized_entity, normalized_source, timestamp, normalized_update_status),
+            )
+            conn.commit()
+
+    def update_actor_enrichment_refresh_statuses(self, statuses):
+        self._update_library_enrichment_refresh_statuses(
+            'actor_enrichment_refresh_times',
+            'actor_name',
+            statuses,
+            uppercase=False,
+        )
+
+    def update_code_prefix_enrichment_refresh_statuses(self, statuses):
+        self._update_library_enrichment_refresh_statuses(
+            'code_prefix_enrichment_refresh_times',
+            'prefix',
+            statuses,
+            uppercase=True,
+        )
+
+    def _update_library_enrichment_refresh_statuses(
+        self,
+        table_name,
+        entity_column,
+        statuses,
+        uppercase,
+    ):
+        values = []
+        for entity, update_status in dict(statuses or {}).items():
+            normalized_entity = str(entity or '').strip()
+            if uppercase:
+                normalized_entity = normalized_entity.upper()
+            if normalized_entity:
+                values.append((str(update_status or '').strip(), normalized_entity))
+        if not values:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                f'UPDATE {table_name} SET update_status = ? WHERE {entity_column} = ?',
+                values,
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def list_expired_actor_enrichment_entities(self, source_key, now=None):
+        return self._list_expired_library_enrichment_entities(
+            self.list_actor_enrichment_refresh_times(),
+            source_key,
+            now,
+        )
+
+    def list_expired_code_prefix_enrichment_entities(self, source_key, now=None):
+        return self._list_expired_library_enrichment_entities(
+            self.list_code_prefix_enrichment_refresh_times(),
+            source_key,
+            now,
+        )
+
+    @staticmethod
+    def _list_expired_library_enrichment_entities(records, source_key, now):
+        normalized_source = normalize_video_enrichment_source(source_key)
+        return {
+            entity
+            for (entity, current_source), record in dict(records or {}).items()
+            if current_source == normalized_source
+            and is_library_refresh_expired(
+                record.get('last_completed_at', ''),
+                record.get('update_status', ''),
+                now=now,
+            )
+        }
+
+    def record_actor_expired_refresh_history(
+        self,
+        actor_name,
+        source_key,
+        previous_video_count,
+        current_video_count,
+        completed_at=None,
+    ):
+        self._record_library_expired_refresh_history(
+            'actor_expired_refresh_history',
+            'actor_name',
+            actor_name,
+            source_key,
+            previous_video_count,
+            current_video_count,
+            completed_at,
+            uppercase=False,
+        )
+
+    def record_code_prefix_expired_refresh_history(
+        self,
+        prefix,
+        source_key,
+        previous_video_count,
+        current_video_count,
+        completed_at=None,
+    ):
+        self._record_library_expired_refresh_history(
+            'code_prefix_expired_refresh_history',
+            'prefix',
+            prefix,
+            source_key,
+            previous_video_count,
+            current_video_count,
+            completed_at,
+            uppercase=True,
+        )
+
+    def _record_library_expired_refresh_history(
+        self,
+        table_name,
+        entity_column,
+        entity,
+        source_key,
+        previous_video_count,
+        current_video_count,
+        completed_at,
+        uppercase,
+    ):
+        normalized_entity = str(entity or '').strip()
+        if uppercase:
+            normalized_entity = normalized_entity.upper()
+        previous_count = max(0, int(previous_video_count or 0))
+        current_count = max(0, int(current_video_count or 0))
+        timestamp = str(completed_at or '').strip() or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with self._connect() as conn:
+            conn.execute(
+                f'''
+                INSERT INTO {table_name} (
+                    {entity_column}, source_key, previous_video_count,
+                    current_video_count, added_video_count, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    normalized_entity,
+                    normalize_video_enrichment_source(source_key),
+                    previous_count,
+                    current_count,
+                    max(0, current_count - previous_count),
+                    timestamp,
+                ),
+            )
+            conn.commit()
+
+    def list_actor_expired_refresh_history(self, actor_name=None):
+        return self._list_library_expired_refresh_history(
+            'actor_expired_refresh_history',
+            'actor_name',
+            actor_name,
+            uppercase=False,
+        )
+
+    def list_code_prefix_expired_refresh_history(self, prefix=None):
+        return self._list_library_expired_refresh_history(
+            'code_prefix_expired_refresh_history',
+            'prefix',
+            prefix,
+            uppercase=True,
+        )
+
+    def _list_library_expired_refresh_history(self, table_name, entity_column, entity, uppercase):
+        normalized_entity = str(entity or '').strip()
+        if uppercase:
+            normalized_entity = normalized_entity.upper()
+        where_sql = f'WHERE {entity_column} = ?' if normalized_entity else ''
+        parameters = (normalized_entity,) if normalized_entity else ()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT id, {entity_column}, source_key, previous_video_count,
+                       current_video_count, added_video_count, completed_at
+                FROM {table_name}
+                {where_sql}
+                ORDER BY id DESC
+                ''',
+                parameters,
+            )
+            return [
+                {
+                    'id': int(row[0] or 0),
+                    entity_column: str(row[1] or ''),
+                    'source_key': str(row[2] or ''),
+                    'previous_video_count': int(row[3] or 0),
+                    'current_video_count': int(row[4] or 0),
+                    'added_video_count': int(row[5] or 0),
+                    'completed_at': str(row[6] or ''),
+                }
+                for row in cursor.fetchall()
+            ]
 
     def save_binghuo_actor_profile(
         self,

@@ -99,7 +99,7 @@ class ActorProfileDisplayTest(unittest.TestCase):
             expected_status = (
                 f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: {ENRICHED_STATUS} | '
                 f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: {FAILED_STATUS} | '
-                f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: {ENRICHED_STATUS} | '
+                f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态3 | '
                 f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: {UNENRICHED_STATUS}'
             )
             self.assertEqual(rows[0]['enrichment_status'], expected_status)
@@ -150,7 +150,7 @@ class ActorProfileDisplayTest(unittest.TestCase):
             expected_status = (
                 f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: {UNENRICHED_STATUS} | '
                 f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: {UNENRICHED_STATUS} | '
-                f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: {NO_VIDEO_DETAIL_STATUS} | '
+                f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态2 | '
                 f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: {UNENRICHED_STATUS}'
             )
             self.assertEqual(rows[0]['enrichment_status'], expected_status)
@@ -194,12 +194,54 @@ class ActorProfileDisplayTest(unittest.TestCase):
             expected_status = (
                 f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: {ENRICHED_STATUS} | '
                 f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: {UNENRICHED_STATUS} | '
-                f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: {ENRICHED_STATUS} | '
-                f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: {ENRICHED_STATUS}'
+                f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态2 | '
+                f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: 状态16'
             )
             self.assertEqual(rows[0]['enrichment_status'], expected_status)
 
             del rows
+            del db
+            gc.collect()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_list_actors_exposes_source_profile_states_and_merged_final_state(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, ?, ?, 1)",
+                    ('Actor State', '', ''),
+                )
+                conn.commit()
+
+            db.save_binghuo_actor_profile(
+                'Actor State',
+                ENRICHED_STATUS,
+                person_id='1001',
+                birthday='2000-01-01',
+            )
+            db.save_baomu_actor_profile(
+                'Actor State',
+                ENRICHED_STATUS,
+                height='168',
+                bust='88',
+                cup='F',
+                waist='60',
+                hip='89',
+            )
+
+            row = db.list_actors('Actor State')[0]
+
+            self.assertEqual(row['binghuo_completion_status'], '状态3')
+            self.assertEqual(row['baomu_completion_status'], '状态13')
+            self.assertEqual(row['final_completion_status'], '状态0')
+            self.assertIn(f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态3', row['enrichment_status'])
+            self.assertIn(f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: 状态13', row['enrichment_status'])
+
+            del row
             del db
             gc.collect()
         finally:

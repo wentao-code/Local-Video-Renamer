@@ -160,10 +160,10 @@ class ViewerInlineAddTest(unittest.TestCase):
                     window.btn_refresh,
                 )
 
-                self.assertEqual(window.table.columnCount(), 6)
+                self.assertEqual(window.table.columnCount(), 7)
                 self.assertEqual(
                     [window.table.horizontalHeaderItem(index).text() for index in range(window.table.columnCount())],
-                    ['演员', '生日', '年龄', '补全状态', '详情', '操作'],
+                    ['演员', '生日', '年龄', '补全状态', '最终状态', '详情', '操作'],
                 )
                 self.assertEqual(
                     first_row_widgets,
@@ -236,20 +236,25 @@ class ViewerInlineAddTest(unittest.TestCase):
                 actor_width = max(120, viewport_width // 7)
                 birthday_width = 120
                 age_width = 72
+                final_status_width = 104
                 detail_width = 104
-                base_status_width = max(320, int(viewport_width * 0.3))
-                base_action_width = max(
-                    188,
-                    viewport_width - actor_width - birthday_width - age_width - base_status_width - detail_width,
+                expected_action_width = 188
+                expected_status_width = max(
+                    320,
+                    viewport_width
+                    - actor_width
+                    - birthday_width
+                    - age_width
+                    - final_status_width
+                    - detail_width
+                    - expected_action_width,
                 )
-                expected_action_width = max(188, int(base_action_width * (2 / 3)))
-                expected_status_width = base_status_width + (base_action_width - expected_action_width)
 
                 self.assertAlmostEqual(window.table.columnWidth(0), viewport_width // 7, delta=16)
                 self.assertEqual(window.table.columnWidth(3), expected_status_width)
-                self.assertEqual(window.table.columnWidth(5), expected_action_width)
+                self.assertEqual(window.table.columnWidth(4), final_status_width)
+                self.assertEqual(window.table.columnWidth(6), expected_action_width)
                 self.assertGreater(window.table.columnWidth(3), window.table.columnWidth(0))
-                self.assertLess(window.table.columnWidth(5), base_action_width)
             finally:
                 window.hide()
                 window.deleteLater()

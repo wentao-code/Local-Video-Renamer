@@ -52,8 +52,9 @@ ACTOR_COLUMN_NAME = 0
 ACTOR_COLUMN_BIRTHDAY = 1
 ACTOR_COLUMN_AGE = 2
 ACTOR_COLUMN_STATUS = 3
-ACTOR_COLUMN_DETAIL = 4
-ACTOR_COLUMN_ACTIONS = 5
+ACTOR_COLUMN_FINAL_STATUS = 4
+ACTOR_COLUMN_DETAIL = 5
+ACTOR_COLUMN_ACTIONS = 6
 DEFAULT_ACTOR_PAGE_SIZE = 200
 LOGGER = logging.getLogger(__name__)
 
@@ -179,7 +180,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         action_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(tr('actor.viewer.headers'))
         for index in range(self.table.columnCount()):
             self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Fixed)
@@ -227,19 +228,25 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         actor_width = max(120, viewport_width // 7)
         birthday_width = 120
         age_width = 72
+        final_status_width = 104
         detail_width = 104
-        base_status_width = max(320, int(viewport_width * 0.3))
-        base_action_width = max(
-            188,
-            viewport_width - actor_width - birthday_width - age_width - base_status_width - detail_width,
+        action_width = 188
+        status_width = max(
+            320,
+            viewport_width
+            - actor_width
+            - birthday_width
+            - age_width
+            - final_status_width
+            - detail_width
+            - action_width,
         )
-        action_width = max(188, int(base_action_width * (2 / 3)))
-        status_width = base_status_width + (base_action_width - action_width)
 
         self.table.setColumnWidth(ACTOR_COLUMN_NAME, actor_width)
         self.table.setColumnWidth(ACTOR_COLUMN_BIRTHDAY, birthday_width)
         self.table.setColumnWidth(ACTOR_COLUMN_AGE, age_width)
         self.table.setColumnWidth(ACTOR_COLUMN_STATUS, status_width)
+        self.table.setColumnWidth(ACTOR_COLUMN_FINAL_STATUS, final_status_width)
         self.table.setColumnWidth(ACTOR_COLUMN_DETAIL, detail_width)
         self.table.setColumnWidth(ACTOR_COLUMN_ACTIONS, action_width)
 
@@ -304,12 +311,13 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 row_data.get('birthday', ''),
                 row_data.get('age', ''),
                 row_data.get('enrichment_status', ''),
+                row_data.get('final_completion_status', ''),
             )
             for col_idx, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if col_idx == ACTOR_COLUMN_NAME:
                     item.setForeground(QColor(update_status_foreground(row_data.get('update_status', ''))))
-                if col_idx in (ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
+                if col_idx in (ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE, ACTOR_COLUMN_FINAL_STATUS):
                     item.setTextAlignment(Qt.AlignCenter)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_idx, col_idx, item)
@@ -381,7 +389,7 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
     def insert_add_row(self):
         self.table.insertRow(0)
-        for column in range(ACTOR_COLUMN_STATUS + 1):
+        for column in range(ACTOR_COLUMN_FINAL_STATUS + 1):
             item = QTableWidgetItem('')
             if column in (ACTOR_COLUMN_BIRTHDAY, ACTOR_COLUMN_AGE):
                 item.setTextAlignment(Qt.AlignCenter)

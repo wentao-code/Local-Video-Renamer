@@ -4,6 +4,10 @@ from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET
 from app.scraper.avfan_actor_scraper import AvfanActorScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.enrichment import start_progress_tracker
+from app.services.enrichment.library_refresh_tracker import (
+    LibraryExpiredRefreshTracker,
+    sync_actor_refresh_update_statuses,
+)
 from app.services.parsers import parse_actor_search_card
 
 
@@ -24,6 +28,7 @@ class ActorEnrichmentService:
         self.logger = logger
         self.scraper = scraper or AvfanActorScraper(headless=not show_browser)
         self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
+        self.refresh_tracker = None
 
     @staticmethod
     def _normalize_planned_actor_names(planned_actor_names):
@@ -42,6 +47,12 @@ class ActorEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
+        sync_actor_refresh_update_statuses(self.database)
+        self.refresh_tracker = LibraryExpiredRefreshTracker(
+            self.database,
+            'actor',
+            AVFAN_VIDEO_SOURCE,
+        )
         candidates = self._candidate_actors(limit)
         results = []
         success_count = 0
@@ -77,9 +88,11 @@ class ActorEnrichmentService:
                 break
 
             self._log('INFO', '开始处理演员', actor_name=actor_name)
+            self.refresh_tracker.start(actor_name)
             try:
                 with self.scraper.session() as page:
                     result = self._enrich_single_actor(page, actor_name)
+                result.update(self.refresh_tracker.complete(actor_name, result.get('status')))
                 results.append(result)
                 if result.get('stopped'):
                     stopped = True
@@ -196,6 +209,11 @@ class ActorEnrichmentService:
 
     def _candidate_actors(self, limit):
         records = self.database.list_actor_enrichment_records()
+        refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
+            self.database,
+            'actor',
+            AVFAN_VIDEO_SOURCE,
+        )
         actors = []
         source_names = self.planned_actor_names or [
             str((row or {}).get('name', '') or '').strip()
@@ -205,7 +223,7 @@ class ActorEnrichmentService:
             if not actor_name:
                 continue
             status = records.get(actor_name, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS):
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) or refresh_tracker.is_expired(actor_name):
                 actors.append(actor_name)
             if len(actors) >= limit:
                 break
@@ -219,13 +237,18 @@ class ActorEnrichmentService:
 
     def _remaining_actor_count(self):
         records = self.database.list_actor_enrichment_records()
+        refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
+            self.database,
+            'actor',
+            AVFAN_VIDEO_SOURCE,
+        )
         remaining = 0
         for row in self.database.list_actors():
             actor_name = str(row.get('name', '')).strip()
             if not actor_name:
                 continue
             status = records.get(actor_name, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS):
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) or refresh_tracker.is_expired(actor_name):
                 remaining += 1
         return remaining
 

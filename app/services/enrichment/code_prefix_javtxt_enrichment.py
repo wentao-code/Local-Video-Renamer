@@ -2,6 +2,10 @@ from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE, get_video_enrichmen
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
 from app.core.enrichment_targets import CODE_PREFIX_LIBRARY_TARGET
 from app.services.enrichment import start_progress_tracker
+from app.services.enrichment.library_refresh_tracker import (
+    LibraryExpiredRefreshTracker,
+    sync_code_prefix_refresh_update_statuses,
+)
 from app.services.library import CodePrefixLibrary
 from app.services.resolvers import MovieAuthorResolver
 
@@ -28,6 +32,7 @@ class CodePrefixJavtxtEnrichmentService:
             should_stop=self.should_stop,
             logger=self.logger,
         )
+        self.refresh_tracker = None
 
     @staticmethod
     def _normalize_planned_prefixes(planned_prefixes):
@@ -46,6 +51,12 @@ class CodePrefixJavtxtEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
+        sync_code_prefix_refresh_update_statuses(self.database, self.prefix_library)
+        self.refresh_tracker = LibraryExpiredRefreshTracker(
+            self.database,
+            'code_prefix',
+            JAVTXT_VIDEO_SOURCE,
+        )
         ready_prefix_infos = self._ready_prefix_infos()
         ready_prefixes = [info['prefix'] for info in ready_prefix_infos]
         blocked_count = self._blocked_prefix_count()
@@ -99,7 +110,9 @@ class CodePrefixJavtxtEnrichmentService:
                     break
 
                 try:
+                    self.refresh_tracker.start(prefix)
                     result = self._enrich_single_prefix(prefix, remaining_slots, progress_state)
+                    result.update(self.refresh_tracker.complete(prefix, result.get('status')))
                     results.append(result)
                     remaining_video_count_after = remaining_video_count_after - pending_before + int(
                         result.get('remaining_video_count', pending_before) or 0
@@ -179,6 +192,11 @@ class CodePrefixJavtxtEnrichmentService:
 
     def _ready_prefix_infos(self):
         records = self.database.list_code_prefix_enrichment_records()
+        refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
+            self.database,
+            'code_prefix',
+            JAVTXT_VIDEO_SOURCE,
+        )
         prefix_infos = []
         source_prefixes = self.planned_prefixes or [
             str((row or {}).get('prefix', '') or '').strip().upper()
@@ -191,7 +209,7 @@ class CodePrefixJavtxtEnrichmentService:
 
             movies = self.database.list_code_prefix_movies(prefix)
             pending_count = self.author_resolver.count_pending_entries(movies)
-            if pending_count <= 0:
+            if pending_count <= 0 and not refresh_tracker.is_expired(prefix):
                 continue
 
             prefix_infos.append(

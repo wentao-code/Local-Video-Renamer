@@ -532,6 +532,57 @@ class LibraryListMetadataTest(unittest.TestCase):
         self.assertEqual(rows[0]['javtxt_enrichment_status'], FAILED_STATUS)
         self.assertEqual(rows[0]['update_status'], 'active')
 
+    def test_code_prefix_list_marks_stale_source_as_expired(self):
+        recent_date = date.today().isoformat()
+
+        class FakeDatabase:
+            synced_statuses = None
+
+            def list_videos(self):
+                return [
+                    {
+                        'code': 'NEM-001',
+                        'release_date': recent_date,
+                        'video_category': VIDEO_CATEGORY_SINGLE,
+                    }
+                ]
+
+            def list_code_prefix_enrichment_records(self):
+                return {
+                    'NEM': {
+                        'avfan_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                    }
+                }
+
+            def list_hidden_code_prefixes(self):
+                return set()
+
+            def list_code_prefix_movies_by_prefixes(self, prefixes):
+                return {'NEM': []}
+
+            def list_ladder_entries(self, board_key=None, entity_type=None):
+                return []
+
+            def list_code_prefix_enrichment_refresh_times(self, prefixes):
+                return {
+                    ('NEM', 'avfan'): {
+                        'last_completed_at': '2020-01-01 00:00:00',
+                        'update_status': 'active',
+                    }
+                }
+
+            def update_code_prefix_enrichment_refresh_statuses(self, statuses):
+                self.synced_statuses = statuses
+
+        database = FakeDatabase()
+
+        rows = CodePrefixLibrary(database, _PassThroughFilterService()).list_prefixes()
+
+        self.assertEqual(rows[0]['avfan_enrichment_status'], '已过期')
+        self.assertIn('已过期', rows[0]['enrichment_status'])
+        self.assertEqual(database.synced_statuses, {'NEM': 'active'})
+
     def test_code_prefix_list_skips_category_refresh_for_targeted_local_video_query(self):
         class FakeDatabase:
             def __init__(self):

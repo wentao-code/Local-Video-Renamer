@@ -4,6 +4,10 @@ from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE, get_video_enrichmen
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET
 from app.services.enrichment import start_progress_tracker
+from app.services.enrichment.library_refresh_tracker import (
+    LibraryExpiredRefreshTracker,
+    sync_actor_refresh_update_statuses,
+)
 from app.services.resolvers import MovieAuthorResolver
 
 
@@ -28,6 +32,7 @@ class ActorJavtxtEnrichmentService:
             should_stop=self.should_stop,
             logger=self.logger,
         )
+        self.refresh_tracker = None
 
     @staticmethod
     def _normalize_planned_actor_names(planned_actor_names):
@@ -46,6 +51,12 @@ class ActorJavtxtEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
+        sync_actor_refresh_update_statuses(self.database)
+        self.refresh_tracker = LibraryExpiredRefreshTracker(
+            self.database,
+            'actor',
+            JAVTXT_VIDEO_SOURCE,
+        )
         ready_actor_infos = self._ready_actor_infos()
         ready_actor_names = [info['actor_name'] for info in ready_actor_infos]
         blocked_count = self._blocked_actor_count()
@@ -98,7 +109,9 @@ class ActorJavtxtEnrichmentService:
                     break
 
                 try:
+                    self.refresh_tracker.start(actor_name)
                     result = self._enrich_single_actor(actor_name, remaining_slots, progress_state)
+                    result.update(self.refresh_tracker.complete(actor_name, result.get('status')))
                     results.append(result)
                     remaining_video_count_after = remaining_video_count_after - pending_before + int(
                         result.get('remaining_video_count', pending_before) or 0
@@ -182,6 +195,11 @@ class ActorJavtxtEnrichmentService:
 
     def _ready_actor_infos(self):
         records = self.database.list_actor_enrichment_records()
+        refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
+            self.database,
+            'actor',
+            JAVTXT_VIDEO_SOURCE,
+        )
         actor_infos = []
         source_names = self.planned_actor_names or [
             str((row or {}).get('name', '') or '').strip()
@@ -196,7 +214,7 @@ class ActorJavtxtEnrichmentService:
 
             movies = self.database.list_actor_movies(actor_name)
             pending_count = self.author_resolver.count_pending_entries(movies)
-            if pending_count <= 0:
+            if pending_count <= 0 and not refresh_tracker.is_expired(actor_name):
                 continue
 
             actor_infos.append(

@@ -49,7 +49,7 @@ class DetailSummaryGrid(QWidget):
                 widget.deleteLater()
 
 
-def format_distribution_summary(rows, key_name, empty_text=None, items_per_line=1):
+def format_distribution_summary(rows, key_name, empty_text=None, items_per_line=1, align_columns=False):
     if not rows:
         return empty_text or tr('common.empty')
 
@@ -61,7 +61,7 @@ def format_distribution_summary(rows, key_name, empty_text=None, items_per_line=
         )
         for row in rows
     ]
-    return _join_items_by_line(items, items_per_line)
+    return _join_items_by_line(items, items_per_line, align_columns=align_columns)
 
 
 def format_update_frequency_summary(stats):
@@ -72,9 +72,21 @@ def format_update_frequency_summary(stats):
     return tr('detail.update_frequency_value', rate=f'{float(rate):.2f}')
 
 
-def _join_items_by_line(items, items_per_line):
-    grouped_lines = []
+def _join_items_by_line(items, items_per_line, align_columns=False):
     items_per_line = max(1, int(items_per_line or 1))
-    for start in range(0, len(items), items_per_line):
-        grouped_lines.append('    '.join(items[start:start + items_per_line]))
+    rows = [items[start:start + items_per_line] for start in range(0, len(items), items_per_line)]
+    if not align_columns:
+        return '\n'.join('    '.join(row) for row in rows)
+
+    column_widths = [
+        max((len(row[column]) for row in rows if column < len(row)), default=0)
+        for column in range(items_per_line)
+    ]
+    grouped_lines = []
+    for row in rows:
+        aligned_items = [
+            item.ljust(column_widths[column]) if column < len(row) - 1 else item
+            for column, item in enumerate(row)
+        ]
+        grouped_lines.append('    '.join(aligned_items))
     return '\n'.join(grouped_lines)

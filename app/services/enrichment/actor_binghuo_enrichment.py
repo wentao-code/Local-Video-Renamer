@@ -1,5 +1,6 @@
 import re
 
+from app.core.actor_profile_completion_status import build_actor_profile_completion_status
 from app.core.enrichment_sources import BINGHUO_ACTOR_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
@@ -111,6 +112,7 @@ class ActorBinghuoEnrichmentService:
                     result = {
                         'actor_name': actor_name,
                         'status': FAILED_STATUS,
+                        'completion_status': FAILED_STATUS,
                         'error': error_message,
                     }
                     failed_count += 1
@@ -247,6 +249,7 @@ class ActorBinghuoEnrichmentService:
                 return {
                     'actor_name': actor_name,
                     'status': NO_SEARCH_RESULTS_STATUS,
+                    'completion_status': build_actor_profile_completion_status({}, has_result=False),
                     'error': '无搜索结果',
                 }
             target_result = exact_matches[0]
@@ -285,6 +288,7 @@ class ActorBinghuoEnrichmentService:
         return {
             'actor_name': actor_name,
             'status': resolved_status,
+            'completion_status': build_actor_profile_completion_status(profile, has_result=True),
             'person_id': resolved_person_id,
             'birthday': birthday,
             'age': age,
@@ -401,4 +405,5 @@ class ActorBinghuoEnrichmentService:
             person_id=str((result or {}).get('person_id', '') or '').strip(),
             birthday_found=bool(str((result or {}).get('birthday', '') or '').strip()),
             status_written=str((result or {}).get('status', '') or '').strip(),
+            completion_status=str((result or {}).get('completion_status', '') or '').strip(),
         )

@@ -7,7 +7,8 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication
 
-from app.gui.actor_viewer import ActorViewerWindow
+import app.gui.actor_viewer as actor_viewer
+from app.gui.actor_viewer import ACTOR_COLUMN_STATUS, ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 
 
@@ -55,7 +56,8 @@ class _BackendStub:
                     'name': 'Alpha',
                     'birthday': '',
                     'age': '',
-                    'enrichment_status': '',
+                    'enrichment_status': '并火: 状态3 | 保木: 状态13',
+                    'final_completion_status': '状态0',
                 }
             ],
             'total_count': 1,
@@ -69,6 +71,26 @@ class _BackendStub:
 
 
 class ActorViewerSnapshotTest(unittest.TestCase):
+    def test_actor_table_shows_source_and_final_completion_status_columns(self):
+        backend = _BackendStub()
+        with (
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_sync_async_task),
+            patch(
+                'app.gui.actor_viewer.load_actor_library_settings',
+                return_value={'sort_field': 'name', 'sort_order': 'asc'},
+            ),
+            patch('app.gui.actor_viewer.save_actor_library_settings'),
+        ):
+            window = ActorViewerWindow(backend)
+            try:
+                self.assertEqual(window.table.columnCount(), 7)
+                self.assertEqual(window.table.item(0, ACTOR_COLUMN_STATUS).text(), '并火: 状态3 | 保木: 状态13')
+                final_column = getattr(actor_viewer, 'ACTOR_COLUMN_FINAL_STATUS')
+                self.assertEqual(window.table.item(0, final_column).text(), '状态0')
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_detail_button_works_without_window_coordinator(self):
         created = {}
 

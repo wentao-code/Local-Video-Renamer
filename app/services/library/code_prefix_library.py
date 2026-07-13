@@ -6,8 +6,13 @@ from app.core.javtxt_video_state import (
     is_javtxt_eligible_movie,
     summarize_javtxt_movies,
 )
-from app.core.enrichment_sources import build_library_enrichment_status_text
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    build_library_enrichment_status_text,
+)
 from app.core.enrichment_status import UNENRICHED_STATUS
+from app.core.library_refresh_expiry import effective_library_refresh_status
 from app.core.ladder_board import LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_CODE_PREFIX
 from app.services.detail import resolve_update_status
 
@@ -125,7 +130,7 @@ class CodePrefixLibrary:
                     'last_enriched_at': str((row or {}).get('last_enriched_at', '') or ''),
                 }
             )
-        return results
+        return self._apply_refresh_expiry(results)
 
     def _list_prefixes_legacy(self, search_text=''):
         rows = self.database.list_videos()
@@ -191,7 +196,39 @@ class CodePrefixLibrary:
                 'last_enriched_at': enrichment.get('last_enriched_at', ''),
             })
 
-        return results
+        return self._apply_refresh_expiry(results)
+
+    def _apply_refresh_expiry(self, rows):
+        if not hasattr(self.database, 'list_code_prefix_enrichment_refresh_times'):
+            return rows
+        prefixes = [
+            str((row or {}).get('prefix', '') or '').strip().upper()
+            for row in rows or []
+            if str((row or {}).get('prefix', '') or '').strip()
+        ]
+        refresh_times = self.database.list_code_prefix_enrichment_refresh_times(prefixes)
+        update_statuses = {}
+        for row in rows or []:
+            prefix = str((row or {}).get('prefix', '') or '').strip().upper()
+            update_status = str((row or {}).get('update_status', '') or '').strip()
+            update_statuses[prefix] = update_status
+            for source_key, field_name in (
+                (AVFAN_VIDEO_SOURCE, 'avfan_enrichment_status'),
+                (JAVTXT_VIDEO_SOURCE, 'javtxt_enrichment_status'),
+            ):
+                refresh_record = refresh_times.get((prefix, source_key), {})
+                row[field_name] = effective_library_refresh_status(
+                    row.get(field_name, ''),
+                    refresh_record.get('last_completed_at', ''),
+                    update_status,
+                )
+            row['enrichment_status'] = build_library_enrichment_status_text(
+                row.get('avfan_enrichment_status', ''),
+                row.get('javtxt_enrichment_status', ''),
+            )
+        if hasattr(self.database, 'update_code_prefix_enrichment_refresh_statuses'):
+            self.database.update_code_prefix_enrichment_refresh_statuses(update_statuses)
+        return rows
 
     @staticmethod
     def _collect_date_range(movies):

@@ -1,3 +1,4 @@
+from app.core.actor_profile_completion_status import build_actor_profile_completion_status
 from app.core.enrichment_sources import BAOMU_ACTOR_SOURCE, get_video_enrichment_source_label
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
@@ -88,7 +89,12 @@ class ActorBaomuEnrichmentService:
                 except Exception as exc:
                     error_message = str(exc)
                     self.database.save_baomu_actor_profile(actor_name, FAILED_STATUS, error=error_message)
-                    result = {'actor_name': actor_name, 'status': FAILED_STATUS, 'error': error_message}
+                    result = {
+                        'actor_name': actor_name,
+                        'status': FAILED_STATUS,
+                        'completion_status': FAILED_STATUS,
+                        'error': error_message,
+                    }
                     failed_count += 1
                 else:
                     if result.get('status') == ENRICHED_STATUS:
@@ -155,7 +161,12 @@ class ActorBaomuEnrichmentService:
         profile = self.scraper.parse_profile(page)
         if not any(str((profile or {}).get(field_name, '') or '').strip() for field_name in self.REQUIRED_FIELDS):
             self.database.save_baomu_actor_profile(actor_name, NO_SEARCH_RESULTS_STATUS, error='无搜索结果')
-            return {'actor_name': actor_name, 'status': NO_SEARCH_RESULTS_STATUS, 'error': '无搜索结果'}
+            return {
+                'actor_name': actor_name,
+                'status': NO_SEARCH_RESULTS_STATUS,
+                'completion_status': build_actor_profile_completion_status({}, has_result=False),
+                'error': '无搜索结果',
+            }
 
         self.database.save_baomu_actor_profile(
             actor_name,
@@ -171,6 +182,7 @@ class ActorBaomuEnrichmentService:
         return {
             'actor_name': actor_name,
             'status': ENRICHED_STATUS,
+            'completion_status': build_actor_profile_completion_status(profile, has_result=True),
             'birthday': str((profile or {}).get('birthday', '') or '').strip(),
             'height': str((profile or {}).get('height', '') or '').strip(),
             'bust': str((profile or {}).get('bust', '') or '').strip(),

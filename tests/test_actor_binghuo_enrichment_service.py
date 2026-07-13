@@ -219,6 +219,7 @@ class ActorBinghuoEnrichmentServiceTest(unittest.TestCase):
         second = service.enrich_next_actors(1)
 
         self.assertEqual(first["results"][0]["status"], NO_SEARCH_RESULTS_STATUS)
+        self.assertEqual(first["results"][0]["completion_status"], "状态1")
         self.assertEqual(second["processed_count"], 0)
         self.assertEqual(
             self.db.get_actor_enrichment_record("Actor No Search")["binghuo_enrichment_status"],
@@ -370,6 +371,7 @@ class ActorBinghuoEnrichmentServiceTest(unittest.TestCase):
         result = service.enrich_next_actors(1)
 
         self.assertEqual(result["results"][0]["status"], NO_VIDEO_DETAIL_STATUS)
+        self.assertEqual(result["results"][0]["completion_status"], "状态10")
         self.assertEqual(result["success_count"], 0)
         record = self.db.get_actor_enrichment_record(actor_name)
         self.assertEqual(record["binghuo_person_id"], "36413")

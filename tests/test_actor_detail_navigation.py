@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
@@ -67,5 +68,25 @@ def test_actor_detail_uses_coordinated_actor_list_for_neighbor_navigation():
         window.load_data = Mock()
         window._switch_actor('Actor C')
         actor_list.select_actor_row.assert_called_once_with('Actor C')
+    finally:
+        window.deleteLater()
+
+
+def test_actor_detail_has_fixed_size_and_scrollable_content():
+    window = _build_window()
+    try:
+        assert (window.minimumWidth(), window.minimumHeight()) == (1200, 800)
+        assert (window.maximumWidth(), window.maximumHeight()) == (1200, 800)
+        assert window.detail_scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+        assert window.detail_scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+    finally:
+        window.deleteLater()
+
+
+def test_actor_detail_uses_fixed_width_font_for_web_prefix_distribution():
+    window = _build_window()
+    try:
+        label = window.web_prefix_grid.value_labels['web_prefix']
+        assert label.font().fixedPitch()
     finally:
         window.deleteLater()

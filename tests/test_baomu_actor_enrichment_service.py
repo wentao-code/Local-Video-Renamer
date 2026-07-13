@@ -145,6 +145,7 @@ class ActorBaomuEnrichmentServiceTest(unittest.TestCase):
         second = service.enrich_next_actors(1)
 
         self.assertEqual(first["results"][0]["status"], ENRICHED_STATUS)
+        self.assertEqual(first["results"][0]["completion_status"], "状态5")
         self.assertEqual(first["results"][0]["height"], "160")
         self.assertEqual(second["processed_count"], 0)
         self.assertEqual(scraper.open_calls, [actor_name])
@@ -164,6 +165,7 @@ class ActorBaomuEnrichmentServiceTest(unittest.TestCase):
         second = service.enrich_next_actors(1)
 
         self.assertEqual(first["results"][0]["status"], NO_SEARCH_RESULTS_STATUS)
+        self.assertEqual(first["results"][0]["completion_status"], "状态1")
         self.assertEqual(second["processed_count"], 0)
 
     def test_failures_are_skipped_until_manual_reset_for_baomu(self):

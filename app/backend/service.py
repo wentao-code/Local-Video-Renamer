@@ -15,7 +15,14 @@ from app.core.enrichment_targets import (
     CODE_PREFIX_LIBRARY_TARGET,
     VIDEO_LIBRARY_TARGET,
 )
-from app.core.enrichment_sources import DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+    JAVTXT_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
+    build_library_enrichment_status_text,
+)
+from app.core.library_refresh_expiry import effective_library_refresh_status
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
@@ -1217,13 +1224,38 @@ class BackendService:
                 if release_date > web_release_dates_by_actor.get(actor_name, ''):
                     web_release_dates_by_actor[actor_name] = release_date
 
+        refresh_times = {}
+        if hasattr(self.db, 'list_actor_enrichment_refresh_times'):
+            refresh_times = self.db.list_actor_enrichment_refresh_times(actor_names)
+
+        update_statuses = {}
         for row in rows:
             actor_name = str((row or {}).get('name', '') or '').strip()
             status_rows = list(local_movies_by_actor.get(actor_name, []) or [])
             web_release_date = web_release_dates_by_actor.get(actor_name, '')
             if web_release_date:
                 status_rows.append({'release_date': web_release_date, 'video_category': VIDEO_CATEGORY_SINGLE})
-            row['update_status'] = resolve_update_status(status_rows)
+            update_status = resolve_update_status(status_rows)
+            row['update_status'] = update_status
+            update_statuses[actor_name] = update_status
+            for source_key, field_name in (
+                (AVFAN_VIDEO_SOURCE, 'avfan_enrichment_status'),
+                (JAVTXT_VIDEO_SOURCE, 'javtxt_enrichment_status'),
+            ):
+                refresh_record = refresh_times.get((actor_name, source_key), {})
+                row[field_name] = effective_library_refresh_status(
+                    row.get(field_name, ''),
+                    refresh_record.get('last_completed_at', ''),
+                    update_status,
+                )
+            row['enrichment_status'] = build_library_enrichment_status_text(
+                row.get('avfan_enrichment_status', ''),
+                row.get('javtxt_enrichment_status', ''),
+                row.get('binghuo_completion_status', row.get('binghuo_enrichment_status')),
+                row.get('baomu_completion_status', row.get('baomu_enrichment_status')),
+            )
+        if hasattr(self.db, 'update_actor_enrichment_refresh_statuses'):
+            self.db.update_actor_enrichment_refresh_statuses(update_statuses)
         return rows
 
     def _attach_actor_ladder_tiers(self, rows):

@@ -4,6 +4,10 @@ from app.core.enrichment_targets import CODE_PREFIX_LIBRARY_TARGET
 from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
 from app.scraper.exceptions import HumanVerificationRequiredError
 from app.services.enrichment import start_progress_tracker
+from app.services.enrichment.library_refresh_tracker import (
+    LibraryExpiredRefreshTracker,
+    sync_code_prefix_refresh_update_statuses,
+)
 from app.services.library import CodePrefixLibrary, extract_code_prefix
 from app.services.parsers import parse_code_prefix_card
 
@@ -26,6 +30,7 @@ class CodePrefixEnrichmentService:
         self.logger = logger
         self.scraper = scraper or AvfanCodePrefixScraper(headless=not show_browser)
         self.planned_prefixes = self._normalize_planned_prefixes(planned_prefixes)
+        self.refresh_tracker = None
 
     @staticmethod
     def _normalize_planned_prefixes(planned_prefixes):
@@ -44,6 +49,12 @@ class CodePrefixEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
+        sync_code_prefix_refresh_update_statuses(self.database, self.prefix_library)
+        self.refresh_tracker = LibraryExpiredRefreshTracker(
+            self.database,
+            'code_prefix',
+            AVFAN_VIDEO_SOURCE,
+        )
         candidates = self._candidate_prefixes(limit)
         results = []
         success_count = 0
@@ -82,8 +93,10 @@ class CodePrefixEnrichmentService:
                     break
 
                 self._log('INFO', '开始处理番号前缀', prefix=prefix)
+                self.refresh_tracker.start(prefix)
                 try:
                     result = self._enrich_single_prefix(page, prefix)
+                    result.update(self.refresh_tracker.complete(prefix, result.get('status')))
                     results.append(result)
                     if result.get('stopped'):
                         stopped = True
@@ -198,6 +211,11 @@ class CodePrefixEnrichmentService:
 
     def _candidate_prefixes(self, limit):
         records = self.database.list_code_prefix_enrichment_records()
+        refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
+            self.database,
+            'code_prefix',
+            AVFAN_VIDEO_SOURCE,
+        )
         prefixes = []
         source_prefixes = self.planned_prefixes or [
             str((row or {}).get('prefix', '') or '').strip().upper()
@@ -205,7 +223,7 @@ class CodePrefixEnrichmentService:
         ]
         for prefix in source_prefixes:
             status = records.get(prefix, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS):
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) or refresh_tracker.is_expired(prefix):
                 prefixes.append(prefix)
             if len(prefixes) >= limit:
                 break
@@ -219,11 +237,16 @@ class CodePrefixEnrichmentService:
 
     def _remaining_prefix_count(self):
         records = self.database.list_code_prefix_enrichment_records()
+        refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
+            self.database,
+            'code_prefix',
+            AVFAN_VIDEO_SOURCE,
+        )
         remaining = 0
         for row in self.prefix_library.list_prefixes():
             prefix = row.get('prefix', '')
             status = records.get(prefix, {}).get('avfan_enrichment_status', UNENRICHED_STATUS)
-            if status in (UNENRICHED_STATUS, FAILED_STATUS):
+            if status in (UNENRICHED_STATUS, FAILED_STATUS) or refresh_tracker.is_expired(prefix):
                 remaining += 1
         return remaining
 

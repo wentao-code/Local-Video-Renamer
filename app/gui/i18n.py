@@ -41,7 +41,7 @@ BASE_GUI_TEXTS = {
     'actor.viewer.reset_baomu': '保木重置',
     'actor.viewer.add': '添加',
     'actor.viewer.add_confirm': '确认',
-    'actor.viewer.headers': ['演员', '作者 ID', '生日', '年龄', '补全状态', '详情', '操作'],
+    'actor.viewer.headers': ['演员', '生日', '年龄', '补全状态', '最终状态', '详情', '操作'],
     'actor.viewer.detail': '查看详情',
     'actor.viewer.edit': '修改',
     'actor.viewer.delete': '删除',

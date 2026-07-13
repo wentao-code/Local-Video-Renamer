@@ -2,7 +2,7 @@ import logging
 
 from PyQt5.QtCore import QUrl
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtGui import QDesktopServices, QFont, QFontDatabase
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -74,17 +74,19 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
     def init_ui(self):
         self.setWindowTitle(tr('actor.detail.title', actor_name=self.actor_name))
-        self.resize(1380, 980)
+        self.setFixedSize(1200, 800)
         self.setWindowModality(Qt.NonModal)
 
         root_layout = QVBoxLayout(self)
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        root_layout.addWidget(scroll_area)
+        self.detail_scroll_area = QScrollArea()
+        self.detail_scroll_area.setWidgetResizable(True)
+        self.detail_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.detail_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        root_layout.addWidget(self.detail_scroll_area)
 
         content = QGroupBox()
         content.setStyleSheet('QGroupBox { border: 0; margin-top: 0; }')
-        scroll_area.setWidget(content)
+        self.detail_scroll_area.setWidget(content)
 
         layout = QVBoxLayout(content)
 
@@ -207,6 +209,10 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 ('web_prefix', tr('actor.detail.web_prefix'), ''),
             ]
         )
+        web_prefix_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        web_prefix_font.setStyleHint(QFont.TypeWriter)
+        web_prefix_font.setFixedPitch(True)
+        self.web_prefix_grid.value_labels['web_prefix'].setFont(web_prefix_font)
         web_layout.addWidget(self.web_prefix_grid)
         self.web_year_grid = DetailSummaryGrid(columns=1)
         self.web_year_grid.set_items(
@@ -434,7 +440,12 @@ class ActorDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
         self.web_prefix_grid.set_value(
             'web_prefix',
-            format_distribution_summary(self.detail.get('web_prefix_distribution', []), 'prefix', items_per_line=10),
+            format_distribution_summary(
+                self.detail.get('web_prefix_distribution', []),
+                'prefix',
+                items_per_line=10,
+                align_columns=True,
+            ),
         )
         self.web_year_grid.set_value(
             'web_year',

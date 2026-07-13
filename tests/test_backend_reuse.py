@@ -3,6 +3,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 import subprocess
+from datetime import date, datetime
 
 from app.backend.service import BackendService
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
@@ -470,6 +471,66 @@ class BackendReuseDecisionTest(unittest.TestCase):
         self.assertEqual(filter_service.load_calls, 1)
         self.assertEqual(len(filter_service.settings_refs), 2)
         self.assertTrue(all(settings == {'loaded': 1} for settings in filter_service.settings_refs))
+
+    def test_attach_actor_update_status_marks_stale_source_as_expired(self):
+        class FakeDatabase:
+            synced_statuses = None
+
+            @staticmethod
+            def list_local_videos_by_actor_names(actor_names, refresh_categories=False):
+                return [
+                    {
+                        'author': 'Alpha',
+                        'release_date': date.today().isoformat(),
+                        'video_category': VIDEO_CATEGORY_SINGLE,
+                    }
+                ]
+
+            @staticmethod
+            def list_latest_actor_movie_release_dates_by_names(actor_names, filter_settings=None):
+                return {}
+
+            @staticmethod
+            def list_actor_enrichment_refresh_times(actor_names):
+                return {
+                    ('Alpha', 'avfan'): {
+                        'last_completed_at': '2020-01-01 00:00:00',
+                        'update_status': 'active',
+                    },
+                    ('Alpha', 'javtxt'): {
+                        'last_completed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'update_status': 'active',
+                    },
+                }
+
+            def update_actor_enrichment_refresh_statuses(self, statuses):
+                self.synced_statuses = statuses
+
+        class PassThroughFilterService:
+            @staticmethod
+            def load_settings():
+                return {}
+
+            @staticmethod
+            def filter_video_rows(rows, settings=None):
+                return list(rows)
+
+        rows = [
+            {
+                'name': 'Alpha',
+                'avfan_enrichment_status': ENRICHED_STATUS,
+                'javtxt_enrichment_status': ENRICHED_STATUS,
+            }
+        ]
+        database = FakeDatabase()
+        stub = SimpleNamespace(db=database, video_filter_service=PassThroughFilterService())
+
+        BackendService._attach_actor_update_status(stub, rows)
+
+        self.assertEqual(rows[0]['avfan_enrichment_status'], '已过期')
+        self.assertEqual(rows[0]['javtxt_enrichment_status'], ENRICHED_STATUS)
+        self.assertIn('已过期', rows[0]['enrichment_status'])
+        self.assertEqual(database.synced_statuses, {'Alpha': 'active'})
 
 
 if __name__ == '__main__':
