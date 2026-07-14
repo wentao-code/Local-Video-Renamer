@@ -1,18 +1,26 @@
 __pycache__/
 *.py[cod]
 
-# Personal local data
+# Persistent user data and disposable runtime artifacts
+/user_data/
+/runtime/
+
+# Local tooling metadata
+/.agents/
+/.codex/
+/.idea/
+/.pytest_cache/
+/.vs/
+
+# Local files accidentally created inside the code directory
+/.env
+/.venv/
+/venv/
+/__pycache__/
+
+# Defense in depth for local files
 *.csv
 *.db
-.env
-.enrichment_settings.json
-.video_library_settings.json
-.actor_library_settings.json
-.code_prefix_library_settings.json
-config/user/*.json
-data/*.db
-data/*.db-shm
-data/*.db-wal
-browser_profiles/
-combo_task_logs/
+*.db-shm
+*.db-wal
 *.log
