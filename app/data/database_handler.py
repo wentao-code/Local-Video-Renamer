@@ -16,6 +16,10 @@ from app.core.enrichment_status import (
     is_no_result_status,
 )
 from app.core.library_refresh_expiry import is_library_refresh_expired
+from app.core.operation_timeout_settings import (
+    ensure_operation_timeout_settings_table,
+    get_operation_timeout_seconds,
+)
 from app.core.actor_profile_completion_status import (
     build_actor_final_completion_status,
     build_actor_source_completion_status,
@@ -127,9 +131,13 @@ class VideoDatabase(
 
     @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(self.db_path, timeout=60)
+        try:
+            timeout_seconds = get_operation_timeout_seconds('database_wait', self.db_path)
+        except Exception:
+            timeout_seconds = 60
+        conn = sqlite3.connect(self.db_path, timeout=timeout_seconds)
         conn.execute('PRAGMA journal_mode = WAL')
-        conn.execute('PRAGMA busy_timeout = 60000')
+        conn.execute(f'PRAGMA busy_timeout = {max(1, int(timeout_seconds * 1000))}')
         conn.execute('PRAGMA synchronous = NORMAL')
         conn.create_function('effective_actor_birthday_sql', 3, self._sql_effective_actor_birthday)
         conn.create_function('sortable_actor_birthday_sql', 3, self._sql_sortable_actor_birthday)
@@ -583,6 +591,7 @@ class VideoDatabase(
             self._ensure_column(cursor, 'actor_movies', 'supplement_enrichment_error', 'TEXT')
             self._ensure_column(cursor, 'actor_movies', 'supplement_enriched_at', 'TEXT')
             self._ensure_library_refresh_tracking_tables(cursor)
+            ensure_operation_timeout_settings_table(cursor)
             self._ensure_column(cursor, 'ladder_entries', 'tier', 'TEXT NOT NULL DEFAULT ""')
             self._ensure_column(cursor, 'ladder_entries', 'medal', 'TEXT DEFAULT ""')
             self._ensure_column(cursor, 'ladder_entries', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
@@ -3933,7 +3942,7 @@ class VideoDatabase(
         placeholders = ','.join('?' for _ in normalized_names)
         release_date_sql = "COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '')"
         tracked_categories = (VIDEO_CATEGORY_SINGLE, VIDEO_CATEGORY_CO_STAR)
-        filter_sql, filter_params = self._actor_movie_update_status_filter_sql(filter_settings)
+        filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -3960,6 +3969,97 @@ class VideoDatabase(
                 if str(row[0] or '').strip() and str(row[1] or '').strip()
             }
 
+    def list_actor_dashboard_stats(self, actor_names, filter_settings=None):
+        normalized_names = []
+        seen = set()
+        for actor_name in actor_names or []:
+            normalized_name = str(actor_name or '').strip()
+            if not normalized_name or normalized_name in seen:
+                continue
+            seen.add(normalized_name)
+            normalized_names.append(normalized_name)
+        if not normalized_names:
+            return {}
+
+        placeholders = ','.join('?' for _ in normalized_names)
+        release_date_sql = "COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '')"
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT actor_name,
+                       COUNT(DISTINCT CASE
+                           WHEN video_category IN (?, ?) THEN code
+                       END) AS video_count,
+                       MAX(CASE
+                           WHEN video_category IN (?, ?) THEN {release_date_sql}
+                       END) AS latest_release_date
+                FROM actor_movies
+                WHERE actor_name IN ({placeholders})
+                GROUP BY actor_name
+                ''',
+                [
+                    VIDEO_CATEGORY_SINGLE,
+                    VIDEO_CATEGORY_CO_STAR,
+                    VIDEO_CATEGORY_SINGLE,
+                    VIDEO_CATEGORY_CO_STAR,
+                    *normalized_names,
+                ],
+            )
+            return {
+                str(row[0] or '').strip(): {
+                    'video_count': int(row[1] or 0),
+                    'latest_release_date': str(row[2] or '').strip(),
+                }
+                for row in cursor.fetchall()
+                if str(row[0] or '').strip()
+            }
+
+    def list_code_prefix_dashboard_stats(self, filter_settings=None):
+        actor_prefix_sql = self._code_prefix_expression_sql('code')
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                WITH combined AS (
+                    SELECT UPPER(prefix) AS prefix,
+                           code,
+                           COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '') AS release_date,
+                           video_category
+                    FROM code_prefix_movies
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                    UNION ALL
+                    SELECT {actor_prefix_sql} AS prefix,
+                           code,
+                           COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '') AS release_date,
+                           video_category
+                    FROM actor_movies
+                    WHERE TRIM(COALESCE(code, '')) <> ''
+                )
+                SELECT prefix,
+                       COUNT(DISTINCT code) AS video_count,
+                       MAX(CASE
+                           WHEN video_category IN (?, ?) THEN release_date
+                       END) AS latest_release_date
+                FROM combined
+                WHERE TRIM(COALESCE(prefix, '')) <> ''
+                  AND prefix GLOB '*[A-Z]*'
+                GROUP BY prefix
+                ''',
+                [
+                    VIDEO_CATEGORY_SINGLE,
+                    VIDEO_CATEGORY_CO_STAR,
+                ],
+            )
+            return {
+                str(row[0] or '').strip().upper(): {
+                    'video_count': int(row[1] or 0),
+                    'latest_release_date': str(row[2] or '').strip(),
+                }
+                for row in cursor.fetchall()
+                if str(row[0] or '').strip()
+            }
+
     @classmethod
     def _actor_movie_update_status_filter_sql(cls, filter_settings=None):
         if not isinstance(filter_settings, dict):
@@ -3975,6 +4075,33 @@ class VideoDatabase(
             for prefix in cls._normalized_filter_values(rules.get(field_name, [])):
                 clauses.append(f'{prefix_expression} != ?')
                 params.append(prefix.upper())
+
+        for field_name, column_name in (('title', 'title'), ('javtxt_tags', 'javtxt_tags')):
+            for keyword in cls._normalized_filter_values(rules.get(field_name, [])):
+                clauses.append(f"COALESCE({column_name}, '') NOT LIKE ?")
+                params.append(f'%{keyword}%')
+
+        if not clauses:
+            return '', []
+        return 'AND ' + ' AND '.join(clauses), params
+
+    @classmethod
+    def _dashboard_library_filter_sql(cls, filter_settings=None):
+        if not isinstance(filter_settings, dict):
+            return '', []
+        rules = filter_settings.get('rules', filter_settings)
+        if not isinstance(rules, dict):
+            return '', []
+
+        clauses = []
+        params = []
+        hidden_prefixes = cls._normalized_filter_values(rules.get('code', []))
+        if hidden_prefixes:
+            placeholders = ','.join('?' for _ in hidden_prefixes)
+            clauses.append(
+                f"{cls._code_prefix_expression_sql('code')} NOT IN ({placeholders})"
+            )
+            params.extend(prefix.upper() for prefix in hidden_prefixes)
 
         for field_name, column_name in (('title', 'title'), ('javtxt_tags', 'javtxt_tags')):
             for keyword in cls._normalized_filter_values(rules.get(field_name, [])):

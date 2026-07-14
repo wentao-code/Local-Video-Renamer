@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.core.app_config import get_setting
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import (
     get_avfan_profile_dir,
     get_browser_profiles_dir,
@@ -243,7 +244,11 @@ class AvfanScraper:
                     'error': '未搜索到匹配影片',
                 }
 
-            page.goto(movie_url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                movie_url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+            )
             wait_for_security_verification_if_needed(page, self.headless)
             wait_for_manual_login_if_needed(page, self.headless)
             wait_for_page_ready(page)
@@ -256,7 +261,11 @@ class AvfanScraper:
 
     def fetch_by_url(self, url):
         with self.session() as page:
-            page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+            )
             wait_for_security_verification_if_needed(page, self.headless)
             accept_age_gate_if_needed(page)
             wait_for_security_verification_if_needed(page, self.headless)
@@ -306,7 +315,11 @@ class AvfanScraper:
     def search_movie_url(self, page, code):
         self.ensure_login_state(page)
         if is_login_page(page) or is_security_verification_page(page) or not can_search_from_current_page(page):
-            page.goto(self.home_url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                self.home_url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+            )
 
         wait_for_security_verification_if_needed(page, self.headless)
         accept_age_gate_if_needed(page)
@@ -396,7 +409,7 @@ def wait_for_security_verification_if_needed(page, headless):
                 return !hasMarker && !hasChallengeFrame;
             }
             """,
-            timeout=MANUAL_CHECK_TIMEOUT_MS,
+            timeout=get_operation_timeout_milliseconds('manual_verification'),
         )
         wait_for_page_ready(page)
     except Exception as exc:
@@ -460,7 +473,7 @@ def wait_for_manual_login_if_needed(page, headless):
                 return !passwordInput;
             }
             """,
-            timeout=300000,
+            timeout=get_operation_timeout_milliseconds('manual_login'),
         )
         wait_for_page_ready(page)
     except Exception as exc:

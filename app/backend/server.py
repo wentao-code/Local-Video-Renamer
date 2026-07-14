@@ -104,6 +104,16 @@ def make_handler(service):
                 return service.get_video_detail(query.get('code', [''])[0])
             if method == 'GET' and path == '/data-center/summary':
                 return service.get_data_center_summary(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'GET' and path == '/data-center/dashboard':
+                return service.get_data_dashboard(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'GET' and path == '/data-center/dashboard/items':
+                return service.get_data_dashboard_items(query.get('metric', [''])[0])
+            if method == 'GET' and path == '/settings/timeouts':
+                return service.list_operation_timeouts()
+            if method == 'POST' and path == '/settings/timeouts':
+                return service.update_operation_timeouts(body.get('values', {}))
+            if method == 'POST' and path == '/settings/timeouts/reset':
+                return service.reset_operation_timeouts(body.get('setting_keys'))
             if method == 'POST' and path == '/snapshots/details/rebuild':
                 return service.rebuild_detail_snapshots()
             if method == 'GET' and path == '/data-center/analysis':
@@ -114,6 +124,12 @@ def make_handler(service):
                 )
             if method == 'GET' and path == '/data-center/analysis/actors':
                 return service.get_actor_metric_bucket(
+                    query.get('metric', [''])[0],
+                    query.get('value', [''])[0],
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
+            if method == 'GET' and path == '/data-center/analysis/code-prefixes':
+                return service.get_code_prefix_metric_bucket(
                     query.get('metric', [''])[0],
                     query.get('value', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),

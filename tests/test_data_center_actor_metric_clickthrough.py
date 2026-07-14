@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.backend.client import BackendClient
 from app.data.database_handler import VideoDatabase
 from app.services.library import DataCenterService
 
@@ -105,6 +106,24 @@ class DataCenterActorMetricClickthroughTest(unittest.TestCase):
             gc.collect()
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_code_prefix_metric_bucket_client_uses_prefix_route(self):
+        client = BackendClient(base_url="http://127.0.0.1:8766", timeout=30)
+        calls = []
+
+        def fake_get(path, timeout=None):
+            calls.append((path, timeout))
+            return {"prefixes": []}
+
+        client._get = fake_get
+
+        result = client.get_code_prefix_metric_bucket("video_count", "50_99", force_refresh=True)
+
+        self.assertEqual(result, {"prefixes": []})
+        self.assertEqual(
+            calls,
+            [("/data-center/analysis/code-prefixes?metric=video_count&value=50_99&refresh=1", None)],
+        )
 
 
 if __name__ == "__main__":

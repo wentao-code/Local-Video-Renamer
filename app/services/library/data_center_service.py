@@ -8,6 +8,7 @@ from time import perf_counter
 
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRIC_MAP
 from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRIC_MAP
+from app.core.data_dashboard import build_data_dashboard
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
     BAOMU_ACTOR_SOURCE,
@@ -28,7 +29,14 @@ from app.core.supplement_task_state import build_supplement_candidate
 from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
 from app.core.video_code import standardize_video_code
 from app.services.library import CodePrefixLibrary, build_merged_movie_snapshot, extract_code_prefix
-from app.services.video import VIDEO_CATEGORY_COLLECTION, VideoFilterService
+from app.services.detail import resolve_update_status
+from app.services.video import (
+    VIDEO_CATEGORY_COLLECTION,
+    VIDEO_CATEGORY_CO_STAR,
+    VIDEO_CATEGORY_SINGLE,
+    VideoFilterService,
+    normalize_video_category,
+)
 
 
 VIDEO_LIBRARY_LABEL = '\u89c6\u9891\u5e93'
@@ -74,6 +82,7 @@ class DataCenterService:
         self._summary_cache_lock = Lock()
         self._analysis_cache = {}
         self._analysis_cache_lock = Lock()
+        self._dashboard_items_cache = {}
         self._build_cache_state = local()
         self._snapshot_file_lock = Lock()
         self._load_persisted_snapshots()
@@ -184,6 +193,190 @@ class DataCenterService:
             self._analysis_cache[cache_key] = payload
             self._persist_snapshots()
             return dict(payload)
+
+    def get_code_prefix_metric_bucket_snapshot(self, metric_key, bucket_value, force_refresh=False):
+        config = self._get_code_prefix_metric_config(metric_key)
+        if not self._is_range_count_metric(config):
+            raise ValueError(f'Unsupported code prefix metric bucket: {config["key"]}')
+        normalized_bucket_value = self._normalize_range_bucket_value(config, bucket_value)
+        if not normalized_bucket_value:
+            raise ValueError(f'Unknown code prefix metric bucket value: {bucket_value}')
+
+        cache_key = self._build_analysis_cache_key(
+            'code_prefix_bucket',
+            f'{config["key"]}:{normalized_bucket_value}',
+        )
+        with self._analysis_cache_lock:
+            self._refresh_filter_settings_state()
+            cached = self._analysis_cache.get(cache_key)
+            if cached is not None and not force_refresh:
+                return dict(cached)
+
+            payload = {
+                'metric_key': config['key'],
+                'bucket_value': normalized_bucket_value,
+                'bucket_label': self._format_range_bucket_label(config, normalized_bucket_value),
+                'prefixes': self._build_range_count_bucket(
+                    config,
+                    self._collect_code_prefix_video_count_rows(),
+                    normalized_bucket_value,
+                    'prefix',
+                ),
+                'refreshed_at': self._current_cache_timestamp(),
+            }
+            self._analysis_cache[cache_key] = payload
+            self._persist_snapshots()
+            return dict(payload)
+
+    def get_dashboard_snapshot(self, force_refresh=False):
+        cache_key = 'dashboard'
+        with self._analysis_cache_lock:
+            self._refresh_filter_settings_state()
+            cached = self._analysis_cache.get(cache_key)
+            if cached is not None and not force_refresh:
+                return dict(cached)
+
+            built = self._run_with_build_cache(self._build_dashboard)
+            self._dashboard_items_cache = dict(built.pop('items_by_metric', {}) or {})
+            payload = {
+                'dashboard': built,
+                'refreshed_at': self._current_cache_timestamp(),
+            }
+            self._analysis_cache[cache_key] = payload
+            self._persist_snapshots()
+            return dict(payload)
+
+    def get_dashboard_items_snapshot(self, metric_key):
+        normalized_key = str(metric_key or '').strip()
+        if not normalized_key:
+            raise ValueError('Missing dashboard metric key')
+        with self._analysis_cache_lock:
+            self._refresh_filter_settings_state()
+            if not self._dashboard_items_cache:
+                built = self._run_with_build_cache(self._build_dashboard)
+                self._dashboard_items_cache = dict(built.get('items_by_metric', {}) or {})
+            if normalized_key not in self._dashboard_items_cache:
+                raise ValueError(f'Unknown dashboard metric: {normalized_key}')
+            return {
+                'metric_key': normalized_key,
+                'items': [
+                    dict(item or {})
+                    for item in self._dashboard_items_cache.get(normalized_key, [])
+                ],
+                'refreshed_at': self._current_cache_timestamp(),
+            }
+
+    def _build_dashboard(self):
+        filter_settings = self._load_filter_settings()
+        all_videos = [dict(row or {}) for row in self.database.list_videos()]
+        visible_videos = self._filter_visible_movies(all_videos, filter_settings=filter_settings)
+        visible_codes = {
+            standardize_video_code((row or {}).get('code', ''))
+            for row in visible_videos
+            if standardize_video_code((row or {}).get('code', ''))
+        }
+        filtered_videos = [
+            row
+            for row in all_videos
+            if standardize_video_code(row.get('code', '')) not in visible_codes
+        ]
+
+        actor_rows = self._list_actor_rows()
+        actor_names = [str(row.get('name', '') or '').strip() for row in actor_rows]
+        actor_stats = self.database.list_actor_dashboard_stats(
+            actor_names,
+            filter_settings=filter_settings,
+        )
+        dashboard_actors = []
+        for row in actor_rows:
+            actor_name = str(row.get('name', '') or '').strip()
+            actor_stat = dict(actor_stats.get(actor_name, {}) or {})
+            latest_release_date = str(actor_stat.get('latest_release_date', '') or '').strip()
+            dashboard_actors.append(
+                {
+                    'name': actor_name,
+                    'age': row.get('age', ''),
+                    'height': row.get('binghuo_height') or row.get('baomu_height') or '',
+                    'video_count': int(actor_stat.get('video_count', 0) or 0),
+                    'update_status': resolve_update_status(
+                        [
+                            {
+                                'release_date': latest_release_date,
+                                'video_category': VIDEO_CATEGORY_SINGLE,
+                            }
+                        ]
+                        if latest_release_date
+                        else []
+                    ),
+                    'complete_profile': str(row.get('final_completion_status', '') or '').strip()
+                    == '\u72b6\u60010',
+                }
+            )
+
+        prefix_stats = self.database.list_code_prefix_dashboard_stats(
+            filter_settings=filter_settings,
+        )
+        dashboard_prefixes = []
+        for row in self.database.list_code_prefix_summaries():
+            prefix = str(row.get('prefix', '') or '').strip().upper()
+            prefix_stat = dict(prefix_stats.get(prefix, {}) or {})
+            latest_release_date = str(prefix_stat.get('latest_release_date', '') or '').strip()
+            dashboard_prefixes.append(
+                {
+                    'prefix': prefix,
+                    'video_count': int(prefix_stat.get('video_count', 0) or 0),
+                    'update_status': resolve_update_status(
+                        [
+                            {
+                                'release_date': latest_release_date,
+                                'video_category': VIDEO_CATEGORY_SINGLE,
+                            }
+                        ]
+                        if latest_release_date
+                        else []
+                    ),
+                }
+            )
+
+        completed_statuses = {
+            ENRICHED_STATUS,
+            NO_SEARCH_RESULTS_STATUS,
+            NO_VIDEO_DETAIL_STATUS,
+        }
+        source_coverages = {}
+        for source_key, field_name in (
+            (AVFAN_VIDEO_SOURCE, 'avfan_enrichment_status'),
+            (JAVTXT_VIDEO_SOURCE, 'javtxt_enrichment_status'),
+        ):
+            completed_rows = [
+                row
+                for row in visible_videos
+                if str(row.get(field_name, '') or '').strip() in completed_statuses
+            ]
+            source_coverages[source_key] = (
+                len(completed_rows),
+                len(visible_videos),
+                [
+                    {
+                        'entity_type': 'video',
+                        'key': str(row.get('code', '') or ''),
+                        'name': str(row.get('code', '') or ''),
+                        'title': str(row.get('title', '') or ''),
+                        'author': str(row.get('author', '') or ''),
+                        'category': str(row.get('video_category', '') or ''),
+                        'value': str(row.get('release_date', '') or ''),
+                    }
+                    for row in completed_rows
+                ],
+            )
+
+        return build_data_dashboard(
+            actor_rows=dashboard_actors,
+            code_prefix_rows=dashboard_prefixes,
+            visible_video_rows=visible_videos,
+            filtered_video_rows=filtered_videos,
+            source_coverages=source_coverages,
+        )
 
     def _load_persisted_snapshots(self):
         if self.snapshot_file is None:
@@ -775,6 +968,7 @@ class DataCenterService:
             self._summary_cache_refresh_duration_ms = 0
             self._summary_cache_refresh_duration_text = ''
             self._analysis_cache = {}
+            self._dashboard_items_cache = {}
         return filter_settings
 
     @staticmethod
@@ -827,6 +1021,9 @@ class DataCenterService:
         }
 
     def _build_code_prefix_metric_analysis(self, config):
+        if self._is_range_count_metric(config):
+            rows = self._collect_code_prefix_video_count_rows()
+            return self._build_range_count_analysis(config, rows, 'prefix')
         if config.get('key') != 'collection_ratio':
             raise ValueError(f"Unknown code prefix analysis metric: {config.get('key', '')}")
 
@@ -889,6 +1086,9 @@ class DataCenterService:
         }
 
     def _build_actor_metric_analysis(self, config):
+        if self._is_range_count_metric(config):
+            rows = self._collect_actor_video_count_rows()
+            return self._build_range_count_analysis(config, rows, 'actor_name')
         metric_rows, unknown_count = self._collect_actor_metric_rows(config)
         if self._is_categorical_actor_metric(config):
             distribution_by_value = {}
@@ -948,6 +1148,13 @@ class DataCenterService:
         }
 
     def _build_actor_metric_bucket(self, config, bucket_value):
+        if self._is_range_count_metric(config):
+            return self._build_range_count_bucket(
+                config,
+                self._collect_actor_video_count_rows(),
+                bucket_value,
+                'actor_name',
+            )
         metric_rows, _unknown_count = self._collect_actor_metric_rows(config)
         if self._is_categorical_actor_metric(config):
             normalized_bucket_value = str(bucket_value or '').strip().upper()
@@ -977,6 +1184,126 @@ class DataCenterService:
             )
             if int(row.get('numeric_value', 0) or 0) == normalized_bucket_value
         ]
+
+    def _collect_actor_video_count_rows(self):
+        actor_names = self._list_actor_names()
+        movies_by_actor = self._list_actor_movies_by_names(actor_names)
+        filter_settings = self._load_filter_settings()
+        rows = []
+        qualifying_categories = {VIDEO_CATEGORY_SINGLE, VIDEO_CATEGORY_CO_STAR}
+        for actor_name in actor_names:
+            merged_movies = self._merge_movies_by_code(movies_by_actor.get(actor_name, []) or [])
+            visible_movies = self._filter_visible_movies(merged_movies, filter_settings=filter_settings)
+            video_count = sum(
+                1
+                for movie in visible_movies
+                if normalize_video_category((movie or {}).get('video_category', '')) in qualifying_categories
+            )
+            rows.append(
+                {
+                    'actor_name': actor_name,
+                    'display_value': f'{video_count}\u4e2a',
+                    'numeric_value': video_count,
+                }
+            )
+        return rows
+
+    def _collect_code_prefix_video_count_rows(self):
+        filter_settings = self._load_filter_settings()
+        code_prefixes = self._list_code_prefix_values()
+        movies_by_prefix = self._list_code_prefix_movies_by_prefixes(code_prefixes) if code_prefixes else {}
+        actor_movies_by_prefix = self._group_actor_movies_for_code_prefix_analysis()
+        prefixes = sorted(set(code_prefixes) | set(actor_movies_by_prefix))
+        rows = []
+        for prefix in prefixes:
+            merged_movies = self._merge_movies_by_code(
+                [
+                    *list(movies_by_prefix.get(prefix, []) or []),
+                    *list(actor_movies_by_prefix.get(prefix, []) or []),
+                ]
+            )
+            visible_movies = self._filter_visible_movies(merged_movies, filter_settings=filter_settings)
+            video_count = len(visible_movies)
+            rows.append(
+                {
+                    'prefix': prefix,
+                    'label': prefix,
+                    'display_value': f'{video_count}\u4e2a',
+                    'numeric_value': video_count,
+                }
+            )
+        return rows
+
+    @classmethod
+    def _build_range_count_analysis(cls, config, metric_rows, entity_key):
+        distribution_counts = {
+            str(range_config.get('key', '') or '').strip(): 0
+            for range_config in config.get('ranges', ())
+        }
+        for row in metric_rows:
+            bucket_key = cls._range_bucket_key(config, row.get('numeric_value', 0))
+            if bucket_key in distribution_counts:
+                distribution_counts[bucket_key] += 1
+
+        ranking_rows = sorted(
+            [dict(row or {}) for row in metric_rows],
+            key=lambda item: (
+                -int(item.get('numeric_value', 0) or 0),
+                str(item.get(entity_key, '') or ''),
+            ),
+        )
+        return {
+            'metric_key': config['key'],
+            'distribution_rows': [
+                {
+                    'label': str(range_config.get('label', '') or '').strip(),
+                    'count': distribution_counts.get(str(range_config.get('key', '') or '').strip(), 0),
+                    'bucket_value': str(range_config.get('key', '') or '').strip(),
+                }
+                for range_config in config.get('ranges', ())
+            ],
+            'ranking_rows': ranking_rows[:50],
+        }
+
+    @classmethod
+    def _build_range_count_bucket(cls, config, metric_rows, bucket_value, entity_key):
+        normalized_bucket_value = cls._normalize_range_bucket_value(config, bucket_value)
+        return [
+            dict(row or {})
+            for row in sorted(
+                metric_rows,
+                key=lambda item: (
+                    -int((item or {}).get('numeric_value', 0) or 0),
+                    str((item or {}).get(entity_key, '') or ''),
+                ),
+            )
+            if cls._range_bucket_key(config, (row or {}).get('numeric_value', 0)) == normalized_bucket_value
+        ]
+
+    @staticmethod
+    def _is_range_count_metric(config):
+        return str((config or {}).get('value_type', '') or '').strip().lower() == 'range_count'
+
+    @classmethod
+    def _range_bucket_key(cls, config, numeric_value):
+        value = int(numeric_value or 0)
+        for range_config in config.get('ranges', ()):
+            minimum = int(range_config.get('minimum', 0) or 0)
+            maximum = range_config.get('maximum')
+            if value < minimum:
+                continue
+            if maximum is None or value <= int(maximum):
+                return str(range_config.get('key', '') or '').strip()
+        return ''
+
+    @staticmethod
+    def _normalize_range_bucket_value(config, bucket_value):
+        normalized_value = str(bucket_value or '').strip()
+        valid_values = {
+            str(range_config.get('key', '') or '').strip()
+            for range_config in config.get('ranges', ())
+        }
+        return normalized_value if normalized_value in valid_values else ''
 
     def _collect_actor_metric_rows(self, config):
         metric_rows = []
@@ -1044,15 +1371,27 @@ class DataCenterService:
 
     @classmethod
     def _normalize_actor_metric_bucket_value(cls, config, bucket_value):
+        if cls._is_range_count_metric(config):
+            return cls._normalize_range_bucket_value(config, bucket_value)
         if cls._is_categorical_actor_metric(config):
             return cls._parse_metric_text_bucket(bucket_value)
         return cls._parse_metric_number(bucket_value)
 
     @staticmethod
     def _format_actor_metric_bucket_label(config, bucket_value):
+        if DataCenterService._is_range_count_metric(config):
+            return DataCenterService._format_range_bucket_label(config, bucket_value)
         if DataCenterService._is_categorical_actor_metric(config):
             return str(bucket_value or '').strip()
         return f'{bucket_value}{str(config.get("suffix", "") or "")}'
+
+    @staticmethod
+    def _format_range_bucket_label(config, bucket_value):
+        normalized_value = DataCenterService._normalize_range_bucket_value(config, bucket_value)
+        for range_config in config.get('ranges', ()):
+            if str(range_config.get('key', '') or '').strip() == normalized_value:
+                return str(range_config.get('label', '') or '').strip()
+        return normalized_value
 
     @staticmethod
     def _parse_metric_text_bucket(value):

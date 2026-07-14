@@ -23,7 +23,11 @@ from app.core.enrichment_status import (
 )
 from app.data.database_handler import VideoDatabase
 from app.services.library import DataCenterService
-from app.services.video import VIDEO_CATEGORY_COLLECTION
+from app.services.video import (
+    VIDEO_CATEGORY_COLLECTION,
+    VIDEO_CATEGORY_CO_STAR,
+    VIDEO_CATEGORY_SINGLE,
+)
 from app.services.video import VideoFilterService
 
 
@@ -1206,6 +1210,176 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             )
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_actor_video_count_analysis_uses_effective_single_and_co_star_movies(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+            actors_and_counts = [
+                ("Actor A", 4, VIDEO_CATEGORY_SINGLE),
+                ("Actor B", 5, VIDEO_CATEGORY_CO_STAR),
+                ("Actor C", 10, VIDEO_CATEGORY_SINGLE),
+                ("Actor D", 30, VIDEO_CATEGORY_CO_STAR),
+                ("Actor E", 80, VIDEO_CATEGORY_SINGLE),
+                ("Actor F", 0, VIDEO_CATEGORY_SINGLE),
+            ]
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    [(actor_name,) for actor_name, _count, _category in actors_and_counts],
+                )
+                conn.commit()
+
+            for actor_index, (actor_name, count, category) in enumerate(actors_and_counts):
+                movies = [
+                    self._build_library_movie(
+                        f"A{actor_index:02d}-{movie_index:03d}",
+                        f"Movie {movie_index}",
+                        actor_name,
+                        "2026-01-01",
+                        ENRICHED_STATUS,
+                        video_category=category,
+                    )
+                    for movie_index in range(count)
+                ]
+                if actor_name == "Actor A":
+                    movies.append(dict(movies[0]))
+                if actor_name == "Actor C":
+                    movies.append(
+                        self._build_library_movie(
+                            "A02-999",
+                            "Excluded collection",
+                            actor_name,
+                            "2026-01-01",
+                            ENRICHED_STATUS,
+                            video_category=VIDEO_CATEGORY_COLLECTION,
+                        )
+                    )
+                db.replace_actor_movies(actor_name, movies)
+
+            analysis = DataCenterService(db).get_actor_metric_analysis_snapshot("video_count")["analysis"]
+
+            self.assertEqual(
+                analysis["distribution_rows"],
+                [
+                    {"label": "5\u4e2a\u4ee5\u4e0b", "count": 2, "bucket_value": "0_4"},
+                    {"label": "5~9\u4e2a", "count": 1, "bucket_value": "5_9"},
+                    {"label": "10~29\u4e2a", "count": 1, "bucket_value": "10_29"},
+                    {"label": "30~79\u4e2a", "count": 1, "bucket_value": "30_79"},
+                    {"label": "80\u4e2a\u4ee5\u4e0a", "count": 1, "bucket_value": "80_plus"},
+                ],
+            )
+            self.assertEqual(
+                analysis["ranking_rows"],
+                [
+                    {"actor_name": "Actor E", "display_value": "80\u4e2a", "numeric_value": 80},
+                    {"actor_name": "Actor D", "display_value": "30\u4e2a", "numeric_value": 30},
+                    {"actor_name": "Actor C", "display_value": "10\u4e2a", "numeric_value": 10},
+                    {"actor_name": "Actor B", "display_value": "5\u4e2a", "numeric_value": 5},
+                    {"actor_name": "Actor A", "display_value": "4\u4e2a", "numeric_value": 4},
+                    {"actor_name": "Actor F", "display_value": "0\u4e2a", "numeric_value": 0},
+                ],
+            )
+            bucket = DataCenterService(db).get_actor_metric_bucket_snapshot("video_count", "5_9")
+            self.assertEqual(
+                bucket["actors"],
+                [{"actor_name": "Actor B", "display_value": "5\u4e2a", "numeric_value": 5}],
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_code_prefix_video_count_analysis_builds_ranges_and_ranking(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+            prefixes_and_counts = [
+                ("AAA", 49),
+                ("BBB", 50),
+                ("CCC", 100),
+                ("DDD", 300),
+                ("EEE", 800),
+            ]
+            for prefix, count in prefixes_and_counts:
+                db.replace_code_prefix_movies(
+                    prefix,
+                    [
+                        self._build_library_movie(
+                            f"{prefix}-{movie_index:04d}",
+                            f"{prefix} Movie {movie_index}",
+                            "Actor",
+                            "2026-01-01",
+                            ENRICHED_STATUS,
+                            video_category=VIDEO_CATEGORY_SINGLE,
+                        )
+                        for movie_index in range(count)
+                    ],
+                )
+
+            service = DataCenterService(db)
+            analysis = service.get_code_prefix_metric_analysis_snapshot("video_count")["analysis"]
+
+            self.assertEqual(
+                analysis["distribution_rows"],
+                [
+                    {"label": "50\u4e2a\u4ee5\u4e0b", "count": 1, "bucket_value": "0_49"},
+                    {"label": "50~99\u4e2a", "count": 1, "bucket_value": "50_99"},
+                    {"label": "100~299\u4e2a", "count": 1, "bucket_value": "100_299"},
+                    {"label": "300~799\u4e2a", "count": 1, "bucket_value": "300_799"},
+                    {"label": "800\u4e2a\u4ee5\u4e0a", "count": 1, "bucket_value": "800_plus"},
+                ],
+            )
+            self.assertEqual(
+                analysis["ranking_rows"],
+                [
+                    {"prefix": "EEE", "label": "EEE", "display_value": "800\u4e2a", "numeric_value": 800},
+                    {"prefix": "DDD", "label": "DDD", "display_value": "300\u4e2a", "numeric_value": 300},
+                    {"prefix": "CCC", "label": "CCC", "display_value": "100\u4e2a", "numeric_value": 100},
+                    {"prefix": "BBB", "label": "BBB", "display_value": "50\u4e2a", "numeric_value": 50},
+                    {"prefix": "AAA", "label": "AAA", "display_value": "49\u4e2a", "numeric_value": 49},
+                ],
+            )
+            bucket = service.get_code_prefix_metric_bucket_snapshot("video_count", "50_99")
+            self.assertEqual(bucket["metric_key"], "video_count")
+            self.assertEqual(bucket["bucket_value"], "50_99")
+            self.assertEqual(bucket["bucket_label"], "50~99\u4e2a")
+            self.assertEqual(
+                bucket["prefixes"],
+                [
+                    {
+                        "prefix": "BBB",
+                        "label": "BBB",
+                        "display_value": "50\u4e2a",
+                        "numeric_value": 50,
+                    }
+                ],
+            )
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_video_count_ranking_is_limited_to_top_50_with_stable_ties(self):
+        config = {
+            "key": "video_count",
+            "ranges": (
+                {"key": "0_49", "label": "50\u4e2a\u4ee5\u4e0b", "minimum": 0, "maximum": 49},
+                {"key": "50_plus", "label": "50\u4e2a\u4ee5\u4e0a", "minimum": 50, "maximum": None},
+            ),
+        }
+        rows = [
+            {
+                "actor_name": f"Actor {index:02d}",
+                "display_value": "1\u4e2a",
+                "numeric_value": 1,
+            }
+            for index in range(55)
+        ]
+
+        analysis = DataCenterService._build_range_count_analysis(config, rows, "actor_name")
+
+        self.assertEqual(len(analysis["ranking_rows"]), 50)
+        self.assertEqual(analysis["ranking_rows"][0]["actor_name"], "Actor 00")
+        self.assertEqual(analysis["ranking_rows"][-1]["actor_name"], "Actor 49")
 
     def test_code_prefix_metric_analysis_builds_ratio_distribution_and_top_rankings(self):
         temp_dir = tempfile.mkdtemp()

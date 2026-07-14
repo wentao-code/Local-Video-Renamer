@@ -8,6 +8,11 @@ from time import perf_counter
 from urllib.parse import quote, unquote
 
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
+from app.core.operation_timeout_settings import (
+    list_operation_timeout_settings,
+    reset_operation_timeout_overrides,
+    set_operation_timeout_overrides,
+)
 from app.core.combo_enrichment import get_combo_label, normalize_combo_key
 from app.core.enrichment_targets import (
     ACTOR_BIRTHDAY_TARGET,
@@ -360,6 +365,25 @@ class BackendService:
         self.ensure_database_loaded()
         return self.data_center_service.get_summary_snapshot(force_refresh=force_refresh)
 
+    def get_data_dashboard(self, force_refresh=False):
+        self.ensure_database_loaded()
+        return self.data_center_service.get_dashboard_snapshot(force_refresh=force_refresh)
+
+    def get_data_dashboard_items(self, metric_key):
+        self.ensure_database_loaded()
+        return self.data_center_service.get_dashboard_items_snapshot(metric_key)
+
+    def list_operation_timeouts(self):
+        return {'settings': list_operation_timeout_settings(self.db.db_path)}
+
+    def update_operation_timeouts(self, values):
+        return {'settings': set_operation_timeout_overrides(values, self.db.db_path)}
+
+    def reset_operation_timeouts(self, setting_keys=None):
+        return {
+            'settings': reset_operation_timeout_overrides(setting_keys, self.db.db_path),
+        }
+
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
         self.ensure_database_loaded()
         return self.data_center_service.get_actor_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)
@@ -375,6 +399,14 @@ class BackendService:
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
         self.ensure_database_loaded()
         return self.data_center_service.get_code_prefix_metric_analysis_snapshot(metric_key, force_refresh=force_refresh)
+
+    def get_code_prefix_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
+        self.ensure_database_loaded()
+        return self.data_center_service.get_code_prefix_metric_bucket_snapshot(
+            metric_key,
+            bucket_value,
+            force_refresh=force_refresh,
+        )
 
     def get_metric_analysis(self, analysis_type, metric_key, force_refresh=False):
         normalized_type = str(analysis_type or 'actor').strip().lower() or 'actor'

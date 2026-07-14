@@ -12,7 +12,9 @@ BACKEND_API_REVISION = (
     'actor-library-baomu-age-co-star-code-filter-'
     'actor-detail-refresh-guard-'
     'actor-metric-clickthrough-1-'
-    'code-prefix-snapshot-startup'
+    'code-prefix-snapshot-startup-video-count-analysis-'
+    'operation-timeout-settings-'
+    'data-center-dashboard'
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]

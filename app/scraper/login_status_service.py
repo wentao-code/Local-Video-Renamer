@@ -1,6 +1,7 @@
 from urllib.parse import urlparse
 
 from app.core.app_config import get_setting
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 
 
 MANUAL_CHECK_TIMEOUT_MS = 600000
@@ -45,7 +46,11 @@ def ensure_logged_in_on_home(page, headless=False):
 
 
 def open_home_page(page, home_url, headless):
-    page.goto(home_url, wait_until='domcontentloaded', timeout=60000)
+    page.goto(
+        home_url,
+        wait_until='domcontentloaded',
+        timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+    )
     wait_for_security_verification_if_needed(page, headless)
     accept_age_gate_if_needed(page)
     wait_for_security_verification_if_needed(page, headless)
@@ -54,7 +59,11 @@ def open_home_page(page, home_url, headless):
 
 def detect_home_login_status(page, home_url, headless):
     settings_url = build_settings_url(home_url)
-    page.goto(settings_url, wait_until='domcontentloaded', timeout=60000)
+    page.goto(
+        settings_url,
+        wait_until='domcontentloaded',
+        timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+    )
     wait_for_security_verification_if_needed(page, headless)
     accept_age_gate_if_needed(page)
     wait_for_security_verification_if_needed(page, headless)
@@ -68,7 +77,11 @@ def detect_home_login_status(page, home_url, headless):
 
 
 def run_login_flow(page, login_url, home_url, username, password, headless):
-    page.goto(login_url, wait_until='domcontentloaded', timeout=60000)
+    page.goto(
+        login_url,
+        wait_until='domcontentloaded',
+        timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+    )
     wait_for_security_verification_if_needed(page, headless)
     accept_age_gate_if_needed(page)
     wait_for_security_verification_if_needed(page, headless)
@@ -174,7 +187,7 @@ def wait_for_security_verification_if_needed(page, headless):
                 return !hasMarker && !hasChallengeFrame;
             }
             """,
-            timeout=MANUAL_CHECK_TIMEOUT_MS,
+            timeout=get_operation_timeout_milliseconds('manual_verification'),
         )
         wait_for_page_ready(page)
     except Exception as exc:
@@ -235,7 +248,7 @@ def wait_for_manual_login_if_needed(page, headless):
                 return !passwordInput;
             }
             """,
-            timeout=300000,
+            timeout=get_operation_timeout_milliseconds('manual_login'),
         )
         wait_for_page_ready(page)
     except Exception as exc:

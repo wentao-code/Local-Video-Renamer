@@ -40,6 +40,9 @@ class BackendReuseDecisionTest(unittest.TestCase):
     def test_backend_revision_marks_code_prefix_analysis_change(self):
         self.assertIn('code-prefix-analysis', BACKEND_API_REVISION)
 
+    def test_backend_revision_marks_video_count_analysis_change(self):
+        self.assertIn('video-count-analysis', BACKEND_API_REVISION)
+
     def test_backend_revision_marks_actor_detail_refresh_guard_change(self):
         self.assertIn('actor-detail-refresh-guard', BACKEND_API_REVISION)
 

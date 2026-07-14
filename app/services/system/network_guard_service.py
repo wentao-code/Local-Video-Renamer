@@ -1,6 +1,7 @@
 import socket
 from urllib.parse import urlparse
 
+from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.runtime_config import get_avfan_base_url, get_javtxt_base_url
 
 
@@ -15,8 +16,21 @@ _DEFAULT_FALLBACK_TARGETS = (
 class NetworkGuardService:
     def __init__(self, targets=None, timeout_seconds=None, required_failures=None):
         self.targets = list(targets) if targets is not None else self._build_default_targets()
-        self.timeout_seconds = float(timeout_seconds or DEFAULT_NETWORK_GUARD_TIMEOUT_SECONDS)
+        self._timeout_seconds_override = None if timeout_seconds is None else float(timeout_seconds)
         self.required_failures = max(1, int(required_failures or DEFAULT_NETWORK_GUARD_REQUIRED_FAILURES))
+
+    @property
+    def timeout_seconds(self):
+        if self._timeout_seconds_override is not None:
+            return self._timeout_seconds_override
+        try:
+            return get_operation_timeout_seconds('network_probe')
+        except Exception:
+            return DEFAULT_NETWORK_GUARD_TIMEOUT_SECONDS
+
+    @timeout_seconds.setter
+    def timeout_seconds(self, value):
+        self._timeout_seconds_override = None if value is None else float(value)
 
     def probe(self):
         failed_targets = []

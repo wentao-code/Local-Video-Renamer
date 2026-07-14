@@ -3,6 +3,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.operation_timeout_settings import get_operation_timeout_seconds
+
 
 @dataclass(frozen=True)
 class LocalVideoMediaInfo:
@@ -37,7 +39,7 @@ def probe_video_duration_seconds(file_path):
             ],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=get_operation_timeout_seconds('local_media_read'),
             check=False,
         )
     except Exception:

@@ -2,6 +2,7 @@ import re
 from contextlib import contextmanager
 from urllib.parse import quote, urlparse
 
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import get_scraper_browser_channel, get_scraper_locale
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
 from app.scraper.browser_window import minimize_browser_window_if_needed
@@ -80,7 +81,11 @@ class BinghuoActorScraper:
 
     def open_search_page(self, page, actor_name):
         target_url = self.build_search_url(actor_name)
-        page.goto(target_url, wait_until='domcontentloaded', timeout=60000)
+        page.goto(
+            target_url,
+            wait_until='domcontentloaded',
+            timeout=get_operation_timeout_milliseconds('binghuo_page_load'),
+        )
         wait_for_page_ready(page)
         return target_url
 
@@ -119,7 +124,11 @@ class BinghuoActorScraper:
         target_url = str(url or '').strip() or self.build_person_url(person_id)
         if not target_url:
             raise ValueError('Missing Binghuo person target')
-        page.goto(target_url, wait_until='domcontentloaded', timeout=60000)
+        page.goto(
+            target_url,
+            wait_until='domcontentloaded',
+            timeout=get_operation_timeout_milliseconds('binghuo_page_load'),
+        )
         wait_for_page_ready(page)
         return page.url or target_url
 

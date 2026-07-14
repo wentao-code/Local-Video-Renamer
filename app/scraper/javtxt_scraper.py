@@ -3,6 +3,7 @@ from contextlib import contextmanager
 
 from app.core.enrichment_sources import JAVTXT_VIDEO_SOURCE
 from app.core.enrichment_status import NO_VIDEO_DETAIL_STATUS
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.video_code import compact_video_code
 from app.core.runtime_config import (
     get_javtxt_base_url,
@@ -111,7 +112,11 @@ class JavtxtScraper:
         with self.session() as page:
             search_url = self.build_search_url(normalized_code)
             self._log('INFO', '开始请求 JAVTXT 搜索页', code=normalized_code, search_url=search_url)
-            page.goto(search_url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                search_url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('javtxt_page_load'),
+            )
             wait_for_page_ready(page)
 
             detail_url = self.find_first_detail_url(page)
@@ -125,7 +130,11 @@ class JavtxtScraper:
                 }
 
             self._log('INFO', 'JAVTXT 搜索命中详情页', code=normalized_code, detail_url=detail_url)
-            page.goto(detail_url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                detail_url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('javtxt_page_load'),
+            )
             wait_for_page_ready(page)
             lines = visible_lines(page)
             if is_not_found_detail_page(page, lines):

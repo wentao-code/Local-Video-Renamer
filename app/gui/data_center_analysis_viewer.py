@@ -16,17 +16,21 @@ from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRICS
 from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, enable_minimize_button
+from app.gui.data_dashboard_viewer import DataDashboardWindow
 from app.gui.i18n import tr
 from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
-def _build_refresh_client(backend_client, minimum_timeout=90):
+def _build_refresh_client(backend_client, minimum_timeout=None):
     base_url = str(getattr(backend_client, 'base_url', '') or '').strip()
     if not base_url:
         return backend_client
+    timeout = None
+    if minimum_timeout is not None:
+        timeout = max(float(getattr(backend_client, 'timeout', 30) or 30), float(minimum_timeout))
     return BackendClient(
         base_url=base_url,
-        timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), minimum_timeout),
+        timeout=timeout,
     )
 
 
@@ -70,6 +74,7 @@ class DataAnalysisWindow(QDialog):
         self.backend_client = backend_client
         self.coordinator = coordinator
         self.analysis_windows = []
+        self.dashboard_window = None
         self.init_ui()
 
     def init_ui(self):
@@ -101,6 +106,11 @@ class DataAnalysisWindow(QDialog):
         self.btn_code_prefix_analysis.clicked.connect(self.show_code_prefix_analysis_window)
         button_layout.addWidget(self.btn_code_prefix_analysis, 0, 1)
 
+        self.btn_dashboard = QPushButton('数据看板')
+        self.btn_dashboard.setMinimumHeight(36)
+        self.btn_dashboard.clicked.connect(self.show_dashboard_window)
+        button_layout.addWidget(self.btn_dashboard, 0, 2)
+
         layout.addWidget(button_group)
         layout.addStretch()
 
@@ -109,6 +119,22 @@ class DataAnalysisWindow(QDialog):
 
     def show_code_prefix_analysis_window(self):
         self._open_analysis_window(CodePrefixDataAnalysisWindow(self.backend_client, self, coordinator=self.coordinator))
+
+    def show_dashboard_window(self):
+        if self.dashboard_window is not None:
+            self.dashboard_window.show()
+            self.dashboard_window.raise_()
+            self.dashboard_window.activateWindow()
+            return
+        self.dashboard_window = DataDashboardWindow(
+            self.backend_client,
+            self,
+            coordinator=self.coordinator,
+        )
+        self.dashboard_window.finished.connect(
+            lambda _result: setattr(self, 'dashboard_window', None)
+        )
+        self._open_analysis_window(self.dashboard_window)
 
     def _open_analysis_window(self, window):
         self.analysis_windows.append(window)
@@ -295,6 +321,7 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
 
         for row in self.actor_rows:
             actor_name = str(row.get('actor_name', '') or '').strip()
+            display_value = str(row.get('display_value', '') or '').strip()
             row_widget = QWidget()
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(8, 6, 8, 6)
@@ -304,6 +331,11 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
             name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             row_layout.addWidget(name_label)
             row_layout.addStretch()
+
+            if display_value:
+                value_label = QLabel(display_value)
+                value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                row_layout.addWidget(value_label)
 
             detail_button = QPushButton(tr('actor.detail.detail'))
             detail_button.setMinimumWidth(92)
@@ -352,6 +384,121 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
 
     def select_actor_row(self, actor_name):
         return actor_name
+
+
+class CodePrefixMetricBucketWindow(ActorMetricBucketWindow):
+    def __init__(self, backend_client, metric_config, bucket_value, bucket_label, parent=None, coordinator=None):
+        self.prefix_rows = []
+        super().__init__(
+            backend_client,
+            metric_config,
+            bucket_value,
+            bucket_label,
+            parent=parent,
+            coordinator=coordinator,
+        )
+
+    def init_ui(self):
+        super().init_ui()
+        metric_label = tr(self.metric_config.get('label_key', ''))
+        self.setWindowTitle(
+            tr(
+                'data_center.analysis.code_prefix_bucket_title',
+                metric_label=metric_label,
+                bucket_label=self.bucket_label,
+            )
+        )
+        self.summary_label.setText(tr('data_center.analysis.code_prefix_bucket_count', count=0))
+
+    def load_data(self, force_refresh=False):
+        if self.is_async_task_running():
+            return
+        self.start_async_task(
+            lambda: self.refresh_client.get_code_prefix_metric_bucket(
+                self.metric_key,
+                self.bucket_value,
+                force_refresh=force_refresh,
+            ),
+            self._on_load_data_finished,
+            tr('common.read_failed'),
+        )
+
+    def _on_load_data_finished(self, result):
+        payload = dict(result or {})
+        self.prefix_rows = list(payload.get('prefixes', []) or [])
+        refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or tr('common.empty')
+        self.summary_label.setText(
+            tr('data_center.analysis.code_prefix_bucket_count', count=len(self.prefix_rows))
+        )
+        self.last_refreshed_label.setText(tr('data_center.last_refreshed', value=refreshed_at))
+        self._render_rows()
+        if self._startup_refresh_pending:
+            self._startup_refresh_pending = False
+            self.load_data(force_refresh=True)
+
+    def _render_rows(self):
+        _clear_layout(self.rows_layout)
+        if not self.prefix_rows:
+            empty_label = QLabel(tr('common.no_data'))
+            empty_label.setWordWrap(True)
+            self.rows_layout.addWidget(empty_label)
+            self.rows_layout.addStretch()
+            return
+
+        for row in self.prefix_rows:
+            prefix = str(row.get('prefix', '') or '').strip().upper()
+            display_value = str(row.get('display_value', '') or '').strip()
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(10)
+
+            name_label = QLabel(prefix or tr('common.unknown'))
+            name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            row_layout.addWidget(name_label)
+            row_layout.addStretch()
+
+            if display_value:
+                value_label = QLabel(display_value)
+                value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                row_layout.addWidget(value_label)
+
+            detail_button = QPushButton(tr('actor.detail.detail'))
+            detail_button.setMinimumWidth(92)
+            detail_button.clicked.connect(
+                lambda _checked=False, current_prefix=prefix: self.show_code_prefix_detail(current_prefix)
+            )
+            row_layout.addWidget(detail_button)
+            self.rows_layout.addWidget(row_widget)
+
+        self.rows_layout.addStretch()
+
+    def show_code_prefix_detail(self, prefix):
+        if not prefix:
+            return
+        if self.coordinator is not None:
+            reference = EntityReference(EntityType.CODE_PREFIX, prefix, display_name=prefix)
+            self.coordinator.open_entity(
+                reference,
+                QueryContext(source='data_center_analysis', entity=reference),
+            )
+            return
+        from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
+        viewer = CodePrefixDetailViewerWindow(self.backend_client, prefix, self)
+        self.detail_windows.append(viewer)
+        if hasattr(viewer, 'finished'):
+            viewer.finished.connect(lambda _result, current=viewer: self._forget_detail_window(current))
+        viewer.show()
+
+    def detail_navigation_keys(self):
+        return [
+            str((row or {}).get('prefix', '') or '').strip().upper()
+            for row in self.prefix_rows
+            if str((row or {}).get('prefix', '') or '').strip()
+        ]
+
+    def select_prefix_row(self, prefix):
+        return str(prefix or '').strip().upper()
 
 
 class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
@@ -504,7 +651,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
                 button.clicked.connect(
                     lambda _checked=False,
                     bucket_value=row.get('bucket_value'),
-                    bucket_label=str(row.get('label', '') or '').strip(): self.open_actor_metric_bucket_window(
+                    bucket_label=str(row.get('label', '') or '').strip(): self.open_metric_bucket_window(
                         bucket_value,
                         bucket_label,
                     )
@@ -561,7 +708,7 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.ranking_label.hide()
 
     def _is_clickable_distribution_row(self, row):
-        return self.analysis_type == 'actor' and row.get('bucket_value') is not None
+        return self.analysis_type in {'actor', 'code_prefix'} and row.get('bucket_value') is not None
 
     def _build_distribution_item_text(self, row):
         current = dict(row or {})
@@ -585,6 +732,28 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
         self.bucket_windows.append(window)
         window.finished.connect(lambda _result, current=window: self._forget_bucket_window(current))
         window.show()
+
+    def open_code_prefix_metric_bucket_window(self, bucket_value, bucket_label):
+        if self.analysis_type != 'code_prefix':
+            return
+        window = CodePrefixMetricBucketWindow(
+            self.backend_client,
+            self.metric_config,
+            bucket_value,
+            bucket_label,
+            self,
+            coordinator=self.coordinator,
+        )
+        self.bucket_windows.append(window)
+        window.finished.connect(lambda _result, current=window: self._forget_bucket_window(current))
+        window.show()
+
+    def open_metric_bucket_window(self, bucket_value, bucket_label):
+        if self.analysis_type == 'actor':
+            return self.open_actor_metric_bucket_window(bucket_value, bucket_label)
+        if self.analysis_type == 'code_prefix':
+            return self.open_code_prefix_metric_bucket_window(bucket_value, bucket_label)
+        return None
 
     def _forget_bucket_window(self, window):
         self.bucket_windows = [item for item in self.bucket_windows if item is not window]

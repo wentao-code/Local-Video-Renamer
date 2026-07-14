@@ -43,6 +43,18 @@ ACTOR_ANALYSIS_METRICS = (
         'field': 'binghuo_hip',
         'suffix': ' cm',
     },
+    {
+        'key': 'video_count',
+        'label_key': 'data_center.analysis.video_count',
+        'value_type': 'range_count',
+        'ranges': (
+            {'key': '0_4', 'label': '5\u4e2a\u4ee5\u4e0b', 'minimum': 0, 'maximum': 4},
+            {'key': '5_9', 'label': '5~9\u4e2a', 'minimum': 5, 'maximum': 9},
+            {'key': '10_29', 'label': '10~29\u4e2a', 'minimum': 10, 'maximum': 29},
+            {'key': '30_79', 'label': '30~79\u4e2a', 'minimum': 30, 'maximum': 79},
+            {'key': '80_plus', 'label': '80\u4e2a\u4ee5\u4e0a', 'minimum': 80, 'maximum': None},
+        ),
+    },
 )
 
 

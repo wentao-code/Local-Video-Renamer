@@ -1,3 +1,4 @@
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import get_avfan_code_prefix_url
 from app.scraper.avfan_scraper import (
     AvfanScraper,
@@ -21,7 +22,11 @@ class AvfanCodePrefixScraper:
 
     def open_listing_page(self, page, prefix, page_number):
         url = self.build_listing_url(prefix, page_number)
-        page.goto(url, wait_until='domcontentloaded', timeout=60000)
+        page.goto(
+            url,
+            wait_until='domcontentloaded',
+            timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+        )
         wait_for_security_verification_if_needed(page, self.browser.headless)
         accept_age_gate_if_needed(page)
         wait_for_security_verification_if_needed(page, self.browser.headless)

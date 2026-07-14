@@ -31,13 +31,16 @@ from app.gui.medal_catalog_viewer import MedalSelectionSidebar, build_medal_text
 from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
-def _build_refresh_client(backend_client, minimum_timeout=90):
+def _build_refresh_client(backend_client, minimum_timeout=None):
     base_url = str(getattr(backend_client, 'base_url', '') or '').strip()
     if not base_url:
         return backend_client
+    timeout = None
+    if minimum_timeout is not None:
+        timeout = max(float(getattr(backend_client, 'timeout', 30) or 30), float(minimum_timeout))
     return BackendClient(
         base_url=base_url,
-        timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), minimum_timeout),
+        timeout=timeout,
     )
 
 

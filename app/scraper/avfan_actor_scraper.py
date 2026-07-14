@@ -1,5 +1,6 @@
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import get_avfan_actor_search_url
 from app.scraper.avfan_scraper import (
     AvfanScraper,
@@ -30,7 +31,11 @@ class AvfanActorScraper:
         base_url = self.actor_base_urls.get(actor_name)
         if not base_url:
             search_url = self.build_search_url(actor_name)
-            page.goto(search_url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                search_url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+            )
             self._prepare_page(page)
             base_url = self._open_first_actor_result(page)
             if not base_url:
@@ -39,7 +44,11 @@ class AvfanActorScraper:
 
         target_url = self.build_actor_page_url(base_url, page_number)
         if page.url != target_url:
-            page.goto(target_url, wait_until='domcontentloaded', timeout=60000)
+            page.goto(
+                target_url,
+                wait_until='domcontentloaded',
+                timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+            )
             self._prepare_page(page)
         return target_url
 
@@ -153,7 +162,11 @@ class AvfanActorScraper:
         except Exception:
             pass
 
-        page.goto(target_url, wait_until='domcontentloaded', timeout=60000)
+        page.goto(
+            target_url,
+            wait_until='domcontentloaded',
+            timeout=get_operation_timeout_milliseconds('avfan_page_load'),
+        )
         self._prepare_page(page)
         return page.url or target_url
 

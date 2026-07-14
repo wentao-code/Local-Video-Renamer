@@ -33,13 +33,16 @@ from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.video_list_detail_viewer import VideoListDetailWindow
 
 
-def _build_refresh_client(backend_client, minimum_timeout=90):
+def _build_refresh_client(backend_client, minimum_timeout=None):
     base_url = str(getattr(backend_client, 'base_url', '') or '').strip()
     if not base_url:
         return backend_client
+    timeout = None
+    if minimum_timeout is not None:
+        timeout = max(float(getattr(backend_client, 'timeout', 30) or 30), float(minimum_timeout))
     return BackendClient(
         base_url=base_url,
-        timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), minimum_timeout),
+        timeout=timeout,
     )
 
 

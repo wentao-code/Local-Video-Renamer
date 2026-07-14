@@ -205,6 +205,8 @@ BASE_GUI_TEXTS = {
     'detail.update_frequency_value': '{rate} 部/月',
     'data_center.analysis.actor_bucket_title': '\u6f14\u5458\u5217\u8868 - {metric_label} {bucket_label}',
     'data_center.analysis.actor_bucket_count': '\u5171 {count} \u4f4d\u6f14\u5458',
+    'data_center.analysis.code_prefix_bucket_title': '\u756a\u53f7\u5217\u8868 - {metric_label} {bucket_label}',
+    'data_center.analysis.code_prefix_bucket_count': '\u5171 {count} \u4e2a\u756a\u53f7',
     'enrichment.summary.count_default': '已完成',
     'enrichment.summary.pending_default': '待补全',
     'enrichment.summary.count': '{count_label} {enriched_count} / {total_count}',

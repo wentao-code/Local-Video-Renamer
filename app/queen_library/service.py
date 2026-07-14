@@ -5,6 +5,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 
+from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.project_paths import QUEEN_LIBRARY_CRAWL_LOG_FILE, QUEEN_LIBRARY_DB_FILE
 from app.queen_library.domain import (
     QUEEN_CRAWL_SOURCE_AUTO_GENERATED,
@@ -35,10 +36,14 @@ class QueenLibraryService:
 
     @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(self.db_path, timeout=60)
+        try:
+            timeout_seconds = get_operation_timeout_seconds('database_wait')
+        except Exception:
+            timeout_seconds = 60
+        conn = sqlite3.connect(self.db_path, timeout=timeout_seconds)
         conn.row_factory = sqlite3.Row
         conn.execute('PRAGMA journal_mode = WAL')
-        conn.execute('PRAGMA busy_timeout = 60000')
+        conn.execute(f'PRAGMA busy_timeout = {max(1, int(timeout_seconds * 1000))}')
         try:
             yield conn
         finally:

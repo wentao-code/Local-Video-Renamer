@@ -2,6 +2,7 @@ import re
 from contextlib import contextmanager
 from urllib.parse import quote, urljoin
 
+from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import get_scraper_browser_channel, get_scraper_locale
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
 from app.scraper.browser_window import minimize_browser_window_if_needed
@@ -111,10 +112,11 @@ class QueenSearchScraper:
         has_loaded_target_once = False
         while True:
             try:
+                load_timeout_ms = get_operation_timeout_milliseconds('queen_page_load')
                 if has_loaded_target_once:
-                    page.reload(wait_until='domcontentloaded', timeout=QUEEN_SEARCH_LOAD_TIMEOUT_MS)
+                    page.reload(wait_until='domcontentloaded', timeout=load_timeout_ms)
                 else:
-                    page.goto(target_url, wait_until='domcontentloaded', timeout=QUEEN_SEARCH_LOAD_TIMEOUT_MS)
+                    page.goto(target_url, wait_until='domcontentloaded', timeout=load_timeout_ms)
                     has_loaded_target_once = True
                 wait_for_page_ready(page)
             except Exception:

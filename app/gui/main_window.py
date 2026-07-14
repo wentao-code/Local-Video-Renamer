@@ -35,6 +35,7 @@ from app.core.local_video_labels import (
     NORMALIZED_STATUS,
     RENAME_REQUIRED_STATUS,
 )
+from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.combo_enrichment import get_combo_label
 from app.core.enrichment_sources import get_video_enrichment_source_label
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
@@ -67,6 +68,7 @@ from app.gui.task_queue import (
 )
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
+from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
 from app.gui.runtime_settings import load_runtime_mode, save_runtime_mode
 from app.gui.query_context import EntityReference, EntityType, QueryContext
 from app.gui.query_history import QueryHistoryStore
@@ -646,6 +648,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_task_queue = QPushButton('任务列表')
         self.btn_task_queue.clicked.connect(self.show_task_queue_viewer)
 
+        self.btn_timeout_settings = QPushButton('超时器')
+        self.btn_timeout_settings.clicked.connect(self.show_timeout_settings_viewer)
+
         self.btn_execute = QPushButton(tr('main.execute_rename'))
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
@@ -676,6 +681,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_status_sync)
         bottom_button_row.addWidget(self.btn_refresh_detail_snapshots)
         bottom_button_row.addWidget(self.btn_task_queue)
+        bottom_button_row.addWidget(self.btn_timeout_settings)
         bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
         bottom_button_row.addWidget(self.btn_force_exit)
@@ -1556,7 +1562,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         history = self._load_startup_refresh_history()
         startup_refresh_client = _build_refresh_client(
             self.backend_client,
-            minimum_timeout=SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+            minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
         )
         for task_key, title, task in VidNormApp._startup_refresh_task_specs(
             self,
@@ -2127,6 +2133,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_status_sync.setEnabled(not busy)
         self.btn_refresh_detail_snapshots.setEnabled(not busy)
         self.btn_task_queue.setEnabled(True)
+        self.btn_timeout_settings.setEnabled(True)
         self.btn_force_exit.setEnabled(True)
         self.table.setEnabled(not busy)
         self.setCursor(Qt.WaitCursor if busy else Qt.ArrowCursor)
@@ -2384,6 +2391,19 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         viewer.raise_()
         viewer.activateWindow()
 
+    def show_timeout_settings_viewer(self):
+        viewer = self.__dict__.get('timeout_settings_window')
+        if viewer is None:
+            viewer = TimeoutSettingsViewerWindow(self.backend_client, self)
+            self.timeout_settings_window = viewer
+            if hasattr(viewer, 'destroyed'):
+                viewer.destroyed.connect(
+                    lambda *_args: setattr(self, 'timeout_settings_window', None)
+                )
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
+
     def refresh_task_queue_indicator(self):
         queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
         self._update_task_queue_indicator(queue.is_all_done())
@@ -2476,7 +2496,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def _create_snapshot_refresh_worker(self):
         refresh_client = _build_refresh_client(
             self.backend_client,
-            minimum_timeout=SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+            minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
         )
         return SnapshotRefreshWorker(
             lambda progress_callback: self._run_snapshot_refresh_cycle(
@@ -2488,7 +2508,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def _run_snapshot_refresh_cycle(self, progress_callback=None, refresh_client=None):
         active_client = refresh_client or _build_refresh_client(
             self.backend_client,
-            minimum_timeout=SNAPSHOT_REFRESH_REQUEST_TIMEOUT_SECONDS,
+            minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
         )
         self.snapshot_refresh_running = True
         try:
