@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
+from app.core.app_logging import configure_logging, get_correlation_id, get_logger, new_correlation_id, new_run_id
 from app.core.project_paths import TASK_TRACE_LOG_DIR
 
 
@@ -15,9 +17,10 @@ class TaskTraceLogger:
         self.log_dir = Path(log_dir) if log_dir else TASK_TRACE_LOG_DIR
         self.keep_count = max(1, int(keep_count or 1))
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        configure_logging()
         self.run_started_at = datetime.now()
-        timestamp = self.run_started_at.strftime('%Y%m%d_%H%M%S')
-        self.run_id = f'{timestamp}_{self.task_kind}_{self.task_key}'
+        self.run_id = new_run_id(self.task_kind, self.task_key)
+        self.correlation_id = get_correlation_id() or new_correlation_id(self.task_kind)
         self.log_path = self.log_dir / f'{self.run_id}.log'
         self._lock = Lock()
         self._cleanup_old_logs()
@@ -27,6 +30,7 @@ class TaskTraceLogger:
             task_kind=self.task_kind,
             task_key=self.task_key,
             run_id=self.run_id,
+            correlation_id=self.correlation_id,
             log_path=str(self.log_path),
         )
 
@@ -34,6 +38,8 @@ class TaskTraceLogger:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         level_text = str(level or 'INFO').upper()
         detail_text = ''
+        fields.setdefault('run_id', self.run_id)
+        fields.setdefault('correlation_id', self.correlation_id)
         if fields:
             parts = [f'{key}={fields[key]}' for key in sorted(fields)]
             detail_text = ' | ' + ' | '.join(parts)
@@ -41,6 +47,11 @@ class TaskTraceLogger:
         with self._lock:
             with self.log_path.open('a', encoding='utf-8') as handle:
                 handle.write(line)
+        log_level = getattr(logging, level_text, logging.INFO)
+        get_logger('app.task').log(log_level, '%s%s', message, detail_text, extra={
+            'run_id': self.run_id,
+            'correlation_id': self.correlation_id,
+        })
 
     def log_emphasis_block(self, title, lines=None, level='NOTICE'):
         border = '=' * 18

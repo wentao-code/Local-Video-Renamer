@@ -38,6 +38,9 @@ class _BackendStub:
     def list_candidate_code_prefixes(self):
         return [{'prefix': 'BBB', 'video_count': 9}]
 
+    def refresh_candidate_library(self):
+        return {'actor_count': 1, 'code_prefix_count': 1}
+
     def admit_candidate_actor(self, actor_name):
         self.admitted_actors.append(actor_name)
         return 1
@@ -48,6 +51,23 @@ class _BackendStub:
 
 
 class CandidateLibraryWindowTest(unittest.TestCase):
+    def test_loading_and_refreshing_candidate_data_do_not_retry_on_failure(self):
+        backend = _BackendStub()
+        calls = []
+
+        def capture_async_task(self, task, success_handler, error_title=None, **kwargs):
+            calls.append(kwargs.get('max_attempts'))
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', capture_async_task):
+            window = CandidateLibraryWindow(backend)
+            try:
+                window.refresh_candidates()
+                self.assertEqual(calls, [1, 1])
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_main_window_opens_candidate_library_window(self):
         app = VidNormApp.__new__(VidNormApp)
         app.backend_client = object()

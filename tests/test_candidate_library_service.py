@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,87 @@ from app.services.library.candidate_library_service import CandidateLibraryServi
 
 
 class CandidateLibraryServiceTest(unittest.TestCase):
+    def test_listing_candidates_reads_persisted_records_without_rebuilding(self):
+        class FakeDatabase:
+            def list_candidate_actor_records(self, limit=50):
+                return [{'actor_name': '缓存演员', 'video_count': 7}]
+
+            def list_candidate_code_prefix_records(self, limit=50):
+                return [{'prefix': 'CACHE', 'video_count': 5}]
+
+            def list_actors(self):
+                raise AssertionError('读取候选列表不应重建候选库')
+
+        service = CandidateLibraryService(FakeDatabase())
+
+        self.assertEqual(service.list_actor_candidates(), [{'actor_name': '缓存演员', 'video_count': 7}])
+        self.assertEqual(service.list_code_prefix_candidates(), [{'prefix': 'CACHE', 'video_count': 5}])
+
+    def test_concurrent_refresh_reuses_the_in_progress_result(self):
+        class FakeDatabase:
+            def __init__(self):
+                self.build_started = threading.Event()
+                self.allow_build = threading.Event()
+                self.actor_build_count = 0
+                self.actor_records = []
+                self.code_prefix_records = []
+
+            def list_actors(self):
+                self.actor_build_count += 1
+                self.build_started.set()
+                self.allow_build.wait(timeout=2)
+                return []
+
+            def list_hidden_actors(self):
+                return set()
+
+            def list_all_code_prefix_movies(self):
+                return []
+
+            def list_code_prefix_summaries(self):
+                return []
+
+            def list_hidden_code_prefixes(self):
+                return set()
+
+            def list_all_actor_movies(self):
+                return []
+
+            def replace_candidate_actor_records(self, rows):
+                self.actor_records = list(rows)
+
+            def replace_candidate_code_prefix_records(self, rows):
+                self.code_prefix_records = list(rows)
+
+        database = FakeDatabase()
+        service = CandidateLibraryService(database)
+        results = []
+
+        first = threading.Thread(target=lambda: results.append(service.refresh_candidates()))
+        second = threading.Thread(target=lambda: results.append(service.refresh_candidates()))
+        first.start()
+        self.assertTrue(database.build_started.wait(timeout=1))
+        second.start()
+        database.allow_build.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        self.assertEqual(database.actor_build_count, 1)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sorted(result['refresh_reused'] for result in results), [False, True])
+
+    def test_failed_refresh_releases_the_refresh_guard(self):
+        class FakeDatabase:
+            def list_actors(self):
+                raise RuntimeError('数据库读取失败')
+
+        service = CandidateLibraryService(FakeDatabase())
+
+        with self.assertRaisesRegex(RuntimeError, '数据库读取失败'):
+            service.refresh_candidates()
+
+        self.assertFalse(service._refresh_running)
+
     def test_database_persists_actor_and_code_prefix_candidate_records_separately(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = VideoDatabase(Path(temp_dir) / 'candidates.db')
@@ -86,6 +168,36 @@ class CandidateLibraryServiceTest(unittest.TestCase):
 
 
 class BackendServiceCandidateLibraryTest(unittest.TestCase):
+    def test_list_candidate_actors_only_reads_cached_candidates(self):
+        class FakeCandidateService:
+            def list_actor_candidates(self, limit=50):
+                return [{'actor_name': '缓存演员', 'video_count': 7}]
+
+            def refresh_candidates(self):
+                raise AssertionError('读取候选列表不应触发刷新')
+
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service.candidate_library_service = FakeCandidateService()
+
+        self.assertEqual(
+            BackendService.list_candidate_actors(service),
+            {'candidates': [{'actor_name': '缓存演员', 'video_count': 7}]},
+        )
+
+    def test_refresh_candidate_library_delegates_to_candidate_service(self):
+        class FakeCandidateService:
+            def refresh_candidates(self):
+                return {'actor_count': 2, 'code_prefix_count': 3, 'refresh_reused': False}
+
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service.candidate_library_service = FakeCandidateService()
+
+        self.assertEqual(
+            BackendService.refresh_candidate_library(service),
+            {'actor_count': 2, 'code_prefix_count': 3, 'refresh_reused': False},
+        )
     def test_admit_candidate_actor_reuses_library_add_and_removes_candidate_record(self):
         class FakeDatabase:
             def __init__(self):

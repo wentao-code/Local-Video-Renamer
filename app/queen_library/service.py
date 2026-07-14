@@ -1,4 +1,3 @@
-import json
 import os
 import sqlite3
 from contextlib import contextmanager, nullcontext
@@ -6,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
+from app.core.app_logging import append_jsonl_log
 from app.core.project_paths import QUEEN_LIBRARY_CRAWL_LOG_FILE, QUEEN_LIBRARY_DB_FILE
 from app.queen_library.domain import (
     QUEEN_CRAWL_SOURCE_AUTO_GENERATED,
@@ -1117,13 +1117,7 @@ class QueenLibraryService:
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     def _append_crawl_log(self, payload):
-        try:
-            target = Path(self.crawl_log_path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open('a', encoding='utf-8') as handle:
-                handle.write(json.dumps(dict(payload or {}), ensure_ascii=False) + '\n')
-        except OSError:
-            return
+        append_jsonl_log(self.crawl_log_path, payload)
 
     @staticmethod
     def _empty_profile(queen_name):

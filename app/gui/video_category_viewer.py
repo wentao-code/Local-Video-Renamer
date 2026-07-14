@@ -432,12 +432,15 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
         self.last_refresh_duration_label = QLabel(tr('common.duration', value=tr('common.empty')))
         self.btn_tier_first = QPushButton(tr('video.category.tier_first'))
         self.btn_tier_first.setCheckable(True)
+        self.btn_tier_first.setStyleSheet('QPushButton:checked { background: #d9eaff; color: #075985; font-weight: 700; }')
         self.btn_tier_first.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_FIRST))
         self.btn_tier_second = QPushButton(tr('video.category.tier_second'))
         self.btn_tier_second.setCheckable(True)
+        self.btn_tier_second.setStyleSheet('QPushButton:checked { background: #d9eaff; color: #075985; font-weight: 700; }')
         self.btn_tier_second.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_SECOND))
         self.btn_tier_third = QPushButton(tr('video.category.tier_third'))
         self.btn_tier_third.setCheckable(True)
+        self.btn_tier_third.setStyleSheet('QPushButton:checked { background: #d9eaff; color: #075985; font-weight: 700; }')
         self.btn_tier_third.clicked.connect(lambda: self._set_active_tier(MANUAL_CATEGORY_TIER_THIRD))
         self._tier_buttons = {
             MANUAL_CATEGORY_TIER_FIRST: self.btn_tier_first,
@@ -822,7 +825,14 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
         self.btn_next_page.setEnabled((not busy) and self.model.can_go_next())
 
     def _update_sync_button_state(self):
-        self.btn_sync.setEnabled((not self.is_async_task_running()) and self.staged_count > 0)
+        busy = self.is_async_task_running()
+        self.btn_sync.setEnabled((not busy) and self.staged_count > 0)
+        if busy:
+            self.btn_sync.setToolTip('当前任务执行中，完成后可同步。')
+        elif self.staged_count <= 0:
+            self.btn_sync.setToolTip('暂无已暂存分类；先为视频选择分类并点击“暂存”。')
+        else:
+            self.btn_sync.setToolTip(f'将 {self.staged_count} 条已暂存分类同步到主库。')
 
     def _update_tier_button_state(self):
         busy = self.is_async_task_running()
@@ -830,15 +840,23 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
         for tier, button in self._tier_buttons.items():
             button.setChecked(tier == active_tier)
             button.setEnabled(not busy)
+            if tier == active_tier:
+                button.setToolTip(f'当前显示{button.text()}候选。')
+            else:
+                button.setToolTip(f'切换到{button.text()}候选。')
 
     def _update_batch_button_state(self, *_args):
         busy = self.is_async_task_running()
         has_rows = self.model.page_count() > 0
         has_selection = len(self.selected_codes()) > 0
         self.btn_select_all.setEnabled((not busy) and has_rows)
+        self.btn_select_all.setToolTip('全选当前页的视频。' if has_rows else '当前页没有可选择的视频。')
         self.btn_batch_single.setEnabled((not busy) and has_selection)
         self.btn_batch_co_star.setEnabled((not busy) and has_selection)
         self.btn_batch_collection.setEnabled((not busy) and has_selection)
+        batch_tooltip = '为选中行批量暂存分类。' if has_selection else '请选择表格行后再进行批量分类。'
+        for button in (self.btn_batch_single, self.btn_batch_co_star, self.btn_batch_collection):
+            button.setToolTip(batch_tooltip)
 
     def selected_codes(self):
         selection_model = self.table.selectionModel()

@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from app.gui.i18n import tr
 from app.gui.task_queue import TASK_CATEGORY_VIEW, get_gui_task_queue
+from app.core.app_logging import get_logger
 
 
 def enable_minimize_button(widget, detach_parent=True):
@@ -29,6 +30,7 @@ class BackendTaskWorker(QObject):
         try:
             result = self.task()
         except Exception as exc:
+            get_logger(__name__).exception('GUI 后台任务异常')
             self.failed.emit(str(exc))
             return
         self.finished.emit(result)
@@ -76,6 +78,7 @@ class AsyncTaskHostMixin:
         show_in_task_queue=True,
         task_category=TASK_CATEGORY_VIEW,
         task_kind='',
+        max_attempts=5,
     ):
         queue_task_title = self._build_async_task_title(
             error_title=error_title,
@@ -124,6 +127,7 @@ class AsyncTaskHostMixin:
             start_task,
             task_category=task_category,
             task_kind=task_kind,
+            max_attempts=max_attempts,
         )
         return True
 

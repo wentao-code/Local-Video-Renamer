@@ -57,6 +57,8 @@ class ComboEnrichmentService:
             normalized_combo_key,
             effective_limit,
             log_path=str(self.logger.log_path),
+            run_id=str(self.logger.run_id),
+            correlation_id=str(self.logger.correlation_id),
         )
         if batch_mode:
             self.combo_progress_service.set_message('组合批次计划运行中，子任务会按各自间隔循环执行。')

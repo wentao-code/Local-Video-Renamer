@@ -1,11 +1,20 @@
 import argparse
 import json
+from time import perf_counter
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from app.backend.service import BackendService
 from app.core.runtime_config import get_backend_host, get_backend_port
+from app.core.app_logging import (
+    configure_logging,
+    get_logger,
+    install_global_exception_hooks,
+    log_context,
+    log_http_access,
+    new_correlation_id,
+)
 
 
 def make_handler(service):
@@ -34,17 +43,36 @@ def make_handler(service):
             self._handle_request('POST')
 
         def _handle_request(self, method):
-            try:
-                parsed_url = urlparse(self.path)
-                body = self._read_json_body()
-                response = self._route(method, parsed_url, body)
-                self._send_json(response)
-            except FileNotFoundError as exc:
-                self._send_json({'error': str(exc)}, HTTPStatus.NOT_FOUND)
-            except ValueError as exc:
-                self._send_json({'error': str(exc)}, HTTPStatus.BAD_REQUEST)
-            except Exception as exc:
-                self._send_json({'error': str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            request_id = new_correlation_id('req')
+            started_at = perf_counter()
+            parsed_url = urlparse(self.path)
+            status = HTTPStatus.OK
+            with log_context(correlation_id=request_id):
+                try:
+                    body = self._read_json_body()
+                    response = self._route(method, parsed_url, body)
+                    self._send_json(response, status)
+                except FileNotFoundError as exc:
+                    status = HTTPStatus.NOT_FOUND
+                    get_logger(__name__).warning('后端请求资源不存在: %s', exc)
+                    self._send_json({'error': str(exc), 'request_id': request_id}, status)
+                except ValueError as exc:
+                    status = HTTPStatus.BAD_REQUEST
+                    get_logger(__name__).warning('后端请求参数无效: %s', exc)
+                    self._send_json({'error': str(exc), 'request_id': request_id}, status)
+                except Exception as exc:
+                    status = HTTPStatus.INTERNAL_SERVER_ERROR
+                    get_logger(__name__).exception('后端请求异常')
+                    self._send_json({'error': str(exc), 'request_id': request_id}, status)
+                finally:
+                    log_http_access(
+                        method,
+                        parsed_url.path or '/',
+                        int(status),
+                        (perf_counter() - started_at) * 1000,
+                        request_id,
+                        client_address=self.client_address[0] if self.client_address else '',
+                    )
 
         def _route(self, method, parsed_url, body):
             path = parsed_url.path.rstrip('/') or '/'
@@ -179,6 +207,8 @@ def make_handler(service):
                     body.get('birthday', ''),
                     body.get('age', ''),
                 )
+            if method == 'POST' and path == '/candidate-library/refresh':
+                return service.refresh_candidate_library()
             if method == 'GET' and path == '/candidate-library/actors':
                 return service.list_candidate_actors()
             if method == 'POST' and path == '/candidate-library/actors/admit':
@@ -365,6 +395,8 @@ def make_handler(service):
 
 
 def run_server(host=None, port=None, instance_token=''):
+    configure_logging()
+    install_global_exception_hooks('backend')
     host = str(host or get_backend_host()).strip() or get_backend_host()
     port = int(port or get_backend_port())
     service = BackendService(instance_token=instance_token)

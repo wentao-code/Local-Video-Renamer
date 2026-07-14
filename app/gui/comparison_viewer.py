@@ -2,7 +2,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QDialog, QGridLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
-from app.gui.query_context import EntityReference, EntityType
+from app.gui.query_context import EntityType
 
 
 class ComparisonWindow(AsyncTaskHostMixin, QDialog):

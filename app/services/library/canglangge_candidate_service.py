@@ -7,7 +7,6 @@ from app.core.ladder_board import (
     LADDER_TIER_S,
 )
 from app.services.identity import split_actor_names
-from app.services.library.code_prefix_library import extract_code_prefix
 
 
 class CanglanggeCandidateService:

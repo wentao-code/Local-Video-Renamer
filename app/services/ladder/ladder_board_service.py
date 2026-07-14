@@ -1,13 +1,11 @@
 import re
 
 from app.core.ladder_board import (
-    LADDER_BOARD_CODE_PREFIX,
     LADDER_ENTITY_ACTOR,
     LADDER_ENTITY_CODE_PREFIX,
     get_ladder_board_config,
     ladder_tier_sort_key,
     normalize_ladder_medal_text,
-    normalize_ladder_board_key,
     normalize_ladder_tier,
     split_ladder_medals,
 )

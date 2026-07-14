@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStackedLayout,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -48,6 +49,7 @@ from app.gui.candidate_library_viewer import CandidateLibraryWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
+from app.gui.disguise_panel import NetworkAssistantDisguise
 from app.gui.data_center_analysis_viewer import _build_refresh_client
 from app.gui.comparison_viewer import ComparisonWindow
 from app.gui.db_viewer import DatabaseViewerWindow
@@ -71,7 +73,7 @@ from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
 from app.gui.runtime_settings import load_runtime_mode, save_runtime_mode
-from app.gui.query_context import EntityReference, EntityType, QueryContext
+from app.gui.query_context import EntityType, QueryContext
 from app.gui.query_history import QueryHistoryStore
 from app.gui.single_instance import SingleInstanceGuard
 from app.gui.unified_search_viewer import UnifiedSearchWindow
@@ -530,7 +532,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def init_ui(self):
         self.setWindowTitle(tr('main.title'))
         self.resize(1000, 700)
-        main_layout = QVBoxLayout()
+        self.normal_page = QWidget(self)
+        main_layout = QVBoxLayout(self.normal_page)
 
         top_layout = QHBoxLayout()
         self.path_input = QLineEdit()
@@ -664,6 +667,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_force_exit.clicked.connect(self.force_exit_application)
         self.btn_force_exit.setStyleSheet('QPushButton { color: #b42318; font-weight: 700; }')
 
+        self.btn_disguise = QPushButton('伪装模式')
+        self.btn_disguise.clicked.connect(self.enter_disguise_mode)
+
         top_button_row.addWidget(self.btn_unified_search)
         top_button_row.addWidget(self.btn_video_library)
         top_button_row.addWidget(self.btn_database)
@@ -690,6 +696,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_timeout_settings)
         bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
+        bottom_button_row.addWidget(self.btn_disguise)
         bottom_button_row.addWidget(self.btn_force_exit)
 
         button_layout.addLayout(top_button_row)
@@ -711,7 +718,21 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             main_layout.addWidget(combo_subtask_widget)
         main_layout.addWidget(self.batch_countdown_label)
         main_layout.addLayout(button_layout)
-        self.setLayout(main_layout)
+        self.disguise_page = NetworkAssistantDisguise(self)
+        self.disguise_page.exit_requested.connect(self.exit_disguise_mode)
+        self.page_stack = QStackedLayout()
+        self.page_stack.addWidget(self.normal_page)
+        self.page_stack.addWidget(self.disguise_page)
+        self.page_stack.setCurrentWidget(self.normal_page)
+        self.setLayout(self.page_stack)
+
+    def enter_disguise_mode(self):
+        self.page_stack.setCurrentWidget(self.disguise_page)
+        self.setWindowTitle('网络调试助手')
+
+    def exit_disguise_mode(self):
+        self.page_stack.setCurrentWidget(self.normal_page)
+        self.setWindowTitle(tr('main.title'))
 
     def browse_folder(self):
         folder_path = QFileDialog.getExistingDirectory(self, tr('common.select_folder'))
@@ -2796,6 +2817,10 @@ def _resolve_windows_message_font():
 
 
 def main():
+    from app.core.app_logging import configure_logging, install_global_exception_hooks
+
+    configure_logging()
+    install_global_exception_hooks('GUI')
     configure_qt_application()
     app = QApplication(sys.argv)
     app.setStyle('Fusion')

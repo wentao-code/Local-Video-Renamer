@@ -3,7 +3,6 @@ from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,

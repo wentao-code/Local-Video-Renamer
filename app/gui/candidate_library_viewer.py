@@ -1,4 +1,4 @@
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -46,7 +46,7 @@ class CandidateLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_code_prefixes.setCheckable(True)
         self.btn_code_prefixes.clicked.connect(lambda: self.set_mode(CANDIDATE_CODE_PREFIX_MODE))
         self.btn_refresh = QPushButton(tr('common.refresh'))
-        self.btn_refresh.clicked.connect(self.load_data)
+        self.btn_refresh.clicked.connect(self.refresh_candidates)
         self.summary_label = QLabel()
 
         toolbar.addWidget(self.btn_actors)
@@ -85,7 +85,18 @@ class CandidateLibraryWindow(AsyncTaskHostMixin, QDialog):
             task = self.backend_client.list_candidate_actors
         else:
             task = self.backend_client.list_candidate_code_prefixes
-        self.start_async_task(task, self._on_load_finished, tr('common.read_failed'))
+        self.start_async_task(task, self._on_load_finished, tr('common.read_failed'), max_attempts=1)
+
+    def refresh_candidates(self):
+        self.start_async_task(
+            self.backend_client.refresh_candidate_library,
+            self._on_refresh_finished,
+            tr('common.read_failed'),
+            max_attempts=1,
+        )
+
+    def _on_refresh_finished(self, _result):
+        QTimer.singleShot(50, self.load_data)
 
     def _on_load_finished(self, rows):
         self.rows = [dict(row or {}) for row in rows or []]

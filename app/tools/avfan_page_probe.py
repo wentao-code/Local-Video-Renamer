@@ -5,7 +5,6 @@ import re
 from app.scraper.avfan_code_prefix_scraper import AvfanCodePrefixScraper
 from app.scraper.avfan_actor_scraper import AvfanActorScraper
 from app.scraper.avfan_scraper import (
-    AVFAN_MOVIE_RE,
     AvfanScraper,
     accept_age_gate_if_needed,
     collect_search_results,

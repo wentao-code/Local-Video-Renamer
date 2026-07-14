@@ -2,9 +2,7 @@ import re
 
 from app.core.video_code import standardize_video_code
 from app.core.javtxt_video_state import (
-    build_javtxt_library_status,
     is_javtxt_eligible_movie,
-    summarize_javtxt_movies,
 )
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,

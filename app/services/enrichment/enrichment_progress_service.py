@@ -1,5 +1,6 @@
 from threading import Lock
 
+from app.core.app_logging import get_correlation_id, get_run_id
 
 class EnrichmentProgressService:
     def __init__(self):
@@ -17,6 +18,8 @@ class EnrichmentProgressService:
         source_key='',
         log_path='',
         task_kind='single',
+        run_id='',
+        correlation_id='',
     ):
         with self._lock:
             self._state = self._build_default_state()
@@ -32,6 +35,8 @@ class EnrichmentProgressService:
                     'message': str(message or ''),
                     'count_unit': str(count_unit or '项'),
                     'log_path': str(log_path or ''),
+                    'run_id': str(run_id or get_run_id() or ''),
+                    'correlation_id': str(correlation_id or get_correlation_id() or ''),
                 }
             )
 
@@ -98,4 +103,6 @@ class EnrichmentProgressService:
             'stopped': False,
             'count_unit': '项',
             'log_path': '',
+            'run_id': '',
+            'correlation_id': '',
         }

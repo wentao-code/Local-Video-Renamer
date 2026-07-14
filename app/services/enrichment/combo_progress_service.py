@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from threading import Lock
 
+from app.core.app_logging import get_correlation_id, get_run_id
 from app.core.combo_enrichment import get_combo_label, get_combo_tasks, normalize_combo_key
 
 
@@ -10,7 +11,7 @@ class ComboProgressService:
         self._lock = Lock()
         self._state = self._build_default_state()
 
-    def start(self, combo_key, limit, log_path=''):
+    def start(self, combo_key, limit, log_path='', run_id='', correlation_id=''):
         normalized_combo_key = normalize_combo_key(combo_key)
         combo_label = get_combo_label(normalized_combo_key)
         task_definitions = get_combo_tasks(normalized_combo_key)
@@ -26,6 +27,8 @@ class ComboProgressService:
                     'target_label': f'组合任务 / {combo_label}',
                     'message': '组合任务已启动，等待子任务加载候选项。',
                     'log_path': str(log_path or ''),
+                    'run_id': str(run_id or get_run_id() or ''),
+                    'correlation_id': str(correlation_id or get_correlation_id() or ''),
                     'subtasks': {
                         task_definition['task_key']: self._build_subtask_state(task_definition)
                         for task_definition in task_definitions
@@ -232,6 +235,8 @@ class ComboProgressService:
             'message': '',
             'stopped': False,
             'log_path': '',
+            'run_id': '',
+            'correlation_id': '',
             'subtasks': {},
         }
 

@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -122,6 +123,22 @@ class VideoCategoryViewerWindowTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_disabled_batch_and_sync_buttons_explain_their_requirements(self):
+        with (
+            patch('app.gui.video_category_viewer.BackendClient', _RefreshClientStub),
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task),
+        ):
+            window = VideoCategoryViewerWindow(_BackendClientStub())
+            try:
+                self.assertFalse(window.btn_sync.isEnabled())
+                self.assertIn('暂存', window.btn_sync.toolTip())
+                self.assertFalse(window.btn_batch_single.isEnabled())
+                self.assertIn('选择', window.btn_batch_single.toolTip())
+                self.assertIn('当前显示', window.btn_tier_first.toolTip())
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_deferred_startup_refresh_keeps_allow_deferred_close_flag(self):
         captured = []
 
@@ -198,6 +215,55 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             self.assertTrue(second['cache_hit'])
             self.assertEqual(second['refreshed_at'], '2026-07-07 11:10:00')
             self.assertEqual(second['videos'][0]['code'], 'IPX-001')
+
+    def test_snapshot_rebuilds_when_candidate_source_version_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_file = Path(temp_dir) / 'video_category_snapshot.json'
+            service = self._build_service(snapshot_file)
+            source_versions = iter(['db-v1', 'db-v2', 'db-v2'])
+            service._current_video_category_source_version = lambda: next(source_versions)
+            calls = []
+            service.list_videos_requiring_manual_category = lambda: calls.append(True) or {
+                'videos': [],
+                'staged_count': 0,
+            }
+
+            BackendService.list_videos_requiring_manual_category_snapshot(service)
+            result = BackendService.list_videos_requiring_manual_category_snapshot(service)
+
+            self.assertEqual(calls, [True, True])
+            self.assertFalse(result['cache_hit'])
+
+    def test_snapshot_without_filter_fingerprint_is_not_loaded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_file = Path(temp_dir) / 'video_category_snapshot.json'
+            snapshot_file.write_text(
+                json.dumps(
+                    {
+                        'version': 1,
+                        'overview_snapshot': {
+                            'videos': [],
+                            'staged_count': 0,
+                            'source_version': 'db-v1',
+                            'refreshed_at': '2026-07-07 11:10:00',
+                        },
+                    }
+                ),
+                encoding='utf-8',
+            )
+            service = self._build_service(snapshot_file, filter_settings={'co_star_codes': ['ABC']})
+
+            BackendService._load_video_category_snapshot(service)
+
+            self.assertIsNone(service._video_category_overview_snapshot)
+
+    def test_stage_rejects_codes_outside_manual_category_candidates(self):
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service.list_videos_requiring_manual_category = lambda: {'videos': []}
+
+        with self.assertRaisesRegex(ValueError, '待人工分类'):
+            BackendService.stage_video_category(service, 'INVALID-001', '单体作品')
 
 
 class BackendClientVideoCategorySnapshotTest(unittest.TestCase):

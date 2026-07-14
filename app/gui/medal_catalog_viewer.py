@@ -1,4 +1,3 @@
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -18,7 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
+from app.core.ladder_board import normalize_ladder_medal_text
 from app.core.medal_types import MEDAL_TYPE_ORDER, medal_type_label, normalize_medal_type, sort_medal_rows
 from app.gui.backend_task_worker import AsyncTaskHostMixin, enable_minimize_button
 

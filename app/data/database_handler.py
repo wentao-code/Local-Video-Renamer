@@ -33,7 +33,6 @@ from app.core.enrichment_sources import (
     SUPPLEMENT_TASK_SOURCE,
     build_library_enrichment_status_text,
     build_video_enrichment_status_text,
-    is_effective_video_pending_status,
     normalize_source_enrichment_status,
     normalize_video_enrichment_source,
 )
@@ -59,7 +58,7 @@ from app.core.actor_profile_display import (
     normalize_actor_birthday_for_display,
     normalize_actor_birthday_for_storage,
 )
-from app.core.second_source_actor_text import is_unpublished_actor_text, normalize_second_source_actor_text
+from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
 from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, get_filter_keywords, matches_filter_keywords
 from app.core.video_filter_settings import load_video_filter_settings

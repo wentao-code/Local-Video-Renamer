@@ -1,27 +1,84 @@
+from threading import Condition
+from time import perf_counter
+
+from app.core.app_logging import get_logger
 from app.services.identity import is_ignored_actor_name, split_actor_names
 from app.services.library.code_prefix_library import extract_code_prefix
+
+
+LOGGER = get_logger(__name__)
 
 
 class CandidateLibraryService:
     def __init__(self, database):
         self.database = database
+        self._refresh_condition = Condition()
+        self._refresh_running = False
+        self._last_refresh_result = None
+        self._last_refresh_error = ''
 
     def refresh_candidates(self):
-        actor_candidates = self._build_actor_candidates()
-        code_prefix_candidates = self._build_code_prefix_candidates()
-        self.database.replace_candidate_actor_records(actor_candidates)
-        self.database.replace_candidate_code_prefix_records(code_prefix_candidates)
-        return {
-            'actor_candidates': actor_candidates,
-            'code_prefix_candidates': code_prefix_candidates,
-        }
+        started_at = perf_counter()
+        with self._refresh_condition:
+            if self._refresh_running:
+                LOGGER.info('候选库刷新复用进行中的任务')
+                self._refresh_condition.wait_for(lambda: not self._refresh_running)
+                if self._last_refresh_result is None:
+                    raise RuntimeError(self._last_refresh_error or '候选库刷新未完成')
+                result = {
+                    **dict(self._last_refresh_result),
+                    'refresh_reused': True,
+                    'lock_wait_ms': round((perf_counter() - started_at) * 1000, 3),
+                }
+                LOGGER.info(
+                    '候选库刷新复用完成 duration_ms=%s lock_wait_ms=%s',
+                    result['duration_ms'],
+                    result['lock_wait_ms'],
+                )
+                return result
+            self._refresh_running = True
+
+        LOGGER.info('候选库刷新开始')
+        try:
+            actor_candidates = self._build_actor_candidates()
+            code_prefix_candidates = self._build_code_prefix_candidates()
+            self.database.replace_candidate_actor_records(actor_candidates)
+            self.database.replace_candidate_code_prefix_records(code_prefix_candidates)
+            result = {
+                'actor_candidates': actor_candidates,
+                'code_prefix_candidates': code_prefix_candidates,
+                'actor_count': len(actor_candidates),
+                'code_prefix_count': len(code_prefix_candidates),
+                'refresh_reused': False,
+                'lock_wait_ms': 0,
+                'duration_ms': round((perf_counter() - started_at) * 1000, 3),
+            }
+            with self._refresh_condition:
+                self._last_refresh_result = dict(result)
+                self._last_refresh_error = ''
+            LOGGER.info(
+                '候选库刷新完成 actor_count=%s code_prefix_count=%s duration_ms=%s lock_wait_ms=%s',
+                result['actor_count'],
+                result['code_prefix_count'],
+                result['duration_ms'],
+                result['lock_wait_ms'],
+            )
+            return result
+        except Exception as exc:
+            with self._refresh_condition:
+                self._last_refresh_result = None
+                self._last_refresh_error = str(exc)
+            LOGGER.exception('候选库刷新失败')
+            raise
+        finally:
+            with self._refresh_condition:
+                self._refresh_running = False
+                self._refresh_condition.notify_all()
 
     def list_actor_candidates(self, limit=50):
-        self.refresh_candidates()
         return self.database.list_candidate_actor_records(limit=limit)
 
     def list_code_prefix_candidates(self, limit=50):
-        self.refresh_candidates()
         return self.database.list_candidate_code_prefix_records(limit=limit)
 
     def _build_actor_candidates(self):

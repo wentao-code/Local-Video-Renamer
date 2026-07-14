@@ -368,7 +368,9 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 LOGGER.exception('打开演员详情失败: %s', actor_name)
                 QMessageBox.critical(self, tr('common.operation_failed'), str(exc))
             return
-        from app.gui.actor_detail_viewer import ActorDetailViewerWindow as DetailWindow
+        DetailWindow = ActorDetailViewerWindow
+        if DetailWindow is None:
+            from app.gui.actor_detail_viewer import ActorDetailViewerWindow as DetailWindow
 
         viewer = DetailWindow(self.backend_client, actor_name, self)
         viewer.exec_()

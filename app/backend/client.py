@@ -387,6 +387,10 @@ class BackendClient:
         timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
         return self._get('/candidate-library/actors', timeout=timeout).get('candidates', [])
 
+    def refresh_candidate_library(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._post('/candidate-library/refresh', timeout=timeout)
+
     def admit_candidate_actor(self, actor_name):
         return self._post('/candidate-library/actors/admit', {'actor_name': actor_name}).get('created_count', 0)
 

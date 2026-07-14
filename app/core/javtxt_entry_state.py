@@ -1,8 +1,6 @@
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
-    NO_SEARCH_RESULTS_STATUS,
-    NO_VIDEO_DETAIL_STATUS,
     UNENRICHED_STATUS,
     is_no_result_status,
 )

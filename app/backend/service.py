@@ -8,6 +8,7 @@ from time import perf_counter
 from urllib.parse import quote, unquote
 
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
+from app.core.app_logging import append_jsonl_log, bind_log_context, reset_log_context
 from app.core.operation_timeout_settings import (
     list_operation_timeout_settings,
     reset_operation_timeout_overrides,
@@ -585,7 +586,11 @@ class BackendService:
         self._refresh_video_category_snapshot_filter_state()
         with self._snapshot_guard():
             snapshot = getattr(self, '_video_category_overview_snapshot', None)
-            if snapshot is not None and not force_refresh:
+            if (
+                snapshot is not None
+                and not force_refresh
+                and self._is_video_category_snapshot_current(snapshot)
+            ):
                 return {
                     **self._clone_video_category_snapshot(snapshot),
                     'cache_hit': True,
@@ -597,6 +602,7 @@ class BackendService:
         snapshot = self._build_snapshot_payload(
             videos=[dict(row or {}) for row in (overview or {}).get('videos', []) or []],
             staged_count=int((overview or {}).get('staged_count', 0) or 0),
+            source_version=self._current_video_category_source_version(),
             refresh_duration_ms=refresh_duration_ms,
         )
         with self._snapshot_guard():
@@ -615,12 +621,14 @@ class BackendService:
 
     def stage_video_category(self, code, category):
         self.ensure_database_loaded()
+        self._validate_manual_category_staging_entries([{'code': code}])
         result = self.db.stage_video_category(code, category)
         self._invalidate_video_category_snapshot()
         return result
 
     def stage_video_categories(self, entries):
         self.ensure_database_loaded()
+        self._validate_manual_category_staging_entries(entries)
         result = self.db.stage_video_categories(entries)
         self._invalidate_video_category_snapshot()
         return result
@@ -793,6 +801,10 @@ class BackendService:
     def list_candidate_actors(self):
         self.ensure_database_loaded()
         return {'candidates': self.candidate_library_service.list_actor_candidates(limit=50)}
+
+    def refresh_candidate_library(self):
+        self.ensure_database_loaded()
+        return self.candidate_library_service.refresh_candidates()
 
     def admit_candidate_actor(self, actor_name):
         self.ensure_database_loaded()
@@ -1833,14 +1845,8 @@ class BackendService:
             'refresh_duration_text': str(refresh_duration_text or '').strip()
             or self._format_refresh_duration(int(refresh_duration_ms or 0)),
         }
-        try:
-            target_file = Path(log_file)
-            with self._snapshot_refresh_log_guard():
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-                with target_file.open('a', encoding='utf-8') as file_obj:
-                    file_obj.write(json.dumps(payload, ensure_ascii=False) + '\n')
-        except OSError:
-            return
+        with self._snapshot_refresh_log_guard():
+            append_jsonl_log(log_file, payload)
 
     def _load_code_prefix_snapshots(self):
         snapshot_file = getattr(self, '_code_prefix_snapshot_file', None)
@@ -1906,10 +1912,7 @@ class BackendService:
         if int(payload.get('version', 0) or 0) != 1:
             return
         persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
-        if (
-            persisted_fingerprint
-            and persisted_fingerprint != getattr(self, '_video_category_snapshot_filter_fingerprint', '')
-        ):
+        if persisted_fingerprint != getattr(self, '_video_category_snapshot_filter_fingerprint', ''):
             return
         self._video_category_overview_snapshot = self._normalize_video_category_snapshot(
             payload.get('overview_snapshot')
@@ -2126,6 +2129,49 @@ class BackendService:
         with self._snapshot_guard():
             self._video_category_overview_snapshot = None
             self._persist_video_category_snapshot()
+
+    def _validate_manual_category_staging_entries(self, entries):
+        requested_codes = {
+            str((entry or {}).get('code', '') or '').strip().upper()
+            for entry in (entries or [])
+            if isinstance(entry, dict)
+        }
+        requested_codes.discard('')
+        if not requested_codes:
+            return
+
+        overview = self.list_videos_requiring_manual_category()
+        candidate_codes = {
+            str((row or {}).get('code', '') or '').strip().upper()
+            for row in (overview or {}).get('videos', []) or []
+        }
+        unavailable_codes = sorted(requested_codes - candidate_codes)
+        if unavailable_codes:
+            raise ValueError(
+                f"视频不在待人工分类候选中: {', '.join(unavailable_codes)}"
+            )
+
+    def _current_video_category_source_version(self):
+        database_path = getattr(getattr(self, 'db', None), 'db_path', None)
+        if database_path is None:
+            return 'unavailable'
+
+        source_files = [Path(database_path)]
+        database_file = source_files[0]
+        source_files.append(database_file.with_name(f'{database_file.name}-wal'))
+        version_parts = []
+        for source_file in source_files:
+            try:
+                stat = source_file.stat()
+            except OSError:
+                version_parts.append(f'{source_file.name}:missing')
+            else:
+                version_parts.append(f'{source_file.name}:{stat.st_mtime_ns}:{stat.st_size}')
+        return '|'.join(version_parts)
+
+    def _is_video_category_snapshot_current(self, snapshot):
+        source_version = str((snapshot or {}).get('source_version', '') or '').strip()
+        return bool(source_version) and source_version == self._current_video_category_source_version()
 
     def _refresh_code_prefix_snapshot_filter_state(self):
         current_fingerprint = self._build_code_prefix_snapshot_filter_fingerprint(
@@ -2358,6 +2404,7 @@ class BackendService:
         return {
             'videos': [dict(row or {}) for row in current.get('videos', []) or []],
             'staged_count': int(current.get('staged_count', 0) or 0),
+            'source_version': str(current.get('source_version', '') or '').strip(),
             'refreshed_at': str(current.get('refreshed_at', '') or '').strip(),
             'refresh_duration_ms': int(current.get('refresh_duration_ms', 0) or 0),
             'refresh_duration_text': str(current.get('refresh_duration_text', '') or '').strip(),
@@ -2523,6 +2570,7 @@ class BackendService:
         return {
             'videos': [dict(row or {}) for row in videos],
             'staged_count': int(snapshot.get('staged_count', 0) or 0),
+            'source_version': str(snapshot.get('source_version', '') or '').strip(),
             'refreshed_at': refreshed_at,
             'refresh_duration_ms': refresh_duration_ms,
             'refresh_duration_text': refresh_duration_text or BackendService._format_refresh_duration(refresh_duration_ms),
@@ -2939,12 +2987,15 @@ class BackendService:
             self._build_single_task_label(target_type, source_key),
         )
         active_filter_settings = self.video_filter_service.load_settings()
+        context_tokens = bind_log_context(logger.run_id, logger.correlation_id)
         try:
             planned_items = self._pending_enrichment_plan_items_for_run(plan_id, plan_task_kind, limit)
             if str(plan_id or '').strip() and str(plan_task_kind or '').strip() and not planned_items:
                 result = self._empty_enrichment_plan_result(limit, target_type, source_key)
                 result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
                 result['log_path'] = str(logger.log_path)
+                result['run_id'] = logger.run_id
+                result['correlation_id'] = logger.correlation_id
                 return result
             effective_limit = len(planned_items) if planned_items else limit
             enrichment_service = LibraryEnrichmentService(
@@ -2966,6 +3017,8 @@ class BackendService:
             result = enrichment_service.run(target_type, effective_limit, source_key=source_key, batch_mode=batch_mode)
             result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
             result['log_path'] = str(logger.log_path)
+            result['run_id'] = logger.run_id
+            result['correlation_id'] = logger.correlation_id
 
             if (not target_type or target_type == VIDEO_LIBRARY_TARGET) and result.get('processed_count', 0) > 0:
                 self.actor_library_sync_service.sync_from_video_library()
@@ -2976,6 +3029,7 @@ class BackendService:
             logger.log('ERROR', '单任务补全异常结束', target_type=target_type or '', source_key=source_key or '')
             raise
         finally:
+            reset_log_context(context_tokens)
             self._end_enrichment_task()
 
     def enrich_combo(
@@ -2991,6 +3045,7 @@ class BackendService:
         combo_label = get_combo_label(normalized_combo_key)
         self._begin_enrichment_task('combo')
         logger = ComboTaskLogger(normalized_combo_key, combo_label)
+        context_tokens = bind_log_context(logger.run_id, logger.correlation_id)
         try:
             combo_service = ComboEnrichmentService(
                 self.db,
@@ -3007,11 +3062,14 @@ class BackendService:
                 batch_mode=batch_mode,
             )
             result['log_path'] = str(logger.log_path)
+            result['run_id'] = logger.run_id
+            result['correlation_id'] = logger.correlation_id
             return result
         except Exception:
             self.combo_progress.finish(message='组合任务异常结束。', stopped=True)
             raise
         finally:
+            reset_log_context(context_tokens)
             self._end_enrichment_task()
 
     def cancel_enrichment(self):

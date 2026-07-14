@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
+from PyQt5.QtWidgets import QComboBox, QHBoxLayout, QPushButton, QWidget
 
 from app.gui.i18n import tr
 from app.services.video import (

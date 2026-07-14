@@ -9,7 +9,6 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 from app.gui.backend_task_worker import enable_minimize_button

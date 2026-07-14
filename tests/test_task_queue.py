@@ -187,6 +187,22 @@ class GuiTaskQueueTest(unittest.TestCase):
         finally:
             host.deleteLater()
 
+    def test_start_async_task_forwards_max_attempts_to_queue_record(self):
+        host = _AsyncTaskHost()
+        try:
+            host.start_async_task(
+                lambda: {'ok': True},
+                host.results.append,
+                block_ui=False,
+                max_attempts=1,
+            )
+            _process_events()
+
+            records = self.queue.records()
+            self.assertEqual(records[0].max_attempts, 1)
+        finally:
+            host.deleteLater()
+
     def test_plan_progress_is_kept_on_queue_record_and_can_be_updated(self):
         record = self.queue.enqueue(
             '计划补全',
