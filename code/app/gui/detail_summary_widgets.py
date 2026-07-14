@@ -1,3 +1,5 @@
+from html import escape
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QGridLayout, QLabel, QWidget
 
@@ -62,6 +64,36 @@ def format_distribution_summary(rows, key_name, empty_text=None, items_per_line=
         for row in rows
     ]
     return _join_items_by_line(items, items_per_line, align_columns=align_columns)
+
+
+def format_distribution_table(
+    rows,
+    key_name,
+    empty_text=None,
+    columns=7,
+    highlight_key='',
+    highlight_color='#16a34a',
+):
+    if not rows:
+        return empty_text or tr('common.empty')
+
+    column_count = max(1, int(columns or 1))
+    table_rows = []
+    for start in range(0, len(rows), column_count):
+        row_cells = []
+        for row in rows[start:start + column_count]:
+            item_text = tr(
+                'detail.distribution_item',
+                name=row.get(key_name, tr('common.unknown')),
+                count=row.get('video_count', 0),
+            )
+            item_html = escape(str(item_text))
+            if highlight_key and str(row.get(highlight_key, '') or '').strip():
+                item_html = f'<font color="{escape(str(highlight_color), quote=True)}">{item_html}</font>'
+            row_cells.append(f'<td nowrap="nowrap">{item_html}</td>')
+        row_cells.extend('<td></td>' for _ in range(column_count - len(row_cells)))
+        table_rows.append(f'<tr>{"".join(row_cells)}</tr>')
+    return f'<table cellspacing="12" cellpadding="0">{"".join(table_rows)}</table>'
 
 
 def format_update_frequency_summary(stats):

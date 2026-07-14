@@ -125,6 +125,57 @@ def test_backup_is_not_due_until_five_days_after_last_success(tmp_path):
     assert service.is_due(datetime(2026, 7, 15, 3, tzinfo=timezone.utc))
 
 
+def test_manual_backup_runs_even_when_the_scheduled_backup_is_not_due(tmp_path):
+    source_dir = tmp_path / 'user_data'
+    source_dir.mkdir()
+    (source_dir / 'notes.txt').write_text('keep', encoding='utf-8')
+    config_path = tmp_path / 'quark_backup.json'
+    _write_config(config_path)
+    state_path = tmp_path / 'quark_backup_state.json'
+    state_path.write_text(
+        json.dumps({'last_success_at': '2026-07-14T03:00:00+00:00'}),
+        encoding='utf-8',
+    )
+    client = FakeQuarkClient()
+    service = QuarkBackupService(
+        config_path=config_path,
+        state_path=state_path,
+        source_dir=source_dir,
+        archive_dir=tmp_path / 'archives',
+        client_factory=lambda _cookie: client,
+        now_factory=lambda: datetime(2026, 7, 14, 4, tzinfo=timezone.utc),
+    )
+
+    result = service.run_now()
+
+    assert result['status'] == 'completed'
+    assert len(client.uploads) == 1
+
+
+def test_manual_backup_skips_when_another_backup_holds_the_lock(tmp_path):
+    source_dir = tmp_path / 'user_data'
+    source_dir.mkdir()
+    config_path = tmp_path / 'quark_backup.json'
+    _write_config(config_path)
+    lock_path = tmp_path / 'locks' / 'quark_backup.lock'
+    lock_path.parent.mkdir()
+    lock_path.write_text('running', encoding='utf-8')
+    client = FakeQuarkClient()
+    service = QuarkBackupService(
+        config_path=config_path,
+        state_path=tmp_path / 'quark_backup_state.json',
+        source_dir=source_dir,
+        archive_dir=tmp_path / 'archives',
+        lock_path=lock_path,
+        client_factory=lambda _cookie: client,
+    )
+
+    result = service.run_now()
+
+    assert result['status'] == 'running'
+    assert client.uploads == []
+
+
 def test_scheduled_task_runner_loads_from_the_scripts_directory(tmp_path):
     runner_path = Path(__file__).resolve().parents[1] / 'scripts' / 'run_quark_backup.py'
 

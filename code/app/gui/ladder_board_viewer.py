@@ -13,7 +13,7 @@ from app.core.ladder_board import (
     LADDER_BOARD_CODE_PREFIX,
     LADDER_ENTITY_ACTOR,
     LADDER_VIEW_CANDIDATES,
-    LADDER_VIEW_SELECTED,
+    LADDER_VISIBLE_TIERS,
 )
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
@@ -64,12 +64,16 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         self.btn_candidates = QPushButton(tr('ladder.view_candidates'))
         self.btn_candidates.setCheckable(True)
         self.btn_candidates.clicked.connect(lambda: self.switch_view(LADDER_VIEW_CANDIDATES))
-        self.btn_selected = QPushButton(tr('ladder.view_selected'))
-        self.btn_selected.setCheckable(True)
-        self.btn_selected.clicked.connect(lambda: self.switch_view(LADDER_VIEW_SELECTED))
+        self.tier_buttons = {}
+        for tier in LADDER_VISIBLE_TIERS:
+            button = QPushButton(tr('ladder.view_tier', tier=tier))
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, value=tier: self.switch_view(value))
+            self.tier_buttons[tier] = button
         self.summary_label = QLabel('')
         view_toggle_layout.addWidget(self.btn_candidates)
-        view_toggle_layout.addWidget(self.btn_selected)
+        for tier in LADDER_VISIBLE_TIERS:
+            view_toggle_layout.addWidget(self.tier_buttons[tier])
         view_toggle_layout.addStretch()
         view_toggle_layout.addWidget(self.summary_label)
 
@@ -92,7 +96,7 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
                 self.btn_actor_board,
                 self.btn_code_prefix_board,
                 self.btn_candidates,
-                self.btn_selected,
+                *self.tier_buttons.values(),
                 self.btn_refresh,
             ]
         )
@@ -107,6 +111,9 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         self.load_board()
 
     def switch_view(self, view_key):
+        if view_key != LADDER_VIEW_CANDIDATES and view_key not in LADDER_VISIBLE_TIERS:
+            self._refresh_toggle_states()
+            return
         self.current_view_key = view_key
         self._refresh_toggle_states()
         self._apply_view()
@@ -123,9 +130,16 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         board_key = self.current_board_key
         self.start_async_task(
             lambda: self._reload_board_after(lambda: self.backend_client.admit_ladder_entry(board_key, entity_name, tier)),
-            self._on_board_loaded,
+            lambda payload: self._on_admit_completed(payload, tier),
             tr('common.save_failed'),
         )
+
+    def _on_admit_completed(self, payload, tier):
+        normalized_tier = str(tier or '').strip().upper()
+        self.current_view_key = (
+            normalized_tier if normalized_tier in LADDER_VISIBLE_TIERS else LADDER_VIEW_CANDIDATES
+        )
+        self._on_board_loaded(payload)
 
     def save_medal(self, entity_name, medal):
         board_key = self.current_board_key
@@ -189,20 +203,41 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         self.current_board_data = board
         self.global_medals = [dict(row or {}) for row in (payload.get('global_medals', []) or [])]
         self.candidate_panel.set_rows(board.get('candidates', []) or [])
-        self.selected_panel.set_rows(board.get('selected', []) or [])
         self.selected_panel.set_global_medals(self.global_medals)
         self._update_summary()
         self._apply_view()
         self._refresh_toggle_states()
 
     def _apply_view(self):
-        self.stacked_widget.setCurrentIndex(0 if self.current_view_key == LADDER_VIEW_CANDIDATES else 1)
+        if self.current_view_key == LADDER_VIEW_CANDIDATES:
+            self.selected_panel.set_rows(self._selected_rows_for_tier(LADDER_VISIBLE_TIERS[0]))
+            self.stacked_widget.setCurrentIndex(0)
+            return
+        self.selected_panel.set_rows(self._selected_rows_for_tier(self.current_view_key))
+        self.stacked_widget.setCurrentIndex(1)
+
+    def _selected_rows_for_tier(self, tier):
+        normalized_tier = str(tier or '').strip().upper()
+        if normalized_tier not in LADDER_VISIBLE_TIERS:
+            return []
+        return [
+            row
+            for row in self._visible_selected_rows()
+            if str((row or {}).get('tier', '') or '').strip().upper() == normalized_tier
+        ]
+
+    def _visible_selected_rows(self):
+        return [
+            dict(row or {})
+            for row in ((self.current_board_data or {}).get('selected', []) or [])
+            if str((row or {}).get('tier', '') or '').strip().upper() in LADDER_VISIBLE_TIERS
+        ]
 
     def _update_summary(self):
         board_key = str((self.current_board_data or {}).get('board_key', self.current_board_key) or self.current_board_key)
         board_label = tr('ladder.board_actor') if board_key == LADDER_BOARD_ACTOR else tr('ladder.board_code_prefix')
         candidate_count = len((self.current_board_data or {}).get('candidates', []) or [])
-        selected_count = len((self.current_board_data or {}).get('selected', []) or [])
+        selected_count = len(self._visible_selected_rows())
         self.summary_label.setText(
             tr(
                 'ladder.summary',
@@ -216,7 +251,8 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
         self.btn_actor_board.setChecked(self.current_board_key == LADDER_BOARD_ACTOR)
         self.btn_code_prefix_board.setChecked(self.current_board_key == LADDER_BOARD_CODE_PREFIX)
         self.btn_candidates.setChecked(self.current_view_key == LADDER_VIEW_CANDIDATES)
-        self.btn_selected.setChecked(self.current_view_key == LADDER_VIEW_SELECTED)
+        for tier, button in self.tier_buttons.items():
+            button.setChecked(self.current_view_key == tier)
 
     def closeEvent(self, event):
         if self.block_close_while_async_running(event):

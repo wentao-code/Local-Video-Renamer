@@ -1,4 +1,9 @@
-from app.core.ladder_board import LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_CODE_PREFIX
+from app.core.ladder_board import (
+    LADDER_BOARD_ACTOR,
+    LADDER_BOARD_CODE_PREFIX,
+    LADDER_ENTITY_ACTOR,
+    LADDER_ENTITY_CODE_PREFIX,
+)
 from app.core.javtxt_video_state import (
     build_javtxt_library_status,
     is_javtxt_eligible_movie,
@@ -151,7 +156,27 @@ class CodePrefixDetailLibrary:
                 grouped[normalized] = grouped.get(normalized, 0) + 1
 
         ordered = sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
-        return [{'name': name, 'video_count': count} for name, count in ordered[:14]]
+        ladder_tiers = self._load_actor_ladder_tiers()
+        return [
+            {
+                'name': name,
+                'video_count': count,
+                'ladder_tier': ladder_tiers.get(name, ''),
+            }
+            for name, count in ordered[:14]
+        ]
+
+    def _load_actor_ladder_tiers(self):
+        if not hasattr(self.database, 'list_ladder_entries'):
+            return {}
+        entries = self.database.list_ladder_entries(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR)
+        return {
+            str((entry or {}).get('entity_name', '') or '').strip():
+            str((entry or {}).get('tier', '') or '').strip().upper()
+            for entry in entries or []
+            if str((entry or {}).get('entity_name', '') or '').strip()
+            and str((entry or {}).get('tier', '') or '').strip()
+        }
 
     @staticmethod
     def _is_eligible_movie(movie):

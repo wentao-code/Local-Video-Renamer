@@ -26,6 +26,12 @@ Use a different time when needed:
 
 The registered Windows task is the only automatic trigger, so backups occur at the fixed configured time even when the desktop application is closed.
 
+## Manual Upload
+
+The main application's third action row contains an `上传备份` button. It immediately starts one backup and ignores the five-day interval. The upload runs in the task queue without blocking the interface. It uses the same dedicated remote folder and retention rule as the scheduled task.
+
+Only one backup can run at a time. If the scheduled task is already uploading, the manual action reports that a backup is in progress and does not retry automatically.
+
 ## Restore
 
 1. Download the newest `local_video_renamer_user_data_*.zip` from the dedicated Quark Pan folder.

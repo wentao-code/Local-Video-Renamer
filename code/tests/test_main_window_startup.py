@@ -26,6 +26,34 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_upload_quark_backup_enqueues_a_single_attempt_maintenance_task(self):
+        queued = []
+
+        class FakeButton:
+            def __init__(self):
+                self.enabled_values = []
+
+            def setEnabled(self, enabled):
+                self.enabled_values.append(enabled)
+
+        button = FakeButton()
+        stub = SimpleNamespace(
+            btn_upload_quark_backup=button,
+            quark_backup_queued=False,
+            _on_manual_quark_backup_finished=lambda _result: None,
+            _on_manual_quark_backup_failed=lambda _message: None,
+            _cleanup_manual_quark_backup=lambda: None,
+            _start_queued_gui_runner=lambda *args, **kwargs: queued.append((args, kwargs)),
+        )
+
+        self.assertTrue(main_window.VidNormApp.upload_quark_backup(stub))
+
+        self.assertEqual(button.enabled_values, [False])
+        self.assertTrue(stub.quark_backup_queued)
+        self.assertEqual(queued[0][0][0], '上传夸克备份')
+        self.assertEqual(queued[0][1]['task_category'], main_window.TASK_CATEGORY_MAINTENANCE)
+        self.assertEqual(queued[0][1]['max_attempts'], 1)
+
     def test_actor_detail_window_factory_resolves_detail_viewer(self):
         app = main_window.VidNormApp.__new__(main_window.VidNormApp)
         app.backend_client = object()

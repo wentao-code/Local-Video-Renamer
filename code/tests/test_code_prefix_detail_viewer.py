@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QApplication, QWidget
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -144,6 +145,25 @@ class CodePrefixDetailViewerWindowTest(unittest.TestCase):
                 self.assertEqual(window.prefix, 'ADN')
                 self.assertEqual(window.summary_grid.value_labels['prefix'].text(), original_prefix_text)
                 self.assertEqual(window.last_refreshed_label.text(), original_refreshed_text)
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
+    def test_apply_query_context_switches_to_the_selected_code_prefix(self):
+        parent = QWidget()
+        backend = _BackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = CodePrefixDetailViewerWindow(backend, 'ROE', parent)
+            try:
+                context = QueryContext(entity=EntityReference(EntityType.CODE_PREFIX, 'ADN'))
+
+                window.apply_query_context(context)
+
+                self.assertEqual(window.prefix, 'ADN')
+                self.assertEqual(window.summary_grid.value_labels['prefix'].text(), 'ADN')
+                self.assertIn('ADN', window.windowTitle())
             finally:
                 window.hide()
                 window.deleteLater()

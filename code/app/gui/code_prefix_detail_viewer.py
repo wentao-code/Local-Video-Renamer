@@ -17,7 +17,12 @@ from app.core.ladder_board import LADDER_BOARD_CODE_PREFIX, LADDER_TIERS
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.data_center_analysis_viewer import _build_refresh_client
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
-from app.gui.detail_summary_widgets import DetailSummaryGrid, format_distribution_summary, format_update_frequency_summary
+from app.gui.detail_summary_widgets import (
+    DetailSummaryGrid,
+    format_distribution_summary,
+    format_distribution_table,
+    format_update_frequency_summary,
+)
 from app.gui.i18n import tr
 from app.gui.video_category_batch_action_widget import VideoCategoryBatchActionWidget
 from app.gui.video_category_update_events import video_category_update_event_bus
@@ -195,6 +200,14 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
             ]
         )
 
+    def apply_query_context(self, context):
+        entity = getattr(context, 'entity', None)
+        if getattr(entity, 'entity_type', '') != 'code_prefix':
+            return
+        prefix = str(getattr(entity, 'entity_key', '') or '').strip().upper()
+        if prefix and prefix != self.prefix:
+            self._switch_prefix(prefix)
+
     def load_data(
         self,
         force_refresh=False,
@@ -328,7 +341,13 @@ class CodePrefixDetailViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDia
         )
         self.stats_grid.set_value(
             'top_actors',
-            format_distribution_summary(self.detail.get('top_actors', []), 'name', items_per_line=7),
+            format_distribution_table(
+                self.detail.get('top_actors', []),
+                'name',
+                columns=7,
+                highlight_key='ladder_tier',
+                highlight_color='#16a34a',
+            ),
         )
         self.stats_grid.set_value(
             'video_categories',

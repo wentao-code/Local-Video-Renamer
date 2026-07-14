@@ -54,6 +54,9 @@ class CodePrefixDetailLibraryTest(unittest.TestCase):
             def get_ladder_entry(self, board_key, entity_type, entity_name):
                 return {}
 
+            def list_ladder_entries(self, board_key, entity_type):
+                return [{'entity_name': 'Actor00', 'tier': 'S'}]
+
             def list_videos(self):
                 return []
 
@@ -84,6 +87,8 @@ class CodePrefixDetailLibraryTest(unittest.TestCase):
 
         self.assertEqual(len(detail['top_actors']), 14)
         self.assertEqual(detail['top_actors'][0]['name'], 'Actor00')
+        self.assertEqual(detail['top_actors'][0]['ladder_tier'], 'S')
+        self.assertEqual(detail['top_actors'][1]['ladder_tier'], '')
         self.assertEqual(detail['top_actors'][-1]['name'], 'Actor13')
 
 

@@ -65,6 +65,7 @@ from app.gui.task_queue import (
     RUN_MODE_TASK,
     RUN_MODE_VIEW,
     TASK_CATEGORY_ENRICHMENT,
+    TASK_CATEGORY_MAINTENANCE,
     TASK_CATEGORY_VIEW,
     TASK_STATUS_RUNNING,
     get_gui_task_queue,
@@ -81,6 +82,7 @@ from app.gui.window_coordinator import WindowCoordinator
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.gui.video_filter_dialog import VideoFilterDialog
 from app.services.system import NetworkGuardService
+from app.services.system.quark_backup_service import QuarkBackupService
 
 
 SNAPSHOT_REFRESH_STARTUP_DELAY_MS = 15000
@@ -255,6 +257,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.snapshot_refresh_started_at = 0.0
         self.snapshot_refresh_current_target = ''
         self.snapshot_refresh_last_completed_at = ''
+        self.quark_backup_queued = False
+        self.quark_backup_running = False
+        self.quark_backup_worker = None
+        self.quark_backup_task_runner = None
         self.snapshot_refresh_timer = QTimer(self)
         self.snapshot_refresh_timer.setInterval(3 * 60 * 60 * 1000)
         self.snapshot_refresh_timer.timeout.connect(self.schedule_snapshot_refresh_cycle)
@@ -590,6 +596,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         button_layout = QVBoxLayout()
         top_button_row = QHBoxLayout()
         bottom_button_row = QHBoxLayout()
+        third_button_row = QHBoxLayout()
 
         self.btn_video_library = QPushButton(tr('main.video_library'))
         self.btn_video_library.clicked.connect(self.show_video_library)
@@ -670,6 +677,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_disguise = QPushButton('伪装模式')
         self.btn_disguise.clicked.connect(self.enter_disguise_mode)
 
+        self.btn_upload_quark_backup = QPushButton('上传备份')
+        self.btn_upload_quark_backup.clicked.connect(self.upload_quark_backup)
+
         top_button_row.addWidget(self.btn_unified_search)
         top_button_row.addWidget(self.btn_video_library)
         top_button_row.addWidget(self.btn_database)
@@ -699,8 +709,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_disguise)
         bottom_button_row.addWidget(self.btn_force_exit)
 
+        third_button_row.addWidget(self.btn_upload_quark_backup)
+        third_button_row.addStretch()
+
         button_layout.addLayout(top_button_row)
         button_layout.addLayout(bottom_button_row)
+        button_layout.addLayout(third_button_row)
 
         status_bar_layout = QHBoxLayout()
         status_bar_layout.addWidget(self.status_label, 1)
@@ -1525,6 +1539,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         before_start_with_record=False,
         plan_id='',
         plan_progress=None,
+        max_attempts=5,
     ):
         def start_runner(record):
             if callable(before_start):
@@ -1578,6 +1593,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         enqueue_kwargs = {
             'task_category': task_category,
             'task_kind': task_kind,
+            'max_attempts': max(1, int(max_attempts or 1)),
         }
         if plan_id:
             enqueue_kwargs['plan_id'] = plan_id
@@ -2446,6 +2462,62 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.btn_task_queue.setStyleSheet('QPushButton { background-color: #16a34a; }')
             return
         self.btn_task_queue.setStyleSheet('')
+
+    def upload_quark_backup(self):
+        if getattr(self, 'quark_backup_queued', False) or getattr(self, 'quark_backup_running', False):
+            return False
+        self.quark_backup_queued = True
+        self.btn_upload_quark_backup.setEnabled(False)
+
+        def worker_factory():
+            return BackendTaskWorker(self._run_manual_quark_backup)
+
+        def before_start():
+            self.quark_backup_queued = False
+            self.quark_backup_running = True
+
+        def assign_runner(worker, runner):
+            self.quark_backup_worker = worker
+            self.quark_backup_task_runner = runner
+
+        self._start_queued_gui_runner(
+            '上传夸克备份',
+            worker_factory,
+            self._on_manual_quark_backup_finished,
+            self._on_manual_quark_backup_failed,
+            cleanup_handler=self._cleanup_manual_quark_backup,
+            source='主界面',
+            before_start=before_start,
+            assign_runner=assign_runner,
+            task_category=TASK_CATEGORY_MAINTENANCE,
+            task_kind='quark_backup',
+            max_attempts=1,
+        )
+        return True
+
+    @staticmethod
+    def _run_manual_quark_backup():
+        result = QuarkBackupService().run_now()
+        if result.get('status') != 'completed':
+            raise RuntimeError(str(result.get('error') or '夸克备份未完成'))
+        return result
+
+    def _on_manual_quark_backup_finished(self, result):
+        archive_name = str((result or {}).get('archive_name') or '')
+        self.status_label.setText('夸克备份已完成')
+        QMessageBox.information(self, '上传备份', f'夸克备份已完成：{archive_name}')
+
+    def _on_manual_quark_backup_failed(self, message):
+        self.status_label.setText('夸克备份失败')
+        QMessageBox.critical(self, '上传备份失败', str(message or '夸克备份未完成'))
+
+    def _cleanup_manual_quark_backup(self):
+        self.quark_backup_queued = False
+        self.quark_backup_running = False
+        self.quark_backup_worker = None
+        self.quark_backup_task_runner = None
+        if hasattr(self, 'btn_upload_quark_backup'):
+            self.btn_upload_quark_backup.setEnabled(True)
 
     def show_video_filter_dialog(self):
         dialog = VideoFilterDialog(self)

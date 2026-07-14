@@ -12,6 +12,7 @@ from app.core.app_logging import get_logger
 from app.core.project_paths import (
     QUARK_BACKUP_ARCHIVE_DIR,
     QUARK_BACKUP_CONFIG_FILE,
+    QUARK_BACKUP_LOCK_FILE,
     QUARK_BACKUP_STATE_FILE,
     USER_DATA_DIR,
 )
@@ -31,6 +32,7 @@ class QuarkBackupService:
         state_path=QUARK_BACKUP_STATE_FILE,
         source_dir=USER_DATA_DIR,
         archive_dir=QUARK_BACKUP_ARCHIVE_DIR,
+        lock_path=QUARK_BACKUP_LOCK_FILE,
         client_factory=None,
         now_factory=None,
     ):
@@ -38,6 +40,7 @@ class QuarkBackupService:
         self.state_path = Path(state_path)
         self.source_dir = Path(source_dir)
         self.archive_dir = Path(archive_dir)
+        self.lock_path = Path(lock_path)
         self.client_factory = client_factory or self._create_client
         self.now_factory = now_factory or (lambda: datetime.now(timezone.utc))
 
@@ -70,7 +73,38 @@ class QuarkBackupService:
             return {'status': 'not_due'}
         if not config['cookie']:
             return {'status': 'failed', 'error': '夸克备份已启用，但未配置 Cookie'}
-        return self._run_backup(config, now)
+        return self._run_with_lock(config, now)
+
+    def run_now(self):
+        config = self.load_config()
+        if not config['enabled']:
+            return {'status': 'disabled'}
+        if not config['cookie']:
+            return {'status': 'failed', 'error': '夸克备份已启用，但未配置 Cookie'}
+        return self._run_with_lock(config, self.now_factory())
+
+    def _run_with_lock(self, config, now):
+        if not self._acquire_lock():
+            return {'status': 'running', 'error': '已有夸克备份正在执行'}
+        try:
+            return self._run_backup(config, now)
+        finally:
+            self._release_lock()
+
+    def _acquire_lock(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with self.lock_path.open('x', encoding='utf-8') as stream:
+                stream.write(self.now_factory().isoformat())
+        except FileExistsError:
+            return False
+        return True
+
+    def _release_lock(self):
+        try:
+            self.lock_path.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning('无法清理夸克备份锁文件: %s', self.lock_path)
 
     def is_due(self, now=None, interval_days=DEFAULT_INTERVAL_DAYS):
         last_success_at = str(self._load_state().get('last_success_at', '') or '').strip()

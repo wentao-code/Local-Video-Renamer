@@ -6,7 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication
 
-from app.core.ladder_board import LADDER_BOARD_ACTOR
+from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_VIEW_CANDIDATES
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 from app.gui.ladder_board_viewer import LadderBoardWindow
@@ -52,7 +52,11 @@ class LadderBoardBackendStub:
                         'tier': 'S',
                         'medal': self.selected_medal,
                         'medals': [segment for segment in self.selected_medal.split('\n') if segment],
-                    }
+                    },
+                    {'entity_name': 'ActorB', 'display_name': 'ActorB', 'tier': 'A', 'medal': '', 'medals': []},
+                    {'entity_name': 'ActorC', 'display_name': 'ActorC', 'tier': 'B', 'medal': '', 'medals': []},
+                    {'entity_name': 'ActorD', 'display_name': 'ActorD', 'tier': 'C', 'medal': '', 'medals': []},
+                    {'entity_name': 'ActorHidden', 'display_name': 'ActorHidden', 'tier': 'D', 'medal': '', 'medals': []},
                 ],
             },
             'refreshed_at': '2026-06-21 21:00:00',
@@ -72,6 +76,29 @@ class LadderBoardBackendStub:
 
 
 class LadderBoardViewerTest(unittest.TestCase):
+    def test_tier_buttons_show_separate_selected_views_and_never_show_d(self):
+        backend = LadderBoardBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = LadderBoardWindow(backend)
+            try:
+                self.assertEqual(
+                    [window.btn_candidates.text(), *[window.tier_buttons[tier].text() for tier in ('S', 'A', 'B', 'C')]],
+                    [tr('ladder.view_candidates'), 'S级', 'A级', 'B级', 'C级'],
+                )
+                self.assertIn('入选者 4', window.summary_label.text())
+
+                expected_names = {'S': 'ActorA', 'A': 'ActorB', 'B': 'ActorC', 'C': 'ActorD'}
+                for tier, expected_name in expected_names.items():
+                    window.tier_buttons[tier].click()
+                    self.assertEqual(window.selected_panel.table.rowCount(), 1)
+                    self.assertEqual(window.selected_panel.table.item(0, 0).text(), expected_name)
+                    self.assertEqual(window.selected_panel.table.item(0, 1).text(), tier)
+                    self.assertNotEqual(window.selected_panel.table.item(0, 0).text(), 'ActorHidden')
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_uses_cached_snapshot_on_open_and_force_refresh_on_button_click(self):
         backend = LadderBoardBackendStub()
 
@@ -152,6 +179,39 @@ class LadderBoardViewerTest(unittest.TestCase):
 
                 self.assertEqual(backend.admit_calls, [(LADDER_BOARD_ACTOR, 'ActorA', 'S')])
                 self.assertEqual(backend.refresh_flags, [(LADDER_BOARD_ACTOR, False)])
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_successful_admit_jumps_to_the_matching_tier_view(self):
+        backend = LadderBoardBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = LadderBoardWindow(backend)
+            try:
+                window.admit_entry('ActorA', 'B')
+
+                self.assertEqual(window.current_view_key, 'B')
+                self.assertTrue(window.tier_buttons['B'].isChecked())
+                self.assertEqual(window.stacked_widget.currentIndex(), 1)
+                self.assertEqual(window.selected_panel.table.item(0, 1).text(), 'B')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_admitting_to_hidden_d_tier_returns_to_candidates(self):
+        backend = LadderBoardBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = LadderBoardWindow(backend)
+            try:
+                window.switch_view('S')
+
+                window.admit_entry('ActorA', 'D')
+
+                self.assertEqual(window.current_view_key, LADDER_VIEW_CANDIDATES)
+                self.assertTrue(window.btn_candidates.isChecked())
+                self.assertEqual(window.stacked_widget.currentIndex(), 0)
             finally:
                 window.hide()
                 window.deleteLater()
