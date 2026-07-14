@@ -184,11 +184,20 @@ class BackendClient:
     def list_global_medals(self):
         return self._get('/medals').get('medals', [])
 
-    def add_global_medal(self, name, description=''):
-        return self._post('/medals/add', {'name': name, 'description': description}).get('medal', {})
+    def add_global_medal(self, name, description='', medal_type='special'):
+        return self._post(
+            '/medals/add',
+            {'name': name, 'description': description, 'medal_type': medal_type},
+        ).get('medal', {})
+
+    def update_global_medal(self, name, description='', medal_type=None):
+        payload = {'name': name, 'description': description}
+        if medal_type is not None:
+            payload['medal_type'] = medal_type
+        return self._post('/medals/update', payload).get('medal', {})
 
     def update_global_medal_description(self, name, description=''):
-        return self._post('/medals/update', {'name': name, 'description': description}).get('medal', {})
+        return self.update_global_medal(name, description, medal_type=None)
 
     def delete_global_medal(self, name):
         return self._post('/medals/delete', {'name': name})
@@ -374,6 +383,13 @@ class BackendClient:
             {'actor_name': actor_name, 'birthday': birthday, 'age': age},
         ).get('created_count', 0)
 
+    def list_candidate_actors(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/candidate-library/actors', timeout=timeout).get('candidates', [])
+
+    def admit_candidate_actor(self, actor_name):
+        return self._post('/candidate-library/actors/admit', {'actor_name': actor_name}).get('created_count', 0)
+
     def list_canglangge_candidates(self):
         return self.list_canglangge_candidates_snapshot().get('candidates', [])
 
@@ -464,6 +480,13 @@ class BackendClient:
 
     def add_code_prefix(self, prefix):
         return self._post('/database/code-prefixes/add', {'prefix': prefix}).get('created_count', 0)
+
+    def list_candidate_code_prefixes(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/candidate-library/code-prefixes', timeout=timeout).get('candidates', [])
+
+    def admit_candidate_code_prefix(self, prefix):
+        return self._post('/candidate-library/code-prefixes/admit', {'prefix': prefix}).get('created_count', 0)
 
     def update_code_prefix_uncategorized_video_category(self, prefix, category):
         return self._post(

@@ -11,6 +11,7 @@ from app.core.ladder_board import (
     normalize_ladder_tier,
     split_ladder_medals,
 )
+from app.core.medal_types import sort_medal_names
 from app.services.identity import is_ignored_actor_name, split_actor_names
 from app.services.library import extract_code_prefix
 
@@ -30,6 +31,13 @@ class LadderBoardService:
 
     def _build_board_from_local_counts(self, config, local_counts):
         selected_entries = self.database.list_ladder_entries(config['board_key'], config['entity_type'])
+        list_global_medals = getattr(self.database, 'list_global_medals', None)
+        global_medals = list_global_medals() if callable(list_global_medals) else []
+        medal_types_by_name = {
+            str((row or {}).get('name', '') or '').strip(): str((row or {}).get('medal_type', '') or '').strip()
+            for row in global_medals
+            if str((row or {}).get('name', '') or '').strip()
+        }
         selected_names = {
             str((entry or {}).get('entity_name', '') or '').strip()
             for entry in selected_entries
@@ -51,14 +59,15 @@ class LadderBoardService:
             tier = str((entry or {}).get('tier', '') or '').strip().upper()
             if tier == 'D':
                 continue
-            medal_text = normalize_ladder_medal_text((entry or {}).get('medal', ''))
+            medals = sort_medal_names(split_ladder_medals((entry or {}).get('medal', '')), medal_types_by_name)
+            medal_text = normalize_ladder_medal_text('\n'.join(medals))
             selected.append(
                 {
                     'entity_name': entity_name,
                     'display_name': entity_name,
                     'tier': tier,
                     'medal': medal_text,
-                    'medals': split_ladder_medals(medal_text),
+                    'medals': medals,
                     'local_video_count': int(dict(local_counts).get(entity_name, 0) or 0),
                 }
             )

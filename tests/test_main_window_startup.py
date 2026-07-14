@@ -72,7 +72,10 @@ class MainWindowStartupTest(unittest.TestCase):
         app = _AppStub()
         replacement_font = QFont('Tahoma', 9)
 
-        with patch('app.gui.main_window._resolve_windows_message_font', return_value=replacement_font):
+        with patch('app.gui.main_window._resolve_bundled_application_font', return_value=None), patch(
+            'app.gui.main_window._resolve_windows_message_font',
+            return_value=replacement_font,
+        ):
             main_window.configure_application_font(app)
 
         self.assertIsNotNone(app.applied_font)
@@ -93,10 +96,38 @@ class MainWindowStartupTest(unittest.TestCase):
 
         app = _AppStub()
 
-        with patch('app.gui.main_window._resolve_windows_message_font', return_value=QFont('Tahoma', 9)):
+        with patch('app.gui.main_window._resolve_bundled_application_font', return_value=None), patch(
+            'app.gui.main_window._resolve_windows_message_font',
+            return_value=QFont('Tahoma', 9),
+        ):
             main_window.configure_application_font(app)
 
         self.assertIsNone(app.applied_font)
+
+    def test_configure_application_font_always_applies_bundled_ttf_when_available(self):
+        class _AppStub:
+            def __init__(self):
+                self._font = QFont('Microsoft YaHei UI', 10)
+                self.applied_font = None
+
+            def font(self):
+                return self._font
+
+            def setFont(self, font):
+                self.applied_font = QFont(font)
+
+        app = _AppStub()
+        bundled_font = QFont('FZKai-Z03', 10)
+
+        with patch(
+            'app.gui.main_window._resolve_bundled_application_font',
+            return_value=bundled_font,
+        ):
+            main_window.configure_application_font(app)
+
+        self.assertIsNotNone(app.applied_font)
+        self.assertEqual(app.applied_font.family(), 'FZKai-Z03')
+        self.assertEqual(app.applied_font.pointSize(), 10)
 
     def test_run_snapshot_refresh_cycle_refreshes_libraries_in_order(self):
         calls = []

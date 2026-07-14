@@ -92,7 +92,7 @@ class DataDashboardWindow(AsyncTaskHostMixin, QDialog):
                 button.setMinimumSize(170, 68)
                 button.setEnabled(bool(metric_data.get('clickable', False)))
                 button.setStyleSheet(
-                    'QPushButton { text-align: left; padding: 8px; }'
+                    'QPushButton { text-align: center; padding: 8px; }'
                     'QPushButton:disabled { color: #666666; }'
                 )
                 button.clicked.connect(

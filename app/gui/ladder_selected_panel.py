@@ -4,6 +4,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QHeaderView, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QWidget
 
 from app.core.ladder_board import split_ladder_medals
+from app.core.medal_types import sort_medal_names
 from app.gui.i18n import tr
 from app.gui.medal_catalog_viewer import MedalSelectionSidebar, build_medal_text
 
@@ -22,6 +23,7 @@ class LadderSelectedPanel(QWidget):
         self.rows = []
         self._medal_widgets = {}
         self.global_medals = []
+        self.medal_types_by_name = {}
         self.active_entity_name = ''
         self.init_ui()
 
@@ -62,7 +64,10 @@ class LadderSelectedPanel(QWidget):
             entity_name = str((row or {}).get('display_name', '') or '').strip()
             tier = str((row or {}).get('tier', '') or '').strip().upper()
             medal_text = str((row or {}).get('medal', '') or '').strip()
-            medals = list((row or {}).get('medals') or split_ladder_medals(medal_text))
+            medals = sort_medal_names(
+                (row or {}).get('medals') or split_ladder_medals(medal_text),
+                self.medal_types_by_name,
+            )
             self.table.insertRow(row_index)
 
             name_item = QTableWidgetItem(entity_name)
@@ -80,7 +85,13 @@ class LadderSelectedPanel(QWidget):
 
     def set_global_medals(self, medals):
         self.global_medals = [dict(row or {}) for row in (medals or [])]
+        self.medal_types_by_name = {
+            str((row or {}).get('name', '') or '').strip(): str((row or {}).get('medal_type', '') or '').strip()
+            for row in self.global_medals
+            if str((row or {}).get('name', '') or '').strip()
+        }
         self.medal_sidebar.set_medals(self.global_medals)
+        self.set_rows(self.rows)
 
     def _build_medal_widget(self, entity_name, medal_text, medals):
         label = QLabel()

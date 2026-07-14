@@ -95,9 +95,17 @@ def make_handler(service):
             if method == 'GET' and path == '/medals':
                 return service.list_global_medals()
             if method == 'POST' and path == '/medals/add':
-                return service.add_global_medal(body.get('name'), body.get('description', ''))
+                return service.add_global_medal(
+                    body.get('name'),
+                    body.get('description', ''),
+                    body.get('medal_type', 'special'),
+                )
             if method == 'POST' and path == '/medals/update':
-                return service.update_global_medal_description(body.get('name'), body.get('description', ''))
+                return service.update_global_medal(
+                    body.get('name'),
+                    body.get('description', ''),
+                    body.get('medal_type'),
+                )
             if method == 'POST' and path == '/medals/delete':
                 return service.delete_global_medal(body.get('name'))
             if method == 'GET' and path == '/database/videos/detail':
@@ -171,6 +179,10 @@ def make_handler(service):
                     body.get('birthday', ''),
                     body.get('age', ''),
                 )
+            if method == 'GET' and path == '/candidate-library/actors':
+                return service.list_candidate_actors()
+            if method == 'POST' and path == '/candidate-library/actors/admit':
+                return service.admit_candidate_actor(body.get('actor_name'))
             if method == 'GET' and path == '/canglangge/candidates':
                 return service.list_canglangge_candidates(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'POST' and path == '/canglangge/admit':
@@ -206,6 +218,10 @@ def make_handler(service):
                 )
             if method == 'POST' and path == '/database/code-prefixes/add':
                 return service.add_code_prefix(body.get('prefix'))
+            if method == 'GET' and path == '/candidate-library/code-prefixes':
+                return service.list_candidate_code_prefixes()
+            if method == 'POST' and path == '/candidate-library/code-prefixes/admit':
+                return service.admit_candidate_code_prefix(body.get('prefix'))
             if method == 'POST' and path == '/database/code-prefixes/detail/category':
                 return service.update_code_prefix_uncategorized_video_category(body.get('prefix'), body.get('category'))
             if method == 'POST' and path == '/database/code-prefixes/reset':

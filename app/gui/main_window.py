@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QFontDatabase
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
@@ -44,6 +44,7 @@ from app.core.runtime_config import get_backend_port, get_backend_timeout_second
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
 from app.gui.canglangge_viewer import CanglanggeViewerWindow
+from app.gui.candidate_library_viewer import CandidateLibraryWindow
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
 from app.gui.code_prefix_detail_viewer import CodePrefixDetailViewerWindow
 from app.gui.data_center_viewer import DataCenterWindow
@@ -86,6 +87,7 @@ SNAPSHOT_REFRESH_HISTORY_TASK_KEY = 'snapshot_refresh'
 SNAPSHOT_REFRESH_HISTORY_TASK_TITLE = '后台刷新快照'
 STARTUP_REFRESH_INTERVAL_HOURS = 88
 STARTUP_REFRESH_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'
+APPLICATION_FONT_FILE = PROJECT_ROOT / 'assets' / 'fonts' / '方正楷体_GBK.TTF'
 
 
 class EnrichmentWorker(QObject):
@@ -601,6 +603,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_view_code_prefixes = QPushButton(tr('main.code_prefix_library'))
         self.btn_view_code_prefixes.clicked.connect(self.show_code_prefix_viewer)
 
+        self.btn_candidate_library = QPushButton(tr('main.candidate_library'))
+        self.btn_candidate_library.clicked.connect(self.show_candidate_library_viewer)
+
         self.btn_canglangge = QPushButton(tr('main.canglangge'))
         self.btn_canglangge.clicked.connect(self.show_canglangge_viewer)
 
@@ -664,6 +669,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         top_button_row.addWidget(self.btn_database)
         top_button_row.addWidget(self.btn_view_actors)
         top_button_row.addWidget(self.btn_view_code_prefixes)
+        top_button_row.addWidget(self.btn_candidate_library)
         top_button_row.addWidget(self.btn_canglangge)
         top_button_row.addWidget(self.btn_tianji)
         top_button_row.addWidget(self.btn_ladder_board)
@@ -2282,6 +2288,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def show_code_prefix_viewer(self):
         self.window_coordinator.open_list(EntityType.CODE_PREFIX, QueryContext(source='main_code_prefix_library'))
 
+    def show_candidate_library_viewer(self):
+        viewer = CandidateLibraryWindow(backend_client=self.backend_client, parent=self)
+        viewer.exec_()
+
     def show_canglangge_viewer(self):
         viewer = CanglanggeViewerWindow(backend_client=self.backend_client, parent=self)
         viewer.exec_()
@@ -2673,6 +2683,11 @@ def configure_qt_application():
 
 def configure_application_font(app):
     current_font = app.font()
+    bundled_font = _resolve_bundled_application_font(current_font)
+    if bundled_font is not None:
+        app.setFont(bundled_font)
+        return
+
     if not _is_suspicious_application_font(current_font):
         return
 
@@ -2680,6 +2695,28 @@ def configure_application_font(app):
     if replacement_font is None:
         return
     app.setFont(replacement_font)
+
+
+def _resolve_bundled_application_font(current_font):
+    if not APPLICATION_FONT_FILE.is_file():
+        return None
+    try:
+        font_id = QFontDatabase.addApplicationFont(str(APPLICATION_FONT_FILE))
+        if font_id < 0:
+            return None
+        families = QFontDatabase.applicationFontFamilies(font_id)
+    except Exception:
+        return None
+
+    family = next((str(item).strip() for item in families if str(item).strip()), '')
+    if not family:
+        return None
+
+    application_font = QFont(current_font)
+    application_font.setFamily(family)
+    if int(application_font.pointSize() or 0) <= 7:
+        application_font.setPointSize(9)
+    return application_font
 
 
 def _is_suspicious_application_font(font):

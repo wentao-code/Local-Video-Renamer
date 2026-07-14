@@ -6,6 +6,7 @@ from app.core.ladder_board import (
     split_ladder_medals,
 )
 from app.core.video_ladder_tags import build_video_ladder_tag_text, build_video_ladder_tags
+from app.core.medal_types import sort_medal_names
 
 
 class VideoLadderTagService:
@@ -35,6 +36,13 @@ class VideoLadderTagService:
     def load_medal_maps(self):
         actor_medal_map = {}
         prefix_medal_map = {}
+        list_global_medals = getattr(self.database, 'list_global_medals', None)
+        global_medals = list_global_medals() if callable(list_global_medals) else []
+        medal_types_by_name = {
+            str((row or {}).get('name', '') or '').strip(): str((row or {}).get('medal_type', '') or '').strip()
+            for row in global_medals
+            if str((row or {}).get('name', '') or '').strip()
+        }
 
         entries = []
         entries.extend(self.database.list_ladder_entries(LADDER_BOARD_ACTOR, LADDER_ENTITY_ACTOR))
@@ -47,9 +55,9 @@ class VideoLadderTagService:
             if not entity_name or not medals:
                 continue
             if entity_type == LADDER_ENTITY_ACTOR:
-                actor_medal_map[entity_name] = medals
+                actor_medal_map[entity_name] = sort_medal_names(medals, medal_types_by_name)
             elif entity_type == LADDER_ENTITY_CODE_PREFIX:
-                prefix_medal_map[entity_name.upper()] = medals
+                prefix_medal_map[entity_name.upper()] = sort_medal_names(medals, medal_types_by_name)
 
         return {
             'actor_medal_map': actor_medal_map,

@@ -69,9 +69,11 @@ from app.core.ladder_board import (
     normalize_ladder_medal_text,
     split_ladder_medals,
 )
+from app.core.medal_types import normalize_medal_type, sort_medal_rows
 from app.core.runtime_config import get_avfan_base_url
 from app.data.repositories import (
     ActorRepositoryMixin,
+    CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
     LadderRepositoryMixin,
     MigrationMixin,
@@ -119,6 +121,7 @@ class VideoDatabase(
     MigrationMixin,
     PathRepositoryMixin,
     ActorRepositoryMixin,
+    CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
     LadderRepositoryMixin,
 ):
@@ -355,6 +358,7 @@ class VideoDatabase(
                 CREATE TABLE IF NOT EXISTS global_medals (
                     name TEXT PRIMARY KEY,
                     description TEXT DEFAULT '',
+                    medal_type TEXT NOT NULL DEFAULT 'special',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
@@ -473,6 +477,32 @@ class VideoDatabase(
                     name TEXT PRIMARY KEY
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS candidate_actor_records (
+                    actor_name TEXT PRIMARY KEY,
+                    video_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS candidate_code_prefix_records (
+                    prefix TEXT PRIMARY KEY,
+                    video_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            self._ensure_index(
+                cursor,
+                'idx_candidate_actor_records_video_count',
+                'candidate_actor_records',
+                'video_count DESC, actor_name',
+            )
+            self._ensure_index(
+                cursor,
+                'idx_candidate_code_prefix_records_video_count',
+                'candidate_code_prefix_records',
+                'video_count DESC, prefix',
+            )
             cursor.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS manual_category_staging (
@@ -597,8 +627,12 @@ class VideoDatabase(
             self._ensure_column(cursor, 'ladder_entries', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_column(cursor, 'ladder_entries', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_column(cursor, 'global_medals', 'description', 'TEXT DEFAULT ""')
+            self._ensure_column(cursor, 'global_medals', 'medal_type', "TEXT NOT NULL DEFAULT 'special'")
             self._ensure_column(cursor, 'global_medals', 'created_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
             self._ensure_column(cursor, 'global_medals', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP')
+            cursor.execute(
+                "UPDATE global_medals SET medal_type = 'special' WHERE TRIM(COALESCE(medal_type, '')) = ''"
+            )
             self._ensure_index(cursor, 'idx_processed_videos_manual_category', 'processed_videos', 'javtxt_enrichment_status, video_category, code')
             self._ensure_index(cursor, 'idx_processed_videos_release_date', 'processed_videos', 'release_date, code')
             self._ensure_index(
@@ -7683,6 +7717,7 @@ class VideoDatabase(
                 '''
                 SELECT name,
                        COALESCE(description, ''),
+                       COALESCE(medal_type, 'special'),
                        COALESCE(created_at, ''),
                        COALESCE(updated_at, '')
                 FROM global_medals
@@ -7691,19 +7726,21 @@ class VideoDatabase(
             )
             rows = cursor.fetchall()
 
-        return [
+        return sort_medal_rows([
             {
                 'name': row[0] or '',
                 'description': row[1] or '',
-                'created_at': row[2] or '',
-                'updated_at': row[3] or '',
+                'medal_type': normalize_medal_type(row[2]),
+                'created_at': row[3] or '',
+                'updated_at': row[4] or '',
             }
             for row in rows
-        ]
+        ])
 
-    def add_global_medal(self, name, description=''):
+    def add_global_medal(self, name, description='', medal_type='special'):
         normalized_name = str(name or '').strip()
         normalized_description = str(description or '').strip()
+        normalized_medal_type = normalize_medal_type(medal_type)
         if not normalized_name:
             raise ValueError('缺少勋章名称')
 
@@ -7714,18 +7751,19 @@ class VideoDatabase(
                 raise ValueError(f'勋章已存在: {normalized_name}')
             cursor.execute(
                 '''
-                INSERT INTO global_medals (name, description)
-                VALUES (?, ?)
+                INSERT INTO global_medals (name, description, medal_type)
+                VALUES (?, ?, ?)
                 ''',
-                (normalized_name, normalized_description),
+                (normalized_name, normalized_description, normalized_medal_type),
             )
             conn.commit()
 
         return self._get_global_medal(normalized_name)
 
-    def update_global_medal_description(self, name, description=''):
+    def update_global_medal(self, name, description='', medal_type=None):
         normalized_name = str(name or '').strip()
         normalized_description = str(description or '').strip()
+        normalized_medal_type = None if medal_type is None else normalize_medal_type(medal_type)
         if not normalized_name:
             raise ValueError('缺少勋章名称')
 
@@ -7734,16 +7772,19 @@ class VideoDatabase(
             cursor.execute(
                 '''
                 UPDATE global_medals
-                SET description = ?, updated_at = CURRENT_TIMESTAMP
+                SET description = ?, medal_type = COALESCE(?, medal_type), updated_at = CURRENT_TIMESTAMP
                 WHERE name = ?
                 ''',
-                (normalized_description, normalized_name),
+                (normalized_description, normalized_medal_type, normalized_name),
             )
             if cursor.rowcount <= 0:
                 raise ValueError(f'勋章不存在: {normalized_name}')
             conn.commit()
 
         return self._get_global_medal(normalized_name)
+
+    def update_global_medal_description(self, name, description=''):
+        return self.update_global_medal(name, description, medal_type=None)
 
     def delete_global_medal(self, name):
         normalized_name = str(name or '').strip()

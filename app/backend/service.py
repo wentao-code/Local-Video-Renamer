@@ -62,6 +62,7 @@ from app.services.identity import split_actor_names
 from app.services.ladder import LadderBoardService, VideoLadderTagService
 from app.services.library import (
     ActorLibrarySyncService,
+    CandidateLibraryService,
     CanglanggeCandidateService,
     CodePrefixLibrary,
     CodePrefixVideoCategoryBulkService,
@@ -101,6 +102,7 @@ class BackendService:
         self.code_prefix_library = CodePrefixLibrary(self.db, self.video_filter_service)
         self.code_prefix_video_category_bulk_service = CodePrefixVideoCategoryBulkService(self.db)
         self.canglangge_candidate_service = CanglanggeCandidateService(self.db)
+        self.candidate_library_service = CandidateLibraryService(self.db)
         self.data_center_service = DataCenterService(
             self.db,
             self.video_filter_service,
@@ -342,13 +344,16 @@ class BackendService:
         self.ensure_database_loaded()
         return {'medals': self.db.list_global_medals()}
 
-    def add_global_medal(self, name, description=''):
+    def add_global_medal(self, name, description='', medal_type='special'):
         self.ensure_database_loaded()
-        return {'medal': self.db.add_global_medal(name, description)}
+        return {'medal': self.db.add_global_medal(name, description, medal_type=medal_type)}
+
+    def update_global_medal(self, name, description='', medal_type=None):
+        self.ensure_database_loaded()
+        return {'medal': self.db.update_global_medal(name, description, medal_type=medal_type)}
 
     def update_global_medal_description(self, name, description=''):
-        self.ensure_database_loaded()
-        return {'medal': self.db.update_global_medal_description(name, description)}
+        return self.update_global_medal(name, description, medal_type=None)
 
     def delete_global_medal(self, name):
         self.ensure_database_loaded()
@@ -785,6 +790,18 @@ class BackendService:
         self._invalidate_actor_snapshots()
         return result
 
+    def list_candidate_actors(self):
+        self.ensure_database_loaded()
+        return {'candidates': self.candidate_library_service.list_actor_candidates(limit=50)}
+
+    def admit_candidate_actor(self, actor_name):
+        self.ensure_database_loaded()
+        normalized_name = str(actor_name or '').strip()
+        created_count = int(self.library_admin_service.add_actor(normalized_name, birthday='', age='') or 0)
+        self.db.delete_candidate_actor_record(normalized_name)
+        self._invalidate_actor_snapshots()
+        return {'created_count': created_count}
+
     def list_canglangge_candidates(self, force_refresh=False):
         self.ensure_database_loaded()
         return self._get_canglangge_snapshot(force_refresh=force_refresh)
@@ -969,6 +986,18 @@ class BackendService:
         result = {'created_count': self.library_admin_service.add_code_prefix(prefix)}
         self._invalidate_code_prefix_snapshots()
         return result
+
+    def list_candidate_code_prefixes(self):
+        self.ensure_database_loaded()
+        return {'candidates': self.candidate_library_service.list_code_prefix_candidates(limit=50)}
+
+    def admit_candidate_code_prefix(self, prefix):
+        self.ensure_database_loaded()
+        normalized_prefix = str(prefix or '').strip().upper()
+        created_count = int(self.library_admin_service.add_code_prefix(normalized_prefix) or 0)
+        self.db.delete_candidate_code_prefix_record(normalized_prefix)
+        self._invalidate_code_prefix_snapshots()
+        return {'created_count': created_count}
 
     def update_code_prefix_uncategorized_video_category(self, prefix, category):
         self.ensure_database_loaded()

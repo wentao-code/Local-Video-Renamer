@@ -2,6 +2,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QGridLayout,
     QHeaderView,
@@ -18,6 +19,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.core.ladder_board import normalize_ladder_medal_text, split_ladder_medals
+from app.core.medal_types import MEDAL_TYPE_ORDER, medal_type_label, normalize_medal_type, sort_medal_rows
 from app.gui.backend_task_worker import AsyncTaskHostMixin, enable_minimize_button
 
 
@@ -35,6 +37,15 @@ def merge_medal_names(existing_medals=None, new_medals=None):
 
 def build_medal_text(existing_medals=None, new_medals=None):
     return normalize_ladder_medal_text('\n'.join(merge_medal_names(existing_medals, new_medals)))
+
+
+def build_medal_type_combo(selected_type='special'):
+    combo = QComboBox()
+    normalized_type = normalize_medal_type(selected_type)
+    for medal_type in MEDAL_TYPE_ORDER:
+        combo.addItem(medal_type_label(medal_type), medal_type)
+    combo.setCurrentIndex(combo.findData(normalized_type))
+    return combo
 
 
 class MedalSelectionSidebar(QWidget):
@@ -83,7 +94,7 @@ class MedalSelectionSidebar(QWidget):
         self.scroll_area.setWidget(self.container)
 
     def set_medals(self, medals):
-        self.medals = [dict(row or {}) for row in (medals or [])]
+        self.medals = sort_medal_rows(medals)
         self.medal_names = []
         seen = set()
         for row in self.medals:
@@ -183,7 +194,7 @@ class GlobalMedalPickerDialog(QDialog):
     def __init__(self, medals, owned_medals=None, parent=None):
         super().__init__(parent)
         enable_minimize_button(self)
-        self.medals = [dict(row or {}) for row in (medals or [])]
+        self.medals = sort_medal_rows(medals)
         self.owned_medals = set(str(medal or '').strip() for medal in (owned_medals or []) if str(medal or '').strip())
         self.medal_checkboxes = {}
         self.setWindowTitle('选择勋章')
@@ -276,6 +287,10 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         self.description_input.setMinimumWidth(520)
         toolbar.addWidget(self.description_input, 1)
 
+        toolbar.addWidget(QLabel('类型'))
+        self.type_combo = build_medal_type_combo()
+        toolbar.addWidget(self.type_combo)
+
         self.btn_add = QPushButton('添加')
         self.btn_add.clicked.connect(self.handle_add_medal)
         toolbar.addWidget(self.btn_add)
@@ -289,17 +304,18 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         layout.addWidget(self.summary_label)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(['勋章', '描述', '操作'])
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(['勋章', '类型', '描述', '操作'])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
-        self.set_async_busy_widgets([self.name_input, self.description_input, self.btn_add, self.btn_refresh, self.table])
+        self.set_async_busy_widgets([self.name_input, self.description_input, self.type_combo, self.btn_add, self.btn_refresh, self.table])
 
     def load_medals(self):
         self.start_async_task(
@@ -311,11 +327,12 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
     def handle_add_medal(self):
         name = str(self.name_input.text() or '').strip()
         description = str(self.description_input.text() or '').strip()
+        medal_type = str(self.type_combo.currentData() or '').strip()
         if not name:
             QMessageBox.warning(self, '缺少勋章', '请先输入勋章名称。')
             return
         self.start_async_task(
-            lambda: self._reload_medals_after(lambda: self.backend_client.add_global_medal(name, description)),
+            lambda: self._reload_medals_after(lambda: self.backend_client.add_global_medal(name, description, medal_type)),
             self._on_medals_reloaded_after_add,
             '添加勋章失败',
         )
@@ -327,6 +344,7 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
     def _on_medals_reloaded_after_add(self, rows):
         self.name_input.clear()
         self.description_input.clear()
+        self.type_combo.setCurrentIndex(self.type_combo.findData('special'))
         self.name_input.setFocus()
         self._on_medals_loaded(rows)
 
@@ -339,20 +357,24 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         for row_index, row in enumerate(self.rows):
             name = str(row.get('name', '') or '').strip()
             description = str(row.get('description', '') or '').strip()
+            medal_type = normalize_medal_type(row.get('medal_type', ''))
 
             self.table.insertRow(row_index)
             self.table.setItem(row_index, 0, QTableWidgetItem(name))
 
+            type_editor = build_medal_type_combo(medal_type)
+            self.table.setCellWidget(row_index, 1, type_editor)
+
             description_editor = QLineEdit(description)
             description_editor.setMinimumWidth(320)
-            self.table.setCellWidget(row_index, 1, description_editor)
-            self.table.setCellWidget(row_index, 2, self._build_action_widget(row_index, name, description_editor))
+            self.table.setCellWidget(row_index, 2, description_editor)
+            self.table.setCellWidget(row_index, 3, self._build_action_widget(row_index, name, description_editor, type_editor))
 
         self.summary_label.setText(f'共 {len(self.rows)} 枚勋章')
         self.table.resizeColumnToContents(0)
-        self.table.resizeColumnToContents(2)
+        self.table.resizeColumnToContents(3)
 
-    def _build_action_widget(self, row_index, name, description_editor):
+    def _build_action_widget(self, row_index, name, description_editor, type_editor):
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -360,9 +382,10 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         save_button = QPushButton('保存')
         save_button.setObjectName(f'save_button_{row_index}')
         save_button.clicked.connect(
-            lambda _checked=False, medal_name=name, editor=description_editor: self.save_medal_description(
+            lambda _checked=False, medal_name=name, editor=description_editor, type_input=type_editor: self.save_medal(
                 medal_name,
                 editor.text(),
+                type_input.currentData(),
             )
         )
         delete_button = QPushButton('删除')
@@ -374,10 +397,10 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         layout.addWidget(delete_button)
         return widget
 
-    def save_medal_description(self, name, description):
+    def save_medal(self, name, description, medal_type):
         self.start_async_task(
             lambda: self._reload_medals_after(
-                lambda: self.backend_client.update_global_medal_description(name, description)
+                lambda: self.backend_client.update_global_medal(name, description, medal_type)
             ),
             self._on_medals_loaded,
             '保存勋章描述失败',

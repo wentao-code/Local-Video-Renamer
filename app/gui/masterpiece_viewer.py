@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 from app.backend.client import BackendClient
 from app.core.enrichment_status import ENRICHED_STATUS
 from app.core.ladder_board import split_ladder_medals
+from app.core.medal_types import sort_medal_names
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.deferred_reload_mixin import DeferredReloadMixin
@@ -58,6 +59,7 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         self.coordinator = coordinator
         self.rows = []
         self.global_medals = []
+        self.medal_types_by_name = {}
         self.active_medal_code = ''
         self._init_async_task_host()
         self.setWindowTitle('名作堂')
@@ -171,6 +173,11 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             medals = payload.get('global_medals', medals)
         self.rows = [dict(row or {}) for row in (rows or [])]
         self.global_medals = [dict(row or {}) for row in (medals or [])]
+        self.medal_types_by_name = {
+            str((row or {}).get('name', '') or '').strip(): str((row or {}).get('medal_type', '') or '').strip()
+            for row in self.global_medals
+            if str((row or {}).get('name', '') or '').strip()
+        }
         self.active_medal_code = ''
         self.medal_sidebar.set_medals(self.global_medals)
         self.medal_sidebar.end_edit()
@@ -183,7 +190,10 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
             title = str((row or {}).get('title', '') or '').strip()
             author = str((row or {}).get('author', '') or '').strip()
             medal_text = str((row or {}).get('medal', '') or '').strip()
-            medals = list((row or {}).get('medals', []) or split_ladder_medals(medal_text))
+            medals = sort_medal_names(
+                (row or {}).get('medals', []) or split_ladder_medals(medal_text),
+                self.medal_types_by_name,
+            )
 
             self.table.insertRow(row_index)
             code_item = QTableWidgetItem(code)

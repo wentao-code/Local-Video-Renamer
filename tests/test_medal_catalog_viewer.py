@@ -8,7 +8,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QCheckBox, QHeaderView
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
-from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, MedalCatalogWindow
+from app.gui.medal_catalog_viewer import GlobalMedalPickerDialog, MedalCatalogWindow, MedalSelectionSidebar
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -29,8 +29,8 @@ def _run_sync_async_task(
 class MedalCatalogBackendStub:
     def __init__(self):
         self.rows = [
-            {'name': 'Rookie', 'description': 'For debut-level standouts'},
-            {'name': 'Evergreen', 'description': 'For long-running elite entries'},
+            {'name': 'Rookie', 'description': 'For debut-level standouts', 'medal_type': 'age'},
+            {'name': 'Evergreen', 'description': 'For long-running elite entries', 'medal_type': 'special'},
         ]
         self.add_calls = []
         self.update_calls = []
@@ -39,17 +39,19 @@ class MedalCatalogBackendStub:
     def list_global_medals(self):
         return [dict(row) for row in self.rows]
 
-    def add_global_medal(self, name, description):
-        self.add_calls.append((name, description))
-        row = {'name': name, 'description': description}
+    def add_global_medal(self, name, description, medal_type='special'):
+        self.add_calls.append((name, description, medal_type))
+        row = {'name': name, 'description': description, 'medal_type': medal_type}
         self.rows.append(row)
         return dict(row)
 
-    def update_global_medal_description(self, name, description):
-        self.update_calls.append((name, description))
+    def update_global_medal(self, name, description, medal_type=None):
+        self.update_calls.append((name, description, medal_type))
         for row in self.rows:
             if row['name'] == name:
                 row['description'] = description
+                if medal_type is not None:
+                    row['medal_type'] = medal_type
                 return dict(row)
         raise AssertionError('missing medal')
 
@@ -69,23 +71,26 @@ class MedalCatalogViewerTest(unittest.TestCase):
                 self.assertEqual(window.table.rowCount(), 2)
                 self.assertEqual(window.table.item(0, 0).text(), 'Rookie')
                 self.assertEqual(
-                    window.table.horizontalHeader().sectionResizeMode(1),
+                    window.table.horizontalHeader().sectionResizeMode(2),
                     QHeaderView.Stretch,
                 )
                 self.assertGreaterEqual(window.description_input.minimumWidth(), 520)
 
                 window.name_input.setText('Legend')
                 window.description_input.setText('For all-time great entities')
+                window.type_combo.setCurrentIndex(window.type_combo.findData('body'))
                 window.handle_add_medal()
-                self.assertEqual(backend.add_calls, [('Legend', 'For all-time great entities')])
+                self.assertEqual(backend.add_calls, [('Legend', 'For all-time great entities', 'body')])
 
-                description_editor = window.table.cellWidget(0, 1)
+                description_editor = window.table.cellWidget(0, 2)
                 description_editor.setText('Updated rookie description')
-                save_button = window.table.cellWidget(0, 2).findChild(type(window.btn_add), 'save_button_0')
+                type_editor = window.table.cellWidget(0, 1)
+                type_editor.setCurrentIndex(type_editor.findData('skin_tone'))
+                save_button = window.table.cellWidget(0, 3).findChild(type(window.btn_add), 'save_button_0')
                 save_button.click()
-                self.assertEqual(backend.update_calls, [('Rookie', 'Updated rookie description')])
+                self.assertEqual(backend.update_calls, [('Rookie', 'Updated rookie description', 'skin_tone')])
 
-                delete_button = window.table.cellWidget(1, 2).findChild(type(window.btn_add), 'delete_button_1')
+                delete_button = window.table.cellWidget(1, 3).findChild(type(window.btn_add), 'delete_button_1')
                 delete_button.click()
                 self.assertEqual(backend.delete_calls, ['Evergreen'])
             finally:
@@ -135,6 +140,24 @@ class MedalCatalogViewerTest(unittest.TestCase):
         finally:
             dialog.hide()
             dialog.deleteLater()
+
+    def test_medal_selection_sidebar_sorts_buttons_by_medal_type(self):
+        sidebar = MedalSelectionSidebar()
+        try:
+            sidebar.set_medals(
+                [
+                    {'name': 'Special', 'medal_type': 'special'},
+                    {'name': 'Hair', 'medal_type': 'hairstyle'},
+                    {'name': 'Skin', 'medal_type': 'skin_tone'},
+                    {'name': 'Body', 'medal_type': 'body'},
+                    {'name': 'Age', 'medal_type': 'age'},
+                ]
+            )
+
+            self.assertEqual(sidebar.medal_names, ['Age', 'Body', 'Skin', 'Hair', 'Special'])
+        finally:
+            sidebar.hide()
+            sidebar.deleteLater()
 
 
 if __name__ == '__main__':

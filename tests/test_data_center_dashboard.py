@@ -126,5 +126,6 @@ def test_dashboard_window_renders_sections_and_clickable_metric():
             assert '演员总数' in window.metric_buttons[0].text()
             assert '3' in window.metric_buttons[0].text()
             assert window.metric_buttons[0].isEnabled()
+            assert 'text-align: center' in window.metric_buttons[0].styleSheet()
         finally:
             window.close()
