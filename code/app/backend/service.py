@@ -6,9 +6,10 @@ from pathlib import Path
 import threading
 from time import perf_counter
 from urllib.parse import quote, unquote
+from uuid import uuid4
 
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
-from app.core.app_logging import append_jsonl_log, bind_log_context, reset_log_context
+from app.core.app_logging import append_jsonl_log, bind_log_context, get_logger, reset_log_context
 from app.core.operation_timeout_settings import (
     list_operation_timeout_settings,
     reset_operation_timeout_overrides,
@@ -33,6 +34,7 @@ from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.core.supplement_task_state import build_supplement_candidate
+from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, get_filter_keywords
 from app.core.project_paths import (
     ACTOR_DETAIL_SNAPSHOT_DIR,
     ACTOR_SNAPSHOT_FILE,
@@ -78,6 +80,9 @@ from app.services.local_video import LocalVideoLibraryService
 from app.queen_library.service import QueenLibraryService
 from app.services.video import VIDEO_CATEGORY_SINGLE, VideoFilterService
 from app.core.project_paths import QUEEN_LIBRARY_DB_FILE
+
+
+LOGGER = get_logger(__name__)
 
 
 class BackendService:
@@ -147,10 +152,17 @@ class BackendService:
         self._masterpiece_detail_snapshots = {}
         self._video_category_snapshot_file = VIDEO_CATEGORY_SNAPSHOT_FILE
         self._video_category_snapshot_file_lock = threading.Lock()
+        video_category_filter_settings = self._load_video_category_snapshot_filter_settings()
         self._video_category_snapshot_filter_fingerprint = self._build_video_category_snapshot_filter_fingerprint(
-            self._load_video_category_snapshot_filter_settings()
+            video_category_filter_settings
+        )
+        self._video_category_snapshot_category_fingerprint = self._build_video_category_snapshot_category_fingerprint(
+            video_category_filter_settings
         )
         self._video_category_overview_snapshot = None
+        self._detail_snapshot_rebuild_lock = threading.Lock()
+        self._detail_snapshot_rebuild_thread = None
+        self._detail_snapshot_rebuild_state = {'status': 'idle'}
         self._load_actor_snapshots()
         self._load_code_prefix_snapshots()
         self._load_masterpiece_snapshots()
@@ -257,6 +269,10 @@ class BackendService:
     def list_masterpiece_entries(self):
         self.ensure_database_loaded()
         return {'entries': self.db.list_masterpiece_entries()}
+
+    def refresh_masterpiece_actors(self):
+        self.ensure_database_loaded()
+        return self.db.refresh_masterpiece_actor_registry()
 
     def add_masterpiece_entry(self, code):
         self.ensure_database_loaded()
@@ -574,16 +590,19 @@ class BackendService:
         return {'reset_count': self.db.reset_video_enrichments(codes, source_key=source_key)}
 
     def list_videos_requiring_manual_category(self):
-        self.ensure_database_loaded()
-        overview = self.db.list_videos_requiring_manual_category()
+        overview = self.list_unfiltered_videos_requiring_manual_category()
         return {
             **dict(overview or {}),
             'videos': self.video_filter_service.filter_video_rows((overview or {}).get('videos', []) or []),
         }
 
+    def list_unfiltered_videos_requiring_manual_category(self):
+        self.ensure_database_loaded()
+        return self.db.list_videos_requiring_manual_category()
+
     def list_videos_requiring_manual_category_snapshot(self, force_refresh=False):
         self.ensure_database_loaded()
-        self._refresh_video_category_snapshot_filter_state()
+        filter_settings = self._refresh_video_category_snapshot_filter_state()
         with self._snapshot_guard():
             snapshot = getattr(self, '_video_category_overview_snapshot', None)
             if (
@@ -597,10 +616,12 @@ class BackendService:
                 }
 
         started_at = perf_counter()
-        overview = self.list_videos_requiring_manual_category()
+        overview = self.list_unfiltered_videos_requiring_manual_category()
         refresh_duration_ms = self._build_refresh_duration_ms(started_at)
+        raw_videos = [dict(row or {}) for row in (overview or {}).get('videos', []) or []]
         snapshot = self._build_snapshot_payload(
-            videos=[dict(row or {}) for row in (overview or {}).get('videos', []) or []],
+            raw_videos=raw_videos,
+            videos=self.video_filter_service.filter_video_rows(raw_videos, settings=filter_settings),
             staged_count=int((overview or {}).get('staged_count', 0) or 0),
             source_version=self._current_video_category_source_version(),
             refresh_duration_ms=refresh_duration_ms,
@@ -693,6 +714,17 @@ class BackendService:
         include_update_status=True,
     ):
         self.ensure_database_loaded()
+        if force_refresh:
+            registration_summary = self.db.sync_pending_masterpiece_actor_registrations()
+            if int(registration_summary.get('added_count', 0) or 0) > 0:
+                self._invalidate_actor_snapshots()
+            LOGGER.info(
+                '演员库刷新前同步名作堂待处理演员 pending=%s added=%s failed=%s failures=%s',
+                registration_summary.get('pending_total', 0),
+                registration_summary.get('added_count', 0),
+                registration_summary.get('failed_count', 0),
+                registration_summary.get('failures', []),
+            )
         normalized_limit = self._normalize_list_limit(limit)
         normalized_offset = self._normalize_list_offset(offset)
         normalized_sort_field = self._normalize_actor_sort_field(sort_field)
@@ -754,6 +786,9 @@ class BackendService:
         normalized_actor_name = str(actor_name or '').strip()
         if not normalized_actor_name:
             raise ValueError('缺少演员名称')
+        is_blacklisted = getattr(getattr(self, 'db', None), 'is_actor_blacklisted', None)
+        if callable(is_blacklisted) and is_blacklisted(normalized_actor_name):
+            raise ValueError(f'演员 {normalized_actor_name} 已被加入黑名单')
         self._refresh_actor_snapshot_filter_state()
         snapshot_key = normalized_actor_name.casefold()
         with self._snapshot_guard():
@@ -940,13 +975,20 @@ class BackendService:
 
     def get_code_prefix_detail(self, prefix):
         self.ensure_database_loaded()
-        return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(prefix)}
+        normalized_prefix = str(prefix or '').strip().upper()
+        is_blacklisted = getattr(getattr(self, 'db', None), 'is_code_prefix_blacklisted', None)
+        if callable(is_blacklisted) and is_blacklisted(normalized_prefix):
+            raise ValueError(f'番号前缀 {normalized_prefix} 已被加入黑名单')
+        return {'prefix_detail': self.code_prefix_detail_library.get_prefix_detail(normalized_prefix)}
 
     def get_code_prefix_detail_snapshot(self, prefix, force_refresh=False):
         self.ensure_database_loaded()
         normalized_prefix = str(prefix or '').strip().upper()
         if not normalized_prefix:
             raise ValueError('缺少番号前缀')
+        is_blacklisted = getattr(getattr(self, 'db', None), 'is_code_prefix_blacklisted', None)
+        if callable(is_blacklisted) and is_blacklisted(normalized_prefix):
+            raise ValueError(f'番号前缀 {normalized_prefix} 已被加入黑名单')
         self._refresh_code_prefix_snapshot_filter_state()
         with self._snapshot_guard():
             snapshot = (self._code_prefix_detail_snapshots or {}).get(normalized_prefix)
@@ -986,12 +1028,107 @@ class BackendService:
 
     def rebuild_detail_snapshots(self):
         self.ensure_database_loaded()
-        actor_summary = self._rebuild_actor_detail_snapshots()
-        code_prefix_summary = self._rebuild_code_prefix_detail_snapshots()
-        return {
-            **actor_summary,
-            **code_prefix_summary,
-        }
+        with self._detail_snapshot_rebuild_lock:
+            running_thread = self._detail_snapshot_rebuild_thread
+            if running_thread is not None and running_thread.is_alive():
+                return {
+                    **dict(self._detail_snapshot_rebuild_state),
+                    'reused': True,
+                }
+
+            job_id = f'detail-{uuid4().hex[:12]}'
+            self._detail_snapshot_rebuild_state = {
+                'status': 'running',
+                'job_id': job_id,
+                'phase': 'actor',
+                'started_at': self._current_snapshot_timestamp(),
+                'finished_at': '',
+                'error': '',
+            }
+            worker = threading.Thread(
+                target=self._run_detail_snapshot_rebuild_job,
+                args=(job_id,),
+                name='detail-snapshot-rebuild',
+                daemon=True,
+            )
+            self._detail_snapshot_rebuild_thread = worker
+            worker.start()
+            return {
+                **dict(self._detail_snapshot_rebuild_state),
+                'reused': False,
+            }
+
+    def get_detail_snapshot_rebuild_status(self):
+        with self._detail_snapshot_rebuild_lock:
+            return dict(self._detail_snapshot_rebuild_state)
+
+    def _run_detail_snapshot_rebuild_job(self, job_id):
+        context_tokens = bind_log_context(job_id, job_id)
+        started_at = perf_counter()
+        try:
+            LOGGER.info('详情快照全量重建开始 job_id=%s', job_id)
+            self._update_detail_snapshot_rebuild_state(job_id, phase='masterpiece_actor_registration')
+            registration_summary = self.db.sync_pending_masterpiece_actor_registrations()
+            LOGGER.info(
+                '名作堂待处理演员同步完成 pending=%s added=%s failed=%s failures=%s',
+                registration_summary.get('pending_total', 0),
+                registration_summary.get('added_count', 0),
+                registration_summary.get('failed_count', 0),
+                registration_summary.get('failures', []),
+            )
+            self._update_detail_snapshot_rebuild_state(
+                job_id,
+                phase='actor',
+                masterpiece_actor_pending=registration_summary.get('pending_total', 0),
+                masterpiece_actor_added=registration_summary.get('added_count', 0),
+                masterpiece_actor_failed=registration_summary.get('failed_count', 0),
+                masterpiece_actor_failures=registration_summary.get('failures', []),
+            )
+            actor_summary = self._rebuild_actor_detail_snapshots()
+            self._update_detail_snapshot_rebuild_state(job_id, phase='code_prefix', **actor_summary)
+            code_prefix_summary = self._rebuild_code_prefix_detail_snapshots()
+            duration_ms = self._build_refresh_duration_ms(started_at)
+            self._update_detail_snapshot_rebuild_state(
+                job_id,
+                status='completed',
+                phase='completed',
+                finished_at=self._current_snapshot_timestamp(),
+                duration_ms=duration_ms,
+                **actor_summary,
+                **code_prefix_summary,
+                masterpiece_actor_pending=registration_summary.get('pending_total', 0),
+                masterpiece_actor_added=registration_summary.get('added_count', 0),
+                masterpiece_actor_failed=registration_summary.get('failed_count', 0),
+                masterpiece_actor_failures=registration_summary.get('failures', []),
+            )
+            LOGGER.info(
+                '详情快照全量重建完成 job_id=%s actor=%s/%s code_prefix=%s/%s duration_ms=%s',
+                job_id,
+                actor_summary.get('actor_refreshed', 0),
+                actor_summary.get('actor_total', 0),
+                code_prefix_summary.get('code_prefix_refreshed', 0),
+                code_prefix_summary.get('code_prefix_total', 0),
+                duration_ms,
+            )
+        except Exception as exc:
+            duration_ms = self._build_refresh_duration_ms(started_at)
+            LOGGER.exception('详情快照全量重建失败')
+            self._update_detail_snapshot_rebuild_state(
+                job_id,
+                status='failed',
+                phase='failed',
+                finished_at=self._current_snapshot_timestamp(),
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+        finally:
+            reset_log_context(context_tokens)
+
+    def _update_detail_snapshot_rebuild_state(self, job_id, **fields):
+        with self._detail_snapshot_rebuild_lock:
+            if str(self._detail_snapshot_rebuild_state.get('job_id', '')) != str(job_id or ''):
+                return
+            self._detail_snapshot_rebuild_state.update(fields)
 
     def add_code_prefix(self, prefix):
         self.ensure_database_loaded()
@@ -1030,6 +1167,12 @@ class BackendService:
 
     def delete_code_prefix(self, prefix):
         result = {'deleted_count': self.library_admin_service.delete_code_prefix(prefix)}
+        self._invalidate_code_prefix_snapshots()
+        return result
+
+    def sync_code_prefix_filter_blacklist(self, prefixes):
+        self.ensure_database_loaded()
+        result = self.db.blacklist_code_prefixes(prefixes)
         self._invalidate_code_prefix_snapshots()
         return result
 
@@ -1909,14 +2052,22 @@ class BackendService:
             return
         if not isinstance(payload, dict):
             return
-        if int(payload.get('version', 0) or 0) != 1:
+        if int(payload.get('version', 0) or 0) != 2:
             return
-        persisted_fingerprint = str(payload.get('filter_settings_fingerprint', '') or '').strip()
-        if persisted_fingerprint != getattr(self, '_video_category_snapshot_filter_fingerprint', ''):
+        persisted_category_fingerprint = str(payload.get('category_settings_fingerprint', '') or '').strip()
+        if persisted_category_fingerprint != getattr(self, '_video_category_snapshot_category_fingerprint', ''):
             return
-        self._video_category_overview_snapshot = self._normalize_video_category_snapshot(
+        snapshot = self._normalize_video_category_snapshot(
             payload.get('overview_snapshot')
         )
+        if snapshot is None:
+            return
+        filter_settings = self._load_video_category_snapshot_filter_settings()
+        snapshot['videos'] = self.video_filter_service.filter_video_rows(
+            snapshot.get('raw_videos', []),
+            settings=filter_settings,
+        )
+        self._video_category_overview_snapshot = snapshot
 
     def _persist_code_prefix_snapshots(self):
         snapshot_file = getattr(self, '_code_prefix_snapshot_file', None)
@@ -2094,8 +2245,13 @@ class BackendService:
         if snapshot_file is None:
             return
         payload = {
-            'version': 1,
+            'version': 2,
             'filter_settings_fingerprint': getattr(self, '_video_category_snapshot_filter_fingerprint', ''),
+            'category_settings_fingerprint': getattr(
+                self,
+                '_video_category_snapshot_category_fingerprint',
+                '',
+            ),
             'overview_snapshot': self._normalize_video_category_snapshot(
                 getattr(self, '_video_category_overview_snapshot', None)
             ),
@@ -2245,15 +2401,32 @@ class BackendService:
         }
 
     def _refresh_video_category_snapshot_filter_state(self):
-        current_fingerprint = self._build_video_category_snapshot_filter_fingerprint(
-            self._load_video_category_snapshot_filter_settings()
-        )
-        if current_fingerprint == getattr(self, '_video_category_snapshot_filter_fingerprint', ''):
-            return
+        filter_settings = self._load_video_category_snapshot_filter_settings()
+        current_fingerprint = self._build_video_category_snapshot_filter_fingerprint(filter_settings)
+        current_category_fingerprint = self._build_video_category_snapshot_category_fingerprint(filter_settings)
+        if (
+            current_fingerprint == getattr(self, '_video_category_snapshot_filter_fingerprint', '')
+            and current_category_fingerprint
+            == getattr(self, '_video_category_snapshot_category_fingerprint', '')
+        ):
+            return filter_settings
         with self._snapshot_guard():
+            category_changed = (
+                current_category_fingerprint
+                != getattr(self, '_video_category_snapshot_category_fingerprint', '')
+            )
             self._video_category_snapshot_filter_fingerprint = current_fingerprint
-            self._video_category_overview_snapshot = None
+            self._video_category_snapshot_category_fingerprint = current_category_fingerprint
+            snapshot = getattr(self, '_video_category_overview_snapshot', None)
+            if category_changed:
+                self._video_category_overview_snapshot = None
+            elif snapshot is not None:
+                snapshot['videos'] = self.video_filter_service.filter_video_rows(
+                    snapshot.get('raw_videos', []),
+                    settings=filter_settings,
+                )
             self._persist_video_category_snapshot()
+        return filter_settings
 
     def _load_actor_snapshot_filter_settings(self):
         if getattr(self, 'video_filter_service', None) is None:
@@ -2316,6 +2489,14 @@ class BackendService:
     def _build_video_category_snapshot_filter_fingerprint(filter_settings):
         normalized_settings = filter_settings if isinstance(filter_settings, dict) else {}
         return json.dumps(normalized_settings, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def _build_video_category_snapshot_category_fingerprint(filter_settings):
+        return json.dumps(
+            {FILTER_FIELD_CO_STAR_CODE: get_filter_keywords(filter_settings, FILTER_FIELD_CO_STAR_CODE)},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     @staticmethod
     def _build_code_prefix_list_snapshot_key(search_text, sort_field, sort_order, limit, offset):
@@ -2563,12 +2744,14 @@ class BackendService:
             return None
         refreshed_at = str(snapshot.get('refreshed_at', '') or '').strip()
         videos = snapshot.get('videos', [])
-        if not refreshed_at or not isinstance(videos, list):
+        raw_videos = snapshot.get('raw_videos', [])
+        if not refreshed_at or not isinstance(videos, list) or not isinstance(raw_videos, list):
             return None
         refresh_duration_ms = int(snapshot.get('refresh_duration_ms', 0) or 0)
         refresh_duration_text = str(snapshot.get('refresh_duration_text', '') or '').strip()
         return {
             'videos': [dict(row or {}) for row in videos],
+            'raw_videos': [dict(row or {}) for row in raw_videos],
             'staged_count': int(snapshot.get('staged_count', 0) or 0),
             'source_version': str(snapshot.get('source_version', '') or '').strip(),
             'refreshed_at': refreshed_at,

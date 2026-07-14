@@ -138,6 +138,11 @@ class LadderRepositoryMixin:
                    AND le.entity_name = combined.actor_name
                 WHERE COALESCE(combined.actor_name, '') <> ''
                   AND COALESCE(ma.handle_mark, 0) <> 2
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM hidden_actors AS ha
+                      WHERE ha.name = combined.actor_name
+                  )
                   AND COALESCE(le.tier, '') = ''
                 GROUP BY combined.actor_name
                 ORDER BY masterpiece_count DESC, UPPER(combined.actor_name) ASC

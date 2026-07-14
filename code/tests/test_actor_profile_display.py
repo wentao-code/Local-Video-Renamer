@@ -19,6 +19,63 @@ from app.services.detail import ActorDetailLibrary
 
 
 class ActorProfileDisplayTest(unittest.TestCase):
+    def test_actor_detail_excludes_blacklisted_code_prefix_movies(self):
+        class FakeDatabase:
+            def list_actors(self, search_text=''):
+                return [{'name': 'Actor Filtered', 'birthday': '', 'age': '', 'matched': True}]
+
+            def list_hidden_code_prefixes(self):
+                return {'BBB', 'CCC'}
+
+            def get_ladder_entry(self, board_key, entity_type, entity_name):
+                return {}
+
+            def list_local_videos_by_actor_name(self, actor_name):
+                return [
+                    {'code': 'AAA-001', 'title': 'Visible local', 'author': 'Actor Filtered'},
+                    {'code': 'BBB-002', 'title': 'Hidden local', 'author': 'Actor Filtered'},
+                ]
+
+            def list_actor_movies(self, actor_name):
+                return [
+                    {
+                        'code': 'AAA-003',
+                        'title': 'Visible web',
+                        'author': 'Actor Filtered',
+                        'release_date': '2024-01-01',
+                        'javtxt_release_date': '2024-01-01',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'aaa-003',
+                        'javtxt_url': 'https://example.com/aaa-003',
+                    },
+                    {
+                        'code': 'CCC-004',
+                        'title': 'Hidden web',
+                        'author': 'Actor Filtered',
+                        'release_date': '2024-01-02',
+                        'javtxt_release_date': '2024-01-02',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_movie_id': 'ccc-004',
+                        'javtxt_url': 'https://example.com/ccc-004',
+                    },
+                ]
+
+            def get_actor_enrichment_record(self, actor_name):
+                return {}
+
+            def get_javtxt_actor_cache_by_codes(self, codes):
+                return {}
+
+            def list_code_prefix_enrichment_records(self):
+                return {}
+
+        detail = ActorDetailLibrary(FakeDatabase()).get_actor_detail('Actor Filtered')
+
+        self.assertEqual([row['code'] for row in detail['local_videos']], ['AAA-001'])
+        self.assertEqual([row['code'] for row in detail['web_movies']], ['AAA-003'])
+        self.assertEqual(detail['local_video_count'], 1)
+        self.assertEqual(detail['eligible_video_count'], 1)
+
     def test_list_actors_shows_unknown_age_when_birthday_is_missing_placeholder(self):
         temp_dir = tempfile.mkdtemp()
         try:

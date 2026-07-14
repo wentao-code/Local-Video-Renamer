@@ -63,6 +63,10 @@ class CandidateLibraryRepositoryMixin:
                 '''
                 SELECT prefix, video_count
                 FROM candidate_code_prefix_records
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM hidden_code_prefixes h
+                    WHERE h.prefix = candidate_code_prefix_records.prefix
+                )
                 ORDER BY video_count DESC, prefix ASC
                 LIMIT ?
                 ''',

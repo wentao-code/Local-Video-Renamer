@@ -476,6 +476,18 @@ class VideoDatabase(
                     name TEXT PRIMARY KEY
                 )
             ''')
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO hidden_actors (name)
+                SELECT actor_name
+                FROM masterpiece_actors
+                WHERE COALESCE(handle_mark, 0) = 2
+                  AND COALESCE(actor_name, '') <> ''
+                '''
+            )
+            cursor.execute(
+                'DELETE FROM masterpiece_actors WHERE COALESCE(handle_mark, 0) = 2'
+            )
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS candidate_actor_records (
                     actor_name TEXT PRIMARY KEY,
@@ -2294,6 +2306,9 @@ class VideoDatabase(
         if ignored_names:
             clauses.append('a.name NOT IN ({})'.format(','.join('?' for _ in ignored_names)))
             params.extend(ignored_names)
+        clauses.append(
+            'NOT EXISTS (SELECT 1 FROM hidden_actors h WHERE h.name = a.name)'
+        )
         if normalized_search:
             like_value = f'%{normalized_search}%'
             clauses.append(
@@ -4299,6 +4314,8 @@ class VideoDatabase(
         updates = list(author_updates or [])
         if not normalized_old_name or not normalized_new_name:
             raise ValueError('演员名称不能为空')
+        if normalized_old_name != normalized_new_name and self.is_actor_blacklisted(normalized_new_name):
+            raise ValueError(f'演员 {normalized_new_name} 已被加入黑名单')
 
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -4526,16 +4543,45 @@ class VideoDatabase(
         if not normalized_prefix:
             raise ValueError('番号前缀不能为空')
 
+        self.blacklist_code_prefixes([normalized_prefix])
+        return 1
+
+    def blacklist_code_prefixes(self, prefixes):
+        normalized_prefixes = []
+        seen = set()
+        for prefix in prefixes or []:
+            normalized_prefix = str(prefix or '').strip().upper()
+            if normalized_prefix and normalized_prefix not in seen:
+                seen.add(normalized_prefix)
+                normalized_prefixes.append(normalized_prefix)
+        if not normalized_prefixes:
+            return {'blacklisted_count': 0, 'candidate_removed_count': 0}
+
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
+            cursor.executemany(
                 'INSERT OR IGNORE INTO hidden_code_prefixes (prefix) VALUES (?)',
-                (normalized_prefix,),
+                [(prefix,) for prefix in normalized_prefixes],
             )
-            cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (normalized_prefix,))
-            cursor.execute('DELETE FROM code_prefix_enrichments WHERE prefix = ?', (normalized_prefix,))
+            placeholders = ','.join('?' for _ in normalized_prefixes)
+            cursor.execute(
+                f'DELETE FROM candidate_code_prefix_records WHERE prefix IN ({placeholders})',
+                normalized_prefixes,
+            )
+            candidate_removed_count = int(cursor.rowcount or 0)
+            cursor.execute(
+                f'DELETE FROM code_prefix_movies WHERE prefix IN ({placeholders})',
+                normalized_prefixes,
+            )
+            cursor.execute(
+                f'DELETE FROM code_prefix_enrichments WHERE prefix IN ({placeholders})',
+                normalized_prefixes,
+            )
             conn.commit()
-            return 1
+        return {
+            'blacklisted_count': len(normalized_prefixes),
+            'candidate_removed_count': candidate_removed_count,
+        }
 
     def get_path_by_value(self, folder_path):
         with self._connect() as conn:
@@ -7227,10 +7273,43 @@ class VideoDatabase(
                 SELECT actor_name
                 FROM masterpiece_actors
                 WHERE COALESCE(handle_mark, 0) = 2
+
+                UNION
+
+                SELECT name AS actor_name
+                FROM hidden_actors
                 '''
             )
             rows = cursor.fetchall()
         return {str((row or [''])[0] or '').strip() for row in rows if str((row or [''])[0] or '').strip()}
+
+    def refresh_masterpiece_actor_registry(self):
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''
+                SELECT actor_name
+                FROM masterpiece_actors
+                WHERE COALESCE(handle_mark, 0) = 2
+                  AND COALESCE(actor_name, '') <> ''
+                '''
+            ).fetchall()
+            actor_names = [str((row or [''])[0] or '').strip() for row in rows if str((row or [''])[0] or '').strip()]
+            for actor_name in actor_names:
+                conn.execute(
+                    'INSERT OR IGNORE INTO hidden_actors (name) VALUES (?)',
+                    (actor_name,),
+                )
+            removed_count = conn.execute(
+                'DELETE FROM masterpiece_actors WHERE COALESCE(handle_mark, 0) = 2'
+            ).rowcount
+            conn.commit()
+
+        pending_summary = self._sync_pending_masterpiece_actor_registrations()
+        return {
+            **pending_summary,
+            'blacklisted_count': len(actor_names),
+            'removed_count': int(removed_count or 0),
+        }
 
     def _merge_masterpiece_actor_details_from_source_texts(
         self,
@@ -7446,11 +7525,12 @@ class VideoDatabase(
 
         status = int((row or [actor_exists, 0])[0] or 0)
         handle_mark = int((row or [0, 0])[1] or 0)
+        error = ''
         if status == 0 and handle_mark == 1:
             try:
                 self.add_actor(normalized_name, birthday='', age='')
-            except ValueError:
-                pass
+            except ValueError as exc:
+                error = str(exc)
             status = 1 if self._find_exact_actor_row(normalized_name) else 0
             with self._connect() as conn:
                 cursor = conn.cursor()
@@ -7465,7 +7545,48 @@ class VideoDatabase(
                 )
                 conn.commit()
 
-        return {'actor_name': normalized_name, 'status': status, 'handle_mark': handle_mark}
+        return {
+            'actor_name': normalized_name,
+            'status': status,
+            'handle_mark': handle_mark,
+            'error': error if status == 0 else '',
+        }
+
+    def sync_pending_masterpiece_actor_registrations(self):
+        return self.refresh_masterpiece_actor_registry()
+
+    def _sync_pending_masterpiece_actor_registrations(self):
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''
+                SELECT actor_name
+                FROM masterpiece_actors
+                WHERE COALESCE(status, 0) = 0
+                  AND COALESCE(handle_mark, 0) = 1
+                ORDER BY actor_name
+                '''
+            ).fetchall()
+
+        actor_names = [str((row or [''])[0] or '').strip() for row in rows]
+        results = [
+            self._sync_masterpiece_actor_registration(actor_name)
+            for actor_name in actor_names
+            if actor_name
+        ]
+        failures = [
+            {
+                'actor_name': result.get('actor_name', ''),
+                'error': result.get('error', '') or '加入演员库后仍未找到演员记录',
+            }
+            for result in results
+            if int(result.get('status', 0) or 0) == 0
+        ]
+        return {
+            'pending_total': len(actor_names),
+            'added_count': len(results) - len(failures),
+            'failed_count': len(failures),
+            'failures': failures,
+        }
 
     def _collect_masterpiece_actor_details(self, normalized_code, primary_reference, references):
         actor_names = self._collect_masterpiece_actor_names(primary_reference, references)

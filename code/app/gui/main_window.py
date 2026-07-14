@@ -13,6 +13,7 @@ from PyQt5.QtGui import QFont, QFontDatabase
 from PyQt5.QtCore import QCoreApplication, QObject, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -76,6 +77,7 @@ from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
 from app.gui.runtime_settings import load_runtime_mode, save_runtime_mode
 from app.gui.query_context import EntityReference, EntityType, QueryContext
 from app.gui.query_history import QueryHistoryStore
+from app.gui.quark_login_dialog import QuarkLoginDialog
 from app.gui.single_instance import SingleInstanceGuard
 from app.gui.unified_search_viewer import UnifiedSearchWindow
 from app.gui.window_coordinator import WindowCoordinator
@@ -680,6 +682,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_upload_quark_backup = QPushButton('上传备份')
         self.btn_upload_quark_backup.clicked.connect(self.upload_quark_backup)
 
+        self.btn_login_quark = QPushButton('登录夸克')
+        self.btn_login_quark.clicked.connect(self.show_quark_login_dialog)
+
         top_button_row.addWidget(self.btn_unified_search)
         top_button_row.addWidget(self.btn_video_library)
         top_button_row.addWidget(self.btn_database)
@@ -709,6 +714,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_disguise)
         bottom_button_row.addWidget(self.btn_force_exit)
 
+        third_button_row.addWidget(self.btn_login_quark)
         third_button_row.addWidget(self.btn_upload_quark_backup)
         third_button_row.addStretch()
 
@@ -2288,6 +2294,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             lambda: self.backend_client.rebuild_detail_snapshots(),
             self._on_refresh_detail_snapshots_finished,
             tr('common.operation_failed'),
+            block_ui=False,
+            allow_deferred_close=True,
             task_title='主界面 全量刷新快照',
         )
 
@@ -2498,11 +2506,15 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     @staticmethod
     def _run_manual_quark_backup():
         result = QuarkBackupService().run_now()
-        if result.get('status') != 'completed':
+        if result.get('status') not in {'completed', 'login_required'}:
             raise RuntimeError(str(result.get('error') or '夸克备份未完成'))
         return result
 
     def _on_manual_quark_backup_finished(self, result):
+        if str((result or {}).get('status', '') or '') == 'login_required':
+            self.status_label.setText('需要登录夸克网盘')
+            self.show_quark_login_dialog(resume_backup=True)
+            return
         archive_name = str((result or {}).get('archive_name') or '')
         self.status_label.setText('夸克备份已完成')
         QMessageBox.information(self, '上传备份', f'夸克备份已完成：{archive_name}')
@@ -2518,6 +2530,15 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.quark_backup_task_runner = None
         if hasattr(self, 'btn_upload_quark_backup'):
             self.btn_upload_quark_backup.setEnabled(True)
+
+    def show_quark_login_dialog(self, _checked=False, *, resume_backup=False):
+        dialog = QuarkLoginDialog(parent=self)
+        if dialog.exec_() != QDialog.Accepted:
+            return False
+        self.status_label.setText('夸克网盘登录成功')
+        if resume_backup:
+            QTimer.singleShot(0, self.upload_quark_backup)
+        return True
 
     def show_video_filter_dialog(self):
         dialog = VideoFilterDialog(self)

@@ -12,6 +12,17 @@ class ActorRepositoryMixin:
                 if str(row[0] or '').strip()
             }
 
+    def is_actor_blacklisted(self, actor_name):
+        normalized_name = str(actor_name or '').strip()
+        if not normalized_name:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                'SELECT 1 FROM hidden_actors WHERE name = ?',
+                (normalized_name,),
+            ).fetchone()
+        return row is not None
+
     def insert_missing_actors(self, actors):
         hidden_actors = self.list_hidden_actors()
         normalized_actors = []

@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QApplication, QGroupBox, QLabel, QPushButton
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.detail_summary_widgets import DetailSummaryGrid
 from app.gui.masterpiece_viewer import MasterpieceDetailWindow, MasterpieceWindow
+from app.gui.query_context import EntityReference, EntityType, QueryContext
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -54,6 +55,7 @@ class MasterpieceBackendStub:
         self.detail_calls = []
         self.detail_refresh_flags = []
         self.enrich_calls = []
+        self.actor_refresh_calls = 0
         self.global_medals = [
             {'name': 'Rookie', 'description': 'For debut-level standouts'},
             {'name': 'Evergreen', 'description': 'For long-running elite entries'},
@@ -61,6 +63,10 @@ class MasterpieceBackendStub:
 
     def list_masterpiece_entries(self):
         return [dict(row) for row in self.entries]
+
+    def refresh_masterpiece_actors(self):
+        self.actor_refresh_calls += 1
+        return {'blacklisted_count': 0, 'removed_count': 0}
 
     def add_masterpiece_entry(self, code):
         normalized_code = str(code or '').strip().upper()
@@ -215,6 +221,18 @@ class MasterpieceViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_refresh_loads_masterpiece_actor_registry_before_entries(self):
+        backend = MasterpieceBackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceWindow(backend)
+            try:
+                window.btn_refresh.click()
+                self.assertEqual(backend.actor_refresh_calls, 2)
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_window_marks_fully_enriched_codes_purple(self):
         backend = MasterpieceBackendStub()
 
@@ -313,6 +331,46 @@ class MasterpieceViewerTest(unittest.TestCase):
                 self.assertEqual(window.collaborator_tables['Alice'].rowCount(), 2)
                 self.assertEqual(window.collaborator_tables['Alice'].item(0, 0).text(), 'Carol x3')
                 self.assertEqual(window.collaborator_tables['Alice'].item(1, 0).text(), 'Iris x1')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_detail_window_switches_to_selected_masterpiece_context(self):
+        backend = MasterpieceBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceDetailWindow(backend, 'PFSA-001')
+            try:
+                context = QueryContext(entity=EntityReference(EntityType.MASTERPIECE, 'MISS-001'))
+
+                window.apply_query_context(context)
+
+                self.assertEqual(window.code, 'MISS-001')
+                self.assertIn('MISS-001', window.windowTitle())
+                self.assertEqual(backend.detail_calls[-1], 'MISS-001')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_detail_window_ignores_previous_masterpiece_response_after_switch(self):
+        backend = MasterpieceBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = MasterpieceDetailWindow(backend, 'PFSA-001')
+            try:
+                window.apply_query_context(
+                    QueryContext(entity=EntityReference(EntityType.MASTERPIECE, 'MISS-001'))
+                )
+                current_detail = dict(window.detail)
+
+                window._on_detail_loaded(
+                    {
+                        'detail': {'code': 'PFSA-001', 'display_title': 'Old detail'},
+                        'request_token': 1,
+                        'request_code': 'PFSA-001',
+                    }
+                )
+
+                self.assertEqual(window.code, 'MISS-001')
+                self.assertEqual(window.detail, current_detail)
             finally:
                 window.hide()
                 window.deleteLater()

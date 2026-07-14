@@ -111,6 +111,15 @@ class CandidateLibraryServiceTest(unittest.TestCase):
             self.assertEqual(database.list_candidate_actor_records(), [])
             self.assertEqual(database.list_candidate_code_prefix_records(), [])
 
+    def test_blacklisting_code_prefix_removes_candidate_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = VideoDatabase(Path(temp_dir) / 'candidates.db')
+            database.replace_candidate_code_prefix_records([{'prefix': 'BBB', 'video_count': 9}])
+
+            database.delete_code_prefix('BBB')
+
+            self.assertEqual(database.list_candidate_code_prefix_records(), [])
+
     def test_refresh_records_sorted_candidates_and_excludes_library_and_hidden_items(self):
         class FakeDatabase:
             def __init__(self):

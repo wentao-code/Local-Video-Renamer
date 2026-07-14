@@ -883,7 +883,7 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
     def on_filter_rules_saved(self):
         if not self.isVisible():
             return
-        self.load_data(force_refresh=True)
+        self.load_data(force_refresh=False)
 
     def on_video_categories_updated(self):
         if not self.isVisible():

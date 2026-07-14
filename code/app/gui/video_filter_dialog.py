@@ -108,6 +108,8 @@ class KeywordRuleEditor(QWidget):
 class VideoFilterDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # enable_minimize_button detaches the Qt parent; retain the owner for backend coordination.
+        self._owner = parent
         enable_minimize_button(self)
         self._saved_payload = None
         self.setWindowTitle(tr('video.filter.title'))
@@ -186,6 +188,11 @@ class VideoFilterDialog(QDialog):
         payload = self.build_settings_payload()
         try:
             save_video_filter_settings(payload)
+            parent = getattr(self, '_owner', None) or self.parent()
+            backend_client = getattr(parent, 'backend_client', None)
+            sync_blacklist = getattr(backend_client, 'sync_code_prefix_filter_blacklist', None)
+            if callable(sync_blacklist):
+                sync_blacklist(get_filter_keywords(payload, FILTER_FIELD_CODE))
         except Exception as exc:
             QMessageBox.critical(self, tr('common.save_failed'), tr('video.filter.save_failed', error=exc))
             return False

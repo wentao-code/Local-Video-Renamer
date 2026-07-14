@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication, QDialogButtonBox, QMessageBox
+from PyQt5.QtWidgets import QApplication, QDialogButtonBox, QMessageBox, QWidget
 
 from app.gui.video_filter_dialog import VideoFilterDialog
 
@@ -13,6 +13,34 @@ _APP = QApplication.instance() or QApplication([])
 
 
 class VideoFilterDialogLayoutTest(unittest.TestCase):
+    def test_save_syncs_code_filter_keywords_to_prefix_blacklist(self):
+        class BackendStub:
+            def __init__(self):
+                self.calls = []
+
+            def sync_code_prefix_filter_blacklist(self, prefixes):
+                self.calls.append(list(prefixes))
+                return {'blacklisted_count': len(prefixes)}
+
+        class ParentStub(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.backend_client = BackendStub()
+
+        parent = ParentStub()
+        with patch('app.gui.video_filter_dialog.load_video_filter_settings', return_value={'rules': {}}):
+            dialog = VideoFilterDialog(parent)
+        try:
+            dialog.code_editor.keyword_input.setText('ABCD')
+            dialog.code_editor.add_keyword()
+            with patch('app.gui.video_filter_dialog.save_video_filter_settings'), \
+                    patch('app.gui.video_filter_dialog.QMessageBox.information'):
+                self.assertTrue(dialog.save_changes())
+            self.assertEqual(parent.backend_client.calls, [['ABCD']])
+        finally:
+            dialog.hide()
+            dialog.deleteLater()
+
     def test_keyword_editors_are_arranged_in_one_row_with_equal_width(self):
         with patch('app.gui.video_filter_dialog.load_video_filter_settings', return_value={'rules': {}}):
             dialog = VideoFilterDialog()

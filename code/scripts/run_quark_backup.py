@@ -19,7 +19,10 @@ def main():
     ensure_storage_layout()
     configure_logging()
     result = QuarkBackupService().run_if_due()
-    return 1 if result.get('status') == 'failed' else 0
+    status = str(result.get('status', '') or '')
+    if status == 'login_required':
+        return 2
+    return 1 if status == 'failed' else 0
 
 
 if __name__ == '__main__':

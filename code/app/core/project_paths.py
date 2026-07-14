@@ -40,6 +40,7 @@ CODE_PREFIX_LIBRARY_SETTINGS_FILE = USER_CONFIG_DIR / 'code_prefix_library_setti
 QUERY_HISTORY_FILE = USER_CONFIG_DIR / 'query_history.json'
 QUARK_BACKUP_CONFIG_FILE = USER_CONFIG_DIR / 'quark_backup.json'
 QUARK_BACKUP_STATE_FILE = USER_CONFIG_DIR / 'quark_backup_state.json'
+QUARK_CREDENTIAL_FILE = USER_CONFIG_DIR / 'quark_credentials.dat'
 QUARK_BACKUP_LOCK_FILE = LOCK_DIR / 'quark_backup.lock'
 GUI_INSTANCE_LOCK_FILE = LOCK_DIR / 'vidnorm.gui.lock'
 

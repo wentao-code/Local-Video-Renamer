@@ -154,6 +154,10 @@ class LibraryAdminService:
             raise ValueError(f'未找到演员：{normalized_old_name}')
         if normalized_old_name != normalized_new_name and normalized_new_name in actor_names:
             raise ValueError(f'演员 {normalized_new_name} 已存在')
+        is_blacklisted = getattr(self.database, 'is_actor_blacklisted', None)
+        if normalized_old_name != normalized_new_name and callable(is_blacklisted):
+            if is_blacklisted(normalized_new_name):
+                raise ValueError(f'演员 {normalized_new_name} 已被加入黑名单')
 
         if normalized_old_name != normalized_new_name and self.database.list_actor_movies(normalized_new_name):
             raise ValueError(f'演员 {normalized_new_name} 已存在网页作品记录')

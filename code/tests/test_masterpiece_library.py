@@ -380,6 +380,37 @@ class MasterpieceLibraryTest(unittest.TestCase):
         self.assertEqual(beta_row, ('Beta', 1, 1))
         self.assertTrue(any(row['name'] == 'Beta' for row in self.db.list_actors('Beta')))
 
+    def test_sync_pending_masterpiece_actor_registrations_consumes_handle_mark(self):
+        self._update_processed_video_author('PFSA-001', 'Alice Beta', release_date='2024-05-01')
+        self.db.add_masterpiece_entry('PFSA-001')
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                '''
+                UPDATE masterpiece_actors
+                SET handle_mark = 1
+                WHERE actor_name = ?
+                ''',
+                ('Beta',),
+            )
+            conn.commit()
+
+        summary = self.db.sync_pending_masterpiece_actor_registrations()
+
+        self.assertEqual(summary['pending_total'], 1)
+        self.assertEqual(summary['added_count'], 1)
+        self.assertEqual(summary['failed_count'], 0)
+        with sqlite3.connect(self.db_path) as conn:
+            beta_row = conn.execute(
+                '''
+                SELECT actor_name, status, handle_mark
+                FROM masterpiece_actors
+                WHERE actor_name = ?
+                ''',
+                ('Beta',),
+            ).fetchone()
+        self.assertEqual(beta_row, ('Beta', 1, 1))
+        self.assertTrue(any(row['name'] == 'Beta' for row in self.db.list_actors('Beta')))
+
     def test_masterpiece_actor_handle_mark_two_hides_actor_from_detail(self):
         self._update_processed_video_author('PFSA-001', 'Alice Beta', release_date='2024-05-01')
         self.db.add_actor('Alice')
@@ -402,6 +433,36 @@ class MasterpieceLibraryTest(unittest.TestCase):
             'Beta',
             [row['actor_name'] for section in detail['collaborator_sections'] for row in section['collaborators']],
         )
+
+    def test_refresh_masterpiece_actor_registry_blacklists_and_removes_handle_mark_two(self):
+        self._update_processed_video_author('PFSA-001', 'Alice Beta', release_date='2024-05-01')
+        self.db.add_actor('Beta')
+        self.db.add_masterpiece_entry('PFSA-001')
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                '''
+                UPDATE masterpiece_actors
+                SET handle_mark = 2
+                WHERE actor_name = ?
+                ''',
+                ('Beta',),
+            )
+            conn.commit()
+
+        summary = self.db.refresh_masterpiece_actor_registry()
+
+        self.assertEqual(summary['blacklisted_count'], 1)
+        self.assertEqual(summary['removed_count'], 1)
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertIsNotNone(
+                conn.execute('SELECT 1 FROM hidden_actors WHERE name = ?', ('Beta',)).fetchone()
+            )
+            self.assertIsNone(
+                conn.execute('SELECT 1 FROM masterpiece_actors WHERE actor_name = ?', ('Beta',)).fetchone()
+            )
+        with self.assertRaises(ValueError):
+            self.db.add_actor('Beta')
+        self.assertFalse(any(row['name'] == 'Beta' for row in self.db.list_actors('Beta')))
 
     def test_masterpiece_detail_backfills_registered_actor_table_for_existing_library_actor(self):
         self._update_processed_video_author('PFSA-001', 'Alice Beta', release_date='2024-05-01')

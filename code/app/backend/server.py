@@ -109,6 +109,8 @@ def make_handler(service):
                 return service.get_video_enrichment_summary()
             if method == 'GET' and path == '/masterpiece/entries':
                 return service.list_masterpiece_entries()
+            if method == 'POST' and path == '/masterpiece/actors/refresh':
+                return service.refresh_masterpiece_actors()
             if method == 'POST' and path == '/masterpiece/entries/add':
                 return service.add_masterpiece_entry(body.get('code'))
             if method == 'POST' and path == '/masterpiece/entries/medal':
@@ -152,6 +154,8 @@ def make_handler(service):
                 return service.reset_operation_timeouts(body.get('setting_keys'))
             if method == 'POST' and path == '/snapshots/details/rebuild':
                 return service.rebuild_detail_snapshots()
+            if method == 'GET' and path == '/snapshots/details/rebuild/status':
+                return service.get_detail_snapshot_rebuild_status()
             if method == 'GET' and path == '/data-center/analysis':
                 return service.get_metric_analysis(
                     query.get('analysis_type', ['actor'])[0],
@@ -260,6 +264,8 @@ def make_handler(service):
                 return service.rename_code_prefix(body.get('old_prefix'), body.get('new_prefix'))
             if method == 'POST' and path == '/database/code-prefixes/delete':
                 return service.delete_code_prefix(body.get('prefix'))
+            if method == 'POST' and path == '/database/code-prefixes/filter-blacklist':
+                return service.sync_code_prefix_filter_blacklist(body.get('prefixes', []))
             if method == 'GET' and path == '/ladder/board':
                 return service.get_ladder_board(
                     query.get('board_key', [''])[0],

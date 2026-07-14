@@ -1,10 +1,13 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
 from app.backend.client import BackendClient
 from app.backend.service import BackendService
 from app.core.ladder_board import LADDER_BOARD_ACTOR
+from app.core.operation_timeout_settings import get_operation_timeout_seconds
 
 
 class _FilterServiceStub:
@@ -29,6 +32,18 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
         service._actor_snapshot_filter_fingerprint = BackendService._build_actor_snapshot_filter_fingerprint(
             filter_settings
         )
+        service.db = type(
+            'DatabaseStub',
+            (),
+            {
+                'sync_pending_masterpiece_actor_registrations': lambda self: {
+                    'pending_total': 0,
+                    'added_count': 0,
+                    'failed_count': 0,
+                    'failures': [],
+                }
+            },
+        )()
         return service
 
     def test_detail_snapshot_persists_across_service_restarts(self):
@@ -140,6 +155,18 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
 
             self.assertNotIn('alice', service._actor_detail_snapshots)
             self.assertIn('bob', service._actor_detail_snapshots)
+
+    def test_blacklisted_actor_detail_snapshot_is_rejected_before_cache(self):
+        snapshot_file = Path(tempfile.gettempdir()) / 'actor_snapshot_blacklisted.json'
+        service = self._build_service(snapshot_file)
+        service.db = type(
+            'DatabaseStub',
+            (),
+            {'is_actor_blacklisted': lambda self, _actor_name: True},
+        )()
+
+        with self.assertRaises(ValueError):
+            BackendService.get_actor_detail_snapshot(service, 'Hidden Actor')
             self.assertEqual(service._actor_library_snapshots, {})
 
             BackendService.update_ladder_entry_medal(service, LADDER_BOARD_ACTOR, 'Bob', 'Legend')
@@ -149,6 +176,17 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
     def test_force_refresh_actor_list_does_not_auto_pre_generate_detail_snapshots(self):
         snapshot_file = Path(tempfile.gettempdir()) / 'actor_snapshot_force_refresh.json'
         service = self._build_service(snapshot_file)
+        sync_calls = []
+        service.db = type(
+            'DatabaseStub',
+            (),
+            {
+                'sync_pending_masterpiece_actor_registrations': lambda self: (
+                    sync_calls.append(True)
+                    or {'pending_total': 1, 'added_count': 1, 'failed_count': 0, 'failures': []}
+                )
+            },
+        )()
         service.list_actors = lambda *args, **kwargs: {
             'actors': [{'name': 'Alice'}],
             'total_count': 1,
@@ -164,6 +202,7 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
         result = BackendService.list_actors_snapshot(service, force_refresh=True)
 
         self.assertFalse(result['cache_hit'])
+        self.assertEqual(sync_calls, [True])
 
     def test_background_actor_snapshot_can_skip_update_status(self):
         snapshot_file = Path(tempfile.gettempdir()) / 'actor_snapshot_lightweight_refresh.json'
@@ -198,6 +237,20 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
             BackendService.get_actor_detail_snapshot(service, 'A/B:C?')
 
             self.assertTrue((Path(temp_dir) / 'actor_detail' / 'a%2Fb%3Ac%3F.json').exists())
+
+
+class BackendServiceCodePrefixDetailSnapshotTest(unittest.TestCase):
+    def test_blacklisted_code_prefix_detail_snapshot_is_rejected_before_cache(self):
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service.db = type(
+            'DatabaseStub',
+            (),
+            {'is_code_prefix_blacklisted': lambda self, _prefix: True},
+        )()
+
+        with self.assertRaises(ValueError):
+            BackendService.get_code_prefix_detail_snapshot(service, 'ROE')
 
 
 class BackendServiceMasterpieceDetailSnapshotTest(unittest.TestCase):
@@ -242,6 +295,19 @@ class BackendServiceMasterpieceDetailSnapshotTest(unittest.TestCase):
 
 
 class BackendClientDetailSnapshotTest(unittest.TestCase):
+    def test_refresh_masterpiece_actors_uses_registry_refresh_endpoint(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        calls = []
+        client._post = lambda path, payload=None, timeout=None: calls.append((path, payload, timeout)) or {
+            'blacklisted_count': 1,
+            'removed_count': 1,
+        }
+
+        result = client.refresh_masterpiece_actors()
+
+        self.assertEqual(result['removed_count'], 1)
+        self.assertEqual(calls, [('/masterpiece/actors/refresh', None, None)])
+
     def test_list_actor_snapshot_can_request_lightweight_update_status(self):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
         calls = []
@@ -293,20 +359,94 @@ class BackendClientDetailSnapshotTest(unittest.TestCase):
             [('/masterpiece/detail?code=PFSA-001&refresh=1', 120)],
         )
 
-    def test_rebuild_detail_snapshots_uses_twenty_minute_timeout(self):
+
+class BackendServiceDetailSnapshotRebuildJobTest(unittest.TestCase):
+    def test_rebuild_starts_once_and_reuses_running_job(self):
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service._detail_snapshot_rebuild_lock = threading.Lock()
+        service._detail_snapshot_rebuild_thread = None
+        service._detail_snapshot_rebuild_state = {'status': 'idle'}
+        service.db = type(
+            'DatabaseStub',
+            (),
+            {
+                'sync_pending_masterpiece_actor_registrations': lambda self: {
+                    'pending_total': 1,
+                    'added_count': 1,
+                    'failed_count': 0,
+                    'failures': [],
+                }
+            },
+        )()
+        started = threading.Event()
+        release = threading.Event()
+        actor_calls = []
+
+        def rebuild_actors():
+            actor_calls.append(True)
+            started.set()
+            release.wait(2)
+            return {'actor_total': 2, 'actor_refreshed': 2, 'actor_failed': 0}
+
+        service._rebuild_actor_detail_snapshots = rebuild_actors
+        service._rebuild_code_prefix_detail_snapshots = lambda: {
+            'code_prefix_total': 1,
+            'code_prefix_refreshed': 1,
+            'code_prefix_failed': 0,
+        }
+
+        started_at = time.perf_counter()
+        first = BackendService.rebuild_detail_snapshots(service)
+        elapsed = time.perf_counter() - started_at
+        self.assertTrue(started.wait(1))
+        second = BackendService.rebuild_detail_snapshots(service)
+        release.set()
+        service._detail_snapshot_rebuild_thread.join(2)
+        completed = BackendService.get_detail_snapshot_rebuild_status(service)
+
+        self.assertLess(elapsed, 0.2)
+        self.assertEqual(first['status'], 'running')
+        self.assertTrue(second['reused'])
+        self.assertEqual(actor_calls, [True])
+        self.assertEqual(completed['status'], 'completed')
+        self.assertEqual(completed['actor_refreshed'], 2)
+        self.assertEqual(completed['masterpiece_actor_added'], 1)
+
+    def test_rebuild_detail_snapshots_polls_background_job_without_long_request(self):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
-        calls = []
+        post_calls = []
+        get_calls = []
+        statuses = iter(
+            [
+                {'status': 'running', 'job_id': 'detail-1'},
+                {
+                    'status': 'completed',
+                    'job_id': 'detail-1',
+                    'actor_total': 2,
+                    'actor_refreshed': 2,
+                    'code_prefix_total': 1,
+                    'code_prefix_refreshed': 1,
+                },
+            ]
+        )
 
         def fake_post(path, payload=None, timeout=None):
-            calls.append((path, payload, timeout))
-            return {'success': True}
+            post_calls.append((path, payload, timeout))
+            return next(statuses)
+
+        def fake_get(path, timeout=None):
+            get_calls.append((path, timeout))
+            return next(statuses)
 
         client._post = fake_post
+        client._get = fake_get
 
-        result = client.rebuild_detail_snapshots()
+        result = client.rebuild_detail_snapshots(poll_interval=0)
 
-        self.assertTrue(result['success'])
-        self.assertEqual(calls, [('/snapshots/details/rebuild', None, 1200)])
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(post_calls, [('/snapshots/details/rebuild', None, 30)])
+        self.assertEqual(get_calls, [('/snapshots/details/rebuild/status', 30)])
 
     def test_enrich_masterpiece_detail_uses_long_timeout_for_two_browser_sources(self):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
@@ -321,7 +461,8 @@ class BackendClientDetailSnapshotTest(unittest.TestCase):
         result = client.enrich_masterpiece_detail('ALDN-514')
 
         self.assertEqual(result['detail']['code'], 'ALDN-514')
-        self.assertEqual(calls, [('/masterpiece/detail/enrich', {'code': 'ALDN-514'}, 1200)])
+        expected_timeout = max(30, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        self.assertEqual(calls, [('/masterpiece/detail/enrich', {'code': 'ALDN-514'}, expected_timeout)])
 
 
 if __name__ == '__main__':

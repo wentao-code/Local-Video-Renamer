@@ -129,9 +129,14 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         )
 
     def _build_entries_payload(self):
+        actor_refresh = {}
+        refresh_masterpiece_actors = getattr(self.backend_client, 'refresh_masterpiece_actors', None)
+        if callable(refresh_masterpiece_actors):
+            actor_refresh = dict(refresh_masterpiece_actors() or {})
         return {
             'rows': self.backend_client.list_masterpiece_entries(),
             'global_medals': self.backend_client.list_global_medals(),
+            'actor_refresh': actor_refresh,
         }
 
     def handle_add_entry(self):
@@ -338,6 +343,9 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self._deferred_silent_errors = False
         self._deferred_allow_deferred_close = False
         self._suppress_async_error_dialog = False
+        self._detail_request_sequence = 0
+        self._active_request_token = 0
+        self._active_request_code = self.code
         self._init_async_task_host()
         self._init_deferred_reload(self._perform_deferred_load)
         self.setWindowTitle(f'名作堂详情 - {self.code}')
@@ -412,6 +420,14 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.detail_scroll_layout.addWidget(self.content_widget)
         self.set_async_busy_widgets([self.btn_open_primary, self.btn_enrich, self.btn_refresh])
 
+    def apply_query_context(self, context):
+        entity = getattr(context, 'entity', None)
+        if getattr(entity, 'entity_type', '') != EntityType.MASTERPIECE:
+            return
+        code = str(getattr(entity, 'entity_key', '') or '').strip().upper()
+        if code and code != self.code:
+            self._switch_code(code)
+
     def load_detail(self, force_refresh=False, silent_errors=False, allow_deferred_close=False):
         if self.is_async_task_running():
             self._deferred_force_refresh = self._deferred_force_refresh or bool(force_refresh)
@@ -421,9 +437,17 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             )
             self.schedule_deferred_reload(0)
             return
+        request_token = self._next_detail_request_token()
+        requested_code = str(self.code or '').strip().upper()
+        self._active_request_token = request_token
+        self._active_request_code = requested_code
         self._suppress_async_error_dialog = bool(silent_errors)
         self.start_async_task(
-            lambda: self._load_detail_payload(force_refresh=force_refresh),
+            lambda: self._load_detail_payload(
+                requested_code,
+                force_refresh=force_refresh,
+                request_token=request_token,
+            ),
             self._on_detail_loaded,
             '读取名作堂详情失败',
             block_ui=not bool(allow_deferred_close),
@@ -443,14 +467,24 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             allow_deferred_close=allow_deferred_close,
         )
 
-    def _load_detail_payload(self, force_refresh=False):
+    def _load_detail_payload(self, requested_code=None, force_refresh=False, request_token=None):
+        requested_code = str(requested_code or self.code or '').strip().upper()
         if hasattr(self.refresh_client, 'get_masterpiece_detail_snapshot'):
-            return self.refresh_client.get_masterpiece_detail_snapshot(self.code, force_refresh=force_refresh)
-        detail = self.backend_client.get_masterpiece_detail(self.code)
+            result = self.refresh_client.get_masterpiece_detail_snapshot(
+                requested_code,
+                force_refresh=force_refresh,
+            )
+        else:
+            detail = self.backend_client.get_masterpiece_detail(requested_code)
+            result = {
+                'detail': dict(detail or {}),
+                'refreshed_at': '',
+                'cache_hit': False,
+            }
         return {
-            'detail': dict(detail or {}),
-            'refreshed_at': '',
-            'cache_hit': False,
+            **dict(result or {}),
+            'request_token': request_token,
+            'request_code': requested_code,
         }
 
     def handle_enrich(self):
@@ -463,6 +497,8 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
 
     def _on_detail_loaded(self, result):
         payload = dict(result or {})
+        if not self._is_current_detail_response(payload):
+            return
         self.detail = dict(payload.get('detail', payload or {}) or {})
         self._suppress_async_error_dialog = False
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or '暂无'
@@ -479,6 +515,33 @@ class MasterpieceDetailWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             self._startup_refresh_pending = False
             if bool(payload.get('cache_hit')):
                 self.load_detail(force_refresh=True, silent_errors=True, allow_deferred_close=True)
+
+    def _next_detail_request_token(self):
+        self._detail_request_sequence += 1
+        return self._detail_request_sequence
+
+    def _is_current_detail_response(self, payload):
+        payload = dict(payload or {})
+        request_token = payload.get('request_token')
+        request_code = str(payload.get('request_code', '') or '').strip().upper()
+        if request_token is None and not request_code:
+            return True
+        return (
+            int(request_token or 0) == int(getattr(self, '_active_request_token', 0) or 0)
+            and request_code == str(self.code or '').strip().upper()
+            and request_code == str(getattr(self, '_active_request_code', '') or '').strip().upper()
+        )
+
+    def _switch_code(self, code):
+        self.code = str(code or '').strip().upper()
+        self.detail = {}
+        self._startup_refresh_pending = True
+        self._deferred_force_refresh = False
+        self._deferred_silent_errors = False
+        self._deferred_allow_deferred_close = False
+        self._active_request_code = self.code
+        self.setWindowTitle(f'名作堂详情 - {self.code}')
+        self.load_detail()
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:

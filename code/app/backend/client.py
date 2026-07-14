@@ -1,4 +1,5 @@
 from urllib.parse import urlencode
+import time
 
 import requests
 
@@ -159,6 +160,9 @@ class BackendClient:
     def list_masterpiece_entries(self):
         return self._get('/masterpiece/entries').get('entries', [])
 
+    def refresh_masterpiece_actors(self):
+        return self._post('/masterpiece/actors/refresh')
+
     def add_masterpiece_entry(self, code):
         return self._post('/masterpiece/entries/add', {'code': code}).get('entry', {})
 
@@ -233,9 +237,16 @@ class BackendClient:
         payload = {'setting_keys': None if setting_keys is None else list(setting_keys)}
         return self._post('/settings/timeouts/reset', payload).get('settings', [])
 
-    def rebuild_detail_snapshots(self):
-        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
-        return self._post('/snapshots/details/rebuild', timeout=timeout)
+    def rebuild_detail_snapshots(self, poll_interval=1.0):
+        request_timeout = max(1, self.timeout)
+        result = self._post('/snapshots/details/rebuild', timeout=request_timeout)
+        while str((result or {}).get('status', '') or '').strip().lower() == 'running':
+            if float(poll_interval or 0) > 0:
+                time.sleep(float(poll_interval))
+            result = self._get('/snapshots/details/rebuild/status', timeout=request_timeout)
+        if str((result or {}).get('status', '') or '').strip().lower() == 'failed':
+            raise RuntimeError(str((result or {}).get('error', '') or '详情快照全量刷新失败'))
+        return result
 
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
         return self.get_metric_analysis('actor', metric_key, force_refresh=force_refresh)
@@ -509,6 +520,9 @@ class BackendClient:
 
     def delete_code_prefix(self, prefix):
         return self._post('/database/code-prefixes/delete', {'prefix': prefix}).get('deleted_count', 0)
+
+    def sync_code_prefix_filter_blacklist(self, prefixes):
+        return self._post('/database/code-prefixes/filter-blacklist', {'prefixes': list(prefixes or [])})
 
     def get_ladder_board(self, board_key):
         return self.get_ladder_board_snapshot(board_key).get('board', {})

@@ -26,6 +26,49 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_manual_quark_backup_preserves_login_required_result(self):
+        with patch.object(main_window, 'QuarkBackupService') as service_class:
+            service_class.return_value.run_now.return_value = {
+                'status': 'login_required',
+                'error': '需要先登录夸克网盘',
+            }
+
+            result = main_window.VidNormApp._run_manual_quark_backup()
+
+        self.assertEqual(result['status'], 'login_required')
+
+    def test_login_required_backup_result_opens_login_and_resumes_upload(self):
+        calls = []
+        stub = SimpleNamespace(
+            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
+            show_quark_login_dialog=lambda resume_backup=False: calls.append(('login', resume_backup)),
+        )
+
+        main_window.VidNormApp._on_manual_quark_backup_finished(
+            stub,
+            {'status': 'login_required', 'error': 'expired'},
+        )
+
+        self.assertIn(('login', True), calls)
+
+    def test_successful_login_can_schedule_one_backup_resume(self):
+        calls = []
+        dialog = SimpleNamespace(exec_=lambda: main_window.QDialog.Accepted)
+        stub = SimpleNamespace(
+            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
+            upload_quark_backup=lambda: calls.append(('upload', True)),
+        )
+
+        with patch.object(main_window, 'QuarkLoginDialog', return_value=dialog), patch.object(
+            main_window.QTimer,
+            'singleShot',
+            side_effect=lambda _delay, callback: callback(),
+        ):
+            connected = main_window.VidNormApp.show_quark_login_dialog(stub, resume_backup=True)
+
+        self.assertTrue(connected)
+        self.assertEqual(calls.count(('upload', True)), 1)
+
     def test_upload_quark_backup_enqueues_a_single_attempt_maintenance_task(self):
         queued = []
 
@@ -211,7 +254,10 @@ class MainWindowStartupTest(unittest.TestCase):
             calls.append(('build_client', backend_client, minimum_timeout))
             return refresh_client
 
-        with patch('app.gui.main_window._build_refresh_client', fake_build_refresh_client):
+        with (
+            patch('app.gui.main_window.get_operation_timeout_seconds', return_value=1200),
+            patch('app.gui.main_window._build_refresh_client', fake_build_refresh_client),
+        ):
             main_window.VidNormApp._run_snapshot_refresh_cycle(stub)
 
         self.assertEqual(calls[0], ('build_client', stub.backend_client, 1200))
@@ -389,7 +435,10 @@ class MainWindowStartupTest(unittest.TestCase):
             _on_startup_refresh_task_failed=lambda _message: None,
         )
 
-        with patch('app.gui.main_window._build_refresh_client', return_value=refresh_client) as build_refresh_client:
+        with (
+            patch('app.gui.main_window.get_operation_timeout_seconds', return_value=1200),
+            patch('app.gui.main_window._build_refresh_client', return_value=refresh_client) as build_refresh_client,
+        ):
             main_window.VidNormApp.enqueue_startup_refresh_tasks(stub)
 
         build_refresh_client.assert_called_once_with(
@@ -659,7 +708,8 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(captured['task_result']['actor_refreshed'], 2)
         self.assertEqual(captured['task_result']['code_prefix_refreshed'], 1)
         self.assertEqual(captured['success_handler'], stub._on_refresh_detail_snapshots_finished)
-        self.assertTrue(captured['block_ui'])
+        self.assertFalse(captured['block_ui'])
+        self.assertTrue(captured['kwargs']['allow_deferred_close'])
         self.assertEqual(captured['kwargs']['task_title'], '主界面 全量刷新快照')
 
     def test_task_queue_button_turns_green_when_queue_is_done(self):

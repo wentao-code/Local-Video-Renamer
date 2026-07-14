@@ -30,12 +30,19 @@ class ActorDetailLibrary:
         actor_name = str(actor_name or '').strip()
         if not actor_name:
             raise ValueError('缺少演员姓名')
+        is_blacklisted = getattr(self.database, 'is_actor_blacklisted', None)
+        if callable(is_blacklisted) and is_blacklisted(actor_name):
+            raise ValueError(f'演员 {actor_name} 已被加入黑名单')
 
         actor_row = self._find_actor(actor_name)
         medal_maps = self._load_medal_maps()
-        raw_local_videos = self._find_local_actor_videos(actor_name, medal_maps=medal_maps)
+        raw_local_videos = self._filter_blacklisted_code_prefix_movies(
+            self._find_local_actor_videos(actor_name, medal_maps=medal_maps)
+        )
         local_videos = self._filter_visible_movies(raw_local_videos)
-        raw_web_movies = self._enrich_rows(self.database.list_actor_movies(actor_name), medal_maps=medal_maps)
+        raw_web_movies = self._filter_blacklisted_code_prefix_movies(
+            self._enrich_rows(self.database.list_actor_movies(actor_name), medal_maps=medal_maps)
+        )
         web_movies = self._filter_visible_movies(self._filter_eligible_movies(raw_web_movies))
         eligible_web_movies = list(web_movies)
         web_record = self.database.get_actor_enrichment_record(actor_name)
@@ -147,6 +154,26 @@ class ActorDetailLibrary:
         if self.video_filter_service is None:
             return list(rows or [])
         return self.video_filter_service.filter_video_rows(rows)
+
+    def _filter_blacklisted_code_prefix_movies(self, rows):
+        list_hidden = getattr(self.database, 'list_hidden_code_prefixes', None)
+        if not callable(list_hidden):
+            return list(rows or [])
+        hidden_prefixes = {
+            str(prefix or '').strip().upper()
+            for prefix in (list_hidden() or set())
+            if str(prefix or '').strip()
+        }
+        if not hidden_prefixes:
+            return list(rows or [])
+        visible = []
+        for row in rows or []:
+            code = standardize_video_code((row or {}).get('code', ''))
+            prefix = extract_code_prefix(code)
+            if prefix and prefix.upper() in hidden_prefixes:
+                continue
+            visible.append(row)
+        return visible
 
     def _build_live_web_enrichment_status(self, enrichment, movies, cache_rows):
         avfan_status = str((enrichment or {}).get('avfan_enrichment_status', '')).strip()

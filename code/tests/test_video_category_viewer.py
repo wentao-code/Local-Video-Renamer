@@ -11,8 +11,10 @@ from PyQt5.QtWidgets import QApplication
 
 from app.backend.client import BackendClient
 from app.backend.service import BackendService
+from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, FILTER_FIELD_TITLE
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
+from app.services.video import VideoFilterService
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -61,9 +63,13 @@ class _RefreshClientStub:
 class _FilterServiceStub:
     def __init__(self, settings=None):
         self._settings = dict(settings or {})
+        self._service = VideoFilterService(settings_loader=self.load_settings)
 
     def load_settings(self):
         return dict(self._settings)
+
+    def filter_video_rows(self, rows, settings=None):
+        return self._service.filter_video_rows(rows, settings=settings)
 
 
 class VideoCategoryViewerWindowTest(unittest.TestCase):
@@ -119,6 +125,23 @@ class VideoCategoryViewerWindowTest(unittest.TestCase):
                 self.assertEqual(window.refresh_client.calls, [False, True])
                 self.assertIn('2026-07-07 11:05:00', window.last_refreshed_label.text())
                 self.assertIn('7秒', window.last_refresh_duration_label.text())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_filter_save_reuses_snapshot_instead_of_forcing_source_refresh(self):
+        with (
+            patch('app.gui.video_category_viewer.BackendClient', _RefreshClientStub),
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task),
+        ):
+            window = VideoCategoryViewerWindow(_BackendClientStub())
+            try:
+                window.show()
+                window.refresh_client.calls.clear()
+
+                window.on_filter_rules_saved()
+
+                self.assertEqual(window.refresh_client.calls, [False])
             finally:
                 window.hide()
                 window.deleteLater()
@@ -185,8 +208,57 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
         service._video_category_snapshot_filter_fingerprint = BackendService._build_video_category_snapshot_filter_fingerprint(
             filter_settings
         )
+        service._video_category_snapshot_category_fingerprint = (
+            BackendService._build_video_category_snapshot_category_fingerprint(filter_settings)
+        )
         service._video_category_overview_snapshot = None
         return service
+
+    def test_display_filter_change_reuses_raw_candidate_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_file = Path(temp_dir) / 'video_category_snapshot.json'
+            settings = {'rules': {FILTER_FIELD_TITLE: []}}
+            service = self._build_service(snapshot_file, filter_settings=settings)
+            service.video_filter_service._settings = settings
+            service._current_video_category_source_version = lambda: 'db-v1'
+            calls = []
+            service.list_unfiltered_videos_requiring_manual_category = lambda: calls.append(True) or {
+                'videos': [
+                    {'code': 'IPX-001', 'title': 'keep', 'javtxt_enrichment_status': '已补全'},
+                    {'code': 'IPX-002', 'title': 'hide me', 'javtxt_enrichment_status': '已补全'},
+                ],
+                'staged_count': 0,
+            }
+
+            BackendService.list_videos_requiring_manual_category_snapshot(service)
+            settings['rules'][FILTER_FIELD_TITLE] = ['hide']
+            service.video_filter_service._settings = settings
+            result = BackendService.list_videos_requiring_manual_category_snapshot(service)
+
+            self.assertEqual(calls, [True])
+            self.assertTrue(result['cache_hit'])
+            self.assertEqual([row['code'] for row in result['videos']], ['IPX-001'])
+
+    def test_category_filter_change_rebuilds_raw_candidate_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_file = Path(temp_dir) / 'video_category_snapshot.json'
+            settings = {'rules': {FILTER_FIELD_CO_STAR_CODE: []}}
+            service = self._build_service(snapshot_file, filter_settings=settings)
+            service.video_filter_service._settings = settings
+            service._current_video_category_source_version = lambda: 'db-v1'
+            calls = []
+            service.list_unfiltered_videos_requiring_manual_category = lambda: calls.append(True) or {
+                'videos': [],
+                'staged_count': 0,
+            }
+
+            BackendService.list_videos_requiring_manual_category_snapshot(service)
+            settings['rules'][FILTER_FIELD_CO_STAR_CODE] = ['ABC']
+            service.video_filter_service._settings = settings
+            result = BackendService.list_videos_requiring_manual_category_snapshot(service)
+
+            self.assertEqual(calls, [True, True])
+            self.assertFalse(result['cache_hit'])
 
     def test_snapshot_persists_across_service_restarts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -194,7 +266,7 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             first_service = self._build_service(snapshot_file)
             timestamps = iter(['2026-07-07 11:10:00'])
             first_service._current_snapshot_timestamp = lambda: next(timestamps)
-            first_service.list_videos_requiring_manual_category = lambda: {
+            first_service.list_unfiltered_videos_requiring_manual_category = lambda: {
                 'videos': [{'code': 'IPX-001', 'title': 'A'}],
                 'staged_count': 2,
             }
@@ -205,7 +277,7 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             self.assertEqual(first['refreshed_at'], '2026-07-07 11:10:00')
 
             second_service = self._build_service(snapshot_file)
-            second_service.list_videos_requiring_manual_category = lambda: (_ for _ in ()).throw(
+            second_service.list_unfiltered_videos_requiring_manual_category = lambda: (_ for _ in ()).throw(
                 AssertionError('should reuse persisted video category snapshot')
             )
             BackendService._load_video_category_snapshot(second_service)
@@ -223,7 +295,7 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             source_versions = iter(['db-v1', 'db-v2', 'db-v2'])
             service._current_video_category_source_version = lambda: next(source_versions)
             calls = []
-            service.list_videos_requiring_manual_category = lambda: calls.append(True) or {
+            service.list_unfiltered_videos_requiring_manual_category = lambda: calls.append(True) or {
                 'videos': [],
                 'staged_count': 0,
             }
