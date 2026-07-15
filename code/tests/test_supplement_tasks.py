@@ -168,7 +168,10 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
                 ['Actor B'],
             )
 
-            db.mark_enrichment_batch_item(video_plan['plan_id'], 'video', 1, 'completed')
+            claimed = db.claim_enrichment_batch_items(video_plan['plan_id'], 'video', 1)
+            db.mark_enrichment_batch_item(
+                video_plan['plan_id'], 'video', claimed[0]['sequence_index'], 'completed'
+            )
 
             video_items = db.list_enrichment_batch_items(video_plan['plan_id'], 'video', status=None)
             code_prefix_items = db.list_enrichment_batch_items(
@@ -176,8 +179,10 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
                 'code_prefix',
                 status=None,
             )
-            self.assertEqual(video_items[0]['status'], 'completed')
-            self.assertEqual(video_items[1]['status'], 'pending')
+            self.assertEqual(
+                [(row['sequence_index'], row['status']) for row in video_items],
+                [(2, 'pending')],
+            )
             self.assertEqual(code_prefix_items[0]['status'], 'pending')
 
     def test_enrichment_plan_claim_and_progress_are_persisted(self):
@@ -198,7 +203,9 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
             self.assertTrue(claimed[0]['started_at'])
             self.assertTrue(claimed[0]['claimed_at'])
             self.assertEqual(claimed[0]['attempt_count'], 1)
-            self.assertEqual(db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2), [])
+            resumed = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 1)
+            self.assertEqual([row['sequence_index'] for row in resumed], [1, 2])
+            self.assertEqual([row['attempt_count'] for row in resumed], [1, 1])
 
             db.mark_enrichment_batch_item(plan['plan_id'], 'video', 1, 'completed')
             db.mark_enrichment_batch_item(plan['plan_id'], 'video', 2, 'failed', error='temporary')
@@ -238,8 +245,8 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
             self.assertEqual(progress['pending_count'], 1)
             self.assertEqual(progress['running_count'], 0)
             self.assertEqual(
-                db.list_enrichment_batch_items(plan['plan_id'], 'video', status='completed')[0]['sequence_index'],
-                1,
+                db.list_enrichment_batch_items(plan['plan_id'], 'video', status='completed'),
+                [],
             )
 
     def test_video_supplement_candidates_include_unpublished_actor_rows_as_actor_only(self):

@@ -26,6 +26,54 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_enrichment_plan_and_already_running_errors_are_non_retryable(self):
+        self.assertTrue(
+            main_window.VidNormApp._is_non_retryable_enrichment_error(
+                '创建补全计划失败: timeout',
+                task_category=main_window.TASK_CATEGORY_ENRICHMENT,
+            )
+        )
+        self.assertTrue(
+            main_window.VidNormApp._is_non_retryable_enrichment_error(
+                '当前已有补全任务正在运行',
+                task_category=main_window.TASK_CATEGORY_ENRICHMENT,
+            )
+        )
+        self.assertFalse(
+            main_window.VidNormApp._is_non_retryable_enrichment_error(
+                '网络超时',
+                task_category=main_window.TASK_CATEGORY_ENRICHMENT,
+            )
+        )
+
+    def test_enrichment_worker_creates_plan_inside_run_before_enrichment(self):
+        calls = []
+        client = SimpleNamespace(
+            create_enrichment_batch_plan=lambda payload: calls.append(('plan', payload)) or {
+                'plan': {'plan_id': 'plan-1', 'task_kind': 'video'}
+            },
+            enrich_videos=lambda *args, **kwargs: calls.append(('enrich', kwargs)) or {'processed_count': 0},
+        )
+        state = {}
+        worker = main_window.EnrichmentWorker(
+            client,
+            3,
+            False,
+            False,
+            'video_library',
+            'javtxt',
+            plan_payload={'task_kind': 'video'},
+            plan_state=state,
+        )
+        finished = []
+        worker.finished.connect(finished.append)
+
+        worker.run()
+
+        self.assertEqual([call[0] for call in calls], ['plan', 'enrich'])
+        self.assertEqual(calls[1][1]['plan_id'], 'plan-1')
+        self.assertEqual(state['plan_id'], 'plan-1')
+        self.assertEqual(finished[0]['plan_id'], 'plan-1')
     def test_manual_quark_backup_preserves_login_required_result(self):
         with patch.object(main_window, 'QuarkBackupService') as service_class:
             service_class.return_value.run_now.return_value = {
@@ -801,7 +849,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(result, [plan])
         self.assertEqual(captured, [plan])
 
-    def test_enrichment_button_stays_enabled_while_task_is_active(self):
+    def test_enrichment_button_is_disabled_while_task_is_active(self):
         enrich_button = SimpleNamespace(enabled=None)
         stop_button = SimpleNamespace(enabled=None)
         enrich_button.setEnabled = lambda value: setattr(enrich_button, 'enabled', bool(value))
@@ -817,7 +865,7 @@ class MainWindowStartupTest(unittest.TestCase):
 
         main_window.VidNormApp.update_enrichment_controls(stub)
 
-        self.assertTrue(enrich_button.enabled)
+        self.assertFalse(enrich_button.enabled)
         self.assertTrue(stop_button.enabled)
 
     def test_force_exit_cancel_does_not_exit_process(self):
@@ -971,7 +1019,8 @@ class MainWindowStartupTest(unittest.TestCase):
                 return None
 
         backend_client = SimpleNamespace(
-            create_enrichment_batch_plan=lambda payload: plan_calls.append(dict(payload)) or {'plan_id': 'plan-1'}
+            create_enrichment_batch_plan=lambda payload: plan_calls.append(dict(payload)) or {'plan_id': 'plan-1'},
+            enrich_videos=lambda *args, **kwargs: {'processed_count': 0},
         )
 
         def capture_queued_runner(
@@ -1045,6 +1094,8 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(captured['task_kind'], 'single')
 
         captured['before_start']()
+        self.assertEqual(plan_calls, [])
+        captured['worker_factory']().run()
 
         self.assertEqual(len(plan_calls), 1)
         self.assertEqual(plan_calls[0]['batch_limit'], 5)
@@ -1059,7 +1110,8 @@ class MainWindowStartupTest(unittest.TestCase):
                 return None
 
         backend_client = SimpleNamespace(
-            create_enrichment_batch_plan=lambda payload: plan_calls.append(dict(payload)) or {'plan_id': 'single-plan'}
+            create_enrichment_batch_plan=lambda payload: plan_calls.append(dict(payload)) or {'plan_id': 'single-plan'},
+            enrich_videos=lambda *args, **kwargs: {'processed_count': 0},
         )
 
         def capture_queued_runner(
@@ -1120,6 +1172,8 @@ class MainWindowStartupTest(unittest.TestCase):
 
         captured['before_start']()
         worker = captured['worker_factory']()
+        self.assertEqual(plan_calls, [])
+        worker.run()
 
         self.assertEqual(len(plan_calls), 1)
         self.assertEqual(plan_calls[0]['task_kind'], 'actor')
@@ -1127,8 +1181,8 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(plan_calls[0]['source_key'], 'javtxt')
         self.assertEqual(plan_calls[0]['batch_limit'], 7)
         self.assertEqual(plan_calls[0]['batch_count_limit'], 1)
-        self.assertEqual(worker.plan_id, 'single-plan')
-        self.assertEqual(worker.plan_task_kind, 'actor')
+        self.assertEqual(worker.plan_state['plan_id'], 'single-plan')
+        self.assertEqual(worker.plan_state['task_kind'], 'actor')
 
     # ── _queued_gui_task_runners lifecycle tests ──────────────────────────
 

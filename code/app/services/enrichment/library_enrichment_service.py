@@ -102,7 +102,7 @@ class LibraryEnrichmentService:
             )
 
         if target_type == VIDEO_LIBRARY_TARGET:
-            if source_key == SUPPLEMENT_TASK_SOURCE:
+            if source_key in {AVFAN_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE}:
                 service = VideoSupplementEnrichmentService(
                     self.database,
                     show_browser=self.show_browser,
@@ -147,6 +147,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     planned_prefixes=self._planned_prefixes(),
+                    planned_items=self.planned_items,
                 )
             else:
                 service = CodePrefixEnrichmentService(
@@ -186,6 +187,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     planned_actor_names=self._planned_actor_names(),
+                    planned_items=self.planned_items,
                 )
             else:
                 service = ActorEnrichmentService(

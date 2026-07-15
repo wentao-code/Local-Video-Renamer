@@ -194,6 +194,33 @@ class BackendServiceCandidateLibraryTest(unittest.TestCase):
             {'candidates': [{'actor_name': '缓存演员', 'video_count': 7}]},
         )
 
+    def test_list_candidate_code_prefixes_reconciles_saved_code_filters_only(self):
+        class FakeDatabase:
+            def __init__(self):
+                self.blacklisted = []
+
+            def blacklist_code_prefixes(self, prefixes):
+                self.blacklisted.append(list(prefixes))
+                return {'blacklisted_count': len(prefixes)}
+
+        class FakeCandidateService:
+            def list_code_prefix_candidates(self, limit=50):
+                return []
+
+        class FakeFilterService:
+            def load_settings(self):
+                return {'rules': {'code': ['FC2'], 'co_star_code': ['AKDL']}}
+
+        service = BackendService.__new__(BackendService)
+        service.ensure_database_loaded = lambda: None
+        service.db = FakeDatabase()
+        service.video_filter_service = FakeFilterService()
+        service.candidate_library_service = FakeCandidateService()
+        service._sync_persisted_code_filter_blacklist = lambda: BackendService._sync_persisted_code_filter_blacklist(service)
+
+        self.assertEqual(BackendService.list_candidate_code_prefixes(service), {'candidates': []})
+        self.assertEqual(service.db.blacklisted, [['FC2']])
+
     def test_refresh_candidate_library_delegates_to_candidate_service(self):
         class FakeCandidateService:
             def refresh_candidates(self):

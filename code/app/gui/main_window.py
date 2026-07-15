@@ -111,6 +111,8 @@ class EnrichmentWorker(QObject):
         batch_mode=False,
         plan_id='',
         plan_task_kind='',
+        plan_payload=None,
+        plan_state=None,
     ):
         super().__init__()
         self.backend_client = backend_client
@@ -122,9 +124,31 @@ class EnrichmentWorker(QObject):
         self.batch_mode = bool(batch_mode)
         self.plan_id = str(plan_id or '')
         self.plan_task_kind = str(plan_task_kind or '')
+        self.plan_payload = dict(plan_payload or {})
+        self.plan_state = plan_state if isinstance(plan_state, dict) else {}
 
     def run(self):
+        plan_id = str(self.plan_state.get('plan_id') or self.plan_id or '')
+        plan_task_kind = str(
+            self.plan_state.get('task_kind')
+            or self.plan_task_kind
+            or self.plan_payload.get('task_kind', '')
+        )
         try:
+            if self.plan_payload and not self.plan_state.get('plan_id'):
+                try:
+                    plan_response = self.backend_client.create_enrichment_batch_plan(self.plan_payload)
+                except Exception as exc:
+                    raise RuntimeError(f'创建补全计划失败: {exc}') from exc
+                plan = dict(plan_response.get('plan', plan_response) or {})
+                plan.setdefault('task_kind', self.plan_payload.get('task_kind', ''))
+                self.plan_state.update(plan)
+            plan_id = str(self.plan_state.get('plan_id') or self.plan_id or '')
+            plan_task_kind = str(
+                self.plan_state.get('task_kind')
+                or self.plan_task_kind
+                or self.plan_payload.get('task_kind', '')
+            )
             result = self.backend_client.enrich_videos(
                 self.limit,
                 show_browser=self.show_browser,
@@ -132,12 +156,21 @@ class EnrichmentWorker(QObject):
                 target_type=self.target_type,
                 source_key=self.source_key,
                 batch_mode=self.batch_mode,
-                plan_id=self.plan_id,
-                plan_task_kind=self.plan_task_kind,
+                plan_id=plan_id,
+                plan_task_kind=plan_task_kind,
             )
         except Exception as exc:
+            if plan_id and plan_task_kind and hasattr(self.backend_client, 'pause_enrichment_plan'):
+                try:
+                    self.backend_client.pause_enrichment_plan(plan_id, plan_task_kind, str(exc))
+                except Exception:
+                    pass
             self.failed.emit(str(exc))
             return
+        result = dict(result or {})
+        if plan_id:
+            result.setdefault('plan_id', plan_id)
+            result.setdefault('plan_task_kind', plan_task_kind)
         self.finished.emit(result)
 
 
@@ -852,6 +885,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
 
     def enrich_video_info(self):
+        if self._has_active_enrichment_plan():
+            self.status_label.setText('当前已有补全任务正在运行')
+            return False
+
         dialog = EnrichmentDialog(self)
         if not dialog.exec_():
             return
@@ -922,6 +959,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 batch_mode=(mode == 'batch'),
                 plan_id=batch_plan_state.get('plan_id', ''),
                 plan_task_kind=batch_plan_state.get('task_kind') or (batch_plan_payload or {}).get('task_kind', ''),
+                plan_payload=batch_plan_payload,
+                plan_state=batch_plan_state,
             )
         )
         self._queued_enrichment_task_title = VidNormApp._build_enrichment_task_queue_title(
@@ -1006,11 +1045,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         def before_start(record=None):
             self.current_enrichment_kind = queued_kind
             self.enrichment_mode = queued_mode
-            if batch_plan_payload and not batch_plan_state.get('plan_id'):
-                plan_response = self.backend_client.create_enrichment_batch_plan(batch_plan_payload)
-                plan_payload = dict(plan_response.get('plan', plan_response) or {})
-                if isinstance(batch_plan_state, dict):
-                    batch_plan_state.update(plan_payload)
             if queued_mode == 'batch':
                 self._active_enrichment_batch_plan_state = dict(batch_plan_state)
             if batch_plan_state.get('plan_id'):
@@ -1039,6 +1073,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.enrichment_task_runner = runner
             self.enrichment_thread = runner.thread
 
+        def handle_enrichment_finished(result):
+            if queued_mode == 'batch':
+                active_plan = dict(batch_plan_state or {})
+                if isinstance(result, dict):
+                    active_plan.setdefault('plan_id', result.get('plan_id', ''))
+                    active_plan.setdefault('task_kind', result.get('plan_task_kind', ''))
+                    active_plan.update(dict(result.get('plan_progress', {}) or {}))
+                self._active_enrichment_batch_plan_state = active_plan
+            self.on_enrichment_finished(result)
+
         self.update_enrichment_controls()
         self.reset_progress_widgets(keep_visible=True)
         runner_kwargs = {
@@ -1058,10 +1102,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if 'plan_id' in supported_parameters or accepts_kwargs:
             runner_kwargs['plan_id'] = batch_plan_state.get('plan_id', '')
             runner_kwargs['plan_progress'] = batch_plan_state
+        if 'max_attempts' in supported_parameters or accepts_kwargs:
+            runner_kwargs['max_attempts'] = 5
         self._start_queued_gui_runner(
             task_title,
             worker_factory,
-            self.on_enrichment_finished,
+            handle_enrichment_finished,
             self.on_enrichment_failed,
             **runner_kwargs,
         )
@@ -1348,7 +1394,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def update_enrichment_controls(self):
         enrichment_running = self.enrichment_thread is not None or self.enrichment_task_queued
-        self.btn_enrich.setEnabled(True)
+        self.btn_enrich.setEnabled(not enrichment_running and not self.batch_enrichment_active)
         self.btn_stop_enrich.setEnabled(enrichment_running or self.batch_enrichment_active)
         self.update_network_guard()
 
@@ -1561,6 +1607,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             worker = worker_factory()
 
             def handle_finished(result):
+                if isinstance(result, dict) and result.get('plan_id'):
+                    get_gui_task_queue().update_record_plan(
+                        record.task_id,
+                        result.get('plan_id'),
+                        result.get('plan_task_kind', task_kind),
+                        result.get('plan_progress', result),
+                    )
                 if record.plan_id and isinstance(result, dict) and result.get('plan_progress'):
                     get_gui_task_queue().update_plan_progress(record.plan_id, result.get('plan_progress'))
                 finished_handler(result)
@@ -1574,7 +1627,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                     if callable(cleanup_handler):
                         cleanup_handler()
                     if attempt_state['failed']:
-                        final_failure = get_gui_task_queue().mark_failed(record.task_id, attempt_state['message'])
+                        message = attempt_state['message']
+                        retryable = not VidNormApp._is_non_retryable_enrichment_error(
+                            message,
+                            task_category=task_category,
+                        )
+                        final_failure = get_gui_task_queue().mark_failed(
+                            record.task_id,
+                            message,
+                            retryable=retryable,
+                        )
                         if final_failure:
                             failed_handler(attempt_state['message'])
                         return
@@ -1606,6 +1668,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             enqueue_kwargs['plan_progress'] = plan_progress
         get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
         return True
+
+    @staticmethod
+    def _is_non_retryable_enrichment_error(message, task_category=''):
+        if str(task_category or '').strip() != TASK_CATEGORY_ENRICHMENT:
+            return False
+        normalized = str(message or '').strip()
+        return normalized.startswith('创建补全计划失败:') or '当前已有补全任务正在运行' in normalized
 
     def enqueue_startup_refresh_tasks(self):
         history = self._load_startup_refresh_history()

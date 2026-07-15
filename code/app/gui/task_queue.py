@@ -138,14 +138,14 @@ class GuiTaskQueue(QObject):
         self.changed.emit()
         self._schedule_start_next()
 
-    def mark_failed(self, task_id, error_message):
+    def mark_failed(self, task_id, error_message, retryable=True):
         record = self._find_record(task_id)
         if record is None:
             return True
         record.last_error = str(error_message or '')
         if self._running_task_id == task_id:
             self._running_task_id = None
-        if record.attempts < record.max_attempts:
+        if retryable and record.attempts < record.max_attempts:
             record.status = TASK_STATUS_WAITING
             self._waiting_records.append(record)
             self.changed.emit()

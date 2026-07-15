@@ -3,11 +3,93 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from app.backend import server as backend_server
 from app.backend.service import BackendService
 from app.core.backend_protocol import BACKEND_PROCESS_CODE_FINGERPRINT
 
 
 class BackendHealthTest(unittest.TestCase):
+    def test_server_starts_background_snapshot_filter_after_binding(self):
+        events = []
+
+        class StopServer(Exception):
+            pass
+
+        class FakeService:
+            def __init__(self, instance_token=''):
+                events.append(('service', instance_token))
+
+            def start_background_video_category_snapshot_filter(self):
+                events.append(('background_filter', None))
+
+        class FakeServer:
+            def __init__(self, address, handler):
+                events.append(('server_bound', address))
+
+            def serve_forever(self):
+                events.append(('serve', None))
+                raise StopServer
+
+            def server_close(self):
+                events.append(('close', None))
+
+        with patch.object(backend_server, 'BackendService', FakeService), patch.object(
+            backend_server, 'ThreadingHTTPServer', FakeServer
+        ), patch.object(backend_server, 'configure_logging'), patch.object(
+            backend_server, 'install_global_exception_hooks'
+        ), patch('app.core.project_paths.ensure_storage_layout'):
+            with self.assertRaises(StopServer):
+                backend_server.run_server('127.0.0.1', 18080, instance_token='token-123')
+
+        self.assertEqual(
+            events,
+            [
+                ('service', 'token-123'),
+                ('server_bound', ('127.0.0.1', 18080)),
+                ('background_filter', None),
+                ('serve', None),
+                ('close', None),
+            ],
+        )
+
+    def test_server_keeps_serving_when_background_filter_scheduling_fails(self):
+        events = []
+
+        class StopServer(Exception):
+            pass
+
+        class FakeService:
+            def __init__(self, instance_token=''):
+                events.append('service')
+
+            def start_background_video_category_snapshot_filter(self):
+                events.append('background_filter_failed')
+                raise RuntimeError('thread unavailable')
+
+        class FakeServer:
+            def __init__(self, address, handler):
+                events.append('server_bound')
+
+            def serve_forever(self):
+                events.append('serve')
+                raise StopServer
+
+            def server_close(self):
+                events.append('close')
+
+        with patch.object(backend_server, 'BackendService', FakeService), patch.object(
+            backend_server, 'ThreadingHTTPServer', FakeServer
+        ), patch.object(backend_server, 'configure_logging'), patch.object(
+            backend_server, 'install_global_exception_hooks'
+        ), patch('app.core.project_paths.ensure_storage_layout'):
+            with self.assertRaises(StopServer):
+                backend_server.run_server('127.0.0.1', 18080, instance_token='token-123')
+
+        self.assertEqual(
+            events,
+            ['service', 'server_bound', 'background_filter_failed', 'serve', 'close'],
+        )
+
     def test_health_reports_instance_identity(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch('app.backend.service.VideoDatabase'), patch('app.backend.service.VideoLadderTagService'), patch(

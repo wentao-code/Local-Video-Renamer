@@ -19,6 +19,7 @@ class CodePrefixJavtxtEnrichmentService:
         progress_tracker=None,
         logger=None,
         planned_prefixes=None,
+        planned_items=None,
     ):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
@@ -26,6 +27,7 @@ class CodePrefixJavtxtEnrichmentService:
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.planned_prefixes = self._normalize_planned_prefixes(planned_prefixes)
+        self.planned_codes_by_prefix = self._planned_codes_by_parent(planned_items, 'prefix')
         self.author_resolver = MovieAuthorResolver(
             database,
             headless=not show_browser,
@@ -45,6 +47,19 @@ class CodePrefixJavtxtEnrichmentService:
             prefixes.append(normalized)
             seen.add(normalized)
         return prefixes
+
+    @staticmethod
+    def _planned_codes_by_parent(planned_items, parent_key):
+        grouped = {}
+        for item in planned_items or []:
+            parent = str((item or {}).get(parent_key, '') or '').strip().upper()
+            code = MovieAuthorResolver._normalize_code((item or {}).get('code', ''))
+            if not parent or not code:
+                continue
+            grouped.setdefault(parent, [])
+            if code not in grouped[parent]:
+                grouped[parent].append(code)
+        return grouped
 
     def enrich_next_prefixes(self, limit):
         limit = int(limit or 0)
@@ -167,6 +182,11 @@ class CodePrefixJavtxtEnrichmentService:
             'failed_count': int(progress_state.get('failed_video_count', 0) or 0),
             'remaining_count': max(0, int(remaining_video_count_after or 0)),
             'results': results,
+            'processed_items': [
+                dict(item or {})
+                for prefix_result in results
+                for item in (prefix_result or {}).get('processed_items', []) or []
+            ],
             'stopped': stopped,
             'entity_label': '番号库 / 辛聚谷',
             'source_key': JAVTXT_VIDEO_SOURCE,
@@ -190,7 +210,54 @@ class CodePrefixJavtxtEnrichmentService:
         )
         return result
 
+    def list_plan_candidate_prefixes(self, limit):
+        prefixes = []
+        seen = set()
+        for item in self.list_plan_candidate_items(limit):
+            prefix = str(item.get('prefix', '') or '').strip().upper()
+            if prefix and prefix not in seen:
+                prefixes.append(prefix)
+                seen.add(prefix)
+        return prefixes
+
+    def list_plan_candidate_items(self, limit):
+        """Build concrete video-code candidates with bulk reads, never per prefix."""
+        limit = max(0, int(limit or 0))
+        if limit <= 0:
+            return []
+        sync_code_prefix_refresh_update_statuses(self.database, self.prefix_library)
+        records = self.database.list_code_prefix_enrichment_records()
+        planned_prefixes = set(self.planned_prefixes)
+        movies = [dict(row or {}) for row in self.database.list_all_code_prefix_movies()]
+        cached_rows = self.database.get_javtxt_actor_cache_by_codes(
+            [row.get('code', '') for row in movies]
+        )
+        candidates = []
+        seen = set()
+        for movie in movies:
+            prefix = str(movie.get('prefix', '') or '').strip().upper()
+            if not prefix or (planned_prefixes and prefix not in planned_prefixes):
+                continue
+            if not self._is_ready_for_javtxt(records.get(prefix, {})):
+                continue
+            should_attempt, _reason = self.author_resolver._should_attempt_lookup(movie, cached_rows)
+            code = self.author_resolver._normalize_code(movie.get('code', ''))
+            identity = (prefix, code)
+            if not should_attempt or not code or identity in seen:
+                continue
+            candidates.append({'prefix': prefix, 'code': code})
+            seen.add(identity)
+            if len(candidates) >= limit:
+                break
+        return candidates
+
     def _ready_prefix_infos(self):
+        if self.planned_codes_by_prefix:
+            return [
+                {'prefix': prefix, 'pending_video_count': len(codes)}
+                for prefix, codes in self.planned_codes_by_prefix.items()
+                if codes
+            ]
         records = self.database.list_code_prefix_enrichment_records()
         refresh_tracker = self.refresh_tracker or LibraryExpiredRefreshTracker(
             self.database,
@@ -239,6 +306,8 @@ class CodePrefixJavtxtEnrichmentService:
         return self.author_resolver.count_pending_entries(movies)
 
     def _blocked_prefix_count(self):
+        if self.planned_codes_by_prefix:
+            return 0
         records = self.database.list_code_prefix_enrichment_records()
         blocked = 0
         for row in self.prefix_library.list_prefixes():
@@ -256,9 +325,16 @@ class CodePrefixJavtxtEnrichmentService:
         return avfan_status == ENRICHED_STATUS and avfan_total_videos > 0
 
     def _enrich_single_prefix(self, prefix, max_video_count, progress_state):
-        movies = self.database.list_code_prefix_movies(prefix)
-        if not movies:
+        all_movies = self.database.list_code_prefix_movies(prefix)
+        if not all_movies:
             raise RuntimeError('请先使用天陨阁补全番号库作品列表。')
+        planned_codes = set(self.planned_codes_by_prefix.get(prefix, []))
+        movies = [
+            movie for movie in all_movies
+            if not planned_codes or self.author_resolver._normalize_code(movie.get('code', '')) in planned_codes
+        ]
+        if not movies:
+            raise RuntimeError('待补全表中的具体番号已不在番号作品列表中。')
 
         progress_state['_processed_offset'] = int(progress_state.get('processed_video_count', 0) or 0)
         progress_state['_success_offset'] = int(progress_state.get('success_video_count', 0) or 0)
@@ -278,16 +354,27 @@ class CodePrefixJavtxtEnrichmentService:
             max_lookup_count=max_video_count,
             progress_callback=lambda update: self._on_video_progress(update, progress_state, prefix),
         )
+        processed_items = self._resolved_planned_items(resolution, planned_codes)
 
         enriched_movies = resolution.get('entries', [])
-        completed = bool(resolution.get('completed'))
+        merged_movies = enriched_movies
+        if planned_codes:
+            enriched_by_code = {
+                self.author_resolver._normalize_code(movie.get('code', '')): movie
+                for movie in enriched_movies
+            }
+            merged_movies = [
+                enriched_by_code.get(self.author_resolver._normalize_code(movie.get('code', '')), movie)
+                for movie in all_movies
+            ]
+        completed = self.author_resolver.count_pending_entries(merged_movies) <= 0
         status = ENRICHED_STATUS if completed else UNENRICHED_STATUS
-        self.database.replace_code_prefix_movies(prefix, enriched_movies)
+        self.database.replace_code_prefix_movies(prefix, merged_movies)
         self.database.save_code_prefix_enrichment(
             prefix=prefix,
             status=status,
             total_pages=0,
-            total_videos=len(enriched_movies),
+            total_videos=len(merged_movies),
             error='',
             source_key=JAVTXT_VIDEO_SOURCE,
         )
@@ -296,7 +383,7 @@ class CodePrefixJavtxtEnrichmentService:
             '番号前缀辛聚谷补全完成并写库',
             prefix=prefix,
             status=status,
-            movie_count=len(enriched_movies),
+            movie_count=len(merged_movies),
             processed_video_count=int(resolution.get('processed_video_count', 0) or 0),
             success_video_count=int(resolution.get('success_video_count', 0) or 0),
             failed_video_count=int(resolution.get('failed_video_count', 0) or 0),
@@ -305,13 +392,36 @@ class CodePrefixJavtxtEnrichmentService:
         return {
             'prefix': prefix,
             'status': status,
-            'video_count': len(enriched_movies),
+            'video_count': len(merged_movies),
             'processed_video_count': int(resolution.get('processed_video_count', 0) or 0),
             'success_video_count': int(resolution.get('success_video_count', 0) or 0),
             'failed_video_count': int(resolution.get('failed_video_count', 0) or 0),
             'remaining_video_count': int(resolution.get('pending_video_count', 0) or 0),
+            'processed_items': [
+                {**dict(item or {}), 'prefix': prefix}
+                for item in processed_items
+            ],
             'count_unit': '视频',
         }
+
+    def _resolved_planned_items(self, resolution, planned_codes):
+        processed_items = [dict(item or {}) for item in resolution.get('processed_items', []) or []]
+        seen_codes = {
+            self.author_resolver._normalize_code(item.get('code', ''))
+            for item in processed_items
+        }
+        for movie in resolution.get('entries', []) or []:
+            code = self.author_resolver._normalize_code((movie or {}).get('code', ''))
+            if not code or code in seen_codes or (planned_codes and code not in planned_codes):
+                continue
+            should_attempt, _reason = self.author_resolver._should_attempt_lookup(movie, {})
+            if should_attempt:
+                continue
+            processed_items.append(
+                {'code': code, 'status': str((movie or {}).get('javtxt_enrichment_status', '') or '').strip()}
+            )
+            seen_codes.add(code)
+        return processed_items
 
     def _update_progress(self, processed_count, success_count, failed_count, current_item):
         if self.progress_tracker is not None:

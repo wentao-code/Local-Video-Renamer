@@ -90,6 +90,23 @@ class GuiTaskQueueTest(unittest.TestCase):
         self.assertTrue(records[0].exhausted)
         self.assertEqual(records[0].last_error, 'boom again')
 
+    def test_non_retryable_failure_is_not_queued_again(self):
+        started = []
+        record = self.queue.enqueue(
+            'plan',
+            'test',
+            lambda current: started.append(current.attempts),
+            max_attempts=5,
+        )
+        _process_events()
+
+        final_failure = self.queue.mark_failed(record.task_id, '创建补全计划失败', retryable=False)
+        _process_events()
+
+        self.assertTrue(final_failure)
+        self.assertEqual(started, [1])
+        self.assertTrue(self.queue.records()[0].exhausted)
+
     def test_is_all_done_only_when_no_waiting_or_running_tasks_remain(self):
         self.assertTrue(self.queue.is_all_done())
 

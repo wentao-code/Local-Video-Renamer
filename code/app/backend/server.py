@@ -391,11 +391,18 @@ def make_handler(service):
 
         def _send_json(self, data, status=HTTPStatus.OK):
             payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
-            self.send_response(status)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            except OSError:
+                get_logger(__name__).info('客户端已断开，忽略后端响应回写')
+            except ValueError:
+                if not bool(getattr(self.wfile, 'closed', False)):
+                    raise
+                get_logger(__name__).info('客户端响应流已关闭，忽略后端响应回写')
 
     return VideoBackendHandler
 
@@ -410,8 +417,12 @@ def run_server(host=None, port=None, instance_token=''):
     port = int(port or get_backend_port())
     service = BackendService(instance_token=instance_token)
     server = ThreadingHTTPServer((host, port), make_handler(service))
-    print(f'Local Video Renamer backend listening on http://{host}:{port}')
     try:
+        try:
+            service.start_background_video_category_snapshot_filter()
+        except Exception:
+            get_logger(__name__).exception('视频分类快照后台过滤调度失败，后端继续运行')
+        print(f'Local Video Renamer backend listening on http://{host}:{port}')
         server.serve_forever()
     finally:
         server.server_close()

@@ -97,16 +97,13 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertFalse(dialog.combo_single_button.isHidden())
         self.assertFalse(dialog.combo_batch_button.isHidden())
 
-    def test_supplement_source_is_available_for_video_code_prefix_and_actor_targets(self):
+    def test_supplement_source_is_only_available_for_code_prefix_and_actor_targets(self):
         dialog = self._create_dialog()
 
+        self.assertFalse(dialog.supplement_source_button.isEnabled())
         dialog.supplement_source_button.setChecked(True)
         self.assertEqual(dialog.selected_target_type(), VIDEO_LIBRARY_TARGET)
-        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
-        self.assertTrue(dialog.combo_group.isHidden())
-        self.assertTrue(dialog.combo_single_button.isHidden())
-        self.assertTrue(dialog.combo_batch_button.isHidden())
-        self.assertEqual(dialog.values()['combo_task_settings'], {})
+        self.assertEqual(dialog.selected_source_key(), JAVTXT_VIDEO_SOURCE)
 
         dialog.code_prefix_target_button.setChecked(True)
         self.assertTrue(dialog.supplement_source_button.isEnabled())

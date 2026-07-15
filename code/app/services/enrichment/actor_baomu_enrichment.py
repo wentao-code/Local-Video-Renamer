@@ -143,6 +143,14 @@ class ActorBaomuEnrichmentService:
 
         return self._filter_planned_candidates(sorted(candidates, key=lambda item: (item['priority'], item['actor_name'])))
 
+    def list_plan_candidate_names(self, limit):
+        limit = max(0, int(limit or 0))
+        return [
+            str(item.get('actor_name', '') or '').strip()
+            for item in self._candidate_actors()[:limit]
+            if str(item.get('actor_name', '') or '').strip()
+        ]
+
     def _is_candidate(self, actor_row, record):
         current = dict(record or {})
         binghuo_status = str(current.get('binghuo_enrichment_status', '') or '').strip() or UNENRICHED_STATUS

@@ -59,6 +59,7 @@ class MovieAuthorResolver:
         processed_video_count = 0
         success_video_count = 0
         failed_video_count = 0
+        processed_items = []
 
         for entry in normalized_entries:
             if processed_video_count >= requested_lookup_count:
@@ -100,6 +101,7 @@ class MovieAuthorResolver:
                 success_video_count += 1
             elif status == FAILED_STATUS:
                 failed_video_count += 1
+            processed_items.append({'code': code, 'status': status})
 
             self._log(
                 'INFO',
@@ -151,6 +153,7 @@ class MovieAuthorResolver:
             'failed_video_count': failed_video_count,
             'pending_video_count': pending_video_count_after,
             'requested_video_count': requested_lookup_count,
+            'processed_items': processed_items,
             'completed': pending_video_count_after <= 0,
         }
 

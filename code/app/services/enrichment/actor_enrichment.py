@@ -186,6 +186,19 @@ class ActorEnrichmentService:
         )
         return result
 
+    def list_plan_candidate_names(self, limit):
+        """Return the same AVFan actor candidates used by task execution."""
+        limit = int(limit or 0)
+        if limit <= 0:
+            return []
+        sync_actor_refresh_update_statuses(self.database)
+        self.refresh_tracker = LibraryExpiredRefreshTracker(
+            self.database,
+            'actor',
+            AVFAN_VIDEO_SOURCE,
+        )
+        return self._candidate_actors(limit)
+
     def _update_progress(self, processed_count, success_count, failed_count, current_item):
         if self.progress_tracker is not None:
             self.progress_tracker.update(

@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.video_filter_events import video_filter_event_bus
 from app.gui.i18n import tr
 
 
@@ -28,6 +29,7 @@ class CandidateLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.rows = []
         self._init_async_task_host()
         self.init_ui()
+        video_filter_event_bus.rules_saved.connect(self.on_filter_rules_saved)
         self.load_data()
 
     def init_ui(self):
@@ -94,6 +96,11 @@ class CandidateLibraryWindow(AsyncTaskHostMixin, QDialog):
             tr('common.read_failed'),
             max_attempts=1,
         )
+
+    def on_filter_rules_saved(self):
+        # Filter saves can blacklist prefixes while this window is already open.
+        self.rows = []
+        self.load_data()
 
     def _on_refresh_finished(self, _result):
         QTimer.singleShot(50, self.load_data)

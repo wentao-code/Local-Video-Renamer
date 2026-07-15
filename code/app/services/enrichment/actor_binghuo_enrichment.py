@@ -153,6 +153,14 @@ class ActorBinghuoEnrichmentService:
         )
         return result
 
+    def list_plan_candidate_names(self, limit):
+        limit = max(0, int(limit or 0))
+        return [
+            str(item.get('actor_name', '') or '').strip()
+            for item in self._candidate_actors()[:limit]
+            if str(item.get('actor_name', '') or '').strip()
+        ]
+
     def _candidate_actors(self):
         actor_rows = self.database.list_actors() if hasattr(self.database, 'list_actors') else []
         enrichment_records = self.database.list_actor_enrichment_records()

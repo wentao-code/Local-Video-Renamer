@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.candidate_library_viewer import CandidateLibraryWindow
 from app.gui.main_window import VidNormApp
+from app.gui.video_filter_events import video_filter_event_bus
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -107,6 +108,18 @@ class CandidateLibraryWindowTest(unittest.TestCase):
                 window.btn_code_prefixes.click()
                 self.assertEqual(window.table.horizontalHeaderItem(1).text(), '番号')
                 self.assertEqual(window.table.item(0, 1).text(), 'BBB')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_filter_save_reloads_open_candidate_window(self):
+        backend = _BackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = CandidateLibraryWindow(backend)
+            try:
+                with patch.object(window, 'load_data') as load_data:
+                    video_filter_event_bus.rules_saved.emit()
+                load_data.assert_called_once_with()
             finally:
                 window.hide()
                 window.deleteLater()
