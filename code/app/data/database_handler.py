@@ -1,3 +1,4 @@
+import json
 import re
 import sqlite3
 import uuid
@@ -62,6 +63,7 @@ from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
 from app.core.video_filter_rules import (
     FILTER_FIELD_CO_STAR_CODE,
+    RuleSet,
     get_filter_keywords,
     matches_filter_keywords,
     should_skip_video_before_enrichment,
@@ -523,6 +525,67 @@ class VideoDatabase(
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS data_source_versions (
+                    source_key TEXT PRIMARY KEY,
+                    version INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS snapshot_registry (
+                    snapshot_key TEXT PRIMARY KEY,
+                    source_keys TEXT NOT NULL DEFAULT '',
+                    source_version TEXT NOT NULL DEFAULT '',
+                    filter_fingerprint TEXT NOT NULL DEFAULT '',
+                    dirty INTEGER NOT NULL DEFAULT 1,
+                    last_built_at TEXT NOT NULL DEFAULT '',
+                    last_accessed_at TEXT NOT NULL DEFAULT '',
+                    refresh_duration_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS actor_library_summary (
+                    actor_name TEXT PRIMARY KEY,
+                    video_count INTEGER NOT NULL DEFAULT 0,
+                    eligible_video_count INTEGER NOT NULL DEFAULT 0,
+                    latest_release_date TEXT NOT NULL DEFAULT '',
+                    avfan_enrichment_status TEXT NOT NULL DEFAULT '',
+                    javtxt_enrichment_status TEXT NOT NULL DEFAULT '',
+                    profile_completion_status TEXT NOT NULL DEFAULT '',
+                    source_version INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS code_prefix_library_summary (
+                    prefix TEXT PRIMARY KEY,
+                    local_video_count INTEGER NOT NULL DEFAULT 0,
+                    web_video_count INTEGER NOT NULL DEFAULT 0,
+                    eligible_video_count INTEGER NOT NULL DEFAULT 0,
+                    earliest_release_date TEXT NOT NULL DEFAULT '',
+                    latest_release_date TEXT NOT NULL DEFAULT '',
+                    avfan_enrichment_status TEXT NOT NULL DEFAULT '',
+                    javtxt_enrichment_status TEXT NOT NULL DEFAULT '',
+                    source_version INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS enrichment_candidate_index (
+                    target_kind TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    owner_key TEXT NOT NULL DEFAULT '',
+                    code TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    candidate_status TEXT NOT NULL DEFAULT 'pending',
+                    reason TEXT NOT NULL DEFAULT '',
+                    source_version INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (target_kind, source_key, owner_key, code)
+                )
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS hidden_code_prefixes (
                     prefix TEXT PRIMARY KEY
                 )
@@ -727,6 +790,12 @@ class VideoDatabase(
             self._ensure_index(cursor, 'idx_code_prefix_movies_prefix_release', 'code_prefix_movies', 'prefix, release_date, code')
             self._ensure_index(
                 cursor,
+                'idx_code_prefix_movies_javtxt_filter',
+                'code_prefix_movies',
+                'javtxt_enrichment_status, release_date, prefix, code',
+            )
+            self._ensure_index(
+                cursor,
                 'idx_code_prefix_movies_supplement_status',
                 'code_prefix_movies',
                 'supplement_enrichment_status, javtxt_enrichment_status, prefix, code',
@@ -736,12 +805,24 @@ class VideoDatabase(
             self._ensure_index(cursor, 'idx_actor_movies_actor_release', 'actor_movies', 'actor_name, release_date, code')
             self._ensure_index(
                 cursor,
+                'idx_actor_movies_javtxt_filter',
+                'actor_movies',
+                'javtxt_enrichment_status, release_date, actor_name, code',
+            )
+            self._ensure_index(
+                cursor,
                 'idx_actor_movies_supplement_status',
                 'actor_movies',
                 'supplement_enrichment_status, javtxt_enrichment_status, actor_name, code',
             )
             self._ensure_index(cursor, 'idx_excluded_code_prefix_movies_code', 'excluded_code_prefix_movies', 'code')
             self._ensure_index(cursor, 'idx_excluded_actor_movies_code', 'excluded_actor_movies', 'code')
+            self._ensure_index(cursor, 'idx_snapshot_registry_dirty', 'snapshot_registry', 'dirty, snapshot_key')
+            self._ensure_index(cursor, 'idx_actor_library_summary_release', 'actor_library_summary', 'latest_release_date, actor_name')
+            self._ensure_index(cursor, 'idx_code_prefix_library_summary_release', 'code_prefix_library_summary', 'latest_release_date, prefix')
+            self._ensure_index(cursor, 'idx_enrichment_candidate_index_status', 'enrichment_candidate_index', 'target_kind, source_key, candidate_status, priority, updated_at')
+            self._ensure_column(cursor, 'enrichment_candidate_index', 'candidate_fingerprint', 'TEXT NOT NULL DEFAULT ""')
+            self._ensure_column(cursor, 'enrichment_candidate_index', 'candidate_payload', 'TEXT NOT NULL DEFAULT ""')
             self._ensure_index(
                 cursor,
                 'idx_actor_enrichments_status',
@@ -3136,6 +3217,354 @@ class VideoDatabase(
             ).fetchall()
         return {(str(row[0] or '').strip(), standardize_video_code(row[1])) for row in rows}
 
+    def bump_data_source_versions(self, source_keys):
+        normalized_keys = sorted({str(key or '').strip() for key in source_keys or [] if str(key or '').strip()})
+        if not normalized_keys:
+            return {}
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            for source_key in normalized_keys:
+                cursor.execute(
+                    '''
+                    INSERT INTO data_source_versions (source_key, version, updated_at)
+                    VALUES (?, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT(source_key) DO UPDATE SET
+                        version = data_source_versions.version + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''',
+                    (source_key,),
+                )
+            conn.commit()
+            rows = cursor.execute(
+                f'''
+                SELECT source_key, version
+                FROM data_source_versions
+                WHERE source_key IN ({','.join('?' for _ in normalized_keys)})
+                ''',
+                normalized_keys,
+            ).fetchall()
+        return {str(row[0] or '').strip(): int(row[1] or 0) for row in rows}
+
+    def get_data_source_versions(self, source_keys=None):
+        normalized_keys = sorted({str(key or '').strip() for key in source_keys or [] if str(key or '').strip()})
+        where_sql = ''
+        parameters = []
+        if source_keys is not None:
+            if not normalized_keys:
+                return {}
+            where_sql = f"WHERE source_key IN ({','.join('?' for _ in normalized_keys)})"
+            parameters = normalized_keys
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'SELECT source_key, version FROM data_source_versions {where_sql}',
+                parameters,
+            ).fetchall()
+        return {str(row[0] or '').strip(): int(row[1] or 0) for row in rows}
+
+    def update_snapshot_registry(
+        self,
+        snapshot_key,
+        source_keys=None,
+        source_version='',
+        filter_fingerprint='',
+        dirty=False,
+        refreshed_at='',
+        refresh_duration_ms=0,
+    ):
+        normalized_key = str(snapshot_key or '').strip()
+        if not normalized_key:
+            return
+        normalized_sources = ','.join(sorted({
+            str(key or '').strip() for key in source_keys or [] if str(key or '').strip()
+        }))
+        with self._connect() as conn:
+            conn.execute(
+                '''
+                INSERT INTO snapshot_registry (
+                    snapshot_key, source_keys, source_version, filter_fingerprint, dirty,
+                    last_built_at, last_accessed_at, refresh_duration_ms, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(snapshot_key) DO UPDATE SET
+                    source_keys = excluded.source_keys,
+                    source_version = excluded.source_version,
+                    filter_fingerprint = excluded.filter_fingerprint,
+                    dirty = excluded.dirty,
+                    last_built_at = CASE
+                        WHEN excluded.dirty = 0 AND excluded.last_built_at <> ''
+                        THEN excluded.last_built_at ELSE snapshot_registry.last_built_at END,
+                    last_accessed_at = CURRENT_TIMESTAMP,
+                    refresh_duration_ms = excluded.refresh_duration_ms,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    normalized_key,
+                    normalized_sources,
+                    str(source_version or '').strip(),
+                    str(filter_fingerprint or '').strip(),
+                    1 if dirty else 0,
+                    str(refreshed_at or '').strip(),
+                    max(0, int(refresh_duration_ms or 0)),
+                ),
+            )
+            conn.commit()
+
+    def mark_snapshot_registry_dirty(self, source_keys=None, snapshot_keys=None):
+        normalized_sources = sorted({str(key or '').strip() for key in source_keys or [] if str(key or '').strip()})
+        normalized_snapshots = sorted({str(key or '').strip() for key in snapshot_keys or [] if str(key or '').strip()})
+        if not normalized_sources and not normalized_snapshots:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            changed = 0
+            if normalized_snapshots:
+                placeholders = ','.join('?' for _ in normalized_snapshots)
+                cursor.execute(
+                    f'UPDATE snapshot_registry SET dirty = 1, updated_at = CURRENT_TIMESTAMP WHERE snapshot_key IN ({placeholders})',
+                    normalized_snapshots,
+                )
+                changed += int(cursor.rowcount or 0)
+            if normalized_sources:
+                source_terms = ','.join('?' for _ in normalized_sources)
+                cursor.execute(
+                    f'''
+                    UPDATE snapshot_registry
+                    SET dirty = 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM json_each('[' || '"' || REPLACE(source_keys, ',', '","') || '"' || ']') AS source
+                        WHERE source.value IN ({source_terms})
+                    )
+                    ''',
+                    normalized_sources,
+                )
+                changed += int(cursor.rowcount or 0)
+            conn.commit()
+        return changed
+
+    def get_snapshot_registry(self, snapshot_key=None):
+        normalized_key = str(snapshot_key or '').strip()
+        with self._connect() as conn:
+            if normalized_key:
+                row = conn.execute(
+                    '''
+                    SELECT snapshot_key, source_keys, source_version, filter_fingerprint, dirty,
+                           last_built_at, last_accessed_at, refresh_duration_ms, updated_at
+                    FROM snapshot_registry
+                    WHERE snapshot_key = ?
+                    ''',
+                    (normalized_key,),
+                ).fetchone()
+                if row is None:
+                    return {}
+                return self._build_snapshot_registry_row(row)
+            rows = conn.execute(
+                '''
+                SELECT snapshot_key, source_keys, source_version, filter_fingerprint, dirty,
+                       last_built_at, last_accessed_at, refresh_duration_ms, updated_at
+                FROM snapshot_registry
+                ''',
+            ).fetchall()
+        return {
+            str(row[0] or '').strip(): self._build_snapshot_registry_row(row)
+            for row in rows
+            if str(row[0] or '').strip()
+        }
+
+    @staticmethod
+    def _build_snapshot_registry_row(row):
+        return {
+            'snapshot_key': str(row[0] or '').strip(),
+            'source_keys': [item for item in str(row[1] or '').split(',') if item],
+            'source_version': str(row[2] or '').strip(),
+            'filter_fingerprint': str(row[3] or '').strip(),
+            'dirty': bool(row[4]),
+            'last_built_at': str(row[5] or '').strip(),
+            'last_accessed_at': str(row[6] or '').strip(),
+            'refresh_duration_ms': int(row[7] or 0),
+            'updated_at': str(row[8] or '').strip(),
+        }
+
+    def rebuild_library_summary_tables(self):
+        versions = self.get_data_source_versions()
+        actor_version = int(versions.get('actor_library', 0) or 0)
+        prefix_version = int(versions.get('code_prefix_library', 0) or 0)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM actor_library_summary')
+            cursor.execute(
+                '''
+                INSERT INTO actor_library_summary (
+                    actor_name, video_count, eligible_video_count, latest_release_date,
+                    avfan_enrichment_status, javtxt_enrichment_status, profile_completion_status,
+                    source_version, updated_at
+                )
+                SELECT a.name,
+                       COUNT(DISTINCT am.code),
+                       COUNT(DISTINCT CASE WHEN am.video_category IN (?, ?) THEN am.code END),
+                       COALESCE(MAX(NULLIF(COALESCE(NULLIF(am.javtxt_release_date, ''), am.release_date), '')), ''),
+                       COALESCE(e.avfan_enrichment_status, ?),
+                       COALESCE(e.javtxt_enrichment_status, ?),
+                       COALESCE(e.enrichment_status, ''),
+                       ?, CURRENT_TIMESTAMP
+                FROM actors a
+                LEFT JOIN actor_movies am ON am.actor_name = a.name
+                LEFT JOIN actor_enrichments e ON e.actor_name = a.name
+                GROUP BY a.name
+                ''',
+                [VIDEO_CATEGORY_SINGLE, VIDEO_CATEGORY_CO_STAR, UNENRICHED_STATUS, UNENRICHED_STATUS, actor_version],
+            )
+            prefix_sql = self._code_prefix_expression_sql('p.code')
+            cursor.execute('DELETE FROM code_prefix_library_summary')
+            cursor.execute(
+                f'''
+                WITH local AS (
+                    SELECT {prefix_sql} AS prefix, COUNT(*) AS local_video_count
+                    FROM processed_videos p
+                    WHERE TRIM(COALESCE(p.code, '')) <> '' AND {prefix_sql} GLOB '*[A-Z]*'
+                    GROUP BY {prefix_sql}
+                ), web AS (
+                    SELECT UPPER(prefix) AS prefix,
+                           COUNT(DISTINCT code) AS web_video_count,
+                           COUNT(DISTINCT CASE WHEN video_category IN (?, ?) THEN code END) AS eligible_video_count,
+                           MIN(NULLIF(COALESCE(NULLIF(javtxt_release_date, ''), release_date), '')) AS earliest_release_date,
+                           MAX(NULLIF(COALESCE(NULLIF(javtxt_release_date, ''), release_date), '')) AS latest_release_date
+                    FROM code_prefix_movies
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                    GROUP BY UPPER(prefix)
+                ), combined AS (
+                    SELECT prefix FROM local UNION SELECT prefix FROM web
+                )
+                INSERT INTO code_prefix_library_summary (
+                    prefix, local_video_count, web_video_count, eligible_video_count,
+                    earliest_release_date, latest_release_date,
+                    avfan_enrichment_status, javtxt_enrichment_status, source_version, updated_at
+                )
+                SELECT combined.prefix,
+                       COALESCE(local.local_video_count, 0), COALESCE(web.web_video_count, 0),
+                       COALESCE(web.eligible_video_count, 0),
+                       COALESCE(web.earliest_release_date, ''), COALESCE(web.latest_release_date, ''),
+                       COALESCE(e.avfan_enrichment_status, ?), COALESCE(e.javtxt_enrichment_status, ?),
+                       ?, CURRENT_TIMESTAMP
+                FROM combined
+                LEFT JOIN local ON local.prefix = combined.prefix
+                LEFT JOIN web ON web.prefix = combined.prefix
+                LEFT JOIN code_prefix_enrichments e ON UPPER(e.prefix) = combined.prefix
+                ''',
+                [VIDEO_CATEGORY_SINGLE, VIDEO_CATEGORY_CO_STAR, UNENRICHED_STATUS, UNENRICHED_STATUS, prefix_version],
+            )
+            conn.commit()
+        return {'actor_count': self._count_table_rows('actor_library_summary'), 'code_prefix_count': self._count_table_rows('code_prefix_library_summary')}
+
+    def _count_table_rows(self, table_name):
+        with self._connect() as conn:
+            row = conn.execute(f'SELECT COUNT(*) FROM {table_name}').fetchone()
+        return int(row[0] or 0)
+
+    def load_enrichment_candidate_index(self, target_kind, source_key, source_version, candidate_fingerprint, limit):
+        normalized_target = str(target_kind or '').strip()
+        normalized_source = str(source_key or '').strip()
+        if not normalized_target or not normalized_source or int(limit or 0) <= 0:
+            return None
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''
+                SELECT candidate_payload
+                FROM enrichment_candidate_index
+                WHERE target_kind = ? AND source_key = ?
+                  AND source_version = ? AND candidate_fingerprint = ?
+                  AND candidate_status = 'pending'
+                ORDER BY priority DESC, updated_at, owner_key, code
+                LIMIT ?
+                ''',
+                (
+                    normalized_target,
+                    normalized_source,
+                    int(source_version or 0),
+                    str(candidate_fingerprint or '').strip(),
+                    max(1, int(limit)),
+                ),
+            ).fetchall()
+        if not rows:
+            return None
+        candidates = []
+        for row in rows:
+            try:
+                payload = json.loads(row[0] or '{}')
+            except (TypeError, ValueError):
+                payload = {}
+            if isinstance(payload, dict):
+                candidates.append(payload)
+        return candidates
+
+    def replace_enrichment_candidate_index(
+        self,
+        target_kind,
+        source_key,
+        candidates,
+        source_version=0,
+        candidate_fingerprint='',
+    ):
+        normalized_target = str(target_kind or '').strip()
+        normalized_source = str(source_key or '').strip()
+        if not normalized_target or not normalized_source:
+            return 0
+        values = []
+        for index, candidate in enumerate(candidates or []):
+            payload = dict(candidate or {})
+            owner_key = str(
+                payload.get('actor_name')
+                or payload.get('prefix')
+                or payload.get('code')
+                or ''
+            ).strip()
+            code = standardize_video_code(payload.get('code', ''))
+            if not owner_key and not code:
+                continue
+            values.append(
+                (
+                    normalized_target,
+                    normalized_source,
+                    owner_key,
+                    code,
+                    max(0, len(candidates or []) - index),
+                    'pending',
+                    str(payload.get('candidate_reason', '') or '').strip(),
+                    int(source_version or 0),
+                    str(candidate_fingerprint or '').strip(),
+                    json.dumps(payload, ensure_ascii=False, separators=(',', ':')),
+                )
+            )
+        with self._connect() as conn:
+            conn.execute(
+                '''
+                DELETE FROM enrichment_candidate_index
+                WHERE target_kind = ? AND source_key = ?
+                ''',
+                (normalized_target, normalized_source),
+            )
+            if values:
+                conn.executemany(
+                    '''
+                    INSERT INTO enrichment_candidate_index (
+                        target_kind, source_key, owner_key, code, priority, candidate_status,
+                        reason, source_version, candidate_fingerprint, candidate_payload, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(target_kind, source_key, owner_key, code) DO UPDATE SET
+                        priority = excluded.priority,
+                        candidate_status = excluded.candidate_status,
+                        reason = excluded.reason,
+                        source_version = excluded.source_version,
+                        candidate_fingerprint = excluded.candidate_fingerprint,
+                        candidate_payload = excluded.candidate_payload,
+                        updated_at = CURRENT_TIMESTAMP
+                    ''',
+                    values,
+                )
+            conn.commit()
+        return len(values)
+
     def _migrate_excluded_web_movie_table(
         self,
         table_name,
@@ -3484,20 +3913,28 @@ class VideoDatabase(
                 for row in cursor.fetchall()
             ]
 
-    def list_all_code_prefix_movies(self):
+    def list_all_code_prefix_movies(self, rule_set=None):
+        where_sql, query_parameters = self._append_rule_set_where(
+            '',
+            [],
+            rule_set=rule_set,
+            table_alias='cpm',
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                '''
+                f'''
                 SELECT prefix, code, title, author, release_date, avfan_url, page_number,
                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
                        javtxt_release_date, author_raw, video_category, supplement_enrichment_status
-                FROM code_prefix_movies
+                FROM code_prefix_movies AS cpm
+                {where_sql}
                 ORDER BY prefix, release_date DESC, code DESC
-                '''
+                ''',
+                query_parameters,
             )
 
-            return [
+            rows = [
                 {
                     'prefix': row[0] or '',
                     'code': row[1] or '',
@@ -3517,8 +3954,9 @@ class VideoDatabase(
                 }
                 for row in cursor.fetchall()
             ]
+        return self._apply_rule_set_residual(rows, rule_set=rule_set)
 
-    def list_code_prefix_movies_by_prefixes(self, prefixes):
+    def list_code_prefix_movies_by_prefixes(self, prefixes, rule_set=None):
         normalized_prefixes = []
         seen = set()
         for prefix in prefixes or []:
@@ -3533,6 +3971,12 @@ class VideoDatabase(
             return results
 
         placeholders = ','.join('?' for _ in normalized_prefixes)
+        where_sql, query_parameters = self._append_rule_set_where(
+            f'WHERE prefix IN ({placeholders})',
+            normalized_prefixes,
+            rule_set=rule_set,
+            table_alias='cpm',
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -3540,11 +3984,11 @@ class VideoDatabase(
                 SELECT prefix, code, title, author, release_date, avfan_url, page_number,
                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
                        javtxt_release_date, author_raw, video_category, supplement_enrichment_status
-                FROM code_prefix_movies
-                WHERE prefix IN ({placeholders})
+                FROM code_prefix_movies AS cpm
+                {where_sql}
                 ORDER BY prefix, release_date DESC, code DESC
                 ''',
-                normalized_prefixes,
+                query_parameters,
             )
 
             for row in cursor.fetchall():
@@ -3569,7 +4013,10 @@ class VideoDatabase(
                     }
                 )
 
-        return results
+        return {
+            prefix: self._apply_rule_set_residual(rows, rule_set=rule_set)
+            for prefix, rows in results.items()
+        }
 
     def list_actor_enrichment_records(self):
         with self._connect() as conn:
@@ -4375,20 +4822,28 @@ class VideoDatabase(
                 for row in cursor.fetchall()
             ]
 
-    def list_all_actor_movies(self):
+    def list_all_actor_movies(self, rule_set=None):
+        where_sql, query_parameters = self._append_rule_set_where(
+            '',
+            [],
+            rule_set=rule_set,
+            table_alias='am',
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                '''
+                f'''
                 SELECT actor_name, code, title, author, release_date, avfan_url, page_number,
                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
                        javtxt_release_date, author_raw, video_category, supplement_enrichment_status
-                FROM actor_movies
+                FROM actor_movies AS am
+                {where_sql}
                 ORDER BY actor_name, release_date DESC, code DESC
-                '''
+                ''',
+                query_parameters,
             )
 
-            return [
+            rows = [
                 {
                     'actor_name': row[0] or '',
                     'code': row[1] or '',
@@ -4408,8 +4863,9 @@ class VideoDatabase(
                 }
                 for row in cursor.fetchall()
             ]
+        return self._apply_rule_set_residual(rows, rule_set=rule_set)
 
-    def list_actor_movies_by_names(self, actor_names):
+    def list_actor_movies_by_names(self, actor_names, rule_set=None):
         normalized_names = []
         seen = set()
         for actor_name in actor_names or []:
@@ -4424,6 +4880,12 @@ class VideoDatabase(
             return results
 
         placeholders = ','.join('?' for _ in normalized_names)
+        where_sql, query_parameters = self._append_rule_set_where(
+            f'WHERE actor_name IN ({placeholders})',
+            normalized_names,
+            rule_set=rule_set,
+            table_alias='am',
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -4431,11 +4893,11 @@ class VideoDatabase(
                 SELECT actor_name, code, title, author, release_date, avfan_url, page_number,
                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
                        javtxt_release_date, author_raw, video_category, supplement_enrichment_status
-                FROM actor_movies
-                WHERE actor_name IN ({placeholders})
+                FROM actor_movies AS am
+                {where_sql}
                 ORDER BY actor_name, release_date DESC, code DESC
                 ''',
-                normalized_names,
+                query_parameters,
             )
 
             for row in cursor.fetchall():
@@ -4460,7 +4922,10 @@ class VideoDatabase(
                     }
                 )
 
-        return results
+        return {
+            actor_name: self._apply_rule_set_residual(rows, rule_set=rule_set)
+            for actor_name, rows in results.items()
+        }
 
     def list_latest_actor_movie_release_dates_by_names(self, actor_names, filter_settings=None):
         normalized_names = []
@@ -4519,6 +4984,7 @@ class VideoDatabase(
 
         placeholders = ','.join('?' for _ in normalized_names)
         release_date_sql = "COALESCE(NULLIF(javtxt_release_date, ''), NULLIF(release_date, ''), '')"
+        filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -4532,6 +4998,7 @@ class VideoDatabase(
                        END) AS latest_release_date
                 FROM actor_movies
                 WHERE actor_name IN ({placeholders})
+                  {filter_sql}
                 GROUP BY actor_name
                 ''',
                 [
@@ -4540,6 +5007,7 @@ class VideoDatabase(
                     VIDEO_CATEGORY_SINGLE,
                     VIDEO_CATEGORY_CO_STAR,
                     *normalized_names,
+                    *filter_params,
                 ],
             )
             return {
@@ -4553,6 +5021,7 @@ class VideoDatabase(
 
     def list_code_prefix_dashboard_stats(self, filter_settings=None):
         actor_prefix_sql = self._code_prefix_expression_sql('code')
+        filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -4564,6 +5033,7 @@ class VideoDatabase(
                            video_category
                     FROM code_prefix_movies
                     WHERE TRIM(COALESCE(prefix, '')) <> ''
+                      {filter_sql}
                     UNION ALL
                     SELECT {actor_prefix_sql} AS prefix,
                            code,
@@ -4571,6 +5041,7 @@ class VideoDatabase(
                            video_category
                     FROM actor_movies
                     WHERE TRIM(COALESCE(code, '')) <> ''
+                      {filter_sql}
                 )
                 SELECT prefix,
                        COUNT(DISTINCT code) AS video_count,
@@ -4583,6 +5054,8 @@ class VideoDatabase(
                 GROUP BY prefix
                 ''',
                 [
+                    *filter_params,
+                    *filter_params,
                     VIDEO_CATEGORY_SINGLE,
                     VIDEO_CATEGORY_CO_STAR,
                 ],
@@ -4623,30 +5096,16 @@ class VideoDatabase(
 
     @classmethod
     def _dashboard_library_filter_sql(cls, filter_settings=None):
-        if not isinstance(filter_settings, dict):
+        if not isinstance(filter_settings, (dict, RuleSet)):
             return '', []
-        rules = filter_settings.get('rules', filter_settings)
-        if not isinstance(rules, dict):
+        rule_set = RuleSet.normalize(filter_settings, scope='library')
+        predicate, parameters = rule_set.compile_sql(
+            visibility='visible',
+            post_enriched_only=False,
+        )
+        if not predicate or predicate.strip() == '1 = 1':
             return '', []
-
-        clauses = []
-        params = []
-        hidden_prefixes = cls._normalized_filter_values(rules.get('code', []))
-        if hidden_prefixes:
-            placeholders = ','.join('?' for _ in hidden_prefixes)
-            clauses.append(
-                f"{cls._code_prefix_expression_sql('code')} NOT IN ({placeholders})"
-            )
-            params.extend(prefix.upper() for prefix in hidden_prefixes)
-
-        for field_name, column_name in (('title', 'title'), ('javtxt_tags', 'javtxt_tags')):
-            for keyword in cls._normalized_filter_values(rules.get(field_name, [])):
-                clauses.append(f"COALESCE({column_name}, '') NOT LIKE ?")
-                params.append(f'%{keyword}%')
-
-        if not clauses:
-            return '', []
-        return 'AND ' + ' AND '.join(clauses), params
+        return f'AND ({predicate})', parameters
 
     @staticmethod
     def _normalized_filter_values(values):
@@ -4664,6 +5123,39 @@ class VideoDatabase(
             seen.add(lowered_value)
             normalized_values.append(normalized_value)
         return normalized_values
+
+    @staticmethod
+    def _append_rule_set_where(
+        where_sql,
+        parameters,
+        rule_set=None,
+        table_alias='',
+        scope=None,
+        visibility='visible',
+    ):
+        if rule_set is None:
+            return where_sql, list(parameters or [])
+        if not isinstance(rule_set, RuleSet):
+            rule_set = RuleSet.normalize(rule_set, scope=scope or 'library')
+        predicate, rule_parameters = rule_set.compile_sql(
+            table_alias,
+            scope=scope,
+            visibility=visibility,
+        )
+        if not predicate or predicate.strip() == '1 = 1':
+            return where_sql, list(parameters or [])
+        normalized_where = str(where_sql or '').strip()
+        if normalized_where:
+            return f'{normalized_where} AND ({predicate})', [*(parameters or []), *rule_parameters]
+        return f'WHERE {predicate}', list(rule_parameters)
+
+    @staticmethod
+    def _apply_rule_set_residual(rows, rule_set=None, scope=None, visibility='visible'):
+        if rule_set is None:
+            return rows
+        if not isinstance(rule_set, RuleSet):
+            rule_set = RuleSet.normalize(rule_set, scope=scope or 'library')
+        return rule_set.apply_residual(rows, scope=scope, visibility=visibility)
 
     def reset_video_enrichments(self, codes):
         normalized_codes = [
@@ -5607,9 +6099,16 @@ class VideoDatabase(
         limit=None,
         offset=0,
         refresh_categories=True,
+        rule_set=None,
     ):
         if refresh_categories:
             self.refresh_video_categories_from_filter_rules()
+        where_sql, parameters = self._append_rule_set_where(
+            where_sql,
+            parameters,
+            rule_set=rule_set,
+            table_alias='p',
+        )
         parameters = tuple(parameters or ())
         normalized_limit, normalized_offset = self._normalize_limit_offset(limit, offset)
         limit_sql = ''
@@ -5626,7 +6125,7 @@ class VideoDatabase(
                        video_category,
                        release_date, maker, publisher,
                        avfan_enrichment_status, javtxt_enrichment_status
-                FROM processed_videos
+                FROM processed_videos AS p
                 {where_sql}
                 ORDER BY {order_by_sql}
                 {limit_sql}
@@ -5636,7 +6135,15 @@ class VideoDatabase(
             rows = cursor.fetchall()
         return [self._build_processed_video_row(row) for row in rows]
 
-    def list_videos(self, search_text='', sort_field='code', sort_order='asc', limit=None, offset=0):
+    def list_videos(
+        self,
+        search_text='',
+        sort_field='code',
+        sort_order='asc',
+        limit=None,
+        offset=0,
+        rule_set=None,
+    ):
         where_sql, parameters = self._video_search_where_sql(search_text)
         return self._fetch_processed_video_rows(
             where_sql,
@@ -5645,16 +6152,23 @@ class VideoDatabase(
             limit=limit,
             offset=offset,
             refresh_categories=False,
+            rule_set=rule_set,
         )
 
-    def count_videos(self, search_text=''):
+    def count_videos(self, search_text='', rule_set=None):
         where_sql, parameters = self._video_search_where_sql(search_text)
+        where_sql, parameters = self._append_rule_set_where(
+            where_sql,
+            parameters,
+            rule_set=rule_set,
+            table_alias='p',
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 f'''
                 SELECT COUNT(*)
-                FROM processed_videos
+                FROM processed_videos AS p
                 {where_sql}
                 ''',
                 tuple(parameters),
@@ -5742,44 +6256,65 @@ class VideoDatabase(
             if extract_code_prefix(row.get('code', '')) in target_prefixes
         ]
 
-    def list_video_summary_rows(self):
+    def list_video_summary_rows(self, rule_set=None, visibility='visible'):
+        where_sql, query_parameters = self._append_rule_set_where(
+            '',
+            [],
+            rule_set=rule_set,
+            table_alias='p',
+            visibility=visibility,
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                '''
-                SELECT code, title, release_date,
+                f'''
+                SELECT code, title, release_date, video_category,
                        avfan_enrichment_status, javtxt_enrichment_status,
                        javtxt_movie_id, javtxt_url, javtxt_title, avfan_movie_id,
                        javtxt_actors, javtxt_actors_raw, javtxt_tags, javtxt_release_date, author,
                        supplement_enrichment_status
-                FROM processed_videos
+                FROM processed_videos AS p
+                {where_sql}
                 ORDER BY code
-                '''
+                ''',
+                query_parameters,
             )
             rows = cursor.fetchall()
 
-        return [
+        result = [
             {
                 'code': row[0] or '',
                 'title': row[1] or '',
                 'release_date': row[2] or '',
-                'avfan_enrichment_status': row[3] or UNENRICHED_STATUS,
-                'javtxt_enrichment_status': row[4] or UNENRICHED_STATUS,
-                'javtxt_movie_id': row[5] or '',
-                'javtxt_url': row[6] or '',
-                'javtxt_title': row[7] or '',
-                'avfan_movie_id': row[8] or '',
-                'author': sanitize_actor_text(row[9] or ''),
-                'author_raw': self._normalize_actor_raw_text(row[10] or row[9] or ''),
-                'javtxt_tags': row[11] or '',
-                'javtxt_release_date': row[12] or '',
-                'local_author': sanitize_actor_text(row[13] or ''),
-                'supplement_enrichment_status': row[14] or UNENRICHED_STATUS,
+                'video_category': normalize_video_category(row[3]),
+                'avfan_enrichment_status': row[4] or UNENRICHED_STATUS,
+                'javtxt_enrichment_status': row[5] or UNENRICHED_STATUS,
+                'javtxt_movie_id': row[6] or '',
+                'javtxt_url': row[7] or '',
+                'javtxt_title': row[8] or '',
+                'avfan_movie_id': row[9] or '',
+                'author': sanitize_actor_text(row[10] or ''),
+                'author_raw': self._normalize_actor_raw_text(row[11] or row[10] or ''),
+                'javtxt_tags': row[12] or '',
+                'javtxt_release_date': row[13] or '',
+                'local_author': sanitize_actor_text(row[14] or ''),
+                'supplement_enrichment_status': row[15] or UNENRICHED_STATUS,
             }
             for row in rows
         ]
+        return self._apply_rule_set_residual(
+            result,
+            rule_set=rule_set,
+            visibility=visibility,
+        )
 
-    def list_videos_for_enrichment(self, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, candidate_filter=None):
+    def list_videos_for_enrichment(
+        self,
+        limit,
+        source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+        candidate_filter=None,
+        rule_set=None,
+    ):
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, _, _ = self._video_source_columns(normalized_source)
         candidate_filter = candidate_filter if callable(candidate_filter) else None
@@ -5806,23 +6341,28 @@ class VideoDatabase(
                         break
                 return pending_rows
             else:
-                if candidate_filter is not None:
-                    where_sql = ''
-                    sql_params = []
-                    sql_limit = ''
-                else:
-                    where_sql = f'WHERE COALESCE({status_column}, ?) IN (?, ?)'
-                    sql_params = [
-                        UNENRICHED_STATUS,
-                        UNENRICHED_STATUS,
-                        FAILED_STATUS,
-                    ]
+                where_sql = f'WHERE COALESCE(p.{status_column}, ?) IN (?, ?)'
+                sql_params = [
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    FAILED_STATUS,
+                ]
+                where_sql, sql_params = self._append_rule_set_where(
+                    where_sql,
+                    sql_params,
+                    rule_set=rule_set,
+                    table_alias='p',
+                    scope='pre_enrichment',
+                )
+                if candidate_filter is None:
                     sql_params.append(int(limit))
                     sql_limit = 'LIMIT ?'
+                else:
+                    sql_limit = ''
                 cursor.execute(
                     f'''
                     SELECT code, title, author
-                    FROM processed_videos
+                    FROM processed_videos AS p
                     {where_sql}
                     ORDER BY code
                     {sql_limit}
@@ -7116,7 +7656,12 @@ class VideoDatabase(
             )
             return int(cursor.fetchone()[0] or 0)
 
-    def count_pending_video_enrichments(self, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, candidate_filter=None):
+    def count_pending_video_enrichments(
+        self,
+        source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+        candidate_filter=None,
+        rule_set=None,
+    ):
         normalized_source = normalize_video_enrichment_source(source_key)
         status_column, _, _ = self._video_source_columns(normalized_source)
         candidate_filter = candidate_filter if callable(candidate_filter) else None
@@ -7139,17 +7684,26 @@ class VideoDatabase(
                         pending_count += 1
                 return pending_count
             else:
+                where_sql = f'WHERE COALESCE(p.{status_column}, ?) IN (?, ?)'
+                query_parameters = [
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    FAILED_STATUS,
+                ]
+                where_sql, query_parameters = self._append_rule_set_where(
+                    where_sql,
+                    query_parameters,
+                    rule_set=rule_set,
+                    table_alias='p',
+                    scope='pre_enrichment',
+                )
                 cursor.execute(
                     f'''
                     SELECT COUNT(*)
-                    FROM processed_videos
-                    WHERE COALESCE({status_column}, ?) IN (?, ?)
+                    FROM processed_videos AS p
+                    {where_sql}
                     ''',
-                    (
-                        UNENRICHED_STATUS,
-                        UNENRICHED_STATUS,
-                        FAILED_STATUS,
-                    ),
+                    query_parameters,
                 )
             return int(cursor.fetchone()[0] or 0)
 

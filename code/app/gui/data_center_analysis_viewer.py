@@ -144,6 +144,12 @@ class DataAnalysisWindow(QDialog):
     def _forget_analysis_window(self, window):
         self.analysis_windows = [item for item in self.analysis_windows if item is not window]
 
+    def on_data_changed(self, source_keys=None):
+        for window in list(self.analysis_windows):
+            refresh = getattr(window, 'on_data_changed', None)
+            if callable(refresh):
+                refresh(source_keys or set())
+
 
 class MetricSelectionWindow(QDialog):
     def __init__(self, backend_client, analysis_type, metric_configs, title_key, hint_key, parent=None, coordinator=None):
@@ -200,6 +206,12 @@ class MetricSelectionWindow(QDialog):
 
     def _forget_metric_window(self, window):
         self.metric_windows = [item for item in self.metric_windows if item is not window]
+
+    def on_data_changed(self, source_keys=None):
+        for window in list(self.metric_windows):
+            refresh = getattr(window, 'on_data_changed', None)
+            if callable(refresh):
+                refresh(source_keys or set())
 
 
 class ActorDataAnalysisWindow(MetricSelectionWindow):
@@ -296,6 +308,9 @@ class ActorMetricBucketWindow(AsyncTaskHostMixin, QDialog):
             self._on_load_data_finished,
             tr('common.read_failed'),
         )
+
+    def on_data_changed(self, source_keys=None):
+        self.load_data(force_refresh=True)
 
     def _on_load_data_finished(self, result):
         payload = dict(result or {})
@@ -600,6 +615,9 @@ class MetricAnalysisWindow(AsyncTaskHostMixin, QDialog):
             self._on_load_data_finished,
             tr('common.read_failed'),
         )
+
+    def on_data_changed(self, source_keys=None):
+        self.load_data(force_refresh=True)
 
     def _on_load_data_finished(self, result):
         payload = dict(result or {})

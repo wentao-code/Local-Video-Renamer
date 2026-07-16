@@ -295,7 +295,7 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
         toolbar.addWidget(self.btn_add)
 
         self.btn_refresh = QPushButton('刷新')
-        self.btn_refresh.clicked.connect(self.load_medals)
+        self.btn_refresh.clicked.connect(lambda: self.load_medals(force_refresh=True))
         toolbar.addWidget(self.btn_refresh)
         layout.addLayout(toolbar)
 
@@ -316,12 +316,20 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
 
         self.set_async_busy_widgets([self.name_input, self.description_input, self.type_combo, self.btn_add, self.btn_refresh, self.table])
 
-    def load_medals(self):
+    def load_medals(self, force_refresh=False):
         self.start_async_task(
-            lambda: self.backend_client.list_global_medals(),
+            lambda: self._list_global_medals(force_refresh=force_refresh),
             self._on_medals_loaded,
             '读取勋章堂失败',
         )
+
+    def _list_global_medals(self, force_refresh=False):
+        try:
+            return self.backend_client.list_global_medals(force_refresh=force_refresh)
+        except TypeError as exc:
+            if 'force_refresh' not in str(exc):
+                raise
+            return self.backend_client.list_global_medals()
 
     def handle_add_medal(self):
         name = str(self.name_input.text() or '').strip()
@@ -338,7 +346,7 @@ class MedalCatalogWindow(QDialog, AsyncTaskHostMixin):
 
     def _reload_medals_after(self, operation):
         operation()
-        return self.backend_client.list_global_medals()
+        return self._list_global_medals()
 
     def _on_medals_reloaded_after_add(self, rows):
         self.name_input.clear()

@@ -171,7 +171,14 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
             'board_payload': self.backend_client.get_ladder_board_snapshot(board_key, force_refresh=force_refresh),
         }
         if include_medals:
-            payload['global_medals'] = self.backend_client.list_global_medals()
+            try:
+                payload['global_medals'] = self.backend_client.list_global_medals(
+                    force_refresh=False
+                )
+            except TypeError as exc:
+                if 'force_refresh' not in str(exc):
+                    raise
+                payload['global_medals'] = self.backend_client.list_global_medals()
         else:
             payload['global_medals'] = list(self.global_medals)
         return payload

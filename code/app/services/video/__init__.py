@@ -17,6 +17,7 @@ __all__ = [
     'VIDEO_CATEGORY_OPTIONS',
     'VIDEO_CATEGORY_SINGLE',
     'VideoFilterService',
+    'RuleSet',
     'classify_manual_category_tier',
     'count_video_actors',
     'detect_video_category',
@@ -39,6 +40,7 @@ _EXPORT_MAP = {
     'normalize_video_category': ('app.services.video.video_category_service', 'normalize_video_category'),
     'requires_manual_video_category': ('app.services.video.video_category_service', 'requires_manual_video_category'),
     'VideoFilterService': ('app.services.video.video_filter_service', 'VideoFilterService'),
+    'RuleSet': ('app.core.video_filter_rules', 'RuleSet'),
 }
 
 

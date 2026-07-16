@@ -67,6 +67,13 @@ class DataDashboardWindow(AsyncTaskHostMixin, QDialog):
             task_title='数据看板 刷新',
         )
 
+    def on_data_changed(self, source_keys=None):
+        self.load_data(force_refresh=True)
+        for window in list(self.metric_windows):
+            refresh = getattr(window, 'on_data_changed', None)
+            if callable(refresh):
+                refresh(source_keys)
+
     def _render_dashboard(self, dashboard):
         payload = dict(dashboard or {})
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip() or '暂无'
@@ -159,7 +166,7 @@ class DashboardMetricItemsWindow(AsyncTaskHostMixin, QDialog):
         top_layout = QHBoxLayout()
         self.count_label = QLabel('共 0 条')
         self.btn_refresh = QPushButton('刷新')
-        self.btn_refresh.clicked.connect(self.load_data)
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
         top_layout.addWidget(self.count_label)
         top_layout.addStretch()
         top_layout.addWidget(self.btn_refresh)
@@ -180,15 +187,29 @@ class DashboardMetricItemsWindow(AsyncTaskHostMixin, QDialog):
         root_layout.addWidget(self.table)
         self.set_async_busy_widgets([self.btn_refresh, self.table])
 
-    def load_data(self):
+    def load_data(self, force_refresh=False):
         if self.is_async_task_running():
             return
         self.start_async_task(
-            lambda: self.backend_client.get_data_dashboard_items(self.metric_key),
+            lambda: self._load_metric_items(force_refresh=force_refresh),
             self._render_items,
             '读取指标明细失败',
             task_title=f'数据看板 {self.metric_title}明细',
         )
+
+    def _load_metric_items(self, force_refresh=False):
+        try:
+            return self.backend_client.get_data_dashboard_items(
+                self.metric_key,
+                force_refresh=force_refresh,
+            )
+        except TypeError as exc:
+            if 'force_refresh' not in str(exc):
+                raise
+            return self.backend_client.get_data_dashboard_items(self.metric_key)
+
+    def on_data_changed(self, source_keys=None):
+        self.load_data(force_refresh=True)
 
     def _render_items(self, items):
         self.items = [dict(item or {}) for item in items or []]

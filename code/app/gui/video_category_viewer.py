@@ -599,7 +599,16 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
 
     def _load_overview_payload(self, force_refresh=False):
         if hasattr(self.refresh_client, 'list_videos_requiring_manual_category_snapshot'):
-            return self.refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=force_refresh)
+            loader = self.refresh_client.list_videos_requiring_manual_category_snapshot
+            try:
+                return loader(
+                    force_refresh=force_refresh,
+                    tier=self.model.active_tier(),
+                )
+            except TypeError as exc:
+                if 'tier' not in str(exc):
+                    raise
+                return loader(force_refresh=force_refresh)
         return self.refresh_client.list_videos_requiring_manual_category()
 
     def sync_staged_categories(self):
@@ -780,7 +789,7 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
             return
         if self.model.set_active_tier(tier):
             self.table.clearSelection()
-            self._update_summary_label()
+            self.load_data(force_refresh=False)
             return
         self._update_tier_button_state()
 

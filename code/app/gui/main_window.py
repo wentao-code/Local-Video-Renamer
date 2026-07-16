@@ -87,6 +87,11 @@ from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.gui.video_filter_dialog import VideoFilterDialog
 from app.services.system import NetworkGuardService
 from app.services.system.quark_backup_service import QuarkBackupService
+from app.services.video import (
+    MANUAL_CATEGORY_TIER_FIRST,
+    MANUAL_CATEGORY_TIER_SECOND,
+    MANUAL_CATEGORY_TIER_THIRD,
+)
 
 
 SNAPSHOT_REFRESH_STARTUP_DELAY_MS = 15000
@@ -1735,11 +1740,21 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 '启动刷新 数据中心',
                 lambda: startup_refresh_client.get_data_center_summary(force_refresh=True),
             ),
-            (
-                'video_category',
-                '启动刷新 视频分类',
-                lambda: startup_refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=True),
-            ),
+            *[
+                (
+                    f'video_category_{tier}',
+                    f'启动刷新 视频分类 {label}',
+                    lambda tier=tier: startup_refresh_client.list_videos_requiring_manual_category_snapshot(
+                        force_refresh=True,
+                        tier=tier,
+                    ),
+                )
+                for tier, label in (
+                    (MANUAL_CATEGORY_TIER_FIRST, '一档'),
+                    (MANUAL_CATEGORY_TIER_SECOND, '二档'),
+                    (MANUAL_CATEGORY_TIER_THIRD, '三档'),
+                )
+            ],
             (
                 'path_library',
                 '启动刷新 路径库',
@@ -1753,12 +1768,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             (
                 'masterpiece',
                 '启动刷新 名作堂',
-                lambda: self.backend_client.list_masterpiece_entries(),
+                lambda: self.backend_client.list_masterpiece_entries(force_refresh=True),
             ),
             (
                 'global_medals',
                 '启动刷新 勋章堂',
-                lambda: self.backend_client.list_global_medals(),
+                lambda: self.backend_client.list_global_medals(force_refresh=True),
             ),
             (
                 'canglangge',
@@ -2080,6 +2095,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         is_batch_mode = mode in ('batch', 'combo_batch')
         entity_label = result.get('entity_label', tr('main.entity_default'))
         summary = self.build_enrichment_summary(result)
+        if hasattr(self, 'window_coordinator'):
+            self.window_coordinator.refresh_open_windows()
 
         if result.get('requires_manual_verification'):
             message = result.get('message') or tr('main.manual_verification_message')

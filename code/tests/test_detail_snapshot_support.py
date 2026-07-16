@@ -8,6 +8,7 @@ from app.backend.client import BackendClient
 from app.backend.service import BackendService
 from app.core.ladder_board import LADDER_BOARD_ACTOR
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
+from app.core.snapshot_store import SnapshotStore
 
 
 class _FilterServiceStub:
@@ -76,6 +77,33 @@ class BackendServiceActorDetailSnapshotTest(unittest.TestCase):
             self.assertEqual(second['refreshed_at'], '2026-07-07 10:00:00')
             self.assertEqual(second['actor']['name'], 'Alice')
             self.assertTrue((Path(temp_dir) / 'actor_detail' / 'alice.json').exists())
+
+    def test_actor_detail_dual_writes_and_reuses_messagepack_store(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            snapshot_file = root / 'legacy' / 'actor_snapshot.json'
+            first_service = self._build_service(snapshot_file)
+            first_service.snapshot_store = SnapshotStore(root / 'snapshots')
+            first_service._current_snapshot_timestamp = lambda: '2026-07-16 12:00:00'
+            first_service.get_actor_detail = lambda actor_name: {'actor': {'name': actor_name}}
+
+            first = BackendService.get_actor_detail_snapshot(first_service, 'Alice')
+
+            self.assertFalse(first['cache_hit'])
+            self.assertTrue(first_service.snapshot_store.messagepack_path('actor_detail/alice').exists())
+            self.assertTrue(first_service.snapshot_store.json_path('actor_detail/alice').exists())
+
+            second_service = self._build_service(snapshot_file)
+            second_service.snapshot_store = SnapshotStore(root / 'snapshots')
+            second_service.get_actor_detail = lambda _name: (_ for _ in ()).throw(
+                AssertionError('should reuse MessagePack actor detail snapshot')
+            )
+
+            BackendService._load_actor_snapshots(second_service)
+            second = BackendService.get_actor_detail_snapshot(second_service, 'Alice')
+
+            self.assertTrue(second['cache_hit'])
+            self.assertEqual(second['actor']['name'], 'Alice')
 
     def test_directory_detail_snapshot_is_reused_after_restart(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -22,6 +22,7 @@ from app.core.enrichment_status import (
     UNENRICHED_STATUS,
 )
 from app.data.database_handler import VideoDatabase
+from app.core.snapshot_store import SnapshotStore
 from app.services.library import DataCenterService
 from app.services.video import (
     VIDEO_CATEGORY_COLLECTION,
@@ -865,6 +866,32 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                 second = second_service.get_summary_snapshot()
 
             self.assertEqual(first, second)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_summary_and_analysis_use_independent_dual_format_files(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            root = Path(temp_dir)
+            store = SnapshotStore(root / 'snapshots')
+            snapshot_file = root / 'legacy' / 'data_center_snapshot.json'
+            service = DataCenterService(
+                database=None,
+                snapshot_file=snapshot_file,
+                snapshot_store=store,
+                video_filter_service=VideoFilterService(settings_loader=lambda: None),
+            )
+            with patch.object(service, '_build_summary', return_value=_build_complete_summary_stub(1)), patch.object(
+                service,
+                '_build_actor_metric_analysis',
+                return_value={'metric_key': 'age', 'distribution_rows': [], 'ranking_rows': []},
+            ), patch.object(service, '_current_cache_timestamp', return_value='2026-07-16 12:20:00'):
+                service.get_summary_snapshot(force_refresh=True)
+                service.get_actor_metric_analysis_snapshot('age', force_refresh=True)
+
+            for key in ('data_center/data_center_summary', 'data_center/actor_age'):
+                self.assertTrue(store.messagepack_path(key).exists())
+                self.assertTrue(store.json_path(key).exists())
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 

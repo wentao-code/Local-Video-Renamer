@@ -99,6 +99,7 @@ def make_handler(service):
                     sort_order=query.get('sort_order', [''])[0],
                     limit=_int_query_value(query, 'limit', default=None),
                     offset=_int_query_value(query, 'offset', default=0),
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
             if method == 'GET' and path == '/search/unified':
                 return service.search_unified(
@@ -108,7 +109,9 @@ def make_handler(service):
             if method == 'GET' and path == '/database/videos/summary':
                 return service.get_video_enrichment_summary()
             if method == 'GET' and path == '/masterpiece/entries':
-                return service.list_masterpiece_entries()
+                return service.list_masterpiece_entries(
+                    force_refresh=_is_truthy_query_value(query, 'refresh')
+                )
             if method == 'POST' and path == '/masterpiece/actors/refresh':
                 return service.refresh_masterpiece_actors()
             if method == 'POST' and path == '/masterpiece/entries/add':
@@ -123,7 +126,9 @@ def make_handler(service):
             if method == 'POST' and path == '/masterpiece/detail/enrich':
                 return service.enrich_masterpiece_detail(body.get('code'))
             if method == 'GET' and path == '/medals':
-                return service.list_global_medals()
+                return service.list_global_medals(
+                    force_refresh=_is_truthy_query_value(query, 'refresh')
+                )
             if method == 'POST' and path == '/medals/add':
                 return service.add_global_medal(
                     body.get('name'),
@@ -145,7 +150,10 @@ def make_handler(service):
             if method == 'GET' and path == '/data-center/dashboard':
                 return service.get_data_dashboard(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'GET' and path == '/data-center/dashboard/items':
-                return service.get_data_dashboard_items(query.get('metric', [''])[0])
+                return service.get_data_dashboard_items(
+                    query.get('metric', [''])[0],
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
             if method == 'GET' and path == '/settings/timeouts':
                 return service.list_operation_timeouts()
             if method == 'POST' and path == '/settings/timeouts':
@@ -178,7 +186,8 @@ def make_handler(service):
                 return service.reset_video_enrichments(body.get('codes', []), body.get('source_key'))
             if method == 'GET' and path == '/database/videos/manual-category':
                 return service.list_videos_requiring_manual_category_snapshot(
-                    force_refresh=_is_truthy_query_value(query, 'refresh')
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                    tier=query.get('tier', [''])[0],
                 )
             if method == 'POST' and path == '/database/videos/manual-category/stage':
                 return service.stage_video_category(body.get('code'), body.get('category'))

@@ -1,7 +1,5 @@
 from app.core.video_filter_rules import (
-    normalize_video_filter_settings,
-    should_hide_video_from_library,
-    should_skip_video_before_enrichment,
+    RuleSet,
 )
 from app.core.video_filter_settings import load_video_filter_settings
 
@@ -11,19 +9,19 @@ class VideoFilterService:
         self.settings_loader = settings_loader or load_video_filter_settings
 
     def load_settings(self):
-        return normalize_video_filter_settings(self.settings_loader())
+        return self.load_ruleset().to_settings()
+
+    def load_ruleset(self, settings=None, scope='library'):
+        active_settings = self.settings_loader() if settings is None else settings
+        return RuleSet.normalize(active_settings, scope=scope)
 
     def build_pre_enrichment_filter(self, settings=None):
-        active_settings = normalize_video_filter_settings(self.load_settings() if settings is None else settings)
-        return lambda video: not should_skip_video_before_enrichment(video, active_settings)
+        ruleset = self.load_ruleset(settings=settings, scope='pre_enrichment')
+        return lambda video: bool(ruleset.apply_residual([video]))
 
     def filter_library_rows(self, rows, settings=None):
-        active_settings = normalize_video_filter_settings(self.load_settings() if settings is None else settings)
-        return [
-            dict(row or {})
-            for row in (rows or [])
-            if not should_hide_video_from_library(row, active_settings)
-        ]
+        ruleset = self.load_ruleset(settings=settings, scope='library')
+        return ruleset.apply_residual(rows)
 
     def filter_video_rows(self, rows, settings=None):
         return self.filter_library_rows(rows, settings=settings)

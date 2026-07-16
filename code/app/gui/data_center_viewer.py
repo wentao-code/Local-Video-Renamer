@@ -105,6 +105,16 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             block_ui=block_ui,
         )
 
+    def on_data_changed(self, source_keys=None):
+        if self._pending_close:
+            return
+        self.load_data(force_refresh=True, block_ui=False, silent_errors=True)
+        analysis_window = self.analysis_window
+        if analysis_window is not None:
+            refresh = getattr(analysis_window, 'on_data_changed', None)
+            if callable(refresh):
+                refresh(source_keys or set())
+
     def _on_load_data_finished(self, result):
         result = dict(result or {})
         if self._pending_close:

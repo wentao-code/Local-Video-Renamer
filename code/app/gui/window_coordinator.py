@@ -101,6 +101,14 @@ class WindowCoordinator:
                 close()
         self._windows.clear()
 
+    def refresh_open_windows(self, source_keys=None):
+        for window in list(self._windows.values()):
+            if self._is_deleted(window):
+                continue
+            refresh = getattr(window, 'on_data_changed', None)
+            if callable(refresh):
+                refresh(source_keys or set())
+
     @staticmethod
     def window_key(reference):
         return ('entity', reference.entity_type)

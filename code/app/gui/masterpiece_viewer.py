@@ -89,7 +89,7 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
         toolbar.addWidget(self.btn_add)
 
         self.btn_refresh = QPushButton('刷新')
-        self.btn_refresh.clicked.connect(self.load_entries)
+        self.btn_refresh.clicked.connect(lambda: self.load_entries(force_refresh=True))
         toolbar.addWidget(self.btn_refresh)
 
         self.summary_label = QLabel('共 0 条')
@@ -121,21 +121,33 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
 
         self.set_async_busy_widgets([self.code_input, self.btn_add, self.btn_refresh, self.table])
 
-    def load_entries(self):
+    def load_entries(self, force_refresh=False):
         self.start_async_task(
-            self._build_entries_payload,
+            lambda: self._build_entries_payload(force_refresh=force_refresh),
             self._on_entries_loaded,
             '读取名作堂失败',
         )
 
-    def _build_entries_payload(self):
+    def _build_entries_payload(self, force_refresh=False):
         actor_refresh = {}
         refresh_masterpiece_actors = getattr(self.backend_client, 'refresh_masterpiece_actors', None)
         if callable(refresh_masterpiece_actors):
             actor_refresh = dict(refresh_masterpiece_actors() or {})
+        try:
+            rows = self.backend_client.list_masterpiece_entries(force_refresh=force_refresh)
+        except TypeError as exc:
+            if 'force_refresh' not in str(exc):
+                raise
+            rows = self.backend_client.list_masterpiece_entries()
+        try:
+            global_medals = self.backend_client.list_global_medals(force_refresh=False)
+        except TypeError as exc:
+            if 'force_refresh' not in str(exc):
+                raise
+            global_medals = self.backend_client.list_global_medals()
         return {
-            'rows': self.backend_client.list_masterpiece_entries(),
-            'global_medals': self.backend_client.list_global_medals(),
+            'rows': rows,
+            'global_medals': global_medals,
             'actor_refresh': actor_refresh,
         }
 

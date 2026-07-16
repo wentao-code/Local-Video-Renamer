@@ -92,7 +92,7 @@ class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_filter_rules.clicked.connect(self.open_filter_dialog)
 
         self.btn_refresh = QPushButton(tr('common.refresh'))
-        self.btn_refresh.clicked.connect(self.load_data)
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
         self.btn_prev_page = QPushButton(tr('video.category.page_prev'))
         self.btn_prev_page.clicked.connect(self.go_to_previous_page)
         self.btn_next_page = QPushButton(tr('video.category.page_next'))
@@ -165,7 +165,7 @@ class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
         self._update_page_controls()
 
-    def load_data(self):
+    def load_data(self, force_refresh=False):
         if self.is_async_task_running():
             self.schedule_deferred_reload(0)
             return
@@ -179,10 +179,17 @@ class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
                 sort_order=sort_order,
                 limit=self.page_size,
                 offset=self.current_offset,
+                force_refresh=force_refresh,
             ),
             self._on_load_data_finished,
             tr('common.read_failed'),
         )
+
+    def on_data_changed(self, source_keys=None):
+        normalized_sources = {str(key or '').strip() for key in (source_keys or set())}
+        if normalized_sources and 'video_library' not in normalized_sources:
+            return
+        self.load_data(force_refresh=True)
 
     def render_rows(self, rows):
         self.table.setRowCount(0)
@@ -369,15 +376,36 @@ class DatabaseViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         self.btn_prev_page.setEnabled(has_previous and not self.is_async_task_running())
         self.btn_next_page.setEnabled(has_next and not self.is_async_task_running())
 
-    def _list_videos_payload(self, search_text='', sort_field='code', sort_order='asc', limit=None, offset=0):
+    def _list_videos_payload(
+        self,
+        search_text='',
+        sort_field='code',
+        sort_order='asc',
+        limit=None,
+        offset=0,
+        force_refresh=False,
+    ):
         if hasattr(self.backend_client, 'list_videos_page'):
-            return self.backend_client.list_videos_page(
-                search_text,
-                sort_field=sort_field,
-                sort_order=sort_order,
-                limit=limit,
-                offset=offset,
-            )
+            loader = self.backend_client.list_videos_page
+            try:
+                return loader(
+                    search_text,
+                    sort_field=sort_field,
+                    sort_order=sort_order,
+                    limit=limit,
+                    offset=offset,
+                    force_refresh=force_refresh,
+                )
+            except TypeError as exc:
+                if 'force_refresh' not in str(exc):
+                    raise
+                return loader(
+                    search_text,
+                    sort_field=sort_field,
+                    sort_order=sort_order,
+                    limit=limit,
+                    offset=offset,
+                )
         rows = self.backend_client.list_videos(search_text)
         return {
             'videos': list(rows or []),

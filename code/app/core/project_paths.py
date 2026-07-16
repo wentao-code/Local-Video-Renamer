@@ -21,6 +21,8 @@ DATA_DIR = USER_DATA_DIR / 'databases'
 BROWSER_PROFILES_DIR = USER_DATA_DIR / 'browser_profiles'
 BACKUP_DIR = USER_DATA_DIR / 'backups'
 SNAPSHOT_DIR = USER_DATA_DIR / 'snapshots'
+MESSAGEPACK_SNAPSHOT_DIR = SNAPSHOT_DIR / 'messagepack'
+JSON_SNAPSHOT_DIR = SNAPSHOT_DIR / 'json'
 
 LOG_DIR = RUNTIME_DIR / 'logs'
 TASK_TRACE_LOG_DIR = RUNTIME_DIR / 'task_logs'
@@ -140,6 +142,8 @@ def ensure_storage_layout() -> None:
         BROWSER_PROFILES_DIR,
         BACKUP_DIR,
         SNAPSHOT_DIR,
+        MESSAGEPACK_SNAPSHOT_DIR,
+        JSON_SNAPSHOT_DIR,
         LOG_DIR,
         TASK_TRACE_LOG_DIR,
         COMBO_TASK_LOG_DIR,

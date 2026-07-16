@@ -76,11 +76,43 @@ def test_backend_client_dashboard_api_paths():
     }
 
     assert client.get_data_dashboard(force_refresh=True) == {'sections': []}
-    assert client.get_data_dashboard_items('actor_active') == []
+    assert client.get_data_dashboard_items('actor_active', force_refresh=True) == []
     assert calls == [
         ('/data-center/dashboard?refresh=1', None),
-        ('/data-center/dashboard/items?metric=actor_active', None),
+        ('/data-center/dashboard/items?metric=actor_active&refresh=1', None),
     ]
+
+
+def test_dashboard_metric_items_use_independent_dual_format_snapshot(tmp_path):
+    from app.core.snapshot_store import SnapshotStore
+    from app.services.library.data_center_service import DataCenterService
+
+    snapshot_file = tmp_path / 'legacy_data_center.json'
+    store = SnapshotStore(tmp_path / 'snapshots')
+    first_service = DataCenterService(
+        database=None,
+        snapshot_file=snapshot_file,
+        snapshot_store=store,
+    )
+    first_service._build_dashboard = lambda: {
+        'sections': [],
+        'items_by_metric': {'actor_active': [{'entity_type': 'actor', 'name': 'Alice'}]},
+    }
+
+    first = first_service.get_dashboard_items_snapshot('actor_active')
+
+    second_service = DataCenterService(
+        database=None,
+        snapshot_file=snapshot_file,
+        snapshot_store=SnapshotStore(tmp_path / 'snapshots'),
+    )
+    second_service._build_dashboard = lambda: (_ for _ in ()).throw(
+        AssertionError('dashboard metric snapshot cache miss')
+    )
+
+    assert second_service.get_dashboard_items_snapshot('actor_active') == first
+    assert store.messagepack_path('data_center/dashboard_items_actor_active').exists()
+    assert store.json_path('data_center/dashboard_items_actor_active').exists()
 
 
 def test_dashboard_window_renders_sections_and_clickable_metric():

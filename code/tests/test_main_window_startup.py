@@ -340,8 +340,8 @@ class MainWindowStartupTest(unittest.TestCase):
             list_queen_library_snapshot=lambda **kwargs: calls.append(('queen_library', kwargs)),
             list_queen_keywords_snapshot=lambda **kwargs: calls.append(('queen_keywords', kwargs)),
             get_queen_library_stats=lambda: calls.append(('queen_stats', {})),
-            list_masterpiece_entries=lambda: calls.append(('masterpiece', {})),
-            list_global_medals=lambda: calls.append(('medals', {})),
+            list_masterpiece_entries=lambda **kwargs: calls.append(('masterpiece', kwargs)),
+            list_global_medals=lambda **kwargs: calls.append(('medals', kwargs)),
             list_canglangge_candidates_snapshot=lambda **kwargs: calls.append(('canglangge', kwargs)),
         )
         stub = SimpleNamespace(
@@ -368,7 +368,9 @@ class MainWindowStartupTest(unittest.TestCase):
                 '启动刷新 演员库',
                 '启动刷新 番号库',
                 '启动刷新 数据中心',
-                '启动刷新 视频分类',
+                '启动刷新 视频分类 一档',
+                '启动刷新 视频分类 二档',
+                '启动刷新 视频分类 三档',
                 '启动刷新 路径库',
                 '启动刷新 女王库',
                 '启动刷新 名作堂',
@@ -379,13 +381,15 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertIn(('actors', {'force_refresh': True, 'include_update_status': False}), calls)
         self.assertIn(('prefixes', {'force_refresh': True}), calls)
         self.assertIn(('data_center', {'force_refresh': True}), calls)
-        self.assertIn(('video_category', {'force_refresh': True}), calls)
+        self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_1'}), calls)
+        self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_2'}), calls)
+        self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_3'}), calls)
         self.assertIn(('path_library', {'force_refresh': True}), calls)
         self.assertIn(('queen_library', {'force_refresh': True}), calls)
         self.assertIn(('queen_keywords', {'force_refresh': True}), calls)
         self.assertIn(('queen_stats', {}), calls)
-        self.assertIn(('masterpiece', {}), calls)
-        self.assertIn(('medals', {}), calls)
+        self.assertIn(('masterpiece', {'force_refresh': True}), calls)
+        self.assertIn(('medals', {'force_refresh': True}), calls)
         self.assertIn(('canglangge', {'force_refresh': True}), calls)
         self.assertEqual(
             recorded,
@@ -393,7 +397,9 @@ class MainWindowStartupTest(unittest.TestCase):
                 ('actor_library', '启动刷新 演员库'),
                 ('code_prefix_library', '启动刷新 番号库'),
                 ('data_center', '启动刷新 数据中心'),
-                ('video_category', '启动刷新 视频分类'),
+                ('video_category_tier_1', '启动刷新 视频分类 一档'),
+                ('video_category_tier_2', '启动刷新 视频分类 二档'),
+                ('video_category_tier_3', '启动刷新 视频分类 三档'),
                 ('path_library', '启动刷新 路径库'),
                 ('queen_library', '启动刷新 女王库'),
                 ('masterpiece', '启动刷新 名作堂'),
@@ -414,8 +420,8 @@ class MainWindowStartupTest(unittest.TestCase):
             list_queen_library_snapshot=lambda **kwargs: {'queens': []},
             list_queen_keywords_snapshot=lambda **kwargs: {'keywords': []},
             get_queen_library_stats=lambda: {'queen_count': 0},
-            list_masterpiece_entries=lambda: {'entries': []},
-            list_global_medals=lambda: {'medals': []},
+            list_masterpiece_entries=lambda **kwargs: {'entries': []},
+            list_global_medals=lambda **kwargs: {'medals': []},
             list_canglangge_candidates_snapshot=lambda **kwargs: {'rows': []},
         )
         allowed_task_keys = {'code_prefix_library', 'queen_library'}
@@ -460,8 +466,8 @@ class MainWindowStartupTest(unittest.TestCase):
             list_queen_library_snapshot=lambda **kwargs: backend_calls.append(('queen_library', kwargs)),
             list_queen_keywords_snapshot=lambda **kwargs: backend_calls.append(('queen_keywords', kwargs)),
             get_queen_library_stats=lambda: backend_calls.append(('queen_stats', {})),
-            list_masterpiece_entries=lambda: backend_calls.append(('masterpiece', {})),
-            list_global_medals=lambda: backend_calls.append(('medals', {})),
+            list_masterpiece_entries=lambda **kwargs: backend_calls.append(('masterpiece', kwargs)),
+            list_global_medals=lambda **kwargs: backend_calls.append(('medals', kwargs)),
             list_canglangge_candidates_snapshot=lambda **kwargs: backend_calls.append(('canglangge', kwargs)),
         )
         refresh_client = SimpleNamespace(
@@ -496,11 +502,13 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertIn(('actors', {'force_refresh': True, 'include_update_status': False}), refresh_calls)
         self.assertIn(('prefixes', {'force_refresh': True}), refresh_calls)
         self.assertIn(('data_center', {'force_refresh': True}), refresh_calls)
-        self.assertIn(('video_category', {'force_refresh': True}), refresh_calls)
+        self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_1'}), refresh_calls)
+        self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_2'}), refresh_calls)
+        self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_3'}), refresh_calls)
         self.assertNotIn(('actors', {'force_refresh': True, 'include_update_status': False}), backend_calls)
         self.assertNotIn(('prefixes', {'force_refresh': True}), backend_calls)
         self.assertNotIn(('data_center', {'force_refresh': True}), backend_calls)
-        self.assertNotIn(('video_category', {'force_refresh': True}), backend_calls)
+        self.assertFalse(any(name == 'video_category' for name, _kwargs in backend_calls))
 
     def test_should_run_startup_refresh_task_respects_88_hour_threshold(self):
         history = {

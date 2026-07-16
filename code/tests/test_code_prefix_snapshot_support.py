@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.backend.client import BackendClient
 from app.backend.service import BackendService
+from app.core.snapshot_store import SnapshotStore
 
 
 class _FilterServiceStub:
@@ -91,6 +92,32 @@ class BackendServiceCodePrefixSnapshotTest(unittest.TestCase):
             self.assertEqual(second['refreshed_at'], '2026-07-06 13:05:00')
             self.assertEqual(second['prefix_detail']['prefix'], 'ADN')
             self.assertTrue((Path(temp_dir) / 'code_prefix_detail' / 'ADN.json').exists())
+
+    def test_code_prefix_detail_dual_writes_and_reuses_messagepack_store(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            snapshot_file = root / 'legacy' / 'code_prefix_snapshot.json'
+            first_service = self._build_service(snapshot_file)
+            first_service.snapshot_store = SnapshotStore(root / 'snapshots')
+            first_service._current_snapshot_timestamp = lambda: '2026-07-16 12:10:00'
+            first_service.get_code_prefix_detail = lambda prefix: {'prefix_detail': {'prefix': prefix}}
+
+            BackendService.get_code_prefix_detail_snapshot(first_service, 'ADN')
+
+            self.assertTrue(first_service.snapshot_store.messagepack_path('code_prefix_detail/ADN').exists())
+            self.assertTrue(first_service.snapshot_store.json_path('code_prefix_detail/ADN').exists())
+
+            second_service = self._build_service(snapshot_file)
+            second_service.snapshot_store = SnapshotStore(root / 'snapshots')
+            second_service.get_code_prefix_detail = lambda _prefix: (_ for _ in ()).throw(
+                AssertionError('should reuse MessagePack code-prefix detail snapshot')
+            )
+            BackendService._load_code_prefix_snapshots(second_service)
+
+            second = BackendService.get_code_prefix_detail_snapshot(second_service, 'ADN')
+
+            self.assertTrue(second['cache_hit'])
+            self.assertEqual(second['prefix_detail']['prefix'], 'ADN')
 
     def test_directory_detail_snapshot_is_reused_after_restart(self):
         with tempfile.TemporaryDirectory() as temp_dir:

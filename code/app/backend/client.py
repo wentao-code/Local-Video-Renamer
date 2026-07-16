@@ -125,16 +125,25 @@ class BackendClient:
     def sync_library_statuses(self):
         return self._post('/database/library-status/sync')
 
-    def list_videos(self, search_text='', sort_field=None, sort_order=None, limit=None, offset=0):
+    def list_videos(self, search_text='', sort_field=None, sort_order=None, limit=None, offset=0, force_refresh=False):
         return self.list_videos_page(
             search_text=search_text,
             sort_field=sort_field,
             sort_order=sort_order,
             limit=limit,
             offset=offset,
+            force_refresh=force_refresh,
         ).get('videos', [])
 
-    def list_videos_page(self, search_text='', sort_field=None, sort_order=None, limit=None, offset=0):
+    def list_videos_page(
+        self,
+        search_text='',
+        sort_field=None,
+        sort_order=None,
+        limit=None,
+        offset=0,
+        force_refresh=False,
+    ):
         params = {}
         if search_text:
             params['q'] = search_text
@@ -146,6 +155,8 @@ class BackendClient:
             params['limit'] = int(limit)
         if int(offset or 0) > 0:
             params['offset'] = int(offset or 0)
+        if force_refresh:
+            params['refresh'] = '1'
         query = ('?' + urlencode(params)) if params else ''
         return self._get('/database/videos' + query)
 
@@ -157,8 +168,9 @@ class BackendClient:
     def get_video_enrichment_summary(self):
         return self._get('/database/videos/summary').get('summary', {})
 
-    def list_masterpiece_entries(self):
-        return self._get('/masterpiece/entries').get('entries', [])
+    def list_masterpiece_entries(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        return self._get('/masterpiece/entries' + query).get('entries', [])
 
     def refresh_masterpiece_actors(self):
         return self._post('/masterpiece/actors/refresh')
@@ -185,8 +197,9 @@ class BackendClient:
         timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._post('/masterpiece/detail/enrich', {'code': code}, timeout=timeout)
 
-    def list_global_medals(self):
-        return self._get('/medals').get('medals', [])
+    def list_global_medals(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        return self._get('/medals' + query).get('medals', [])
 
     def add_global_medal(self, name, description='', medal_type='special'):
         return self._post(
@@ -223,8 +236,11 @@ class BackendClient:
             dashboard['refreshed_at'] = refreshed_at
         return dashboard
 
-    def get_data_dashboard_items(self, metric_key):
-        query = '?' + urlencode({'metric': str(metric_key or '').strip()})
+    def get_data_dashboard_items(self, metric_key, force_refresh=False):
+        params = {'metric': str(metric_key or '').strip()}
+        if force_refresh:
+            params['refresh'] = '1'
+        query = '?' + urlencode(params)
         return self._get('/data-center/dashboard/items' + query).get('items', [])
 
     def list_operation_timeouts(self):
@@ -306,8 +322,13 @@ class BackendClient:
     def list_videos_requiring_manual_category(self):
         return self._get('/database/videos/manual-category')
 
-    def list_videos_requiring_manual_category_snapshot(self, force_refresh=False):
-        query = '?refresh=1' if force_refresh else ''
+    def list_videos_requiring_manual_category_snapshot(self, force_refresh=False, tier=None):
+        params = {}
+        if force_refresh:
+            params['refresh'] = '1'
+        if str(tier or '').strip():
+            params['tier'] = str(tier).strip()
+        query = ('?' + urlencode(params)) if params else ''
         timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
         return self._get('/database/videos/manual-category' + query, timeout=timeout)
 

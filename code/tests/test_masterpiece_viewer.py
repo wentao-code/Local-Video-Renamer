@@ -56,12 +56,15 @@ class MasterpieceBackendStub:
         self.detail_refresh_flags = []
         self.enrich_calls = []
         self.actor_refresh_calls = 0
+        self.entry_refresh_flags = []
+        self.global_medal_refresh_flags = []
         self.global_medals = [
             {'name': 'Rookie', 'description': 'For debut-level standouts'},
             {'name': 'Evergreen', 'description': 'For long-running elite entries'},
         ]
 
-    def list_masterpiece_entries(self):
+    def list_masterpiece_entries(self, force_refresh=False):
+        self.entry_refresh_flags.append(bool(force_refresh))
         return [dict(row) for row in self.entries]
 
     def refresh_masterpiece_actors(self):
@@ -90,7 +93,8 @@ class MasterpieceBackendStub:
                 return dict(row)
         raise AssertionError('missing code')
 
-    def list_global_medals(self):
+    def list_global_medals(self, force_refresh=False):
+        self.global_medal_refresh_flags.append(bool(force_refresh))
         return [dict(row) for row in self.global_medals]
 
     def get_masterpiece_detail_snapshot(self, code, force_refresh=False):
@@ -229,6 +233,8 @@ class MasterpieceViewerTest(unittest.TestCase):
             try:
                 window.btn_refresh.click()
                 self.assertEqual(backend.actor_refresh_calls, 2)
+                self.assertEqual(backend.entry_refresh_flags, [False, True])
+                self.assertEqual(backend.global_medal_refresh_flags, [False, False])
             finally:
                 window.hide()
                 window.deleteLater()

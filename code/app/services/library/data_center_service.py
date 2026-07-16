@@ -68,11 +68,19 @@ class DataCenterService:
         ),
     }
 
-    def __init__(self, database, video_filter_service=None, snapshot_file=None, refresh_logger=None):
+    def __init__(
+        self,
+        database,
+        video_filter_service=None,
+        snapshot_file=None,
+        refresh_logger=None,
+        snapshot_store=None,
+    ):
         self.database = database
         self.code_prefix_library = CodePrefixLibrary(database)
         self.video_filter_service = video_filter_service or VideoFilterService()
         self.snapshot_file = Path(snapshot_file) if snapshot_file else None
+        self.snapshot_store = snapshot_store
         self.refresh_logger = refresh_logger
         self._snapshot_filter_fingerprint = self._build_filter_settings_fingerprint(self._load_filter_settings())
         self._summary_cache = None
@@ -85,7 +93,10 @@ class DataCenterService:
         self._dashboard_items_cache = {}
         self._build_cache_state = local()
         self._snapshot_file_lock = Lock()
+        self._view_snapshot_lock = Lock()
+        self._view_snapshot_dir = self.snapshot_file.parent / 'data_center_views' if self.snapshot_file else None
         self._load_persisted_snapshots()
+        self._load_persisted_view_snapshots()
 
     def get_summary(self, force_refresh=False):
         return self.get_summary_snapshot(force_refresh=force_refresh)['summary']
@@ -114,6 +125,8 @@ class DataCenterService:
             self._summary_cache_refresh_duration_ms = refresh_duration_ms
             self._summary_cache_refresh_duration_text = self._format_duration_text(refresh_duration_ms)
             self._persist_snapshots()
+            self._persist_view_snapshot('data_center_summary', self._build_persisted_summary_snapshot())
+            self._record_view_registry('data_center_summary', self._summary_cache_refreshed_at, refresh_duration_ms, dirty=False)
             self._log_refresh(
                 snapshot_key='data_center',
                 refreshed_at=self._summary_cache_refreshed_at,
@@ -145,6 +158,8 @@ class DataCenterService:
             }
             self._analysis_cache[cache_key] = payload
             self._persist_snapshots()
+            self._persist_view_snapshot(cache_key, payload)
+            self._record_view_registry(cache_key, payload.get('refreshed_at', ''), 0, dirty=False)
             return dict(payload)
 
     def get_actor_metric_bucket_snapshot(self, metric_key, bucket_value, force_refresh=False):
@@ -172,6 +187,8 @@ class DataCenterService:
             }
             self._analysis_cache[cache_key] = payload
             self._persist_snapshots()
+            self._persist_view_snapshot(cache_key, payload)
+            self._record_view_registry(cache_key, payload.get('refreshed_at', ''), 0, dirty=False)
             return dict(payload)
 
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
@@ -192,6 +209,8 @@ class DataCenterService:
             }
             self._analysis_cache[cache_key] = payload
             self._persist_snapshots()
+            self._persist_view_snapshot(cache_key, payload)
+            self._record_view_registry(cache_key, payload.get('refreshed_at', ''), 0, dirty=False)
             return dict(payload)
 
     def get_code_prefix_metric_bucket_snapshot(self, metric_key, bucket_value, force_refresh=False):
@@ -226,6 +245,8 @@ class DataCenterService:
             }
             self._analysis_cache[cache_key] = payload
             self._persist_snapshots()
+            self._persist_view_snapshot(cache_key, payload)
+            self._record_view_registry(cache_key, payload.get('refreshed_at', ''), 0, dirty=False)
             return dict(payload)
 
     def get_dashboard_snapshot(self, force_refresh=False):
@@ -244,20 +265,26 @@ class DataCenterService:
             }
             self._analysis_cache[cache_key] = payload
             self._persist_snapshots()
+            self._persist_view_snapshot(cache_key, payload)
+            self._record_view_registry(cache_key, payload.get('refreshed_at', ''), 0, dirty=False)
             return dict(payload)
 
-    def get_dashboard_items_snapshot(self, metric_key):
+    def get_dashboard_items_snapshot(self, metric_key, force_refresh=False):
         normalized_key = str(metric_key or '').strip()
         if not normalized_key:
             raise ValueError('Missing dashboard metric key')
+        cache_key = self._build_analysis_cache_key('dashboard_items', normalized_key)
         with self._analysis_cache_lock:
             self._refresh_filter_settings_state()
-            if not self._dashboard_items_cache:
+            cached = self._analysis_cache.get(cache_key)
+            if cached is not None and not force_refresh:
+                return dict(cached)
+            if not self._dashboard_items_cache or force_refresh:
                 built = self._run_with_build_cache(self._build_dashboard)
                 self._dashboard_items_cache = dict(built.get('items_by_metric', {}) or {})
             if normalized_key not in self._dashboard_items_cache:
                 raise ValueError(f'Unknown dashboard metric: {normalized_key}')
-            return {
+            payload = {
                 'metric_key': normalized_key,
                 'items': [
                     dict(item or {})
@@ -265,21 +292,39 @@ class DataCenterService:
                 ],
                 'refreshed_at': self._current_cache_timestamp(),
             }
+            self._analysis_cache[cache_key] = payload
+            self._persist_view_snapshot(cache_key, payload)
+            self._record_view_registry(cache_key, payload.get('refreshed_at', ''), 0, dirty=False)
+            return dict(payload)
 
     def _build_dashboard(self):
         filter_settings = self._load_filter_settings()
-        all_videos = [dict(row or {}) for row in self.database.list_videos()]
-        visible_videos = self._filter_visible_movies(all_videos, filter_settings=filter_settings)
-        visible_codes = {
-            standardize_video_code((row or {}).get('code', ''))
-            for row in visible_videos
-            if standardize_video_code((row or {}).get('code', ''))
-        }
-        filtered_videos = [
-            row
-            for row in all_videos
-            if standardize_video_code(row.get('code', '')) not in visible_codes
-        ]
+        rule_set = self._build_library_ruleset(filter_settings)
+        try:
+            visible_videos = [
+                dict(row or {})
+                for row in self.database.list_video_summary_rows(rule_set=rule_set)
+            ]
+            filtered_videos = [
+                dict(row or {})
+                for row in self.database.list_video_summary_rows(
+                    rule_set=rule_set,
+                    visibility='filtered',
+                )
+            ]
+        except TypeError:
+            all_videos = [dict(row or {}) for row in self.database.list_videos()]
+            visible_videos = self._filter_visible_movies(all_videos, filter_settings=filter_settings)
+            visible_codes = {
+                standardize_video_code((row or {}).get('code', ''))
+                for row in visible_videos
+                if standardize_video_code((row or {}).get('code', ''))
+            }
+            filtered_videos = [
+                row
+                for row in all_videos
+                if standardize_video_code(row.get('code', '')) not in visible_codes
+            ]
 
         actor_rows = self._list_actor_rows()
         actor_names = [str(row.get('name', '') or '').strip() for row in actor_rows]
@@ -378,15 +423,217 @@ class DataCenterService:
             source_coverages=source_coverages,
         )
 
+    def _view_snapshot_path(self, snapshot_key):
+        if self._view_snapshot_dir is None:
+            return None
+        safe_key = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(snapshot_key or '').strip())
+        if not safe_key:
+            return None
+        return self._view_snapshot_dir / f'{safe_key}.json'
+
+    @staticmethod
+    def _view_snapshot_store_key(snapshot_key):
+        safe_key = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(snapshot_key or '').strip())
+        return f'data_center/{safe_key}' if safe_key else ''
+
+    def _load_persisted_view_snapshots(self):
+        store = getattr(self, 'snapshot_store', None)
+        loaded_keys = set()
+        if store is not None:
+            for store_key in store.iter_keys('data_center'):
+                payload = store.read(store_key)
+                snapshot_key = str((payload or {}).get('snapshot_key', '') or '').strip()
+                if snapshot_key and self._load_persisted_view_payload(payload):
+                    loaded_keys.add(snapshot_key)
+        if self._view_snapshot_dir is None or not self._view_snapshot_dir.exists():
+            return
+        try:
+            paths = list(self._view_snapshot_dir.glob('*.json'))
+        except OSError:
+            return
+        for path in paths:
+            try:
+                legacy_payload = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError, TypeError):
+                continue
+            snapshot_key = str((legacy_payload or {}).get('snapshot_key', '') or '').strip()
+            if not snapshot_key or snapshot_key in loaded_keys:
+                continue
+            if store is not None:
+                payload = store.read(self._view_snapshot_store_key(snapshot_key), legacy_paths=[path])
+            else:
+                payload = legacy_payload
+            self._load_persisted_view_payload(payload)
+
+    def _load_persisted_view_payload(self, payload):
+        if not isinstance(payload, dict) or int(payload.get('version', 0) or 0) != self.SNAPSHOT_VERSION + 1:
+            return False
+        if str(payload.get('filter_settings_fingerprint', '') or '').strip() != self._snapshot_filter_fingerprint:
+            return False
+        snapshot_key = str(payload.get('snapshot_key', '') or '').strip()
+        view_payload = payload.get('payload')
+        if not snapshot_key or not isinstance(view_payload, dict):
+            return False
+        registry_reader = getattr(self.database, 'get_snapshot_registry', None)
+        if callable(registry_reader):
+            try:
+                registry = dict(registry_reader(snapshot_key) or {})
+                if registry and registry.get('dirty'):
+                    return False
+            except Exception:
+                pass
+        if snapshot_key == 'data_center_summary':
+            normalized = self._normalize_summary_snapshot(view_payload)
+            if normalized is not None and self._is_complete_summary_snapshot(normalized.get('summary', {})):
+                self._summary_cache = normalized.get('summary', {})
+                self._summary_cache_refreshed_at = str(normalized.get('refreshed_at', '') or '').strip()
+                self._summary_cache_refresh_duration_ms = int(normalized.get('refresh_duration_ms', 0) or 0)
+                self._summary_cache_refresh_duration_text = str(normalized.get('refresh_duration_text', '') or '').strip()
+            return normalized is not None
+        normalized = self._normalize_analysis_snapshot(view_payload)
+        if normalized is not None:
+            self._analysis_cache[snapshot_key] = normalized
+            return True
+        return False
+
+    def _persist_view_snapshot(self, snapshot_key, payload):
+        target_path = self._view_snapshot_path(snapshot_key)
+        if target_path is None or not isinstance(payload, dict):
+            return
+        wrapper = {
+            'version': self.SNAPSHOT_VERSION + 1,
+            'snapshot_key': str(snapshot_key or '').strip(),
+            'filter_settings_fingerprint': self._snapshot_filter_fingerprint,
+            'payload': dict(payload or {}),
+        }
+        store = getattr(self, 'snapshot_store', None)
+        if store is not None:
+            store.write(self._view_snapshot_store_key(snapshot_key), wrapper)
+            return
+        temp_path = target_path.with_suffix(target_path.suffix + '.tmp')
+        try:
+            with self._view_snapshot_lock:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.write_text(json.dumps(wrapper, ensure_ascii=False, indent=2), encoding='utf-8')
+                temp_path.replace(target_path)
+        except OSError:
+            return
+
+    def _record_view_registry(self, snapshot_key, refreshed_at='', refresh_duration_ms=0, dirty=False):
+        updater = getattr(self.database, 'update_snapshot_registry', None)
+        if not callable(updater):
+            return
+        source_keys = self._view_source_keys(snapshot_key)
+        versions = getattr(self.database, 'get_data_source_versions', lambda _keys: {}) (source_keys)
+        source_version = ','.join(f'{key}:{int(versions.get(key, 0) or 0)}' for key in sorted(source_keys))
+        try:
+            updater(
+                snapshot_key,
+                source_keys=source_keys,
+                source_version=source_version,
+                filter_fingerprint=self._snapshot_filter_fingerprint,
+                dirty=dirty,
+                refreshed_at=refreshed_at,
+                refresh_duration_ms=refresh_duration_ms,
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _view_source_keys(snapshot_key):
+        key = str(snapshot_key or '').strip()
+        if key.startswith('actor:') or key.startswith('actor_bucket:'):
+            return {'actor_library', 'actor_profile', 'video_library'}
+        if key.startswith('code_prefix:') or key.startswith('code_prefix_bucket:'):
+            return {'code_prefix_library', 'video_library'}
+        if key == 'video_category':
+            return {'video_library'}
+        if key == 'dashboard':
+            return {'video_library', 'actor_library', 'code_prefix_library', 'actor_profile'}
+        return {'video_library', 'actor_library', 'code_prefix_library', 'actor_profile'}
+
+    def invalidate_views_for_sources(self, source_keys):
+        normalized_sources = {str(key or '').strip() for key in source_keys or [] if str(key or '').strip()}
+        if not normalized_sources:
+            return
+        affected = set()
+        if normalized_sources & {'video_library', 'actor_library', 'actor_profile', 'code_prefix_library'}:
+            affected.update({'data_center_summary', 'dashboard', 'dashboard_items:'})
+        if 'video_library' in normalized_sources:
+            affected.add('video_category')
+        if 'actor_library' in normalized_sources or 'actor_profile' in normalized_sources:
+            affected.update({'actor:'})
+        if 'code_prefix_library' in normalized_sources:
+            affected.update({'code_prefix:'})
+        with self._summary_cache_lock:
+            if 'data_center_summary' in affected:
+                self._summary_cache = None
+                self._summary_cache_refreshed_at = ''
+                self._summary_cache_refresh_duration_ms = 0
+                self._summary_cache_refresh_duration_text = ''
+        with self._analysis_cache_lock:
+            if 'dashboard' in affected:
+                self._analysis_cache.pop('dashboard', None)
+                self._dashboard_items_cache = {}
+            if 'dashboard_items:' in affected:
+                for key in list(self._analysis_cache):
+                    if key.startswith('dashboard_items:'):
+                        self._analysis_cache.pop(key, None)
+            if 'actor:' in affected:
+                for key in list(self._analysis_cache):
+                    if key.startswith('actor:') or key.startswith('actor_bucket:'):
+                        self._analysis_cache.pop(key, None)
+            if 'code_prefix:' in affected:
+                for key in list(self._analysis_cache):
+                    if key.startswith('code_prefix:') or key.startswith('code_prefix_bucket:'):
+                        self._analysis_cache.pop(key, None)
+        self._clear_view_snapshot_files(affected)
+        marker = getattr(self.database, 'mark_snapshot_registry_dirty', None)
+        if callable(marker):
+            try:
+                marker(source_keys=normalized_sources)
+            except Exception:
+                pass
+        self._persist_snapshots()
+
+    def _clear_view_snapshot_files(self, snapshot_keys):
+        store = getattr(self, 'snapshot_store', None)
+        if store is not None:
+            for store_key in store.iter_keys('data_center'):
+                payload = store.read(store_key)
+                key = str((payload or {}).get('snapshot_key', '') or '').strip()
+                if any(key == item or (item.endswith(':') and key.startswith(item)) for item in snapshot_keys or set()):
+                    store.delete(store_key)
+        if self._view_snapshot_dir is None:
+            return
+        try:
+            paths = list(self._view_snapshot_dir.glob('*.json'))
+        except OSError:
+            return
+        for path in paths:
+            try:
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                key = str((payload or {}).get('snapshot_key', '') or '').strip()
+                if any(key == item or (item.endswith(':') and key.startswith(item)) for item in snapshot_keys or set()):
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError, TypeError):
+                continue
+
     def _load_persisted_snapshots(self):
         if self.snapshot_file is None:
             return
-        try:
-            if not self.snapshot_file.exists():
+        store = getattr(self, 'snapshot_store', None)
+        if store is not None:
+            payload = store.read('data_center/aggregate', legacy_paths=[self.snapshot_file])
+            if payload is None:
                 return
-            payload = json.loads(self.snapshot_file.read_text(encoding='utf-8'))
-        except (OSError, ValueError, TypeError):
-            return
+        else:
+            try:
+                if not self.snapshot_file.exists():
+                    return
+                payload = json.loads(self.snapshot_file.read_text(encoding='utf-8'))
+            except (OSError, ValueError, TypeError):
+                return
 
         if not isinstance(payload, dict):
             return
@@ -421,11 +668,21 @@ class DataCenterService:
             self._analysis_cache = normalized_analysis_snapshots
         else:
             self._analysis_cache = {}
+        if store is not None:
+            summary_payload = self._build_persisted_summary_snapshot()
+            if summary_payload.get('refreshed_at'):
+                self._persist_view_snapshot('data_center_summary', summary_payload)
+            for cache_key, analysis_payload in self._build_persisted_analysis_snapshots().items():
+                self._persist_view_snapshot(cache_key, analysis_payload)
+            store.delete('data_center/aggregate')
+            return
         if should_migrate_legacy_snapshot and (self._summary_cache is not None or self._analysis_cache):
             self._persist_snapshots()
 
     def _persist_snapshots(self):
         if self.snapshot_file is None:
+            return
+        if getattr(self, 'snapshot_store', None) is not None:
             return
         payload = {
             'version': self.SNAPSHOT_VERSION,
@@ -599,16 +856,33 @@ class DataCenterService:
             if str((row or {}).get('name', '') or '').strip()
         ]
 
-    def _list_actor_movies_by_names(self, actor_names):
+    def _build_library_ruleset(self, filter_settings=None):
+        loader = getattr(self.video_filter_service, 'load_ruleset', None)
+        if not callable(loader):
+            return None
+        try:
+            return loader(settings=filter_settings, scope='library')
+        except TypeError:
+            return None
+
+    def _list_actor_movies_by_names(self, actor_names, rule_set=None):
         normalized_names = tuple(str(name or '').strip() for name in actor_names or [] if str(name or '').strip())
         if not normalized_names:
             return {}
+        effective_rule_set = rule_set or self._build_library_ruleset()
+        rule_key = effective_rule_set.fingerprint() if effective_rule_set is not None else ''
         return self._get_cached_build_value(
-            ('actor_movies_by_names', normalized_names),
-            lambda: self.database.list_actor_movies_by_names(list(normalized_names)),
+            ('actor_movies_by_names', normalized_names, rule_key),
+            lambda: self._list_actor_movies_from_database(normalized_names, effective_rule_set),
         )
 
-    def _list_code_prefix_movies_by_prefixes(self, prefixes):
+    def _list_actor_movies_from_database(self, actor_names, rule_set=None):
+        try:
+            return self.database.list_actor_movies_by_names(list(actor_names), rule_set=rule_set)
+        except TypeError:
+            return self.database.list_actor_movies_by_names(list(actor_names))
+
+    def _list_code_prefix_movies_by_prefixes(self, prefixes, rule_set=None):
         normalized_prefixes = tuple(
             str(prefix or '').strip().upper()
             for prefix in prefixes or []
@@ -616,10 +890,18 @@ class DataCenterService:
         )
         if not normalized_prefixes:
             return {}
+        effective_rule_set = rule_set or self._build_library_ruleset()
+        rule_key = effective_rule_set.fingerprint() if effective_rule_set is not None else ''
         return self._get_cached_build_value(
-            ('code_prefix_movies_by_prefixes', normalized_prefixes),
-            lambda: self.database.list_code_prefix_movies_by_prefixes(list(normalized_prefixes)),
+            ('code_prefix_movies_by_prefixes', normalized_prefixes, rule_key),
+            lambda: self._list_code_prefix_movies_from_database(normalized_prefixes, effective_rule_set),
         )
+
+    def _list_code_prefix_movies_from_database(self, prefixes, rule_set=None):
+        try:
+            return self.database.list_code_prefix_movies_by_prefixes(list(prefixes), rule_set=rule_set)
+        except TypeError:
+            return self.database.list_code_prefix_movies_by_prefixes(list(prefixes))
 
     def _build_summary(self, filter_settings=None):
         return {
@@ -969,6 +1251,15 @@ class DataCenterService:
             self._summary_cache_refresh_duration_text = ''
             self._analysis_cache = {}
             self._dashboard_items_cache = {}
+            self._clear_view_snapshot_files(
+                {'data_center_summary', 'dashboard', 'dashboard_items:', 'actor:', 'code_prefix:'}
+            )
+            marker = getattr(self.database, 'mark_snapshot_registry_dirty', None)
+            if callable(marker):
+                try:
+                    marker(snapshot_keys=['data_center_summary', 'dashboard'])
+                except Exception:
+                    pass
         return filter_settings
 
     @staticmethod
@@ -1486,16 +1777,24 @@ class DataCenterService:
 
     def _list_visible_video_summary_rows(self, filter_settings=None):
         filter_fingerprint = self._build_filter_settings_fingerprint(filter_settings)
+        rule_set = self._build_library_ruleset(filter_settings)
         return list(
             self._get_cached_build_value(
                 ('visible_video_summary_rows', filter_fingerprint),
-                lambda: self._filter_visible_movies(
-                    self.database.list_video_summary_rows(),
-                    filter_settings=filter_settings,
+                lambda: self._list_visible_video_summary_rows_from_database(
+                    rule_set,
+                    filter_settings,
                 ),
             )
             or []
         )
+
+    def _list_visible_video_summary_rows_from_database(self, rule_set, filter_settings=None):
+        try:
+            rows = self.database.list_video_summary_rows(rule_set=rule_set)
+        except TypeError:
+            rows = self.database.list_video_summary_rows()
+        return self._filter_visible_movies(rows, filter_settings=filter_settings)
 
     def _filter_visible_movies(self, rows, filter_settings=None):
         if not rows:
@@ -1522,7 +1821,12 @@ class DataCenterService:
 
     def _build_actor_movies_grouped_by_code_prefix(self):
         grouped_movies = {}
-        for row in self.database.list_all_actor_movies():
+        rule_set = self._build_library_ruleset()
+        try:
+            rows = self.database.list_all_actor_movies(rule_set=rule_set)
+        except TypeError:
+            rows = self.database.list_all_actor_movies()
+        for row in rows:
             prefix = extract_code_prefix((row or {}).get('code', ''))
             if not prefix:
                 continue

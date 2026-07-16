@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import QApplication
 from app.backend.client import BackendClient
 from app.backend.service import BackendService
 from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, FILTER_FIELD_TITLE
+from app.core.snapshot_store import SnapshotStore
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.video_category_viewer import VideoCategoryViewerWindow
 from app.services.video import VideoFilterService
@@ -57,6 +58,19 @@ class _RefreshClientStub:
         return {
             'videos': [],
             'staged_count': 0,
+        }
+
+
+class _TierRefreshClientStub(_RefreshClientStub):
+    def list_videos_requiring_manual_category_snapshot(self, force_refresh=False, tier=None):
+        self.calls.append((tier, bool(force_refresh)))
+        return {
+            'videos': [],
+            'staged_count': 0,
+            'refreshed_at': '2026-07-16 12:40:00',
+            'refresh_duration_ms': 1,
+            'refresh_duration_text': '1ms',
+            'cache_hit': not force_refresh,
         }
 
 
@@ -142,6 +156,23 @@ class VideoCategoryViewerWindowTest(unittest.TestCase):
                 window.on_filter_rules_saved()
 
                 self.assertEqual(window.refresh_client.calls, [False])
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_switching_tier_loads_only_the_selected_tier_snapshot(self):
+        with (
+            patch('app.gui.video_category_viewer.BackendClient', _TierRefreshClientStub),
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task),
+        ):
+            window = VideoCategoryViewerWindow(_BackendClientStub())
+            try:
+                self.assertEqual(
+                    window.refresh_client.calls,
+                    [('tier_1', False), ('tier_1', True)],
+                )
+                window._set_active_tier('tier_2')
+                self.assertEqual(window.refresh_client.calls[-1], ('tier_2', False))
             finally:
                 window.hide()
                 window.deleteLater()
@@ -238,6 +269,49 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             self.assertEqual(calls, [True])
             self.assertTrue(result['cache_hit'])
             self.assertEqual([row['code'] for row in result['videos']], ['IPX-001'])
+
+    def test_tiers_are_persisted_and_refreshed_independently(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            service = self._build_service(root / 'legacy' / 'video_category_snapshot.json')
+            service.snapshot_store = SnapshotStore(root / 'snapshots')
+            service._video_category_overview_snapshots = {}
+            service._current_video_category_source_version = lambda: 'db-v1'
+            timestamps = iter(
+                [
+                    '2026-07-16 12:30:00',
+                    '2026-07-16 12:31:00',
+                    '2026-07-16 12:32:00',
+                ]
+            )
+            service._current_snapshot_timestamp = lambda: next(timestamps)
+            service._append_snapshot_refresh_log = lambda **_kwargs: None
+            service.list_unfiltered_videos_requiring_manual_category = lambda: {
+                'videos': [
+                    {'code': 'AAA-001', 'manual_tier': 'tier_1'},
+                    {'code': 'BBB-002', 'manual_tier': 'tier_2'},
+                    {'code': 'CCC-003', 'manual_tier': 'tier_3'},
+                ],
+                'staged_count': 0,
+            }
+
+            first = BackendService.list_videos_requiring_manual_category_snapshot(service, tier='tier_1')
+            second = BackendService.list_videos_requiring_manual_category_snapshot(service, tier='tier_2')
+            tier_two_before = service.snapshot_store.read('video_category/tier_2')
+            refreshed = BackendService.list_videos_requiring_manual_category_snapshot(
+                service,
+                tier='tier_1',
+                force_refresh=True,
+            )
+            tier_two_after = service.snapshot_store.read('video_category/tier_2')
+
+            self.assertEqual([row['code'] for row in first['videos']], ['AAA-001'])
+            self.assertEqual([row['code'] for row in second['videos']], ['BBB-002'])
+            self.assertEqual(refreshed['refreshed_at'], '2026-07-16 12:32:00')
+            self.assertEqual(tier_two_after, tier_two_before)
+            for tier in ('tier_1', 'tier_2'):
+                self.assertTrue(service.snapshot_store.messagepack_path(f'video_category/{tier}').exists())
+                self.assertTrue(service.snapshot_store.json_path(f'video_category/{tier}').exists())
 
     def test_category_filter_change_rebuilds_raw_candidate_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:

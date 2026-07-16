@@ -1,5 +1,8 @@
+import json
 import re
+from dataclasses import dataclass
 from functools import lru_cache
+from types import MappingProxyType
 
 from app.core.enrichment_status import UNENRICHED_STATUS
 from app.core.javtxt_video_state import COLLECTION_TITLE_KEYWORDS
@@ -56,6 +59,186 @@ DEFAULT_VIDEO_FILTER_SETTINGS = {
         FILTER_FIELD_CO_STAR_CODE: [],
     }
 }
+
+
+@dataclass(frozen=True)
+class RuleSet:
+    """Normalized filter rules shared by SQL queries and residual filtering."""
+
+    rules: object
+    scope: str = 'library'
+
+    @classmethod
+    def normalize(cls, settings=None, scope='library'):
+        if isinstance(settings, cls):
+            if str(scope or '').strip() in ('', settings.scope):
+                return settings
+            settings = settings.to_settings()
+        normalized = normalize_video_filter_settings(settings)
+        normalized_rules = {
+            field_name: tuple(
+                str(value or '').strip().lower()
+                for value in normalized['rules'].get(field_name, [])
+            )
+            for field_name in FILTER_FIELDS
+        }
+        normalized_scope = str(scope or 'library').strip().lower() or 'library'
+        if normalized_scope not in {'library', 'pre_enrichment'}:
+            raise ValueError(f'Unknown RuleSet scope: {scope}')
+        return cls(MappingProxyType(normalized_rules), normalized_scope)
+
+    def to_settings(self):
+        return {
+            'rules': {
+                field_name: list(self.rules.get(field_name, ()))
+                for field_name in FILTER_FIELDS
+            }
+        }
+
+    def fingerprint(self):
+        return json.dumps(
+            {
+                'scope': self.scope,
+                'rules': {
+                    field_name: list(self.rules.get(field_name, ()))
+                    for field_name in FILTER_FIELDS
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+
+    def compile_sql(
+        self,
+        table_alias='',
+        scope=None,
+        visibility='visible',
+        post_enriched_only=True,
+    ):
+        """Return a SQL visibility predicate and parameters.
+
+        SQL only handles safe, literal substring and separated-code-prefix rules.
+        Rules such as VR's spaced marker remain in ``apply_residual``.
+        """
+        active_scope = str(scope or self.scope).strip().lower() or self.scope
+        if active_scope not in {'library', 'pre_enrichment'}:
+            raise ValueError(f'Unknown RuleSet scope: {active_scope}')
+        active_visibility = str(visibility or 'visible').strip().lower() or 'visible'
+        if active_visibility not in {'visible', 'filtered'}:
+            raise ValueError(f'Unknown RuleSet visibility: {active_visibility}')
+        hidden_terms = []
+        parameters = []
+
+        code_column = self._column('code', table_alias)
+        code_prefixes = []
+        for keyword in self.rules.get(FILTER_FIELD_CODE, ()):
+            prefix = _normalize_code_prefix(keyword)
+            if prefix and re.fullmatch(r'[A-Z0-9]+', prefix):
+                code_prefixes.append(prefix)
+        if code_prefixes:
+            placeholders = ','.join('?' for _ in code_prefixes)
+            hidden_terms.append(
+                f'{self._sql_separated_code_prefix(code_column)} IN ({placeholders})'
+            )
+            parameters.extend(code_prefixes)
+
+        if active_scope == 'pre_enrichment':
+            text_fields = (FILTER_FIELD_TITLE,)
+        else:
+            text_fields = (FILTER_FIELD_TITLE, FILTER_FIELD_JAVTXT_TAGS)
+        for field_name in text_fields:
+            column = self._column(field_name, table_alias)
+            for keyword in self.rules.get(field_name, ()):
+                if str(keyword or '').strip().upper() == VR_FILTER_KEYWORD:
+                    continue
+                hidden_terms.append(
+                    f"LOWER(COALESCE({column}, '')) LIKE LOWER(?) ESCAPE '\\'"
+                )
+                parameters.append(self._escape_like_pattern(keyword))
+
+        if not hidden_terms:
+            if active_visibility == 'filtered' and active_scope == 'library':
+                return self._post_enriched_sql(table_alias), [UNENRICHED_STATUS]
+            return '1 = 1', []
+
+        hidden_sql = ' OR '.join(f'({term})' for term in hidden_terms)
+        if active_scope == 'pre_enrichment':
+            return f'NOT ({hidden_sql})', parameters
+
+        if not post_enriched_only:
+            return f'NOT ({hidden_sql})', parameters
+
+        post_enriched_sql = self._post_enriched_sql(table_alias)
+        if active_visibility == 'filtered':
+            if self._has_residual_rules(active_scope):
+                return post_enriched_sql, [UNENRICHED_STATUS]
+            return f'({post_enriched_sql} AND ({hidden_sql}))', [UNENRICHED_STATUS, *parameters]
+        return f'(NOT ({post_enriched_sql}) OR NOT ({hidden_sql}))', [UNENRICHED_STATUS, *parameters]
+
+    def apply_residual(self, rows, scope=None, visibility='visible'):
+        active_scope = str(scope or self.scope).strip().lower() or self.scope
+        active_visibility = str(visibility or 'visible').strip().lower() or 'visible'
+        if active_visibility not in {'visible', 'filtered'}:
+            raise ValueError(f'Unknown RuleSet visibility: {active_visibility}')
+        settings = self.to_settings()
+        if active_scope == 'pre_enrichment':
+            predicate = lambda row: not should_skip_video_before_enrichment(row, settings)
+        elif active_scope == 'library':
+            predicate = lambda row: not should_hide_video_from_library(row, settings)
+        else:
+            raise ValueError(f'Unknown RuleSet scope: {active_scope}')
+        return [
+            dict(row or {})
+            for row in (rows or [])
+            if predicate(row) == (active_visibility == 'visible')
+        ]
+
+    @staticmethod
+    def _column(column_name, table_alias=''):
+        alias = str(table_alias or '').strip()
+        return f'{alias}.{column_name}' if alias else column_name
+
+    @staticmethod
+    def _sql_separated_code_prefix(column):
+        separated = f"REPLACE(REPLACE(TRIM({column}), '_', '-'), ' ', '-')"
+        return (
+            "UPPER(CASE WHEN instr({value}, '-') > 0 "
+            "THEN substr({value}, 1, instr({value}, '-') - 1) "
+            "ELSE '' END)"
+        ).format(value=separated)
+
+    @classmethod
+    def _post_enriched_sql(cls, table_alias=''):
+        fields = (
+            'javtxt_movie_id',
+            'javtxt_url',
+            'javtxt_tags',
+        )
+        value_terms = [
+            f"COALESCE({cls._column(field_name, table_alias)}, '') <> ''"
+            for field_name in fields
+        ]
+        status_column = cls._column('javtxt_enrichment_status', table_alias)
+        value_terms.append(
+            f"(COALESCE({status_column}, '') <> '' AND COALESCE({status_column}, '') <> ?)"
+        )
+        return '(' + ' OR '.join(value_terms) + ')'
+
+    def _has_residual_rules(self, scope):
+        if scope == 'pre_enrichment':
+            return False
+        if any(
+            str(keyword or '').strip().upper() == VR_FILTER_KEYWORD
+            for field_name in (FILTER_FIELD_TITLE, FILTER_FIELD_JAVTXT_TAGS)
+            for keyword in self.rules.get(field_name, ())
+        ):
+            return True
+        return bool(self.rules.get(FILTER_FIELD_CODE, ()))
+
+    @staticmethod
+    def _escape_like_pattern(value):
+        return '%' + str(value or '').replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
 
 
 def normalize_video_filter_settings(settings):

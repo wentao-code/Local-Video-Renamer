@@ -24,6 +24,49 @@ class ExcludedWebMovieCacheTest(unittest.TestCase):
 
             self.assertIn('excluded_code_prefix_movies', table_names)
             self.assertIn('excluded_actor_movies', table_names)
+            self.assertIn('data_source_versions', table_names)
+            self.assertIn('snapshot_registry', table_names)
+            self.assertIn('actor_library_summary', table_names)
+            self.assertIn('code_prefix_library_summary', table_names)
+            self.assertIn('enrichment_candidate_index', table_names)
+            del db
+            gc.collect()
+
+    def test_data_versions_snapshot_registry_and_candidate_index_are_batch_queryable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+
+            first = db.bump_data_source_versions(['actor_library', 'actor_library'])
+            second = db.bump_data_source_versions(['actor_library'])
+            self.assertEqual(first['actor_library'], 1)
+            self.assertEqual(second['actor_library'], 2)
+            self.assertEqual(db.get_data_source_versions(['actor_library']), {'actor_library': 2})
+
+            db.update_snapshot_registry(
+                'actor:video_count',
+                source_keys=['actor_library'],
+                source_version='actor_library:2',
+                filter_fingerprint='fingerprint',
+                dirty=False,
+            )
+            db.mark_snapshot_registry_dirty(source_keys=['actor_library'])
+            self.assertTrue(db.get_snapshot_registry('actor:video_count')['dirty'])
+
+            candidates = [
+                {'actor_name': '演员甲', 'code': 'ABC-001', 'candidate_reason': 'missing_actor'},
+                {'actor_name': '演员乙', 'code': 'ABC-002', 'candidate_reason': 'missing_actor'},
+            ]
+            db.replace_enrichment_candidate_index(
+                'actor',
+                'supplement',
+                candidates,
+                source_version=2,
+                candidate_fingerprint='fingerprint',
+            )
+            self.assertEqual(
+                db.load_enrichment_candidate_index('actor', 'supplement', 2, 'fingerprint', 10),
+                candidates,
+            )
             del db
             gc.collect()
 

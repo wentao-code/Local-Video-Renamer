@@ -30,6 +30,7 @@ def _run_sync_async_task(
 class LadderBoardBackendStub:
     def __init__(self):
         self.refresh_flags = []
+        self.global_medal_refresh_flags = []
         self.medal_calls = []
         self.admit_calls = []
         self.selected_medal = 'Rookie\nEvergreen'
@@ -62,7 +63,8 @@ class LadderBoardBackendStub:
             'refreshed_at': '2026-06-21 21:00:00',
         }
 
-    def list_global_medals(self):
+    def list_global_medals(self, force_refresh=False):
+        self.global_medal_refresh_flags.append(bool(force_refresh))
         return [dict(row) for row in self.global_medals]
 
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
@@ -114,6 +116,7 @@ class LadderBoardViewerTest(unittest.TestCase):
                     backend.refresh_flags,
                     [(LADDER_BOARD_ACTOR, False), (LADDER_BOARD_ACTOR, True)],
                 )
+                self.assertEqual(backend.global_medal_refresh_flags, [False, False])
             finally:
                 window.hide()
                 window.deleteLater()
