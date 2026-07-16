@@ -266,6 +266,8 @@ def make_handler(service):
                 return service.delete_code_prefix(body.get('prefix'))
             if method == 'POST' and path == '/database/code-prefixes/filter-blacklist':
                 return service.sync_code_prefix_filter_blacklist(body.get('prefixes', []))
+            if method == 'POST' and path == '/database/excluded-web-movies/migrate':
+                return service.migrate_excluded_web_movies(body.get('batch_size', 500))
             if method == 'GET' and path == '/ladder/board':
                 return service.get_ladder_board(
                     query.get('board_key', [''])[0],

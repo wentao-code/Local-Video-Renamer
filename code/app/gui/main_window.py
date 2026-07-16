@@ -68,7 +68,9 @@ from app.gui.task_queue import (
     TASK_CATEGORY_ENRICHMENT,
     TASK_CATEGORY_MAINTENANCE,
     TASK_CATEGORY_VIEW,
+    TASK_STATUS_PAUSED,
     TASK_STATUS_RUNNING,
+    TASK_STATUS_WAITING,
     get_gui_task_queue,
 )
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
@@ -885,8 +887,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
 
     def enrich_video_info(self):
-        if self._has_active_enrichment_plan():
-            self.status_label.setText('当前已有补全任务正在运行')
+        if self.batch_enrichment_active:
+            self.status_label.setText('当前批量补全任务正在运行')
             return False
 
         dialog = EnrichmentDialog(self)
@@ -1081,7 +1083,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                     active_plan.setdefault('task_kind', result.get('plan_task_kind', ''))
                     active_plan.update(dict(result.get('plan_progress', {}) or {}))
                 self._active_enrichment_batch_plan_state = active_plan
-            self.on_enrichment_finished(result)
+            self.on_enrichment_finished(result, mode=queued_mode)
+
+        def handle_enrichment_failed(error_message):
+            self.on_enrichment_failed(error_message, mode=queued_mode)
 
         self.update_enrichment_controls()
         self.reset_progress_widgets(keep_visible=True)
@@ -1108,7 +1113,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             task_title,
             worker_factory,
             handle_enrichment_finished,
-            self.on_enrichment_failed,
+            handle_enrichment_failed,
             **runner_kwargs,
         )
 
@@ -1393,8 +1398,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.batch_countdown_label.setText(tr('main.batch_countdown', countdown_text=countdown_text))
 
     def update_enrichment_controls(self):
-        enrichment_running = self.enrichment_thread is not None or self.enrichment_task_queued
-        self.btn_enrich.setEnabled(not enrichment_running and not self.batch_enrichment_active)
+        enrichment_running = self.enrichment_thread is not None or self._has_queued_enrichment_tasks()
+        self.btn_enrich.setEnabled(not self.batch_enrichment_active)
         self.btn_stop_enrich.setEnabled(enrichment_running or self.batch_enrichment_active)
         self.update_network_guard()
 
@@ -1472,7 +1477,15 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.network_status_label.setToolTip('')
 
     def _has_active_enrichment_plan(self):
-        return bool(self.enrichment_thread is not None or self.enrichment_task_queued or self.batch_enrichment_active)
+        return bool(self.enrichment_thread is not None or self._has_queued_enrichment_tasks() or self.batch_enrichment_active)
+
+    def _has_queued_enrichment_tasks(self):
+        queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
+        return any(
+            record.task_category == TASK_CATEGORY_ENRICHMENT
+            and record.status in (TASK_STATUS_WAITING, TASK_STATUS_RUNNING, TASK_STATUS_PAUSED)
+            for record in queue.records()
+        )
 
     def toggle_runtime_mode(self):
         next_mode = RUN_MODE_VIEW if getattr(self, 'runtime_mode', RUN_MODE_TASK) == RUN_MODE_TASK else RUN_MODE_TASK
@@ -2062,8 +2075,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def on_auto_login_failed(self, error_message):
         QMessageBox.critical(self, tr('main.auto_login_failed'), error_message)
 
-    def on_enrichment_finished(self, result):
-        mode = self.enrichment_mode
+    def on_enrichment_finished(self, result, mode=None):
+        mode = self.enrichment_mode if mode is None else mode
         is_batch_mode = mode in ('batch', 'combo_batch')
         entity_label = result.get('entity_label', tr('main.entity_default'))
         summary = self.build_enrichment_summary(result)
@@ -2119,8 +2132,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         QMessageBox.information(self, title, summary)
         self.status_label.setText('')
 
-    def on_enrichment_failed(self, error_message):
-        mode = self.enrichment_mode
+    def on_enrichment_failed(self, error_message, mode=None):
+        mode = self.enrichment_mode if mode is None else mode
         if mode in ('batch', 'combo_batch'):
             self.stop_batch_enrichment(tr('main.batch_failed'))
             QMessageBox.critical(self, tr('main.batch_failed_title'), error_message)

@@ -849,7 +849,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(result, [plan])
         self.assertEqual(captured, [plan])
 
-    def test_enrichment_button_is_disabled_while_task_is_active(self):
+    def test_enrichment_button_stays_enabled_while_single_task_is_active(self):
         enrich_button = SimpleNamespace(enabled=None)
         stop_button = SimpleNamespace(enabled=None)
         enrich_button.setEnabled = lambda value: setattr(enrich_button, 'enabled', bool(value))
@@ -860,6 +860,27 @@ class MainWindowStartupTest(unittest.TestCase):
             batch_enrichment_active=False,
             btn_enrich=enrich_button,
             btn_stop_enrich=stop_button,
+            _has_queued_enrichment_tasks=lambda: False,
+            update_network_guard=lambda: None,
+        )
+
+        main_window.VidNormApp.update_enrichment_controls(stub)
+
+        self.assertTrue(enrich_button.enabled)
+        self.assertTrue(stop_button.enabled)
+
+    def test_enrichment_button_is_disabled_while_batch_plan_is_active(self):
+        enrich_button = SimpleNamespace(enabled=None)
+        stop_button = SimpleNamespace(enabled=None)
+        enrich_button.setEnabled = lambda value: setattr(enrich_button, 'enabled', bool(value))
+        stop_button.setEnabled = lambda value: setattr(stop_button, 'enabled', bool(value))
+        stub = SimpleNamespace(
+            enrichment_thread=None,
+            enrichment_task_queued=False,
+            batch_enrichment_active=True,
+            btn_enrich=enrich_button,
+            btn_stop_enrich=stop_button,
+            _has_queued_enrichment_tasks=lambda: False,
             update_network_guard=lambda: None,
         )
 

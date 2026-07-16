@@ -524,6 +524,12 @@ class BackendClient:
     def sync_code_prefix_filter_blacklist(self, prefixes):
         return self._post('/database/code-prefixes/filter-blacklist', {'prefixes': list(prefixes or [])})
 
+    def migrate_excluded_web_movies(self, batch_size=500):
+        return self._post(
+            '/database/excluded-web-movies/migrate',
+            {'batch_size': batch_size},
+        )
+
     def get_ladder_board(self, board_key):
         return self.get_ladder_board_snapshot(board_key).get('board', {})
 

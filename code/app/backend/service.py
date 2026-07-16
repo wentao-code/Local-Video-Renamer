@@ -1186,6 +1186,13 @@ class BackendService:
         self._invalidate_code_prefix_snapshots()
         return result
 
+    def migrate_excluded_web_movies(self, batch_size=500):
+        self.ensure_database_loaded()
+        result = self.db.migrate_excluded_web_movies(batch_size=batch_size)
+        self._invalidate_code_prefix_snapshots()
+        self._invalidate_actor_snapshots()
+        return result
+
     def _sync_persisted_code_filter_blacklist(self):
         """Reconcile saved left-side code filters if the GUI saved against an old backend."""
         settings = self.video_filter_service.load_settings()

@@ -60,7 +60,13 @@ from app.core.actor_profile_display import (
 )
 from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.core.project_paths import DATABASE_FILE
-from app.core.video_filter_rules import FILTER_FIELD_CO_STAR_CODE, get_filter_keywords, matches_filter_keywords
+from app.core.video_filter_rules import (
+    FILTER_FIELD_CO_STAR_CODE,
+    get_filter_keywords,
+    matches_filter_keywords,
+    should_skip_video_before_enrichment,
+    should_hide_video_from_library,
+)
 from app.core.video_filter_settings import load_video_filter_settings
 from app.core.ladder_board import (
     LADDER_BOARD_ACTOR,
@@ -467,6 +473,56 @@ class VideoDatabase(
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS excluded_code_prefix_movies (
+                    prefix TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    title TEXT,
+                    author TEXT,
+                    release_date TEXT,
+                    avfan_url TEXT,
+                    page_number INTEGER DEFAULT 1,
+                    javtxt_enrichment_status TEXT DEFAULT '',
+                    javtxt_movie_id TEXT,
+                    javtxt_url TEXT,
+                    javtxt_tags TEXT,
+                    javtxt_release_date TEXT,
+                    author_raw TEXT,
+                    video_category TEXT,
+                    supplement_enrichment_status TEXT DEFAULT '',
+                    supplement_enrichment_error TEXT DEFAULT '',
+                    supplement_enriched_at TEXT,
+                    exclude_reason TEXT NOT NULL DEFAULT '',
+                    excluded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (prefix, code)
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS excluded_actor_movies (
+                    actor_name TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    title TEXT,
+                    author TEXT,
+                    release_date TEXT,
+                    avfan_url TEXT,
+                    page_number INTEGER DEFAULT 1,
+                    javtxt_enrichment_status TEXT DEFAULT '',
+                    javtxt_movie_id TEXT,
+                    javtxt_url TEXT,
+                    javtxt_tags TEXT,
+                    javtxt_release_date TEXT,
+                    author_raw TEXT,
+                    video_category TEXT,
+                    supplement_enrichment_status TEXT DEFAULT '',
+                    supplement_enrichment_error TEXT DEFAULT '',
+                    supplement_enriched_at TEXT,
+                    exclude_reason TEXT NOT NULL DEFAULT '',
+                    excluded_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (actor_name, code)
+                )
+            ''')
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS hidden_code_prefixes (
                     prefix TEXT PRIMARY KEY
                 )
@@ -684,6 +740,8 @@ class VideoDatabase(
                 'actor_movies',
                 'supplement_enrichment_status, javtxt_enrichment_status, actor_name, code',
             )
+            self._ensure_index(cursor, 'idx_excluded_code_prefix_movies_code', 'excluded_code_prefix_movies', 'code')
+            self._ensure_index(cursor, 'idx_excluded_actor_movies_code', 'excluded_actor_movies', 'code')
             self._ensure_index(
                 cursor,
                 'idx_actor_enrichments_status',
@@ -2901,6 +2959,339 @@ class VideoDatabase(
             self._refresh_code_prefix_combined_status(cursor, normalized_prefix)
             conn.commit()
 
+    @staticmethod
+    def _normalize_excluded_movie_reason(reason):
+        values = []
+        seen = set()
+        for value in str(reason or '').split(','):
+            normalized = str(value or '').strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(normalized)
+        return ','.join(values)
+
+    def _store_excluded_web_movie_rows(self, cursor, table_name, owner_column, owner_value, movies, reason):
+        normalized_owner = str(owner_value or '').strip()
+        normalized_reason = self._normalize_excluded_movie_reason(reason)
+        values = []
+        for movie in movies or []:
+            if not isinstance(movie, dict):
+                continue
+            normalized_code = standardize_video_code(movie.get('code', ''))
+            if not normalized_owner or not normalized_code:
+                continue
+            values.append(
+                (
+                    normalized_owner,
+                    normalized_code,
+                    str(movie.get('title', '') or '').strip(),
+                    str(movie.get('author', '') or '').strip(),
+                    str(movie.get('release_date', '') or '').strip(),
+                    str(movie.get('avfan_url', '') or '').strip(),
+                    max(1, int(movie.get('page_number', 1) or 1)),
+                    str(movie.get('javtxt_enrichment_status', '') or '').strip(),
+                    str(movie.get('javtxt_movie_id', '') or '').strip(),
+                    str(movie.get('javtxt_url', '') or '').strip(),
+                    str(movie.get('javtxt_tags', '') or '').strip(),
+                    str(movie.get('javtxt_release_date', '') or '').strip(),
+                    str(movie.get('author_raw', '') or '').strip(),
+                    str(movie.get('video_category', '') or '').strip(),
+                    str(movie.get('supplement_enrichment_status', '') or '').strip(),
+                    str(movie.get('supplement_enrichment_error', '') or '').strip(),
+                    str(movie.get('supplement_enriched_at', '') or '').strip(),
+                    normalized_reason,
+                )
+            )
+        if not values:
+            return 0
+        cursor.executemany(
+            f'''
+            INSERT INTO {table_name} (
+                {owner_column}, code, title, author, release_date, avfan_url, page_number,
+                javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                javtxt_release_date, author_raw, video_category,
+                supplement_enrichment_status, supplement_enrichment_error, supplement_enriched_at,
+                exclude_reason, excluded_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT({owner_column}, code) DO UPDATE SET
+                title = excluded.title,
+                author = excluded.author,
+                release_date = excluded.release_date,
+                avfan_url = excluded.avfan_url,
+                page_number = excluded.page_number,
+                javtxt_enrichment_status = excluded.javtxt_enrichment_status,
+                javtxt_movie_id = excluded.javtxt_movie_id,
+                javtxt_url = excluded.javtxt_url,
+                javtxt_tags = excluded.javtxt_tags,
+                javtxt_release_date = excluded.javtxt_release_date,
+                author_raw = excluded.author_raw,
+                video_category = excluded.video_category,
+                exclude_reason = excluded.exclude_reason,
+                last_seen_at = CURRENT_TIMESTAMP
+            ''',
+            values,
+        )
+        return len(values)
+
+    def store_excluded_code_prefix_movies(self, prefix, movies, reason=''):
+        normalized_prefix = str(prefix or '').strip().upper()
+        with self._connect() as conn:
+            count = self._store_excluded_web_movie_rows(
+                conn,
+                'excluded_code_prefix_movies',
+                'prefix',
+                normalized_prefix,
+                movies,
+                reason,
+            )
+            conn.commit()
+        return count
+
+    def store_excluded_actor_movies(self, actor_name, movies, reason=''):
+        normalized_name = str(actor_name or '').strip()
+        with self._connect() as conn:
+            count = self._store_excluded_web_movie_rows(
+                conn,
+                'excluded_actor_movies',
+                'actor_name',
+                normalized_name,
+                movies,
+                reason,
+            )
+            conn.commit()
+        return count
+
+    def list_excluded_code_prefix_movie_keys(self, prefixes=None, codes=None):
+        normalized_prefixes = sorted({str(value or '').strip().upper() for value in prefixes or [] if str(value or '').strip()})
+        normalized_codes = sorted({standardize_video_code(value) for value in codes or [] if standardize_video_code(value)})
+        if not normalized_prefixes or not normalized_codes:
+            return set()
+        prefix_placeholders = ','.join('?' for _ in normalized_prefixes)
+        code_placeholders = ','.join('?' for _ in normalized_codes)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT prefix, code
+                FROM excluded_code_prefix_movies
+                WHERE prefix IN ({prefix_placeholders})
+                  AND code IN ({code_placeholders})
+                ''',
+                [*normalized_prefixes, *normalized_codes],
+            ).fetchall()
+        return {(str(row[0] or '').strip().upper(), standardize_video_code(row[1])) for row in rows}
+
+    def _list_excluded_web_movie_reasons(self, table_name, owner_column, owners, codes, uppercase_owner=False):
+        normalized_owners = sorted({
+            (str(value or '').strip().upper() if uppercase_owner else str(value or '').strip())
+            for value in owners or []
+            if str(value or '').strip()
+        })
+        normalized_codes = sorted({
+            standardize_video_code(value)
+            for value in codes or []
+            if standardize_video_code(value)
+        })
+        if not normalized_owners or not normalized_codes:
+            return {}
+        owner_placeholders = ','.join('?' for _ in normalized_owners)
+        code_placeholders = ','.join('?' for _ in normalized_codes)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT {owner_column}, code, exclude_reason
+                FROM {table_name}
+                WHERE {owner_column} IN ({owner_placeholders})
+                  AND code IN ({code_placeholders})
+                ''',
+                [*normalized_owners, *normalized_codes],
+            ).fetchall()
+        return {
+            (
+                str(row[0] or '').strip().upper()
+                if uppercase_owner
+                else str(row[0] or '').strip(),
+                standardize_video_code(row[1]),
+            ): self._normalize_excluded_movie_reason(row[2]) or 'already_excluded'
+            for row in rows
+        }
+
+    def list_excluded_actor_movie_keys(self, actor_names=None, codes=None):
+        normalized_names = sorted({str(value or '').strip() for value in actor_names or [] if str(value or '').strip()})
+        normalized_codes = sorted({standardize_video_code(value) for value in codes or [] if standardize_video_code(value)})
+        if not normalized_names or not normalized_codes:
+            return set()
+        name_placeholders = ','.join('?' for _ in normalized_names)
+        code_placeholders = ','.join('?' for _ in normalized_codes)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT actor_name, code
+                FROM excluded_actor_movies
+                WHERE actor_name IN ({name_placeholders})
+                  AND code IN ({code_placeholders})
+                ''',
+                [*normalized_names, *normalized_codes],
+            ).fetchall()
+        return {(str(row[0] or '').strip(), standardize_video_code(row[1])) for row in rows}
+
+    def _migrate_excluded_web_movie_table(
+        self,
+        table_name,
+        archive_table_name,
+        owner_column,
+        hidden_table_name,
+        hidden_column,
+        owner_reason,
+        filter_settings,
+        batch_size,
+    ):
+        hidden_owners = set()
+        with self._connect() as conn:
+            hidden_owners = {
+                str(row[0] or '').strip()
+                for row in conn.execute(f'SELECT {hidden_column} FROM {hidden_table_name}').fetchall()
+                if str(row[0] or '').strip()
+            }
+
+        last_row_id = 0
+        migrated_count = 0
+        columns = (
+            f'{owner_column}, code, title, author, release_date, avfan_url, page_number, '
+            'javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, '
+            'javtxt_release_date, author_raw, video_category, supplement_enrichment_status, '
+            'supplement_enrichment_error, supplement_enriched_at'
+        )
+        while True:
+            with self._connect() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f'''
+                    SELECT rowid, {columns}
+                    FROM {table_name}
+                    WHERE rowid > ?
+                    ORDER BY rowid
+                    LIMIT ?
+                    ''',
+                    (last_row_id, batch_size),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    break
+
+                to_archive = []
+                row_ids = []
+                for row in rows:
+                    row_id = int(row[0])
+                    owner = str(row[1] or '').strip()
+                    movie = {
+                        'code': row[2] or '',
+                        'title': row[3] or '',
+                        'author': row[4] or '',
+                        'release_date': row[5] or '',
+                        'avfan_url': row[6] or '',
+                        'page_number': row[7] or 1,
+                        'javtxt_enrichment_status': row[8] or '',
+                        'javtxt_movie_id': row[9] or '',
+                        'javtxt_url': row[10] or '',
+                        'javtxt_tags': row[11] or '',
+                        'javtxt_release_date': row[12] or '',
+                        'author_raw': row[13] or '',
+                        'video_category': row[14] or '',
+                        'supplement_enrichment_status': row[15] or '',
+                        'supplement_enrichment_error': row[16] or '',
+                        'supplement_enriched_at': row[17] or '',
+                    }
+                    reason = self._resolve_web_movie_exclusion_reason(
+                        movie,
+                        filter_settings=filter_settings,
+                        owner_blacklisted=owner in hidden_owners,
+                        owner_reason=owner_reason,
+                    )
+                    if reason:
+                        to_archive.append((owner, movie, reason))
+                        row_ids.append(row_id)
+
+                if to_archive:
+                    by_owner = {}
+                    for owner, movie, reason in to_archive:
+                        by_owner.setdefault(owner, []).append({**movie, 'exclude_reason': reason})
+                    for owner, movies in by_owner.items():
+                        self._store_excluded_web_movie_rows(
+                            cursor,
+                            archive_table_name,
+                            owner_column,
+                            owner,
+                            movies,
+                            ','.join(sorted({movie['exclude_reason'] for movie in movies})),
+                        )
+                    placeholders = ','.join('?' for _ in row_ids)
+                    cursor.execute(
+                        f'DELETE FROM {table_name} WHERE rowid IN ({placeholders})',
+                        row_ids,
+                    )
+                    migrated_count += len(row_ids)
+                last_row_id = max(int(row[0]) for row in rows)
+                conn.commit()
+        return migrated_count
+
+    def migrate_excluded_web_movies(self, batch_size=500):
+        try:
+            normalized_batch_size = max(1, int(batch_size))
+        except (TypeError, ValueError):
+            normalized_batch_size = 500
+        filter_settings = self._load_video_category_filter_settings()
+        code_count = self._migrate_excluded_web_movie_table(
+            'code_prefix_movies',
+            'excluded_code_prefix_movies',
+            'prefix',
+            'hidden_code_prefixes',
+            'prefix',
+            'code_blacklist',
+            filter_settings,
+            normalized_batch_size,
+        )
+        actor_count = self._migrate_excluded_web_movie_table(
+            'actor_movies',
+            'excluded_actor_movies',
+            'actor_name',
+            'hidden_actors',
+            'name',
+            'actor_blacklist',
+            filter_settings,
+            normalized_batch_size,
+        )
+        return {
+            'code_prefix_movies': code_count,
+            'actor_movies': actor_count,
+            'total': code_count + actor_count,
+        }
+
+    @staticmethod
+    def _resolve_web_movie_exclusion_reason(movie, filter_settings=None, owner_blacklisted=False, owner_reason=''):
+        reasons = []
+        if owner_blacklisted:
+            reasons.append(owner_reason)
+        post_enrichment_filter_hit = should_hide_video_from_library(movie, filter_settings)
+        has_detail_reference = bool(
+            str((movie or {}).get('javtxt_movie_id', '') or '').strip()
+            or str((movie or {}).get('javtxt_url', '') or '').strip()
+        )
+        if should_skip_video_before_enrichment(movie, filter_settings) or (
+            post_enrichment_filter_hit and has_detail_reference
+        ):
+            reasons.append('filter')
+        return VideoDatabase._normalize_excluded_movie_reason(','.join(reasons))
+
+    @staticmethod
+    def _is_hidden_web_movie_owner(cursor, table_name, column_name, owner_value):
+        cursor.execute(
+            f'SELECT 1 FROM {table_name} WHERE {column_name} = ? LIMIT 1',
+            (owner_value,),
+        )
+        return bool(cursor.fetchone())
+
     def replace_code_prefix_movies(self, prefix, movies):
         prefix = str(prefix or '').strip().upper()
         normalized_movies = []
@@ -2918,11 +3309,26 @@ class VideoDatabase(
                 normalized_movies.append(normalized_movie)
         processed_videos = self.get_videos_by_codes([movie['code'] for movie in normalized_movies]) if normalized_movies else {}
         web_javtxt_states = self._load_web_movie_javtxt_state_by_codes([movie['code'] for movie in normalized_movies]) if normalized_movies else {}
+        excluded_reasons = self._list_excluded_web_movie_reasons(
+            'excluded_code_prefix_movies',
+            'prefix',
+            [prefix],
+            [movie['code'] for movie in normalized_movies],
+            uppercase_owner=True,
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (prefix,))
             if normalized_movies:
                 values = []
+                excluded_movies = []
+                active_codes = []
+                owner_blacklisted = self._is_hidden_web_movie_owner(
+                    cursor,
+                    'hidden_code_prefixes',
+                    'prefix',
+                    prefix,
+                )
                 for movie in normalized_movies:
                     normalized_code = movie['code']
                     processed_record = self._merge_javtxt_state_records(
@@ -2955,26 +3361,62 @@ class VideoDatabase(
                     ):
                         javtxt_status = UNENRICHED_STATUS
                     existing_movie = existing_movies.get(normalized_code, {})
+                    stored_movie = {
+                        **movie,
+                        'code': normalized_code,
+                        'author': author,
+                        'release_date': javtxt_release_date or movie.get('release_date', ''),
+                        'javtxt_enrichment_status': javtxt_status,
+                        'javtxt_movie_id': javtxt_movie_id,
+                        'javtxt_url': javtxt_url,
+                        'javtxt_tags': javtxt_tags,
+                        'javtxt_release_date': javtxt_release_date,
+                        'author_raw': author_raw,
+                        'video_category': video_category,
+                        'supplement_enrichment_status': str(existing_movie.get('supplement_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
+                        'supplement_enrichment_error': str(existing_movie.get('supplement_enrichment_error', '') or '').strip(),
+                        'supplement_enriched_at': str(existing_movie.get('supplement_enriched_at', '') or '').strip(),
+                    }
+                    exclusion_reason = self._resolve_web_movie_exclusion_reason(
+                        stored_movie,
+                        filter_settings=filter_settings,
+                        owner_blacklisted=owner_blacklisted,
+                        owner_reason='code_blacklist',
+                    )
+                    exclusion_reason = exclusion_reason or excluded_reasons.get((prefix, normalized_code), '')
+                    if exclusion_reason:
+                        excluded_movies.append({**stored_movie, 'exclude_reason': exclusion_reason})
+                        continue
+                    active_codes.append(normalized_code)
                     values.append(
                         (
                             prefix,
                             normalized_code,
-                            movie.get('title', ''),
-                            author,
-                            javtxt_release_date or movie.get('release_date', ''),
-                            movie.get('avfan_url', ''),
-                            int(movie.get('page_number', 1) or 1),
-                            javtxt_status,
-                            javtxt_movie_id,
-                            javtxt_url,
-                            javtxt_tags,
-                            javtxt_release_date,
-                            author_raw,
-                            video_category,
-                            str(existing_movie.get('supplement_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-                            str(existing_movie.get('supplement_enrichment_error', '') or '').strip(),
-                            str(existing_movie.get('supplement_enriched_at', '') or '').strip(),
+                            stored_movie.get('title', ''),
+                            stored_movie.get('author', ''),
+                            stored_movie.get('release_date', ''),
+                            stored_movie.get('avfan_url', ''),
+                            int(stored_movie.get('page_number', 1) or 1),
+                            stored_movie.get('javtxt_enrichment_status', ''),
+                            stored_movie.get('javtxt_movie_id', ''),
+                            stored_movie.get('javtxt_url', ''),
+                            stored_movie.get('javtxt_tags', ''),
+                            stored_movie.get('javtxt_release_date', ''),
+                            stored_movie.get('author_raw', ''),
+                            stored_movie.get('video_category', ''),
+                            stored_movie.get('supplement_enrichment_status', UNENRICHED_STATUS),
+                            stored_movie.get('supplement_enrichment_error', ''),
+                            stored_movie.get('supplement_enriched_at', ''),
                         )
+                    )
+                if excluded_movies:
+                    self._store_excluded_web_movie_rows(
+                        cursor,
+                        'excluded_code_prefix_movies',
+                        'prefix',
+                        prefix,
+                        excluded_movies,
+                        ','.join(sorted({movie.get('exclude_reason', '') for movie in excluded_movies})),
                     )
                 cursor.executemany('''
                     INSERT OR REPLACE INTO code_prefix_movies (
@@ -2984,10 +3426,8 @@ class VideoDatabase(
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', values)
-                self._propagate_web_movie_javtxt_state_for_codes(
-                    cursor,
-                    [movie['code'] for movie in normalized_movies],
-                )
+                if values:
+                    self._propagate_web_movie_javtxt_state_for_codes(cursor, active_codes)
             conn.commit()
         self.refresh_code_prefix_javtxt_statuses([prefix])
 
@@ -3738,11 +4178,25 @@ class VideoDatabase(
                 normalized_movies.append(normalized_movie)
         processed_videos = self.get_videos_by_codes([movie['code'] for movie in normalized_movies]) if normalized_movies else {}
         web_javtxt_states = self._load_web_movie_javtxt_state_by_codes([movie['code'] for movie in normalized_movies]) if normalized_movies else {}
+        excluded_reasons = self._list_excluded_web_movie_reasons(
+            'excluded_actor_movies',
+            'actor_name',
+            [normalized_name],
+            [movie['code'] for movie in normalized_movies],
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
             if normalized_movies:
                 values = []
+                excluded_movies = []
+                active_codes = []
+                owner_blacklisted = self._is_hidden_web_movie_owner(
+                    cursor,
+                    'hidden_actors',
+                    'name',
+                    normalized_name,
+                )
                 for movie in normalized_movies:
                     normalized_code = movie['code']
                     processed_record = self._merge_javtxt_state_records(
@@ -3775,26 +4229,62 @@ class VideoDatabase(
                     ):
                         javtxt_status = UNENRICHED_STATUS
                     existing_movie = existing_movies.get(normalized_code, {})
+                    stored_movie = {
+                        **movie,
+                        'code': normalized_code,
+                        'author': author,
+                        'release_date': javtxt_release_date or movie.get('release_date', ''),
+                        'javtxt_enrichment_status': javtxt_status,
+                        'javtxt_movie_id': javtxt_movie_id,
+                        'javtxt_url': javtxt_url,
+                        'javtxt_tags': javtxt_tags,
+                        'javtxt_release_date': javtxt_release_date,
+                        'author_raw': author_raw,
+                        'video_category': video_category,
+                        'supplement_enrichment_status': str(existing_movie.get('supplement_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
+                        'supplement_enrichment_error': str(existing_movie.get('supplement_enrichment_error', '') or '').strip(),
+                        'supplement_enriched_at': str(existing_movie.get('supplement_enriched_at', '') or '').strip(),
+                    }
+                    exclusion_reason = self._resolve_web_movie_exclusion_reason(
+                        stored_movie,
+                        filter_settings=filter_settings,
+                        owner_blacklisted=owner_blacklisted,
+                        owner_reason='actor_blacklist',
+                    )
+                    exclusion_reason = exclusion_reason or excluded_reasons.get((normalized_name, normalized_code), '')
+                    if exclusion_reason:
+                        excluded_movies.append({**stored_movie, 'exclude_reason': exclusion_reason})
+                        continue
+                    active_codes.append(normalized_code)
                     values.append(
                         (
                             normalized_name,
                             normalized_code,
-                            movie.get('title', ''),
-                            author,
-                            javtxt_release_date or movie.get('release_date', ''),
-                            movie.get('avfan_url', ''),
-                            int(movie.get('page_number', 1) or 1),
-                            javtxt_status,
-                            javtxt_movie_id,
-                            javtxt_url,
-                            javtxt_tags,
-                            javtxt_release_date,
-                            author_raw,
-                            video_category,
-                            str(existing_movie.get('supplement_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-                            str(existing_movie.get('supplement_enrichment_error', '') or '').strip(),
-                            str(existing_movie.get('supplement_enriched_at', '') or '').strip(),
+                            stored_movie.get('title', ''),
+                            stored_movie.get('author', ''),
+                            stored_movie.get('release_date', ''),
+                            stored_movie.get('avfan_url', ''),
+                            int(stored_movie.get('page_number', 1) or 1),
+                            stored_movie.get('javtxt_enrichment_status', ''),
+                            stored_movie.get('javtxt_movie_id', ''),
+                            stored_movie.get('javtxt_url', ''),
+                            stored_movie.get('javtxt_tags', ''),
+                            stored_movie.get('javtxt_release_date', ''),
+                            stored_movie.get('author_raw', ''),
+                            stored_movie.get('video_category', ''),
+                            stored_movie.get('supplement_enrichment_status', UNENRICHED_STATUS),
+                            stored_movie.get('supplement_enrichment_error', ''),
+                            stored_movie.get('supplement_enriched_at', ''),
                         )
+                    )
+                if excluded_movies:
+                    self._store_excluded_web_movie_rows(
+                        cursor,
+                        'excluded_actor_movies',
+                        'actor_name',
+                        normalized_name,
+                        excluded_movies,
+                        ','.join(sorted({movie.get('exclude_reason', '') for movie in excluded_movies})),
                     )
                 cursor.executemany('''
                     INSERT OR REPLACE INTO actor_movies (
@@ -3804,10 +4294,8 @@ class VideoDatabase(
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', values)
-                self._propagate_web_movie_javtxt_state_for_codes(
-                    cursor,
-                    [movie['code'] for movie in normalized_movies],
-                )
+                if values:
+                    self._propagate_web_movie_javtxt_state_for_codes(cursor, active_codes)
             conn.commit()
         self.refresh_actor_javtxt_statuses([normalized_name])
 
@@ -4331,6 +4819,10 @@ class VideoDatabase(
             if normalized_old_name != normalized_new_name and cursor.fetchone():
                 raise ValueError(f'演员 {normalized_new_name} 的作品记录已存在')
 
+            cursor.execute('SELECT 1 FROM excluded_actor_movies WHERE actor_name = ?', (normalized_new_name,))
+            if normalized_old_name != normalized_new_name and cursor.fetchone():
+                raise ValueError(f'演员 {normalized_new_name} 的排除网页作品记录已存在')
+
             cursor.execute(
                 'UPDATE actors SET name = ?, birthday = ?, age = ? WHERE name = ?',
                 (normalized_new_name, normalized_birthday, normalized_age, normalized_old_name),
@@ -4343,6 +4835,10 @@ class VideoDatabase(
             )
             cursor.execute(
                 'UPDATE actor_movies SET actor_name = ? WHERE actor_name = ?',
+                (normalized_new_name, normalized_old_name),
+            )
+            cursor.execute(
+                'UPDATE excluded_actor_movies SET actor_name = ? WHERE actor_name = ?',
                 (normalized_new_name, normalized_old_name),
             )
 
@@ -4366,6 +4862,49 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
+            cursor.execute(
+                '''
+                SELECT actor_name, code, title, author, release_date, avfan_url, page_number,
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                       javtxt_release_date, author_raw, video_category, supplement_enrichment_status,
+                       supplement_enrichment_error, supplement_enriched_at
+                FROM actor_movies
+                WHERE actor_name = ?
+                ''',
+                (normalized_name,),
+            )
+            excluded_movies = []
+            for row in cursor.fetchall():
+                excluded_movies.append(
+                    {
+                        'actor_name': row[0] or normalized_name,
+                        'code': row[1] or '',
+                        'title': row[2] or '',
+                        'author': row[3] or '',
+                        'release_date': row[4] or '',
+                        'avfan_url': row[5] or '',
+                        'page_number': row[6] or 1,
+                        'javtxt_enrichment_status': row[7] or '',
+                        'javtxt_movie_id': row[8] or '',
+                        'javtxt_url': row[9] or '',
+                        'javtxt_tags': row[10] or '',
+                        'javtxt_release_date': row[11] or '',
+                        'author_raw': row[12] or '',
+                        'video_category': row[13] or '',
+                        'supplement_enrichment_status': row[14] or '',
+                        'supplement_enrichment_error': row[15] or '',
+                        'supplement_enriched_at': row[16] or '',
+                    }
+                )
+            if excluded_movies:
+                self._store_excluded_web_movie_rows(
+                    cursor,
+                    'excluded_actor_movies',
+                    'actor_name',
+                    normalized_name,
+                    excluded_movies,
+                    'actor_blacklist',
+                )
             cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM actor_enrichments WHERE actor_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM actors WHERE name = ?', (normalized_name,))
@@ -4480,6 +5019,10 @@ class VideoDatabase(
                 if cursor.fetchone():
                     raise ValueError(f'番号前缀 {normalized_new_prefix} 已存在网页作品记录')
 
+                cursor.execute('SELECT 1 FROM excluded_code_prefix_movies WHERE prefix = ?', (normalized_new_prefix,))
+                if cursor.fetchone():
+                    raise ValueError(f'番号前缀 {normalized_new_prefix} 已存在排除网页作品记录')
+
                 cursor.execute('SELECT 1 FROM hidden_code_prefixes WHERE prefix = ?', (normalized_new_prefix,))
                 if cursor.fetchone():
                     raise ValueError(f'番号前缀 {normalized_new_prefix} 已被删除，请换一个前缀名称')
@@ -4520,10 +5063,22 @@ class VideoDatabase(
                     ''',
                     (normalized_new_prefix, new_code, normalized_old_prefix, old_code),
                 )
+                cursor.execute(
+                    '''
+                    UPDATE excluded_code_prefix_movies
+                    SET prefix = ?, code = ?
+                    WHERE prefix = ? AND code = ?
+                    ''',
+                    (normalized_new_prefix, new_code, normalized_old_prefix, old_code),
+                )
 
             if not normalized_web_movie_updates:
                 cursor.execute(
                     'UPDATE code_prefix_movies SET prefix = ? WHERE prefix = ?',
+                    (normalized_new_prefix, normalized_old_prefix),
+                )
+                cursor.execute(
+                    'UPDATE excluded_code_prefix_movies SET prefix = ? WHERE prefix = ?',
                     (normalized_new_prefix, normalized_old_prefix),
                 )
 
@@ -4569,6 +5124,50 @@ class VideoDatabase(
                 normalized_prefixes,
             )
             candidate_removed_count = int(cursor.rowcount or 0)
+            cursor.execute(
+                f'''
+                SELECT prefix, code, title, author, release_date, avfan_url, page_number,
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                       javtxt_release_date, author_raw, video_category, supplement_enrichment_status,
+                       supplement_enrichment_error, supplement_enriched_at
+                FROM code_prefix_movies
+                WHERE prefix IN ({placeholders})
+                ''',
+                normalized_prefixes,
+            )
+            excluded_by_prefix = {prefix: [] for prefix in normalized_prefixes}
+            for row in cursor.fetchall():
+                excluded_by_prefix.setdefault(row[0] or '', []).append(
+                    {
+                        'prefix': row[0] or '',
+                        'code': row[1] or '',
+                        'title': row[2] or '',
+                        'author': row[3] or '',
+                        'release_date': row[4] or '',
+                        'avfan_url': row[5] or '',
+                        'page_number': row[6] or 1,
+                        'javtxt_enrichment_status': row[7] or '',
+                        'javtxt_movie_id': row[8] or '',
+                        'javtxt_url': row[9] or '',
+                        'javtxt_tags': row[10] or '',
+                        'javtxt_release_date': row[11] or '',
+                        'author_raw': row[12] or '',
+                        'video_category': row[13] or '',
+                        'supplement_enrichment_status': row[14] or '',
+                        'supplement_enrichment_error': row[15] or '',
+                        'supplement_enriched_at': row[16] or '',
+                    }
+                )
+            for prefix, movies in excluded_by_prefix.items():
+                if movies:
+                    self._store_excluded_web_movie_rows(
+                        cursor,
+                        'excluded_code_prefix_movies',
+                        'prefix',
+                        prefix,
+                        movies,
+                        'code_blacklist',
+                    )
             cursor.execute(
                 f'DELETE FROM code_prefix_movies WHERE prefix IN ({placeholders})',
                 normalized_prefixes,
