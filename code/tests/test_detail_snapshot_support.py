@@ -473,8 +473,10 @@ class BackendServiceDetailSnapshotRebuildJobTest(unittest.TestCase):
         result = client.rebuild_detail_snapshots(poll_interval=0)
 
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(post_calls, [('/snapshots/details/rebuild', None, 30)])
-        self.assertEqual(get_calls, [('/snapshots/details/rebuild/status', 30)])
+        from app.core.operation_timeout_settings import get_operation_timeout_seconds
+        expected_timeout = max(30, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        self.assertEqual(post_calls, [('/snapshots/details/rebuild', None, expected_timeout)])
+        self.assertEqual(get_calls, [('/snapshots/details/rebuild/status', expected_timeout)])
 
     def test_enrich_masterpiece_detail_uses_long_timeout_for_two_browser_sources(self):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)

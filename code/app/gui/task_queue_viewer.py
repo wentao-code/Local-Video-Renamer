@@ -10,11 +10,12 @@ from PyQt5.QtWidgets import (
 )
 
 from app.gui.backend_task_worker import enable_minimize_button
-from app.gui.task_queue import TASK_STATUS_COMPLETED, get_gui_task_queue
+from app.gui.task_queue import TASK_STATUS_COMPLETED, TASK_STATUS_PARTIAL, get_gui_task_queue
 
 
 SUCCESS_ROW_COLOR = '#16a34a'
 FAILED_ROW_COLOR = '#dc2626'
+PARTIAL_ROW_COLOR = '#b54708'
 
 
 class TaskQueueViewerWindow(QDialog):
@@ -72,7 +73,9 @@ class TaskQueueViewerWindow(QDialog):
     def refresh_rows(self):
         records = self.task_queue.records()
         self.summary_label.setText(f'共 {len(records)} 个任务')
-        if self.task_queue.is_all_done():
+        if any(getattr(record, 'status', '') == TASK_STATUS_PARTIAL for record in records):
+            self.summary_label.setStyleSheet('color: #b54708; font-weight: 700;')
+        elif self.task_queue.is_all_done():
             self.summary_label.setStyleSheet('color: #16a34a; font-weight: 700;')
         else:
             self.summary_label.setStyleSheet('')
@@ -110,6 +113,8 @@ class TaskQueueViewerWindow(QDialog):
     def _row_foreground(record):
         if bool(getattr(record, 'exhausted', False)):
             return QBrush(QColor(FAILED_ROW_COLOR))
+        if getattr(record, 'status', '') == TASK_STATUS_PARTIAL:
+            return QBrush(QColor(PARTIAL_ROW_COLOR))
         if getattr(record, 'status', '') == TASK_STATUS_COMPLETED:
             return QBrush(QColor(SUCCESS_ROW_COLOR))
         return None

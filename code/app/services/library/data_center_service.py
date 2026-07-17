@@ -1320,6 +1320,19 @@ class DataCenterService:
 
         filter_settings = self._load_filter_settings()
         code_prefixes = self._list_code_prefix_values()
+        try:
+            collection_stats = self.database.list_code_prefix_collection_stats(
+                filter_settings=filter_settings,
+            )
+        except AttributeError:
+            collection_stats = {}
+        if collection_stats:
+            code_prefixes = sorted(set(code_prefixes) | set(collection_stats))
+            return self._build_code_prefix_collection_ratio_analysis(
+                code_prefixes,
+                collection_stats,
+            )
+
         code_prefix_movies_by_prefix = self._list_code_prefix_movies_by_prefixes(code_prefixes) if code_prefixes else {}
         actor_movies_by_prefix = self._group_actor_movies_for_code_prefix_analysis()
         prefixes = sorted(set(code_prefixes) | set(actor_movies_by_prefix))
@@ -1367,6 +1380,50 @@ class DataCenterService:
         )
         return {
             'metric_key': config['key'],
+            'distribution_rows': [
+                {'label': f'{percent}%', 'count': distribution_counts[percent]}
+                for percent in range(1, 101)
+            ],
+            'ranking_rows': ranking_rows[:50],
+            'distribution_items_per_line': 6,
+            'ranking_items_per_line': 6,
+        }
+
+    def _build_code_prefix_collection_ratio_analysis(self, code_prefixes, collection_stats):
+        distribution_counts = {percent: 0 for percent in range(1, 101)}
+        ranking_rows = []
+        for prefix in code_prefixes:
+            stats = dict(collection_stats.get(prefix, {}) or {})
+            total_count = int(stats.get('total_count', 0) or 0)
+            collection_count = int(stats.get('collection_count', 0) or 0)
+            if total_count <= 0:
+                continue
+            ratio_percent = self._round_half_up(
+                (float(collection_count) / float(total_count)) * 100.0,
+                digits=1,
+            )
+            rounded_percent = int(self._round_half_up(ratio_percent, digits=0))
+            if rounded_percent >= 1:
+                distribution_counts[min(rounded_percent, 100)] += 1
+            ranking_rows.append(
+                {
+                    'prefix': prefix,
+                    'label': prefix,
+                    'display_value': f'{ratio_percent:.1f}% ({collection_count}/{total_count})',
+                    'numeric_value': ratio_percent,
+                    'collection_count': collection_count,
+                    'total_count': total_count,
+                }
+            )
+        ranking_rows.sort(
+            key=lambda item: (
+                -float(item.get('numeric_value', 0.0) or 0.0),
+                -int(item.get('collection_count', 0) or 0),
+                str(item.get('prefix', '') or ''),
+            )
+        )
+        return {
+            'metric_key': 'collection_ratio',
             'distribution_rows': [
                 {'label': f'{percent}%', 'count': distribution_counts[percent]}
                 for percent in range(1, 101)
@@ -1478,8 +1535,25 @@ class DataCenterService:
 
     def _collect_actor_video_count_rows(self):
         actor_names = self._list_actor_names()
-        movies_by_actor = self._list_actor_movies_by_names(actor_names)
         filter_settings = self._load_filter_settings()
+        try:
+            counts_by_actor = self.database.list_actor_video_count_stats(
+                actor_names,
+                filter_settings=filter_settings,
+            )
+        except AttributeError:
+            counts_by_actor = {}
+        if counts_by_actor:
+            return [
+                {
+                    'actor_name': actor_name,
+                    'display_value': f'{int(counts_by_actor.get(actor_name, 0) or 0)}个',
+                    'numeric_value': int(counts_by_actor.get(actor_name, 0) or 0),
+                }
+                for actor_name in actor_names
+            ]
+
+        movies_by_actor = self._list_actor_movies_by_names(actor_names)
         rows = []
         qualifying_categories = {VIDEO_CATEGORY_SINGLE, VIDEO_CATEGORY_CO_STAR}
         for actor_name in actor_names:
@@ -1502,6 +1576,24 @@ class DataCenterService:
     def _collect_code_prefix_video_count_rows(self):
         filter_settings = self._load_filter_settings()
         code_prefixes = self._list_code_prefix_values()
+        try:
+            counts_by_prefix = self.database.list_code_prefix_video_count_stats(
+                filter_settings=filter_settings,
+            )
+        except AttributeError:
+            counts_by_prefix = {}
+        if counts_by_prefix:
+            code_prefixes = sorted(set(code_prefixes) | set(counts_by_prefix))
+            return [
+                {
+                    'prefix': prefix,
+                    'label': prefix,
+                    'display_value': f'{int(counts_by_prefix.get(prefix, 0) or 0)}个',
+                    'numeric_value': int(counts_by_prefix.get(prefix, 0) or 0),
+                }
+                for prefix in code_prefixes
+            ]
+
         movies_by_prefix = self._list_code_prefix_movies_by_prefixes(code_prefixes) if code_prefixes else {}
         actor_movies_by_prefix = self._group_actor_movies_for_code_prefix_analysis()
         prefixes = sorted(set(code_prefixes) | set(actor_movies_by_prefix))
@@ -1597,6 +1689,21 @@ class DataCenterService:
         return normalized_value if normalized_value in valid_values else ''
 
     def _collect_actor_metric_rows(self, config):
+        metric_key = str(config.get('key', '') or '').strip()
+        if metric_key in {'age', 'height', 'bust', 'waist', 'hip'}:
+            try:
+                rows, unknown_count = self.database.list_actor_numeric_metric_rows(metric_key)
+                suffix = str(config.get('suffix', '') or '')
+                return [
+                    {
+                        **dict(row or {}),
+                        'display_value': f"{int(row.get('numeric_value', 0) or 0)}{suffix}",
+                    }
+                    for row in rows
+                ], unknown_count
+            except (AttributeError, ValueError):
+                pass
+
         metric_rows = []
         unknown_count = 0
         enrichment_records = self.database.list_actor_enrichment_records()

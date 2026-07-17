@@ -158,7 +158,8 @@ class BackendClient:
         if force_refresh:
             params['refresh'] = '1'
         query = ('?' + urlencode(params)) if params else ''
-        return self._get('/database/videos' + query)
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/videos' + query, timeout=timeout)
 
     def search_all(self, search_text='', limit=20):
         params = {'q': str(search_text or ''), 'limit': int(limit or 20)}
@@ -166,11 +167,13 @@ class BackendClient:
         return self._get('/search/unified?' + urlencode(params), timeout=timeout)
 
     def get_video_enrichment_summary(self):
-        return self._get('/database/videos/summary').get('summary', {})
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/videos/summary', timeout=timeout).get('summary', {})
 
     def list_masterpiece_entries(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
-        return self._get('/masterpiece/entries' + query).get('entries', [])
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/masterpiece/entries' + query, timeout=timeout).get('entries', [])
 
     def refresh_masterpiece_actors(self):
         return self._post('/masterpiece/actors/refresh')
@@ -183,7 +186,8 @@ class BackendClient:
 
     def get_masterpiece_detail(self, code):
         query = '?' + urlencode({'code': code})
-        return self._get('/masterpiece/detail' + query).get('detail', {})
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/masterpiece/detail' + query, timeout=timeout).get('detail', {})
 
     def get_masterpiece_detail_snapshot(self, code, force_refresh=False):
         params = {'code': code}
@@ -199,7 +203,8 @@ class BackendClient:
 
     def list_global_medals(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
-        return self._get('/medals' + query).get('medals', [])
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/medals' + query, timeout=timeout).get('medals', [])
 
     def add_global_medal(self, name, description='', medal_type='special'):
         return self._post(
@@ -221,15 +226,18 @@ class BackendClient:
 
     def get_video_detail(self, code):
         query = '?' + urlencode({'code': code})
-        return self._get('/database/videos/detail' + query).get('video', {})
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/videos/detail' + query, timeout=timeout).get('video', {})
 
     def get_data_center_summary(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
-        return self._get('/data-center/summary' + query)
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/data-center/summary' + query, timeout=timeout)
 
     def get_data_dashboard(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
-        payload = self._get('/data-center/dashboard' + query)
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        payload = self._get('/data-center/dashboard' + query, timeout=timeout)
         dashboard = dict(payload.get('dashboard', {}) or {})
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip()
         if refreshed_at:
@@ -241,7 +249,8 @@ class BackendClient:
         if force_refresh:
             params['refresh'] = '1'
         query = '?' + urlencode(params)
-        return self._get('/data-center/dashboard/items' + query).get('items', [])
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/data-center/dashboard/items' + query, timeout=timeout).get('items', [])
 
     def list_operation_timeouts(self):
         return self._get('/settings/timeouts').get('settings', [])
@@ -254,7 +263,10 @@ class BackendClient:
         return self._post('/settings/timeouts/reset', payload).get('settings', [])
 
     def rebuild_detail_snapshots(self, poll_interval=1.0):
-        request_timeout = max(1, self.timeout)
+        request_timeout = max(
+            self.timeout,
+            get_operation_timeout_seconds('snapshot_refresh_rebuild'),
+        )
         result = self._post('/snapshots/details/rebuild', timeout=request_timeout)
         while str((result or {}).get('status', '') or '').strip().lower() == 'running':
             if float(poll_interval or 0) > 0:
@@ -270,11 +282,12 @@ class BackendClient:
     def get_actor_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
         params = {
             'metric': metric_key,
-            'value': str(bucket_value or ''),
+            'value': '' if bucket_value is None else str(bucket_value),
         }
         if force_refresh:
             params['refresh'] = '1'
-        return self._get('/data-center/analysis/actors?' + urlencode(params))
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/data-center/analysis/actors?' + urlencode(params), timeout=timeout)
 
     def get_code_prefix_metric_analysis(self, metric_key, force_refresh=False):
         return self.get_metric_analysis('code_prefix', metric_key, force_refresh=force_refresh)
@@ -282,11 +295,12 @@ class BackendClient:
     def get_code_prefix_metric_bucket(self, metric_key, bucket_value, force_refresh=False):
         params = {
             'metric': metric_key,
-            'value': str(bucket_value or ''),
+            'value': '' if bucket_value is None else str(bucket_value),
         }
         if force_refresh:
             params['refresh'] = '1'
-        return self._get('/data-center/analysis/code-prefixes?' + urlencode(params))
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/data-center/analysis/code-prefixes?' + urlencode(params), timeout=timeout)
 
     def get_metric_analysis(self, analysis_type, metric_key, force_refresh=False):
         params = {'metric': metric_key}
@@ -294,7 +308,8 @@ class BackendClient:
             params['analysis_type'] = analysis_type
         if force_refresh:
             params['refresh'] = '1'
-        return self._get('/data-center/analysis?' + urlencode(params))
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/data-center/analysis?' + urlencode(params), timeout=timeout)
 
     def get_enrichment_progress(self):
         return self._get('/database/enrich/progress').get('progress', {})
@@ -320,7 +335,8 @@ class BackendClient:
         return self._post('/database/videos/reset', {'codes': codes, 'source_key': source_key}).get('reset_count', 0)
 
     def list_videos_requiring_manual_category(self):
-        return self._get('/database/videos/manual-category')
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/videos/manual-category', timeout=timeout)
 
     def list_videos_requiring_manual_category_snapshot(self, force_refresh=False, tier=None):
         params = {}
@@ -395,11 +411,13 @@ class BackendClient:
         if int(offset or 0) > 0:
             params['offset'] = int(offset or 0)
         query = ('?' + urlencode(params)) if params else ''
-        return self._get('/database/actors' + query)
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/actors' + query, timeout=timeout)
 
     def get_actor_detail(self, actor_name):
         query = '?' + urlencode({'name': actor_name})
-        return self._get('/database/actors/detail' + query).get('actor', {})
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/actors/detail' + query, timeout=timeout).get('actor', {})
 
     def get_actor_detail_snapshot(self, actor_name, force_refresh=False):
         params = {'name': actor_name}
@@ -420,7 +438,7 @@ class BackendClient:
         return self._get('/candidate-library/actors', timeout=timeout).get('candidates', [])
 
     def refresh_candidate_library(self):
-        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._post('/candidate-library/refresh', timeout=timeout)
 
     def admit_candidate_actor(self, actor_name):
@@ -500,11 +518,13 @@ class BackendClient:
         if int(offset or 0) > 0:
             params['offset'] = int(offset or 0)
         query = ('?' + urlencode(params)) if params else ''
-        return self._get('/database/code-prefixes' + query)
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/code-prefixes' + query, timeout=timeout)
 
     def get_code_prefix_detail(self, prefix):
         query = '?' + urlencode({'prefix': prefix})
-        return self._get('/database/code-prefixes/detail' + query).get('prefix_detail', {})
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/database/code-prefixes/detail' + query, timeout=timeout).get('prefix_detail', {})
 
     def get_code_prefix_detail_snapshot(self, prefix, force_refresh=False):
         params = {'prefix': prefix}
@@ -616,7 +636,7 @@ class BackendClient:
         )
 
     def refresh_queen_library(self, show_browser=True):
-        timeout = max(self.timeout, 30)
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._post(
             '/queen-library/refresh',
             {'show_browser': bool(show_browser)},
@@ -624,10 +644,11 @@ class BackendClient:
         )
 
     def get_queen_refresh_progress(self):
-        return self._get('/queen-library/refresh/progress', timeout=max(self.timeout, 30)).get('progress', {})
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        return self._get('/queen-library/refresh/progress', timeout=timeout).get('progress', {})
 
     def cancel_queen_library_refresh(self):
-        timeout = max(self.timeout, 30)
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._post('/queen-library/refresh/cancel', timeout=timeout)
 
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):

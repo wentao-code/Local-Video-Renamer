@@ -81,6 +81,58 @@ def _build_complete_summary_stub(version):
 
 
 class DataCenterSummarySplitCountsTest(unittest.TestCase):
+    def test_database_aggregates_actor_video_counts_with_distinct_codes(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    [("Actor A",), ("Actor B",)],
+                )
+                conn.commit()
+            db.replace_actor_movies(
+                "Actor A",
+                [
+                    self._build_library_movie("AAA-001", "A1", "Actor A", "2026-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_SINGLE),
+                    self._build_library_movie("AAA-001", "A1 duplicate", "Actor A", "2026-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_SINGLE),
+                    self._build_library_movie("AAA-002", "A2 collection", "Actor A", "2026-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_COLLECTION),
+                ],
+            )
+            db.replace_actor_movies(
+                "Actor B",
+                [self._build_library_movie("BBB-001", "B1", "Actor B", "2026-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_CO_STAR)],
+            )
+
+            stats = db.list_actor_video_count_stats(["Actor A", "Actor B"])
+
+            self.assertEqual(stats, {"Actor A": 1, "Actor B": 1})
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_database_aggregates_code_prefix_video_counts_across_sources(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / "video_database.db"
+            db = VideoDatabase(db_path)
+            db.replace_code_prefix_movies(
+                "AAA",
+                [self._build_library_movie("AAA-001", "A1", "Actor", "2026-01-01", ENRICHED_STATUS, video_category=VIDEO_CATEGORY_SINGLE)],
+            )
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    "INSERT INTO actor_movies (actor_name, code, title, video_category) VALUES (?, ?, ?, ?)",
+                    ("Actor", "AAA-002", "A2", VIDEO_CATEGORY_CO_STAR),
+                )
+                conn.commit()
+
+            stats = db.list_code_prefix_video_count_stats()
+
+            self.assertEqual(stats, {"AAA": 2})
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_supplement_summary_reports_pending_candidates_for_all_libraries(self):
         temp_dir = tempfile.mkdtemp()
         try:

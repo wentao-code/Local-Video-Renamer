@@ -44,7 +44,7 @@ from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX
 from app.core.enrichment_sources import get_video_enrichment_source_label
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
-from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT
+from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
@@ -76,6 +76,7 @@ from app.gui.task_queue import (
     TASK_STATUS_WAITING,
     get_gui_task_queue,
 )
+from app.gui.snapshot_refresh_orchestrator import SnapshotRefreshOrchestrator
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
@@ -502,7 +503,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def _is_database_locked(self):
         try:
-            conn = sqlite3.connect(DATABASE_FILE, timeout=1)
+            conn = sqlite3.connect(
+                DATABASE_FILE,
+                timeout=get_operation_timeout_seconds('database_wait', DATABASE_FILE),
+            )
             try:
                 conn.execute('SELECT 1')
             finally:
@@ -1793,7 +1797,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def _ensure_startup_refresh_history_table(self, db_path=None):
         target_path = Path(db_path or self._get_startup_refresh_history_db_path())
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(str(target_path), timeout=5) as conn:
+        with sqlite3.connect(
+            str(target_path),
+            timeout=get_operation_timeout_seconds('database_wait', target_path),
+        ) as conn:
             conn.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS startup_refresh_history (
@@ -1809,7 +1816,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         try:
             db_path = self._get_startup_refresh_history_db_path()
             VidNormApp._ensure_startup_refresh_history_table(self, db_path)
-            with sqlite3.connect(str(db_path), timeout=5) as conn:
+            with sqlite3.connect(
+                str(db_path),
+                timeout=get_operation_timeout_seconds('database_wait', db_path),
+            ) as conn:
                 rows = conn.execute(
                     '''
                     SELECT task_key, task_title, last_completed_at, updated_at
@@ -1852,7 +1862,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         try:
             db_path = self._get_startup_refresh_history_db_path()
             VidNormApp._ensure_startup_refresh_history_table(self, db_path)
-            with sqlite3.connect(str(db_path), timeout=5) as conn:
+            with sqlite3.connect(
+                str(db_path),
+                timeout=get_operation_timeout_seconds('database_wait', db_path),
+            ) as conn:
                 conn.execute(
                     '''
                     INSERT INTO startup_refresh_history (task_key, task_title, last_completed_at, updated_at)
@@ -2407,13 +2420,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.backend_client,
             minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
         )
-        result = {
-            'detail': refresh_client.rebuild_detail_snapshots(),
-            'refreshed': [],
-        }
-
-        def record(snapshot_key):
-            result['refreshed'].append(snapshot_key)
+        context = {}
 
         def refresh_pages(loader, row_key):
             """Refresh every default-sorted page and return all rows seen."""
@@ -2434,123 +2441,176 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 offset += page_limit
             return rows
 
-        video_rows = refresh_pages(
-            lambda offset: refresh_client.list_videos_page(
-                force_refresh=True,
-                offset=offset,
-            ),
-            'videos',
-        )
-        actor_rows = refresh_pages(
-            lambda offset: refresh_client.list_actors_snapshot(
-                force_refresh=True,
-                include_update_status=False,
-                offset=offset,
-            ),
-            'actors',
-        )
-        prefix_rows = refresh_pages(
-            lambda offset: refresh_client.list_code_prefixes_snapshot(
-                force_refresh=True,
-                offset=offset,
-            ),
-            'prefixes',
-        )
+        def refresh_detail():
+            return refresh_client.rebuild_detail_snapshots()
 
-        record('actor_detail_all')
-        record('code_prefix_detail_all')
+        def refresh_video_library():
+            rows = refresh_pages(
+                lambda offset: refresh_client.list_videos_page(force_refresh=True, offset=offset),
+                'videos',
+            )
+            context['video_count'] = len(rows)
+            return {'count': len(rows)}
 
-        refresh_client.get_data_center_summary(force_refresh=True)
-        record('data_center')
-        dashboard = refresh_client.get_data_dashboard(force_refresh=True)
-        record('data_dashboard')
-        dashboard_metrics = {
-            str(metric.get('key') or '').strip()
-            for section in (dashboard.get('sections', []) if isinstance(dashboard, dict) else []) or []
-            for metric in (section.get('metrics', []) if isinstance(section, dict) else []) or []
-            if str(metric.get('key') or '').strip()
+        def refresh_actor_library():
+            rows = refresh_pages(
+                lambda offset: refresh_client.list_actors_snapshot(
+                    force_refresh=True,
+                    include_update_status=False,
+                    offset=offset,
+                ),
+                'actors',
+            )
+            context['actor_count'] = len(rows)
+            return {'count': len(rows)}
+
+        def refresh_code_prefix_library():
+            rows = refresh_pages(
+                lambda offset: refresh_client.list_code_prefixes_snapshot(force_refresh=True, offset=offset),
+                'prefixes',
+            )
+            context['code_prefix_count'] = len(rows)
+            return {'count': len(rows)}
+
+        def refresh_data_center_and_dashboard():
+            refresh_client.get_data_center_summary(force_refresh=True)
+            dashboard = refresh_client.get_data_dashboard(force_refresh=True)
+            dashboard_metrics = {
+                str(metric.get('key') or '').strip()
+                for section in (dashboard.get('sections', []) if isinstance(dashboard, dict) else []) or []
+                for metric in (section.get('metrics', []) if isinstance(section, dict) else []) or []
+                if str(metric.get('key') or '').strip()
+            }
+            for metric_key in sorted(dashboard_metrics):
+                refresh_client.get_data_dashboard_items(metric_key, force_refresh=True)
+            return {'dashboard_metrics': sorted(dashboard_metrics)}
+
+        def refresh_actor_analysis():
+            count = 0
+            for metric in ACTOR_ANALYSIS_METRICS:
+                metric_key = metric['key']
+                analysis = refresh_client.get_metric_analysis('actor', metric_key, force_refresh=True)
+                count += 1
+                for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
+                    bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
+                    if bucket_value not in (None, ''):
+                        refresh_client.get_actor_metric_bucket(metric_key, bucket_value, force_refresh=True)
+                        count += 1
+            return {'count': count}
+
+        def refresh_code_prefix_analysis():
+            count = 0
+            for metric in CODE_PREFIX_ANALYSIS_METRICS:
+                metric_key = metric['key']
+                analysis = refresh_client.get_metric_analysis('code_prefix', metric_key, force_refresh=True)
+                count += 1
+                for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
+                    bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
+                    if bucket_value not in (None, ''):
+                        refresh_client.get_code_prefix_metric_bucket(metric_key, bucket_value, force_refresh=True)
+                        count += 1
+            return {'count': count}
+
+        def refresh_video_category():
+            for tier in (
+                MANUAL_CATEGORY_TIER_FIRST,
+                MANUAL_CATEGORY_TIER_SECOND,
+                MANUAL_CATEGORY_TIER_THIRD,
+            ):
+                refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=True, tier=tier)
+            return {'tiers': 3}
+
+        def refresh_candidate_and_canglangge():
+            refresh_client.refresh_candidate_library()
+            refresh_client.list_canglangge_candidates_snapshot(force_refresh=True)
+            return {'count': 2}
+
+        def refresh_ladder_boards():
+            for board_key in (LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX):
+                refresh_client.get_ladder_board_snapshot(board_key, force_refresh=True)
+            return {'count': 2}
+
+        def refresh_masterpiece():
+            masterpiece_entries = refresh_client.list_masterpiece_entries(force_refresh=True)
+            detail_count = 0
+            for entry in masterpiece_entries or []:
+                code = str((entry or {}).get('code') or '').strip()
+                if code:
+                    refresh_client.get_masterpiece_detail_snapshot(code, force_refresh=True)
+                    detail_count += 1
+            return {'detail_count': detail_count}
+
+        def refresh_queen_library():
+            queens_payload = refresh_client.list_queen_library_snapshot(force_refresh=True)
+            refresh_client.list_queen_keywords_snapshot(force_refresh=True)
+            refresh_client.get_queen_library_stats()
+            queen_rows = queens_payload.get('queens', []) if isinstance(queens_payload, dict) else queens_payload
+            detail_count = 0
+            for row in queen_rows or []:
+                queen_name = str((row or {}).get('queen_name') or '').strip()
+                if queen_name:
+                    refresh_client.get_queen_detail_snapshot(queen_name, force_refresh=True)
+                    detail_count += 1
+            return {'detail_count': detail_count}
+
+        orchestrator = SnapshotRefreshOrchestrator(
+            SNAPSHOT_REFRESH_LOG_FILE.with_name('full_snapshot_refresh_state.json'),
+            max_attempts=3,
+        )
+        orchestration = orchestrator.run(
+            [
+                {'key': 'detail_rebuild', 'runner': refresh_detail},
+                {'key': 'video_library', 'runner': refresh_video_library},
+                {'key': 'actor_library', 'runner': refresh_actor_library},
+                {'key': 'code_prefix_library', 'runner': refresh_code_prefix_library},
+                {'key': 'data_center_dashboard', 'runner': refresh_data_center_and_dashboard},
+                {'key': 'actor_analysis', 'runner': refresh_actor_analysis},
+                {'key': 'code_prefix_analysis', 'runner': refresh_code_prefix_analysis},
+                {'key': 'video_category', 'runner': refresh_video_category},
+                {'key': 'candidate_canglangge', 'runner': refresh_candidate_and_canglangge},
+                {'key': 'ladder_boards', 'runner': refresh_ladder_boards},
+                {'key': 'masterpiece', 'runner': refresh_masterpiece},
+                {'key': 'global_medals', 'runner': lambda: refresh_client.list_global_medals(force_refresh=True) or {}},
+                {'key': 'path_library', 'runner': lambda: refresh_client.get_path_library_snapshot(force_refresh=True) or {}},
+                {'key': 'queen_library', 'runner': refresh_queen_library},
+            ]
+        )
+        detail_result = dict(
+            orchestration.get('steps', {}).get('detail_rebuild', {}).get('result', {}) or {}
+        )
+        return {
+            **orchestration,
+            'detail': detail_result,
+            **detail_result,
+            'refreshed': list(orchestration.get('completed', []) or [])
+            + list(orchestration.get('skipped', []) or []),
+            **context,
+            'checkpoint_path': str(orchestrator.state_path),
         }
-        for metric_key in sorted(dashboard_metrics):
-            refresh_client.get_data_dashboard_items(metric_key, force_refresh=True)
-            record(f'data_dashboard_items:{metric_key}')
-
-        for metric in ACTOR_ANALYSIS_METRICS:
-            metric_key = metric['key']
-            analysis = refresh_client.get_metric_analysis('actor', metric_key, force_refresh=True)
-            record(f'actor_analysis:{metric_key}')
-            for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
-                bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
-                if bucket_value not in (None, ''):
-                    refresh_client.get_actor_metric_bucket(metric_key, bucket_value, force_refresh=True)
-                    record(f'actor_analysis_bucket:{metric_key}:{bucket_value}')
-
-        for metric in CODE_PREFIX_ANALYSIS_METRICS:
-            metric_key = metric['key']
-            analysis = refresh_client.get_metric_analysis('code_prefix', metric_key, force_refresh=True)
-            record(f'code_prefix_analysis:{metric_key}')
-            for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
-                bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
-                if bucket_value not in (None, ''):
-                    refresh_client.get_code_prefix_metric_bucket(metric_key, bucket_value, force_refresh=True)
-                    record(f'code_prefix_analysis_bucket:{metric_key}:{bucket_value}')
-
-        for tier in (
-            MANUAL_CATEGORY_TIER_FIRST,
-            MANUAL_CATEGORY_TIER_SECOND,
-            MANUAL_CATEGORY_TIER_THIRD,
-        ):
-            refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=True, tier=tier)
-            record(f'video_category:{tier}')
-
-        refresh_client.refresh_candidate_library()
-        record('candidate_library')
-        refresh_client.list_canglangge_candidates_snapshot(force_refresh=True)
-        record('canglangge')
-        for board_key in (LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX):
-            refresh_client.get_ladder_board_snapshot(board_key, force_refresh=True)
-            record(f'ladder_board:{board_key}')
-
-        masterpiece_entries = refresh_client.list_masterpiece_entries(force_refresh=True)
-        record('masterpiece')
-        for entry in masterpiece_entries or []:
-            code = str((entry or {}).get('code') or '').strip()
-            if code:
-                refresh_client.get_masterpiece_detail_snapshot(code, force_refresh=True)
-                record('masterpiece_detail')
-        refresh_client.list_global_medals(force_refresh=True)
-        record('global_medals')
-        refresh_client.get_path_library_snapshot(force_refresh=True)
-        record('path_library')
-
-        queens_payload = refresh_client.list_queen_library_snapshot(force_refresh=True)
-        refresh_client.list_queen_keywords_snapshot(force_refresh=True)
-        refresh_client.get_queen_library_stats()
-        record('queen_library')
-        queen_rows = queens_payload.get('queens', []) if isinstance(queens_payload, dict) else queens_payload
-        for row in queen_rows or []:
-            queen_name = str((row or {}).get('queen_name') or '').strip()
-            if queen_name:
-                refresh_client.get_queen_detail_snapshot(queen_name, force_refresh=True)
-                record('queen_detail')
-
-        result['video_count'] = len(video_rows)
-        result['actor_count'] = len(actor_rows)
-        result['code_prefix_count'] = len(prefix_rows)
-        result.update(dict(result.get('detail') or {}))
-        return result
 
     def _on_refresh_detail_snapshots_finished(self, result):
         result = dict(result or {})
         detail_result = dict(result.get('detail') or result)
+        failed_items = list(result.get('failed', []) or [])
+        status = str(result.get('status', '') or '').strip().lower()
+        title = '快照刷新部分失败' if status == 'partial' else '快照刷新完成'
+        failure_text = ''
+        if failed_items:
+            failure_text = '\n失败子任务:\n' + '\n'.join(
+                f"- {item.get('key', '')}: {item.get('error', '')}"
+                for item in failed_items
+                if isinstance(item, dict)
+            )
         QMessageBox.information(
             self,
-            '快照刷新完成',
+            title,
             (
                 f"演员详情快照: {int(detail_result.get('actor_refreshed', 0) or 0)}/"
                 f"{int(detail_result.get('actor_total', 0) or 0)}\n"
                 f"番号详情快照: {int(detail_result.get('code_prefix_refreshed', 0) or 0)}/"
                 f"{int(detail_result.get('code_prefix_total', 0) or 0)}\n"
                 f"其他快照类别: {len(result.get('refreshed', []) or [])}"
+                f"{failure_text}"
             ),
         )
 

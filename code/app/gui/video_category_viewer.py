@@ -1,4 +1,5 @@
 from app.backend.client import BackendClient
+from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from PyQt5.QtCore import QAbstractTableModel, QEvent, QModelIndex, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
@@ -403,7 +404,10 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
         self.backend_client = backend_client
         self.refresh_client = BackendClient(
             base_url=backend_client.base_url,
-            timeout=max(int(getattr(backend_client, 'timeout', 30) or 30), 120),
+            timeout=max(
+                float(getattr(backend_client, 'timeout', 30) or 30),
+                get_operation_timeout_seconds('list_detail_load'),
+            ),
         )
         self.staged_count = 0
         self._filter_dialog = None

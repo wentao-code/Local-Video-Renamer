@@ -67,6 +67,7 @@ def test_dashboard_aggregates_actor_prefix_video_and_quality_metrics():
 
 def test_backend_client_dashboard_api_paths():
     from app.backend.client import BackendClient
+    from app.core.operation_timeout_settings import get_operation_timeout_seconds
 
     client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
     calls = []
@@ -78,8 +79,8 @@ def test_backend_client_dashboard_api_paths():
     assert client.get_data_dashboard(force_refresh=True) == {'sections': []}
     assert client.get_data_dashboard_items('actor_active', force_refresh=True) == []
     assert calls == [
-        ('/data-center/dashboard?refresh=1', None),
-        ('/data-center/dashboard/items?metric=actor_active&refresh=1', None),
+        ('/data-center/dashboard?refresh=1', max(30, get_operation_timeout_seconds('list_detail_load'))),
+        ('/data-center/dashboard/items?metric=actor_active&refresh=1', max(30, get_operation_timeout_seconds('list_detail_load'))),
     ]
 
 

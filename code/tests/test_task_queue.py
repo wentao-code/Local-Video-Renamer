@@ -14,6 +14,7 @@ from app.gui.task_queue import (
     TASK_CATEGORY_VIEW,
     TASK_STATUS_COMPLETED,
     TASK_STATUS_PAUSED,
+    TASK_STATUS_PARTIAL,
     TASK_STATUS_RUNNING,
     TASK_STATUS_WAITING,
     get_gui_task_queue,
@@ -107,6 +108,18 @@ class GuiTaskQueueTest(unittest.TestCase):
         self.assertEqual(started, [1])
         self.assertTrue(self.queue.records()[0].exhausted)
 
+    def test_partial_task_is_done_but_remains_visibly_partial(self):
+        record = self.queue.enqueue('full refresh', 'test', lambda _record: None)
+        _process_events()
+
+        self.queue.mark_partial(record.task_id, '数据中心快照失败')
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.status, TASK_STATUS_PARTIAL)
+        self.assertTrue(current.partial)
+        self.assertTrue(self.queue.is_all_done())
+        self.assertEqual(current.last_error, '数据中心快照失败')
+
     def test_is_all_done_only_when_no_waiting_or_running_tasks_remain(self):
         self.assertTrue(self.queue.is_all_done())
 
@@ -180,6 +193,32 @@ class GuiTaskQueueTest(unittest.TestCase):
             self.assertEqual(host.results, [{'ok': True}])
             self.assertFalse(host.is_async_task_running())
             self.assertEqual(self.queue.records(), [])
+        finally:
+            host.deleteLater()
+
+    def test_start_async_task_marks_partial_result_as_partial_queue_status(self):
+        host = _AsyncTaskHost()
+        try:
+            results = []
+            host.start_async_task(
+                lambda: {
+                    'status': 'partial',
+                    'failed': [{'key': 'data_center', 'error': 'offline'}],
+                },
+                results.append,
+                block_ui=False,
+            )
+
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                _process_events(5)
+                if results and not host.is_async_task_running():
+                    break
+
+            self.assertEqual(results[0]['status'], 'partial')
+            record = self.queue.records()[0]
+            self.assertEqual(record.status, TASK_STATUS_PARTIAL)
+            self.assertTrue(record.partial)
         finally:
             host.deleteLater()
 

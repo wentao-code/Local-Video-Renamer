@@ -5019,6 +5019,80 @@ class VideoDatabase(
                 if str(row[0] or '').strip()
             }
 
+    def list_actor_video_count_stats(self, actor_names, filter_settings=None):
+        normalized_names = []
+        seen = set()
+        for actor_name in actor_names or []:
+            normalized_name = str(actor_name or '').strip()
+            if not normalized_name or normalized_name in seen:
+                continue
+            seen.add(normalized_name)
+            normalized_names.append(normalized_name)
+        if not normalized_names:
+            return {}
+
+        placeholders = ','.join('?' for _ in normalized_names)
+        filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT actor_name, COUNT(DISTINCT code) AS video_count
+                FROM actor_movies
+                WHERE actor_name IN ({placeholders})
+                  AND video_category IN (?, ?)
+                  {filter_sql}
+                GROUP BY actor_name
+                ''',
+                [
+                    *normalized_names,
+                    VIDEO_CATEGORY_SINGLE,
+                    VIDEO_CATEGORY_CO_STAR,
+                    *filter_params,
+                ],
+            ).fetchall()
+        return {
+            str(row[0] or '').strip(): int(row[1] or 0)
+            for row in rows
+            if str(row[0] or '').strip()
+        }
+
+    def list_actor_numeric_metric_rows(self, metric_key):
+        metric_expressions = {
+            'age': "effective_actor_age_sql(a.age, e.binghuo_age, a.birthday, e.binghuo_birthday, e.baomu_birthday)",
+            'height': "e.binghuo_height",
+            'bust': "e.binghuo_bust",
+            'waist': "e.binghuo_waist",
+            'hip': "e.binghuo_hip",
+        }
+        expression = metric_expressions.get(str(metric_key or '').strip())
+        if expression is None:
+            raise ValueError(f'Unsupported actor numeric metric: {metric_key}')
+        where_sql, parameters = self._actor_search_where_sql('')
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT a.name,
+                       CASE
+                           WHEN TRIM(COALESCE({expression}, '')) GLOB '[0-9]*'
+                           THEN CAST(TRIM(COALESCE({expression}, '')) AS INTEGER)
+                           ELSE NULL
+                       END AS numeric_value
+                FROM actors AS a
+                LEFT JOIN actor_enrichments AS e ON e.actor_name = a.name
+                {where_sql}
+                ORDER BY numeric_value DESC, a.name ASC
+                ''',
+                parameters,
+            ).fetchall()
+        return [
+            {
+                'actor_name': str(row[0] or '').strip(),
+                'numeric_value': int(row[1]),
+            }
+            for row in rows
+            if str(row[0] or '').strip() and row[1] is not None
+        ], sum(1 for row in rows if row[1] is None)
+
     def list_code_prefix_dashboard_stats(self, filter_settings=None):
         actor_prefix_sql = self._code_prefix_expression_sql('code')
         filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
@@ -5068,6 +5142,94 @@ class VideoDatabase(
                 for row in cursor.fetchall()
                 if str(row[0] or '').strip()
             }
+
+    def list_code_prefix_video_count_stats(self, filter_settings=None):
+        actor_prefix_sql = self._code_prefix_expression_sql('code')
+        filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                WITH combined AS (
+                    SELECT UPPER(prefix) AS prefix, code
+                    FROM code_prefix_movies
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                      AND video_category IN (?, ?)
+                      {filter_sql}
+                    UNION ALL
+                    SELECT {actor_prefix_sql} AS prefix, code
+                    FROM actor_movies
+                    WHERE TRIM(COALESCE(code, '')) <> ''
+                      AND video_category IN (?, ?)
+                      {filter_sql}
+                )
+                SELECT prefix, COUNT(DISTINCT code) AS video_count
+                FROM combined
+                WHERE TRIM(COALESCE(prefix, '')) <> ''
+                  AND prefix GLOB '*[A-Z]*'
+                GROUP BY prefix
+                ''',
+                [
+                    VIDEO_CATEGORY_SINGLE,
+                    VIDEO_CATEGORY_CO_STAR,
+                    *filter_params,
+                    VIDEO_CATEGORY_SINGLE,
+                    VIDEO_CATEGORY_CO_STAR,
+                    *filter_params,
+                ],
+            ).fetchall()
+        return {
+            str(row[0] or '').strip().upper(): int(row[1] or 0)
+            for row in rows
+            if str(row[0] or '').strip()
+        }
+
+    def list_code_prefix_collection_stats(self, filter_settings=None):
+        actor_prefix_sql = self._code_prefix_expression_sql('code')
+        filter_sql, filter_params = self._dashboard_library_filter_sql(filter_settings)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                WITH combined AS (
+                    SELECT UPPER(prefix) AS prefix, code, video_category, 0 AS source_priority
+                    FROM code_prefix_movies
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                      {filter_sql}
+                    UNION ALL
+                    SELECT {actor_prefix_sql} AS prefix, code, video_category, 1 AS source_priority
+                    FROM actor_movies
+                    WHERE TRIM(COALESCE(code, '')) <> ''
+                      {filter_sql}
+                ), ranked AS (
+                    SELECT prefix,
+                           code,
+                           video_category,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY prefix, code
+                               ORDER BY
+                                   CASE WHEN TRIM(COALESCE(video_category, '')) <> '' THEN 0 ELSE 1 END,
+                                   source_priority
+                           ) AS row_number
+                    FROM combined
+                    WHERE TRIM(COALESCE(prefix, '')) <> ''
+                      AND prefix GLOB '*[A-Z]*'
+                )
+                SELECT prefix,
+                       COUNT(*) AS total_count,
+                       SUM(CASE WHEN video_category = ? THEN 1 ELSE 0 END) AS collection_count
+                FROM ranked
+                WHERE row_number = 1
+                GROUP BY prefix
+                ''',
+                [*filter_params, *filter_params, VIDEO_CATEGORY_COLLECTION],
+            ).fetchall()
+        return {
+            str(row[0] or '').strip().upper(): {
+                'total_count': int(row[1] or 0),
+                'collection_count': int(row[2] or 0),
+            }
+            for row in rows
+            if str(row[0] or '').strip()
+        }
 
     @classmethod
     def _actor_movie_update_status_filter_sql(cls, filter_settings=None):

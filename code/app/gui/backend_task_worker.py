@@ -53,6 +53,7 @@ class AsyncTaskHostMixin:
         self._async_task_queue_record = None
         self._async_task_pending_queue_count = 0
         self._async_task_failed_message = None
+        self._async_task_partial_message = None
 
     def is_async_task_running(self):
         return self._async_task_thread is not None or int(getattr(self, '_async_task_pending_queue_count', 0) or 0) > 0
@@ -98,6 +99,7 @@ class AsyncTaskHostMixin:
                 return
             self._async_task_queue_record = record
             self._async_task_failed_message = None
+            self._async_task_partial_message = None
             self._async_task_blocks_ui = bool(block_ui)
             self._async_task_allows_deferred_close = bool(allow_deferred_close)
             self._async_close_pending = False
@@ -188,6 +190,13 @@ class AsyncTaskHostMixin:
         handler = self._async_task_success_handler
         self._async_task_success_handler = None
         self._async_task_error_title = ''
+        if isinstance(result, dict) and str(result.get('status', '') or '').strip().lower() == 'partial':
+            failed = list(result.get('failed', []) or [])
+            self._async_task_partial_message = '; '.join(
+                f"{item.get('key', '')}: {item.get('error', '')}"
+                for item in failed
+                if isinstance(item, dict)
+            ) or '部分快照刷新失败'
         if handler is not None:
             handler(result)
 
@@ -219,8 +228,14 @@ class AsyncTaskHostMixin:
                 final_failure = get_gui_task_queue().mark_failed(queue_record.task_id, failed_message)
                 if final_failure:
                     QMessageBox.critical(self, error_title, failed_message)
+            elif self._async_task_partial_message:
+                get_gui_task_queue().mark_partial(
+                    queue_record.task_id,
+                    self._async_task_partial_message,
+                )
             else:
                 get_gui_task_queue().mark_completed(queue_record.task_id)
+        self._async_task_partial_message = None
         if close_pending and not failed_message:
             QTimer.singleShot(0, self.close)
 

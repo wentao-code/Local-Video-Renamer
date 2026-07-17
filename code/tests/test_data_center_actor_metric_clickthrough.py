@@ -109,6 +109,7 @@ class DataCenterActorMetricClickthroughTest(unittest.TestCase):
 
     def test_code_prefix_metric_bucket_client_uses_prefix_route(self):
         client = BackendClient(base_url="http://127.0.0.1:8766", timeout=30)
+        from app.core.operation_timeout_settings import get_operation_timeout_seconds
         calls = []
 
         def fake_get(path, timeout=None):
@@ -122,7 +123,25 @@ class DataCenterActorMetricClickthroughTest(unittest.TestCase):
         self.assertEqual(result, {"prefixes": []})
         self.assertEqual(
             calls,
-            [("/data-center/analysis/code-prefixes?metric=video_count&value=50_99&refresh=1", None)],
+            [
+                (
+                    "/data-center/analysis/code-prefixes?metric=video_count&value=50_99&refresh=1",
+                    max(30, get_operation_timeout_seconds("list_detail_load")),
+                )
+            ],
+        )
+
+    def test_actor_metric_bucket_client_preserves_zero_bucket_value(self):
+        client = BackendClient(base_url="http://127.0.0.1:8766", timeout=30)
+        calls = []
+        client._get = lambda path, timeout=None: calls.append((path, timeout)) or {"actors": []}
+
+        result = client.get_actor_metric_bucket("age", 0, force_refresh=True)
+
+        self.assertEqual(result, {"actors": []})
+        self.assertIn(
+            "/data-center/analysis/actors?metric=age&value=0&refresh=1",
+            calls[0][0],
         )
 
 

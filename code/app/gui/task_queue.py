@@ -8,6 +8,7 @@ TASK_STATUS_WAITING = '等待中'
 TASK_STATUS_RUNNING = '正在执行'
 TASK_STATUS_PAUSED = '已暂停'
 TASK_STATUS_COMPLETED = '已完成'
+TASK_STATUS_PARTIAL = '部分完成'
 
 RUN_MODE_VIEW = 'view'
 RUN_MODE_TASK = 'task'
@@ -41,6 +42,7 @@ class TaskRecord:
     completed_at: str = ''
     last_error: str = ''
     exhausted: bool = False
+    partial: bool = False
     plan_id: str = ''
     plan_task_kind: str = ''
     batch_current: int = 0
@@ -138,6 +140,20 @@ class GuiTaskQueue(QObject):
         self.changed.emit()
         self._schedule_start_next()
 
+    def mark_partial(self, task_id, error_message):
+        record = self._find_record(task_id)
+        if record is None:
+            return
+        record.status = TASK_STATUS_PARTIAL
+        record.partial = True
+        record.last_error = str(error_message or '')
+        record.completed_at = _now_text()
+        if self._running_task_id == task_id:
+            self._running_task_id = None
+        self._start_callbacks.pop(task_id, None)
+        self.changed.emit()
+        self._schedule_start_next()
+
     def mark_failed(self, task_id, error_message, retryable=True):
         record = self._find_record(task_id)
         if record is None:
@@ -206,7 +222,10 @@ class GuiTaskQueue(QObject):
             return False
         if self._waiting_records:
             return False
-        return all(record.status == TASK_STATUS_COMPLETED for record in self._records)
+        return all(
+            record.status in {TASK_STATUS_COMPLETED, TASK_STATUS_PARTIAL}
+            for record in self._records
+        )
 
     def reset_for_tests(self):
         self._records.clear()

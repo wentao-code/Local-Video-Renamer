@@ -177,7 +177,10 @@ def _load_overrides(db_path=None, keys=None):
 def _connect_settings_database(db_path=None):
     target_path = Path(db_path or DATABASE_FILE)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(target_path), timeout=5)
+    conn = sqlite3.connect(
+        str(target_path),
+        timeout=OPERATION_TIMEOUT_SPEC_MAP['database_wait']['default'],
+    )
     try:
         yield conn
     finally:
