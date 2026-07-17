@@ -60,7 +60,6 @@ class ComparisonWindow(AsyncTaskHostMixin, QDialog):
             self._on_loaded,
             '对比数据读取失败',
             block_ui=False,
-            show_in_task_queue=False,
             task_title='数据对比 读取数据',
         )
 

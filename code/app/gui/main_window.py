@@ -39,6 +39,9 @@ from app.core.local_video_labels import (
 )
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.combo_enrichment import get_combo_label
+from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRICS
+from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
+from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX
 from app.core.enrichment_sources import get_video_enrichment_source_label
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
 from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT
@@ -2390,7 +2393,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def refresh_detail_snapshots(self):
         self.start_async_task(
-            lambda: self.backend_client.rebuild_detail_snapshots(),
+            lambda: VidNormApp._refresh_all_snapshots(self),
             self._on_refresh_detail_snapshots_finished,
             tr('common.operation_failed'),
             block_ui=False,
@@ -2398,16 +2401,156 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             task_title='主界面 全量刷新快照',
         )
 
+    def _refresh_all_snapshots(self):
+        """Prebuild all snapshots addressable from the current database state."""
+        refresh_client = _build_refresh_client(
+            self.backend_client,
+            minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
+        )
+        result = {
+            'detail': refresh_client.rebuild_detail_snapshots(),
+            'refreshed': [],
+        }
+
+        def record(snapshot_key):
+            result['refreshed'].append(snapshot_key)
+
+        def refresh_pages(loader, row_key):
+            """Refresh every default-sorted page and return all rows seen."""
+            rows = []
+            offset = 0
+            first_page = True
+            while first_page or offset < total_count:
+                payload = dict(loader(offset=offset) or {})
+                page_rows = [dict(row or {}) for row in payload.get(row_key, []) or []]
+                rows.extend(page_rows)
+                if first_page:
+                    record(f'{row_key}_pages')
+                first_page = False
+                total_count = int(payload.get('total_count', 0) or 0)
+                page_limit = int(payload.get('limit', 0) or 0)
+                if not page_rows or page_limit <= 0:
+                    break
+                offset += page_limit
+            return rows
+
+        video_rows = refresh_pages(
+            lambda offset: refresh_client.list_videos_page(
+                force_refresh=True,
+                offset=offset,
+            ),
+            'videos',
+        )
+        actor_rows = refresh_pages(
+            lambda offset: refresh_client.list_actors_snapshot(
+                force_refresh=True,
+                include_update_status=False,
+                offset=offset,
+            ),
+            'actors',
+        )
+        prefix_rows = refresh_pages(
+            lambda offset: refresh_client.list_code_prefixes_snapshot(
+                force_refresh=True,
+                offset=offset,
+            ),
+            'prefixes',
+        )
+
+        record('actor_detail_all')
+        record('code_prefix_detail_all')
+
+        refresh_client.get_data_center_summary(force_refresh=True)
+        record('data_center')
+        dashboard = refresh_client.get_data_dashboard(force_refresh=True)
+        record('data_dashboard')
+        dashboard_metrics = {
+            str(metric.get('key') or '').strip()
+            for section in (dashboard.get('sections', []) if isinstance(dashboard, dict) else []) or []
+            for metric in (section.get('metrics', []) if isinstance(section, dict) else []) or []
+            if str(metric.get('key') or '').strip()
+        }
+        for metric_key in sorted(dashboard_metrics):
+            refresh_client.get_data_dashboard_items(metric_key, force_refresh=True)
+            record(f'data_dashboard_items:{metric_key}')
+
+        for metric in ACTOR_ANALYSIS_METRICS:
+            metric_key = metric['key']
+            analysis = refresh_client.get_metric_analysis('actor', metric_key, force_refresh=True)
+            record(f'actor_analysis:{metric_key}')
+            for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
+                bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
+                if bucket_value not in (None, ''):
+                    refresh_client.get_actor_metric_bucket(metric_key, bucket_value, force_refresh=True)
+                    record(f'actor_analysis_bucket:{metric_key}:{bucket_value}')
+
+        for metric in CODE_PREFIX_ANALYSIS_METRICS:
+            metric_key = metric['key']
+            analysis = refresh_client.get_metric_analysis('code_prefix', metric_key, force_refresh=True)
+            record(f'code_prefix_analysis:{metric_key}')
+            for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
+                bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
+                if bucket_value not in (None, ''):
+                    refresh_client.get_code_prefix_metric_bucket(metric_key, bucket_value, force_refresh=True)
+                    record(f'code_prefix_analysis_bucket:{metric_key}:{bucket_value}')
+
+        for tier in (
+            MANUAL_CATEGORY_TIER_FIRST,
+            MANUAL_CATEGORY_TIER_SECOND,
+            MANUAL_CATEGORY_TIER_THIRD,
+        ):
+            refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=True, tier=tier)
+            record(f'video_category:{tier}')
+
+        refresh_client.refresh_candidate_library()
+        record('candidate_library')
+        refresh_client.list_canglangge_candidates_snapshot(force_refresh=True)
+        record('canglangge')
+        for board_key in (LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX):
+            refresh_client.get_ladder_board_snapshot(board_key, force_refresh=True)
+            record(f'ladder_board:{board_key}')
+
+        masterpiece_entries = refresh_client.list_masterpiece_entries(force_refresh=True)
+        record('masterpiece')
+        for entry in masterpiece_entries or []:
+            code = str((entry or {}).get('code') or '').strip()
+            if code:
+                refresh_client.get_masterpiece_detail_snapshot(code, force_refresh=True)
+                record('masterpiece_detail')
+        refresh_client.list_global_medals(force_refresh=True)
+        record('global_medals')
+        refresh_client.get_path_library_snapshot(force_refresh=True)
+        record('path_library')
+
+        queens_payload = refresh_client.list_queen_library_snapshot(force_refresh=True)
+        refresh_client.list_queen_keywords_snapshot(force_refresh=True)
+        refresh_client.get_queen_library_stats()
+        record('queen_library')
+        queen_rows = queens_payload.get('queens', []) if isinstance(queens_payload, dict) else queens_payload
+        for row in queen_rows or []:
+            queen_name = str((row or {}).get('queen_name') or '').strip()
+            if queen_name:
+                refresh_client.get_queen_detail_snapshot(queen_name, force_refresh=True)
+                record('queen_detail')
+
+        result['video_count'] = len(video_rows)
+        result['actor_count'] = len(actor_rows)
+        result['code_prefix_count'] = len(prefix_rows)
+        result.update(dict(result.get('detail') or {}))
+        return result
+
     def _on_refresh_detail_snapshots_finished(self, result):
         result = dict(result or {})
+        detail_result = dict(result.get('detail') or result)
         QMessageBox.information(
             self,
             '快照刷新完成',
             (
-                f"演员快照: {int(result.get('actor_refreshed', 0) or 0)}/"
-                f"{int(result.get('actor_total', 0) or 0)}\n"
-                f"番号快照: {int(result.get('code_prefix_refreshed', 0) or 0)}/"
-                f"{int(result.get('code_prefix_total', 0) or 0)}"
+                f"演员详情快照: {int(detail_result.get('actor_refreshed', 0) or 0)}/"
+                f"{int(detail_result.get('actor_total', 0) or 0)}\n"
+                f"番号详情快照: {int(detail_result.get('code_prefix_refreshed', 0) or 0)}/"
+                f"{int(detail_result.get('code_prefix_total', 0) or 0)}\n"
+                f"其他快照类别: {len(result.get('refreshed', []) or [])}"
             ),
         )
 

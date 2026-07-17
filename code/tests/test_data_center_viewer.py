@@ -14,12 +14,13 @@ from app.gui.i18n import tr
 _APP = QApplication.instance() or QApplication([])
 
 
-def _capture_sync_async_task(self, task, success_handler, error_title=None, block_ui=True):
+def _capture_sync_async_task(self, task, success_handler, error_title=None, block_ui=True, **kwargs):
     calls = list(getattr(self, '_captured_async_calls', []))
     calls.append(
         {
             'error_title': error_title,
             'block_ui': bool(block_ui),
+            **kwargs,
         }
     )
     self._captured_async_calls = calls
@@ -131,6 +132,7 @@ class DataCenterViewerTest(unittest.TestCase):
 
                 self.assertEqual(backend.summary_refresh_flags, [False, True, True])
                 self.assertIn('2026-06-21 12:35:56', window.last_refreshed_label.text())
+                self.assertEqual(window._captured_async_calls[-1]['task_title'], '数据中心 刷新数据')
             finally:
                 window.hide()
                 window.deleteLater()

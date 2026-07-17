@@ -103,6 +103,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             self._on_load_data_finished,
             tr('common.read_failed'),
             block_ui=block_ui,
+            task_title='数据中心 刷新数据' if force_refresh else '数据中心 读取数据',
         )
 
     def on_data_changed(self, source_keys=None):

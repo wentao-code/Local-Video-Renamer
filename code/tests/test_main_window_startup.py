@@ -738,15 +738,24 @@ class MainWindowStartupTest(unittest.TestCase):
 
     def test_refresh_detail_snapshots_dispatches_explicit_full_refresh_task(self):
         captured = {}
-        stub = SimpleNamespace(
-            backend_client=SimpleNamespace(
-                rebuild_detail_snapshots=lambda: {
+
+        class _RefreshClient:
+            base_url = ''
+            timeout = 30
+
+            def rebuild_detail_snapshots(self):
+                return {
                     'actor_total': 2,
                     'actor_refreshed': 2,
                     'code_prefix_total': 1,
                     'code_prefix_refreshed': 1,
                 }
-            ),
+
+            def __getattr__(self, _name):
+                return lambda *args, **kwargs: {}
+
+        stub = SimpleNamespace(
+            backend_client=_RefreshClient(),
             start_async_task=lambda task, success_handler, error_title=None, block_ui=True, **kwargs: captured.update(
                 {
                     'task_result': task(),
