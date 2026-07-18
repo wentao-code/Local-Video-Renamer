@@ -255,7 +255,10 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
         candidate_limit = 999999 if self._planned_codes() else limit
-        candidates = self.database.list_video_supplement_candidates(candidate_limit)
+        candidates = self.database.list_video_supplement_candidates(
+            candidate_limit,
+            include_queued=bool(self.planned_items),
+        )
         candidates = self._select_planned_rows(candidates, 'code', limit)
         results = []
         success_count = 0
@@ -502,6 +505,18 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         return result
 
     def _candidate_rows_for_prefix(self, prefix):
+        sql_candidate_getter = getattr(self.database, 'list_sql_supplement_candidates', None)
+        if callable(sql_candidate_getter):
+            normalized_prefix = str(prefix or '').strip().upper()
+            return [
+                {
+                    **dict(movie or {}),
+                    **build_supplement_candidate(movie, filter_settings=self.filter_settings),
+                }
+                for movie in sql_candidate_getter('code_prefix', 1000000, include_queued=bool(self.planned_items))
+                if str((movie or {}).get('prefix', '') or '').strip().upper() == normalized_prefix
+                and build_supplement_candidate(movie, filter_settings=self.filter_settings)
+            ]
         return [
             dict(movie or {})
             for movie in self.database.list_code_prefix_movies(prefix)
@@ -564,6 +579,13 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         return batches
 
     def _remaining_video_count(self):
+        sql_candidate_getter = getattr(self.database, 'list_sql_supplement_candidates', None)
+        if callable(sql_candidate_getter):
+            return sum(
+                1
+                for movie in sql_candidate_getter('code_prefix', 1000000)
+                if build_supplement_candidate(movie, filter_settings=self.filter_settings)
+            )
         return sum(
             1
             for movie in (self.database.list_all_code_prefix_movies() or [])
@@ -707,6 +729,18 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
         return result
 
     def _candidate_rows_for_actor(self, actor_name):
+        sql_candidate_getter = getattr(self.database, 'list_sql_supplement_candidates', None)
+        if callable(sql_candidate_getter):
+            normalized_name = str(actor_name or '').strip()
+            return [
+                {
+                    **dict(movie or {}),
+                    **build_supplement_candidate(movie, filter_settings=self.filter_settings),
+                }
+                for movie in sql_candidate_getter('actor', 1000000, include_queued=bool(self.planned_items))
+                if str((movie or {}).get('actor_name', '') or '').strip() == normalized_name
+                and build_supplement_candidate(movie, filter_settings=self.filter_settings)
+            ]
         return [
             dict(movie or {})
             for movie in self.database.list_actor_movies(actor_name)
@@ -769,6 +803,13 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
         return batches
 
     def _remaining_video_count(self):
+        sql_candidate_getter = getattr(self.database, 'list_sql_supplement_candidates', None)
+        if callable(sql_candidate_getter):
+            return sum(
+                1
+                for movie in sql_candidate_getter('actor', 1000000)
+                if build_supplement_candidate(movie, filter_settings=self.filter_settings)
+            )
         return sum(
             1
             for movie in (self.database.list_all_actor_movies() or [])

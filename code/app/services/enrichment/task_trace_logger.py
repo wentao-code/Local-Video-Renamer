@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -52,6 +53,14 @@ class TaskTraceLogger:
             'run_id': self.run_id,
             'correlation_id': self.correlation_id,
         })
+
+    def log_exception(self, level, message, exception, **fields):
+        """Write the exception type, message, and complete traceback to the task log."""
+        error = exception if isinstance(exception, BaseException) else Exception(str(exception))
+        fields.setdefault('exception_type', type(error).__name__)
+        fields.setdefault('exception', str(error))
+        fields.setdefault('traceback', ''.join(traceback.format_exception(type(error), error, error.__traceback__)))
+        self.log(level, message, **fields)
 
     def log_emphasis_block(self, title, lines=None, level='NOTICE'):
         border = '=' * 18

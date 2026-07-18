@@ -370,6 +370,39 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '当前已有补全任务正在执行'):
                 db.claim_enrichment_batch_items(second['plan_id'], 'actor', 1)
 
+    def test_zero_processed_running_items_are_released_and_plan_paused(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+            plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                'supplement',
+                batch_limit=2,
+                batch_count_limit=1,
+                candidates=[
+                    {'actor_name': '演员甲', 'code': 'AAA-001'},
+                    {'actor_name': '演员甲', 'code': 'AAA-002'},
+                ],
+            )
+            db.claim_enrichment_batch_items(plan['plan_id'], 'actor', 2)
+            service = object.__new__(BackendService)
+            service.db = db
+
+            result = service._apply_enrichment_batch_plan_result(
+                plan['plan_id'],
+                'actor',
+                {'processed_count': 0, 'results': [], 'stopped': False},
+            )
+
+            progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor')
+            items = db.list_enrichment_batch_items(plan['plan_id'], 'actor', status=None)
+
+        self.assertTrue(result['stopped'])
+        self.assertEqual(progress['status'], 'paused')
+        self.assertEqual(progress['completed_count'], 0)
+        self.assertEqual(progress['pending_count'], 2)
+        self.assertEqual({item['status'] for item in items}, {'pending'})
+
     def test_restart_recovery_returns_running_row_to_its_origin_queue(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

@@ -86,6 +86,19 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
 
         self.assertEqual(candidates, [{'actor_name': 'Needs Enrichment'}])
 
+    def test_avfan_actor_plan_prefers_sql_candidate_selector(self):
+        calls = []
+        self.service.db.list_sql_enrichment_candidates = lambda *args: (
+            calls.append(args) or [{'actor_name': 'SQL Candidate'}]
+        )
+
+        candidates = self.service._build_enrichment_batch_plan_candidates(
+            'actor', ACTOR_LIBRARY_TARGET, AVFAN_VIDEO_SOURCE, 1
+        )
+
+        self.assertEqual(candidates, [{'actor_name': 'SQL Candidate'}])
+        self.assertEqual(calls, [('actor', AVFAN_VIDEO_SOURCE, 1)])
+
     def test_javtxt_actor_plan_uses_actual_ready_candidates(self):
         records = self.service.db.list_actor_enrichment_records()
         records['Needs Enrichment'].update(
@@ -110,6 +123,17 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
 
         self.assertEqual(candidates, [{'prefix': 'PENDING'}])
         service_class.return_value.list_plan_candidate_prefixes.assert_called_once_with(1)
+
+    def test_avfan_prefix_plan_prefers_sql_candidate_selector(self):
+        self.service.db.list_sql_code_prefix_candidates = lambda source_key, limit: [
+            {'prefix': 'SQL'}
+        ]
+
+        candidates = self.service._build_enrichment_batch_plan_candidates(
+            'code_prefix', CODE_PREFIX_LIBRARY_TARGET, AVFAN_VIDEO_SOURCE, 1
+        )
+
+        self.assertEqual(candidates, [{'prefix': 'SQL'}])
 
     @patch('app.backend.service.CodePrefixJavtxtEnrichmentService')
     def test_javtxt_prefix_plan_uses_source_candidate_selector(self, service_class):

@@ -1,4 +1,5 @@
 from threading import Event, Lock
+import time
 
 
 class EnrichmentTaskState:
@@ -7,6 +8,7 @@ class EnrichmentTaskState:
         self._lock = Lock()
         self.is_running = False
         self.active_kind = ''
+        self.started_monotonic = None
 
     def begin(self, task_kind, reset_progress):
         with self._lock:
@@ -14,13 +16,25 @@ class EnrichmentTaskState:
                 raise RuntimeError('当前已有补全任务正在运行，请稍后再试。')
             self.is_running = True
             self.active_kind = str(task_kind or '').strip()
+            self.started_monotonic = time.monotonic()
             self.cancel_event.clear()
             reset_progress()
 
     def end(self):
         self.is_running = False
         self.active_kind = ''
+        self.started_monotonic = None
         self.cancel_event.clear()
+
+    def reconcile(self, has_persisted_running_items, stale_after_seconds=120):
+        """Release a stale in-memory lock only after persistent execution is absent."""
+        if not self.is_running or has_persisted_running_items:
+            return False
+        started_at = self.started_monotonic
+        if started_at is None or time.monotonic() - started_at < max(1, float(stale_after_seconds or 0)):
+            return False
+        self.end()
+        return True
 
     def request_cancel(self, set_message):
         if not self.is_running:

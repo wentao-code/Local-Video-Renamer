@@ -827,6 +827,12 @@ class VideoDatabase(
                 'processed_videos',
                 'javtxt_enrichment_status, release_date, code',
             )
+            self._ensure_index(
+                cursor,
+                'idx_processed_videos_javtxt_candidate',
+                'processed_videos',
+                'javtxt_enrichment_status, javtxt_release_date, code',
+            )
             self._ensure_index(cursor, 'idx_usb_video_inventory_folder', 'usb_video_inventory', 'folder_path, video_code')
             self._ensure_index(cursor, 'idx_usb_video_change_logs_folder', 'usb_video_change_logs', 'folder_path, created_at')
             self._ensure_index(cursor, 'idx_code_prefix_movies_code', 'code_prefix_movies', 'code')
@@ -837,6 +843,12 @@ class VideoDatabase(
                 'idx_code_prefix_movies_javtxt_filter',
                 'code_prefix_movies',
                 'javtxt_enrichment_status, release_date, prefix, code',
+            )
+            self._ensure_index(
+                cursor,
+                'idx_code_prefix_movies_javtxt_candidate',
+                'code_prefix_movies',
+                'javtxt_enrichment_status, javtxt_release_date, prefix, code',
             )
             self._ensure_index(
                 cursor,
@@ -852,6 +864,12 @@ class VideoDatabase(
                 'idx_actor_movies_javtxt_filter',
                 'actor_movies',
                 'javtxt_enrichment_status, release_date, actor_name, code',
+            )
+            self._ensure_index(
+                cursor,
+                'idx_actor_movies_javtxt_candidate',
+                'actor_movies',
+                'javtxt_enrichment_status, javtxt_release_date, actor_name, code',
             )
             self._ensure_index(
                 cursor,
@@ -4427,6 +4445,475 @@ class VideoDatabase(
                 }
             return records
 
+    def list_sql_enrichment_candidates(self, task_kind, source_key, limit):
+        """Select simple enrichment candidates in SQLite using canonical codes."""
+        normalized_task = str(task_kind or '').strip()
+        normalized_source = normalize_video_enrichment_source(source_key)
+        normalized_limit = max(0, int(limit or 0))
+        if normalized_limit <= 0:
+            return []
+
+        if normalized_task not in {'actor', 'actor_birthday'}:
+            return []
+
+        with self._connect() as conn:
+            if normalized_task == 'actor' and normalized_source == AVFAN_VIDEO_SOURCE:
+                rows = conn.execute(
+                    '''
+                    SELECT a.name
+                    FROM actors AS a
+                    LEFT JOIN actor_enrichments AS e ON e.actor_name = a.name
+                    WHERE NOT EXISTS (
+                              SELECT 1 FROM hidden_actors AS h WHERE h.name = a.name
+                          )
+                      AND COALESCE(NULLIF(TRIM(e.avfan_enrichment_status), ''), ?) IN (?, ?)
+                    ORDER BY UPPER(a.name) ASC
+                    LIMIT ?
+                    ''',
+                    (UNENRICHED_STATUS, UNENRICHED_STATUS, FAILED_STATUS, normalized_limit),
+                ).fetchall()
+            elif normalized_task == 'actor_birthday' and normalized_source == BINGHUO_ACTOR_SOURCE:
+                rows = conn.execute(
+                    '''
+                    SELECT a.name
+                    FROM actors AS a
+                    LEFT JOIN actor_enrichments AS e ON e.actor_name = a.name
+                    WHERE NOT EXISTS (
+                              SELECT 1 FROM hidden_actors AS h WHERE h.name = a.name
+                          )
+                      AND COALESCE(NULLIF(TRIM(e.binghuo_enrichment_status), ''), ?) NOT IN (?, ?)
+                      AND (
+                            (
+                                COALESCE(NULLIF(TRIM(a.birthday), ''),
+                                         NULLIF(TRIM(e.binghuo_birthday), ''), '') = ''
+                                AND NOT (
+                                    TRIM(COALESCE(e.binghuo_birthday, '')) <> ''
+                                    OR TRIM(COALESCE(e.binghuo_age, '')) <> ''
+                                    OR TRIM(COALESCE(e.binghuo_height, '')) <> ''
+                                    OR TRIM(COALESCE(e.binghuo_bust, '')) <> ''
+                                    OR TRIM(COALESCE(e.binghuo_waist, '')) <> ''
+                                    OR TRIM(COALESCE(e.binghuo_hip, '')) <> ''
+                                )
+                            )
+                            OR (
+                                COALESCE(NULLIF(TRIM(a.birthday), ''),
+                                         NULLIF(TRIM(e.binghuo_birthday), ''), '') <> ''
+                                AND (
+                                    TRIM(COALESCE(e.binghuo_person_id, '')) = ''
+                                    OR (
+                                        TRIM(COALESCE(e.binghuo_height, '')) = ''
+                                        AND TRIM(COALESCE(e.binghuo_bust, '')) = ''
+                                        AND TRIM(COALESCE(e.binghuo_waist, '')) = ''
+                                        AND TRIM(COALESCE(e.binghuo_hip, '')) = ''
+                                    )
+                                    OR NOT (
+                                        TRIM(COALESCE(e.binghuo_birthday, '')) <> ''
+                                        OR TRIM(COALESCE(e.binghuo_age, '')) <> ''
+                                        OR TRIM(COALESCE(e.binghuo_height, '')) <> ''
+                                        OR TRIM(COALESCE(e.binghuo_bust, '')) <> ''
+                                        OR TRIM(COALESCE(e.binghuo_waist, '')) <> ''
+                                        OR TRIM(COALESCE(e.binghuo_hip, '')) <> ''
+                                    )
+                                )
+                            )
+                          )
+                    ORDER BY UPPER(a.name) ASC
+                    LIMIT ?
+                    ''',
+                    (UNENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, normalized_limit),
+                ).fetchall()
+            elif normalized_task == 'actor_birthday' and normalized_source == BAOMU_ACTOR_SOURCE:
+                rows = conn.execute(
+                    '''
+                    SELECT a.name
+                    FROM actors AS a
+                    LEFT JOIN actor_enrichments AS e ON e.actor_name = a.name
+                    WHERE NOT EXISTS (
+                              SELECT 1 FROM hidden_actors AS h WHERE h.name = a.name
+                          )
+                      AND COALESCE(e.binghuo_enrichment_status, ?) <> ?
+                      AND COALESCE(NULLIF(TRIM(e.baomu_enrichment_status), ''), ?) = ?
+                      AND (
+                            COALESCE(NULLIF(TRIM(a.birthday), ''),
+                                     NULLIF(TRIM(e.binghuo_birthday), ''), '') = ''
+                            OR TRIM(COALESCE(e.binghuo_height, '')) = ''
+                            OR TRIM(COALESCE(e.binghuo_bust, '')) = ''
+                            OR TRIM(COALESCE(e.binghuo_cup, '')) = ''
+                            OR TRIM(COALESCE(e.binghuo_waist, '')) = ''
+                            OR TRIM(COALESCE(e.binghuo_hip, '')) = ''
+                          )
+                    ORDER BY UPPER(a.name) ASC
+                    LIMIT ?
+                    ''',
+                    (
+                        UNENRICHED_STATUS,
+                        UNENRICHED_STATUS,
+                        UNENRICHED_STATUS,
+                        UNENRICHED_STATUS,
+                        normalized_limit,
+                    ),
+                ).fetchall()
+            else:
+                return []
+
+        return [{'actor_name': str(row[0] or '').strip()} for row in rows if str(row[0] or '').strip()]
+
+    def list_sql_code_prefix_candidates(self, source_key, limit):
+        """Select AVFan code-prefix candidates without loading library rows."""
+        if normalize_video_enrichment_source(source_key) != AVFAN_VIDEO_SOURCE:
+            return []
+        normalized_limit = max(0, int(limit or 0))
+        if normalized_limit <= 0:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                '''
+                WITH prefix_keys(prefix) AS (
+                    SELECT prefix FROM code_prefix_enrichments
+                    UNION
+                    SELECT prefix FROM code_prefix_movies
+                    UNION
+                    SELECT UPPER(
+                        CASE WHEN instr(code, '-') > 0
+                             THEN substr(code, 1, instr(code, '-') - 1)
+                             ELSE code END
+                    )
+                    FROM processed_videos
+                    WHERE TRIM(COALESCE(code, '')) <> ''
+                )
+                SELECT prefix_keys.prefix
+                FROM prefix_keys
+                LEFT JOIN code_prefix_enrichments AS e
+                       ON e.prefix = prefix_keys.prefix
+                WHERE TRIM(COALESCE(prefix_keys.prefix, '')) <> ''
+                  AND NOT EXISTS (
+                          SELECT 1 FROM hidden_code_prefixes AS h
+                          WHERE h.prefix = prefix_keys.prefix
+                      )
+                  AND COALESCE(NULLIF(TRIM(e.avfan_enrichment_status), ''), ?) IN (?, ?)
+                ORDER BY prefix_keys.prefix ASC
+                LIMIT ?
+                ''',
+                (UNENRICHED_STATUS, UNENRICHED_STATUS, FAILED_STATUS, normalized_limit),
+            ).fetchall()
+        return [{'prefix': str(row[0] or '').strip().upper()} for row in rows if str(row[0] or '').strip()]
+
+    def list_sql_javtxt_candidate_items(self, task_kind, limit):
+        """Return a bounded JAVTXT candidate set with its cache joined in SQL."""
+        normalized_task = str(task_kind or '').strip()
+        normalized_limit = max(0, int(limit or 0))
+        if normalized_task not in {'actor', 'code_prefix'} or normalized_limit <= 0:
+            return []
+
+        if normalized_task == 'actor':
+            table_name = 'actor_movies'
+            owner_column = 'actor_name'
+            ready_join = (
+                'JOIN actor_enrichments AS ready '
+                'ON ready.actor_name = source.actor_name '
+                'AND ready.avfan_enrichment_status = ? '
+                'AND COALESCE(ready.avfan_total_videos, 0) > 0'
+            )
+            pending_table = 'pending_actor_javtxt'
+            order_sql = 'source.actor_name ASC, source.code ASC'
+            owner_select = 'source.actor_name'
+        else:
+            table_name = 'code_prefix_movies'
+            owner_column = 'prefix'
+            ready_join = (
+                'JOIN code_prefix_enrichments AS ready '
+                'ON ready.prefix = source.prefix '
+                'AND ready.avfan_enrichment_status = ? '
+                'AND COALESCE(ready.avfan_total_videos, 0) > 0'
+            )
+            pending_table = 'pending_code_prefix_javtxt'
+            order_sql = 'source.prefix ASC, source.code ASC'
+            owner_select = 'source.prefix'
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT {owner_select} AS owner_key,
+                       source.code, source.title, source.author, source.release_date,
+                       source.javtxt_enrichment_status, source.javtxt_release_date,
+                       source.javtxt_movie_id, source.javtxt_url, source.javtxt_tags,
+                       source.author_raw, source.video_category,
+                       cache.javtxt_actors AS cached_javtxt_actors,
+                       cache.javtxt_actors_raw AS cached_javtxt_actors_raw,
+                       cache.javtxt_movie_id AS cached_javtxt_movie_id,
+                       cache.javtxt_url AS cached_javtxt_url,
+                       cache.javtxt_tags AS cached_javtxt_tags,
+                       cache.javtxt_enrichment_status AS cached_javtxt_enrichment_status,
+                       cache.javtxt_release_date AS cached_javtxt_release_date,
+                       cache.release_date AS cached_release_date
+                FROM {table_name} AS source
+                {ready_join}
+                LEFT JOIN processed_videos AS cache ON cache.code = source.code
+                WHERE COALESCE(NULLIF(TRIM(source.javtxt_enrichment_status), ''), ?) IN (?, ?)
+                  AND COALESCE(
+                        NULLIF(source.javtxt_release_date, ''),
+                        NULLIF(cache.javtxt_release_date, ''),
+                        NULLIF(source.release_date, ''),
+                        NULLIF(cache.release_date, '')
+                      ) >= '2020-01-01'
+                  AND source.code LIKE '%-%'
+                  AND NOT EXISTS (
+                        SELECT 1 FROM {pending_table} AS pending
+                        WHERE pending.{owner_column} = source.{owner_column}
+                          AND pending.code = source.code
+                          AND pending.status IN ('pending', 'failed')
+                      )
+                  AND NOT EXISTS (
+                        SELECT 1 FROM enrichment_running_items AS running
+                        WHERE running.task_kind = ?
+                          AND running.origin_table = ?
+                          AND running.{owner_column} = source.{owner_column}
+                          AND running.code = source.code
+                      )
+                ORDER BY {order_sql}
+                LIMIT ?
+                ''',
+                (
+                    ENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    FAILED_STATUS,
+                    normalized_task,
+                    pending_table,
+                    normalized_limit,
+                ),
+            ).fetchall()
+
+        result = []
+        for row in rows:
+            owner_key = str(row[0] or '').strip()
+            current = {
+                'code': row[1] or '',
+                'title': row[2] or '',
+                'author': row[3] or '',
+                'release_date': row[4] or '',
+                'javtxt_enrichment_status': row[5] or UNENRICHED_STATUS,
+                'javtxt_release_date': row[6] or '',
+                'javtxt_movie_id': row[7] or '',
+                'javtxt_url': row[8] or '',
+                'javtxt_tags': row[9] or '',
+                'author_raw': row[10] or '',
+                'video_category': row[11] or '',
+                'cached_javtxt_actors': row[12] or '',
+                'cached_javtxt_actors_raw': row[13] or '',
+                'cached_javtxt_movie_id': row[14] or '',
+                'cached_javtxt_url': row[15] or '',
+                'cached_javtxt_tags': row[16] or '',
+                'cached_javtxt_enrichment_status': row[17] or UNENRICHED_STATUS,
+                'cached_javtxt_release_date': row[18] or '',
+                'cached_release_date': row[19] or '',
+            }
+            if normalized_task == 'actor':
+                current['actor_name'] = owner_key
+            else:
+                current['prefix'] = owner_key
+            result.append(current)
+        return result
+
+    def list_sql_supplement_candidates(self, target_kind, limit, include_queued=False):
+        """Pre-filter supplement candidates; planned execution may include queued rows."""
+        normalized_target = str(target_kind or '').strip()
+        normalized_limit = max(0, int(limit or 0))
+        table_config = {
+            'video': ('processed_videos', 'code', 'pending_video_avfan', 'video'),
+            'actor': ('actor_movies', 'actor_name', 'pending_actor_supplement', 'actor'),
+            'code_prefix': ('code_prefix_movies', 'prefix', 'pending_code_prefix_supplement', 'code_prefix'),
+        }
+        if normalized_target not in table_config or normalized_limit <= 0:
+            return []
+        table_name, owner_column, pending_table, task_kind = table_config[normalized_target]
+        owner_select = f'source.{owner_column}' if normalized_target != 'video' else "''"
+        source_alias = 'source'
+        cache_join = ''
+        if normalized_target == 'video':
+            author_column = 'source.javtxt_actors'
+            author_raw_column = 'source.javtxt_actors_raw'
+            avfan_url_column = "''"
+            page_number_column = '1'
+            javtxt_status_column = 'source.javtxt_enrichment_status'
+            javtxt_movie_id_column = 'source.javtxt_movie_id'
+            javtxt_url_column = 'source.javtxt_url'
+            javtxt_tags_column = 'source.javtxt_tags'
+            javtxt_release_date_column = 'source.javtxt_release_date'
+            video_category_column = 'source.video_category'
+        else:
+            cache_join = 'LEFT JOIN processed_videos AS cache ON cache.code = source.code'
+            author_column = 'COALESCE(NULLIF(TRIM(cache.javtxt_actors), \'\'), source.author)'
+            author_raw_column = 'COALESCE(NULLIF(TRIM(cache.javtxt_actors_raw), \'\'), source.author_raw)'
+            avfan_url_column = 'source.avfan_url'
+            page_number_column = 'source.page_number'
+            javtxt_status_column = 'COALESCE(NULLIF(TRIM(source.javtxt_enrichment_status), \'\'), cache.javtxt_enrichment_status)'
+            javtxt_movie_id_column = 'COALESCE(NULLIF(TRIM(source.javtxt_movie_id), \'\'), cache.javtxt_movie_id)'
+            javtxt_url_column = 'COALESCE(NULLIF(TRIM(source.javtxt_url), \'\'), cache.javtxt_url)'
+            javtxt_tags_column = 'COALESCE(NULLIF(TRIM(source.javtxt_tags), \'\'), cache.javtxt_tags)'
+            javtxt_release_date_column = 'COALESCE(NULLIF(TRIM(source.javtxt_release_date), \'\'), cache.javtxt_release_date)'
+            video_category_column = 'COALESCE(NULLIF(TRIM(source.video_category), \'\'), cache.video_category)'
+        owner_pending = f'pending.{owner_column} = source.{owner_column}' if normalized_target != 'video' else 'pending.code = source.code'
+        owner_running = f'running.{owner_column} = source.{owner_column}' if normalized_target != 'video' else 'running.code = source.code'
+        pending_exclusion_sql = '' if include_queued else f'''
+                  AND NOT EXISTS (
+                        SELECT 1 FROM {pending_table} AS pending
+                        WHERE {owner_pending}
+                          AND pending.code = source.code
+                          AND pending.status IN ('pending', 'failed')
+                      )'''
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT {owner_select} AS owner_key,
+                       source.code, source.title, {author_column},
+                       source.release_date, {avfan_url_column}, {page_number_column},
+                       {javtxt_status_column},
+                       {javtxt_movie_id_column}, {javtxt_url_column},
+                       {javtxt_tags_column}, {javtxt_release_date_column},
+                       {author_raw_column}, {video_category_column},
+                       source.supplement_enrichment_status
+                FROM {table_name} AS source
+                {cache_join}
+                WHERE COALESCE(NULLIF(TRIM(source.supplement_enrichment_status), ''), ?) = ?
+                  AND source.code LIKE '%-%'
+                  AND (
+                        (
+                            (TRIM(COALESCE({javtxt_movie_id_column}, '')) <> ''
+                             OR TRIM(COALESCE({javtxt_url_column}, '')) <> '')
+                            AND LOWER(TRIM(COALESCE({author_column}, ''))) IN (
+                                '', '-', '--', 'na', 'n/a', 'none', 'null', 'unknown',
+                                '无', '無', '暂无', '暫無', '未知', '无记录', '無記錄',
+                                '未公开', '未公開'
+                            )
+                        )
+                        OR (
+                            COALESCE(NULLIF(TRIM({javtxt_status_column}), ''), ?) IN (?, ?)
+                            AND (
+                                LOWER(TRIM(COALESCE({author_column}, ''))) IN (
+                                    '', '-', '--', 'na', 'n/a', 'none', 'null', 'unknown',
+                                    '无', '無', '暂无', '暫無', '未知', '无记录', '無記錄',
+                                    '未公开', '未公開'
+                                )
+                                OR TRIM(COALESCE(source.title, '')) = ''
+                                OR TRIM(COALESCE(source.release_date, '')) = ''
+                            )
+                        )
+                      )
+                  {pending_exclusion_sql}
+                  AND NOT EXISTS (
+                        SELECT 1 FROM enrichment_running_items AS running
+                        WHERE running.task_kind = ?
+                          AND running.origin_table = ?
+                          AND {owner_running}
+                          AND running.code = source.code
+                      )
+                ORDER BY source.code ASC
+                LIMIT ?
+                ''',
+                (
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    NO_SEARCH_RESULTS_STATUS,
+                    NO_VIDEO_DETAIL_STATUS,
+                    task_kind,
+                    pending_table,
+                    normalized_limit,
+                ),
+            ).fetchall()
+
+        result = []
+        for row in rows:
+            current = {
+                'code': row[1] or '',
+                'title': row[2] or '',
+                'author': row[3] or '',
+                'release_date': row[4] or '',
+                'avfan_url': row[5] or '',
+                'page_number': int(row[6] or 1),
+                'javtxt_enrichment_status': row[7] or UNENRICHED_STATUS,
+                'javtxt_movie_id': row[8] or '',
+                'javtxt_url': row[9] or '',
+                'javtxt_tags': row[10] or '',
+                'javtxt_release_date': row[11] or '',
+                'author_raw': row[12] or '',
+                'video_category': row[13] or '',
+                'supplement_enrichment_status': row[14] or UNENRICHED_STATUS,
+            }
+            if normalized_target == 'actor':
+                current['actor_name'] = row[0] or ''
+            elif normalized_target == 'code_prefix':
+                current['prefix'] = row[0] or ''
+            result.append(current)
+        return result
+
+    def list_sql_javtxt_video_candidates(self, limit, rule_set=None):
+        """Return a bounded, retryable JAVTXT video set from SQLite."""
+        normalized_limit = max(0, int(limit or 0))
+        if normalized_limit <= 0:
+            return []
+        where_sql = '''
+            WHERE COALESCE(NULLIF(TRIM(p.javtxt_enrichment_status), ''), ?) IN (?, ?)
+              AND COALESCE(NULLIF(TRIM(p.javtxt_release_date), ''), NULLIF(TRIM(p.release_date), '')) >= '2020-01-01'
+              AND p.code LIKE '%-%'
+              AND NOT EXISTS (
+                    SELECT 1 FROM pending_video_javtxt AS pending
+                    WHERE pending.code = p.code
+                      AND pending.status IN ('pending', 'failed')
+                  )
+              AND NOT EXISTS (
+                    SELECT 1 FROM enrichment_running_items AS running
+                    WHERE running.task_kind = 'video'
+                      AND running.origin_table = 'pending_video_javtxt'
+                      AND running.code = p.code
+                  )
+        '''
+        where_sql, query_parameters = self._append_rule_set_where(
+            where_sql,
+            [UNENRICHED_STATUS, UNENRICHED_STATUS, FAILED_STATUS],
+            rule_set=rule_set,
+            table_alias='p',
+            scope='pre_enrichment',
+        )
+        query_parameters.append(normalized_limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT p.code,
+                       COALESCE(NULLIF(p.javtxt_title, ''), NULLIF(p.title, ''), p.code),
+                       p.author,
+                       p.javtxt_actors, p.javtxt_actors_raw,
+                       p.javtxt_movie_id, p.javtxt_url, p.javtxt_tags,
+                       p.javtxt_enrichment_status, p.release_date,
+                       p.video_category, p.javtxt_release_date,
+                       p.supplement_enrichment_status
+                FROM processed_videos AS p
+                {where_sql}
+                ORDER BY p.code ASC
+                LIMIT ?
+                ''',
+                query_parameters,
+            ).fetchall()
+        return [
+            {
+                'code': row[0] or '',
+                'title': row[1] or '',
+                'author': sanitize_actor_text(row[3] or ''),
+                'author_raw': self._normalize_actor_raw_text(row[4] or row[2] or ''),
+                'local_author': sanitize_actor_text(row[2] or ''),
+                'javtxt_movie_id': row[5] or '',
+                'javtxt_url': row[6] or '',
+                'javtxt_tags': row[7] or '',
+                'javtxt_enrichment_status': row[8] or UNENRICHED_STATUS,
+                'release_date': row[9] or '',
+                'video_category': normalize_video_category(row[10]),
+                'javtxt_release_date': row[11] or '',
+                'supplement_enrichment_status': row[12] or UNENRICHED_STATUS,
+            }
+            for row in rows
+        ]
+
     def save_actor_enrichment(self, actor_name, status, total_pages=0, total_videos=0, error='', actor_id='', source_key=AVFAN_VIDEO_SOURCE):
         normalized_name = str(actor_name or '').strip()
         normalized_source = normalize_video_enrichment_source(source_key)
@@ -6893,7 +7380,11 @@ class VideoDatabase(
             cursor = conn.cursor()
             if normalized_source == JAVTXT_VIDEO_SOURCE:
                 pending_rows = []
-                for record in self._list_processed_video_javtxt_records(cursor):
+                sql_rows = self.list_sql_javtxt_video_candidates(
+                    max(int(limit) * 20, int(limit)),
+                    rule_set=rule_set,
+                )
+                for record in sql_rows:
                     if not is_javtxt_eligible_movie(record):
                         continue
                     candidate = {
@@ -7043,6 +7534,21 @@ class VideoDatabase(
                 f'CREATE INDEX IF NOT EXISTS idx_{table_name}_plan_status '
                 f'ON {table_name} (plan_id, status, sequence_index)'
             )
+            if 'video' in table_name:
+                cursor.execute(
+                    f'CREATE INDEX IF NOT EXISTS idx_{table_name}_candidate_key '
+                    f'ON {table_name} (code, status)'
+                )
+            elif 'actor' in table_name:
+                cursor.execute(
+                    f'CREATE INDEX IF NOT EXISTS idx_{table_name}_candidate_key '
+                    f'ON {table_name} (actor_name, code, status)'
+                )
+            elif 'code_prefix' in table_name:
+                cursor.execute(
+                    f'CREATE INDEX IF NOT EXISTS idx_{table_name}_candidate_key '
+                    f'ON {table_name} (prefix, code, status)'
+                )
         cursor.execute(
             '''
             CREATE TABLE IF NOT EXISTS enrichment_running_items (
@@ -7070,6 +7576,10 @@ class VideoDatabase(
         cursor.execute(
             'CREATE INDEX IF NOT EXISTS idx_enrichment_running_plan '
             'ON enrichment_running_items (plan_id, sequence_index)'
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_enrichment_running_candidate_key '
+            'ON enrichment_running_items (task_kind, origin_table, actor_name, prefix, code, status)'
         )
 
     @classmethod
@@ -7901,6 +8411,12 @@ class VideoDatabase(
             if row.get('pending_count', 0) or row.get('running_count', 0) or row.get('retryable_failed_count', 0)
         ]
 
+    def has_running_enrichment_items(self):
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM enrichment_running_items WHERE status = 'running' LIMIT 1"
+            ).fetchone() is not None
+
     def recover_running_enrichment_plans(self, reason='程序重启恢复'):
         normalized_reason = str(reason or '').strip()
         with self._connect() as conn:
@@ -8090,20 +8606,21 @@ class VideoDatabase(
             conn.commit()
             return updated_count
 
-    def list_video_supplement_candidates(self, limit):
+    def list_video_supplement_candidates(self, limit, include_queued=False):
         limit = max(int(limit or 0), 0)
         if limit <= 0:
             return []
 
         candidates = []
         filter_settings = load_video_filter_settings()
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            for record in self._list_processed_video_javtxt_records(cursor):
-                candidate = build_supplement_candidate(record, filter_settings=filter_settings)
-                if not candidate:
-                    continue
-                candidates.append({**record, **candidate})
+        sql_rows = self.list_sql_supplement_candidates(
+            'video', max(limit * 20, limit), include_queued=include_queued
+        )
+        for record in sql_rows:
+            candidate = build_supplement_candidate(record, filter_settings=filter_settings)
+            if not candidate:
+                continue
+            candidates.append({**record, **candidate})
         candidates.sort(
             key=lambda row: (
                 99 if row.get('supplement_priority') is None else int(row.get('supplement_priority')),

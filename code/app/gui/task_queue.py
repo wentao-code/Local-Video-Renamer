@@ -188,6 +188,25 @@ class GuiTaskQueue(QObject):
         self._schedule_start_next()
         return True
 
+    def retry_later(self, task_id, error_message, delay_ms=20000):
+        """Return a transiently blocked task to the queue without counting a failure."""
+        record = self._find_record(task_id)
+        if record is None or record.status in {TASK_STATUS_DELETED, TASK_STATUS_CANCELLING}:
+            return False
+        record.status = TASK_STATUS_WAITING
+        record.last_error = str(error_message or '').strip()
+        record.pause_reason = record.last_error
+        record.attempts = max(0, int(record.attempts or 0) - 1)
+        record.exhausted = False
+        record.completed_at = ''
+        if self._running_task_id == task_id:
+            self._running_task_id = None
+        if not any(item.task_id == task_id for item in self._waiting_records):
+            self._waiting_records.append(record)
+        self.changed.emit()
+        QTimer.singleShot(max(0, int(delay_ms or 0)), self._schedule_start_next)
+        return True
+
     def mark_deleted(self, task_id, reason='用户删除任务'):
         record = self._find_record(task_id)
         if record is None:

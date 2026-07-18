@@ -225,24 +225,46 @@ class ActorJavtxtEnrichmentService:
         limit = max(0, int(limit or 0))
         if limit <= 0:
             return []
-        sync_actor_refresh_update_statuses(self.database)
-        records = self.database.list_actor_enrichment_records()
+        sql_candidate_getter = getattr(self.database, 'list_sql_javtxt_candidate_items', None)
+        if callable(sql_candidate_getter):
+            sql_rows = list(sql_candidate_getter('actor', max(limit * 20, limit)) or [])
+            records = {}
+            movies = []
+            cached_rows = {}
+            for row in sql_rows:
+                current = dict(row or {})
+                code = self.author_resolver._normalize_code(current.get('code', ''))
+                cached_rows[code] = {
+                    'code': code,
+                    'javtxt_actors': current.pop('cached_javtxt_actors', ''),
+                    'javtxt_actors_raw': current.pop('cached_javtxt_actors_raw', ''),
+                    'javtxt_movie_id': current.pop('cached_javtxt_movie_id', ''),
+                    'javtxt_url': current.pop('cached_javtxt_url', ''),
+                    'javtxt_tags': current.pop('cached_javtxt_tags', ''),
+                    'javtxt_enrichment_status': current.pop('cached_javtxt_enrichment_status', UNENRICHED_STATUS),
+                    'javtxt_release_date': current.pop('cached_javtxt_release_date', ''),
+                    'release_date': current.pop('cached_release_date', ''),
+                }
+                movies.append(current)
+        else:
+            sync_actor_refresh_update_statuses(self.database)
+            records = self.database.list_actor_enrichment_records()
+            movies = [
+                dict(row or {})
+                for row in self.database.list_all_actor_movies()
+                if str((row or {}).get('actor_name', '') or '').strip()
+            ]
+            cached_rows = self.database.get_javtxt_actor_cache_by_codes(
+                [row.get('code', '') for row in movies]
+            )
         planned_names = set(self.planned_actor_names)
-        movies = [
-            dict(row or {})
-            for row in self.database.list_all_actor_movies()
-            if str((row or {}).get('actor_name', '') or '').strip()
-        ]
-        cached_rows = self.database.get_javtxt_actor_cache_by_codes(
-            [row.get('code', '') for row in movies]
-        )
         candidates = []
         seen = set()
         for movie in movies:
             actor_name = str(movie.get('actor_name', '') or '').strip()
             if planned_names and actor_name not in planned_names:
                 continue
-            if not self._is_ready_for_javtxt(records.get(actor_name, {})):
+            if not callable(sql_candidate_getter) and not self._is_ready_for_javtxt(records.get(actor_name, {})):
                 continue
             should_attempt, _reason = self.author_resolver._should_attempt_lookup(movie, cached_rows)
             code = self.author_resolver._normalize_code(movie.get('code', ''))

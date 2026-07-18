@@ -1636,6 +1636,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             def handle_finished(result):
                 if record.status == TASK_STATUS_CANCELLING:
                     return
+                plan_progress = dict((result or {}).get('plan_progress', {}) or {}) if isinstance(result, dict) else {}
+                conflict_message = str(
+                    (result or {}).get('message', '') if isinstance(result, dict) else ''
+                ).strip() or str(plan_progress.get('paused_reason', '') or '').strip()
+                if (
+                    task_category == TASK_CATEGORY_ENRICHMENT
+                    and '当前已有补全任务正在执行' in conflict_message
+                ):
+                    attempt_state['failed'] = True
+                    attempt_state['message'] = conflict_message
+                    return
                 if isinstance(result, dict) and result.get('plan_id'):
                     get_gui_task_queue().update_record_plan(
                         record.task_id,
@@ -1660,6 +1671,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                         return
                     if attempt_state['failed']:
                         message = attempt_state['message']
+                        if (
+                            task_category == TASK_CATEGORY_ENRICHMENT
+                            and '当前已有补全任务正在执行' in message
+                        ):
+                            get_gui_task_queue().retry_later(record.task_id, message)
+                            return
                         retryable = not VidNormApp._is_non_retryable_enrichment_error(
                             message,
                             task_category=task_category,

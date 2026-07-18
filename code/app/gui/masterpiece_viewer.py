@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.backend.client import BackendClient
-from app.core.enrichment_status import ENRICHED_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, normalize_enrichment_status
 from app.core.ladder_board import split_ladder_medals
 from app.core.medal_types import sort_medal_names
 from app.gui.actor_detail_viewer import ActorDetailViewerWindow
@@ -230,8 +230,8 @@ class MasterpieceWindow(QDialog, AsyncTaskHostMixin):
     @staticmethod
     def _is_fully_enriched(row):
         row = dict(row or {})
-        avfan_status = str(row.get('avfan_enrichment_status', '') or '').strip()
-        javtxt_status = str(row.get('javtxt_enrichment_status', '') or '').strip()
+        avfan_status = normalize_enrichment_status(row.get('avfan_enrichment_status', ''))
+        javtxt_status = normalize_enrichment_status(row.get('javtxt_enrichment_status', ''))
         return avfan_status == ENRICHED_STATUS and javtxt_status == ENRICHED_STATUS
 
     def _build_medal_widget(self, medals):

@@ -33,7 +33,8 @@ class DatabaseConnectionSettingsTest(unittest.TestCase):
         self.assertIn('close', calls)
 
     def test_database_handler_source_has_no_direct_sqlite_connections(self):
-        source_text = Path('app/data/database_handler.py').read_text(encoding='utf-8')
+        source_path = Path(__file__).resolve().parents[1] / 'app' / 'data' / 'database_handler.py'
+        source_text = source_path.read_text(encoding='utf-8')
 
         self.assertNotIn('with sqlite3.connect(self.db_path) as conn', source_text)
 

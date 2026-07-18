@@ -3,6 +3,7 @@ from urllib.parse import urlparse
 
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.runtime_config import get_avfan_base_url, get_javtxt_base_url
+from app.core.timeout_policy import validate_timeout_seconds
 
 
 DEFAULT_NETWORK_GUARD_TIMEOUT_SECONDS = 0.8
@@ -24,13 +25,18 @@ class NetworkGuardService:
         if self._timeout_seconds_override is not None:
             return self._timeout_seconds_override
         try:
-            return get_operation_timeout_seconds('network_probe')
+            return validate_timeout_seconds(
+                get_operation_timeout_seconds('network_probe'),
+                name='socket timeout',
+            )
         except Exception:
             return DEFAULT_NETWORK_GUARD_TIMEOUT_SECONDS
 
     @timeout_seconds.setter
     def timeout_seconds(self, value):
-        self._timeout_seconds_override = None if value is None else float(value)
+        self._timeout_seconds_override = (
+            None if value is None else validate_timeout_seconds(value, name='socket timeout')
+        )
 
     def probe(self):
         failed_targets = []
@@ -54,7 +60,8 @@ class NetworkGuardService:
         if not host or port <= 0:
             return False
         try:
-            connection = socket.create_connection((host, port), timeout=self.timeout_seconds)
+            timeout_seconds = validate_timeout_seconds(self.timeout_seconds, name='socket timeout')
+            connection = socket.create_connection((host, port), timeout=timeout_seconds)
         except OSError:
             return False
         try:

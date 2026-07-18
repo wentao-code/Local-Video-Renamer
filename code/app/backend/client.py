@@ -5,6 +5,7 @@ import requests
 
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.runtime_config import get_backend_base_url, get_backend_timeout_seconds
+from app.core.timeout_policy import normalize_http_timeout_seconds, validate_timeout_seconds
 
 
 _DEFAULT_TIMEOUT = object()
@@ -15,20 +16,23 @@ class BackendClient:
     def __init__(self, base_url=None, timeout=None):
         resolved_base_url = str(base_url or get_backend_base_url()).strip()
         self.base_url = resolved_base_url.rstrip('/')
-        self._timeout_override = None if timeout is None else float(timeout)
+        self._timeout_override = None if timeout is None else normalize_http_timeout_seconds(timeout)
 
     @property
     def timeout(self):
         if self._timeout_override is not None:
             return self._timeout_override
         try:
-            return get_operation_timeout_seconds('backend_request')
+            return validate_timeout_seconds(
+                get_operation_timeout_seconds('backend_request'),
+                name='HTTP timeout',
+            )
         except Exception:
             return get_backend_timeout_seconds()
 
     @timeout.setter
     def timeout(self, value):
-        self._timeout_override = None if value is None else float(value)
+        self._timeout_override = None if value is None else normalize_http_timeout_seconds(value)
 
     def health(self):
         return self._get('/health')
@@ -707,11 +711,13 @@ class BackendClient:
 
     def _get(self, path, timeout=_DEFAULT_TIMEOUT):
         request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout
+        request_timeout = normalize_http_timeout_seconds(request_timeout)
         response = requests.get(self.base_url + path, timeout=request_timeout)
         return self._parse_response(response)
 
     def _post(self, path, payload=None, timeout=_DEFAULT_TIMEOUT):
         request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout
+        request_timeout = normalize_http_timeout_seconds(request_timeout)
         response = requests.post(self.base_url + path, json=payload or {}, timeout=request_timeout)
         return self._parse_response(response)
 

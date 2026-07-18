@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from app.core.project_paths import DATABASE_FILE
+from app.core.timeout_policy import validate_timeout_seconds
 
 
 OPERATION_TIMEOUT_SPECS = (
@@ -48,7 +49,7 @@ def list_operation_timeout_settings(db_path=None):
     for spec in OPERATION_TIMEOUT_SPECS:
         key = spec['key']
         custom_value = overrides.get(key)
-        effective_value = spec['default'] if custom_value is None else custom_value
+        effective_value = get_operation_timeout_seconds(key, db_path)
         rows.append(
             {
                 'setting_key': key,
@@ -64,17 +65,44 @@ def list_operation_timeout_settings(db_path=None):
     return rows
 
 
+def get_effective_timeout_snapshot(db_path=None):
+    """Return the validated runtime timeout values used by task diagnostics."""
+    snapshot = {}
+    for spec in OPERATION_TIMEOUT_SPECS:
+        key = spec['key']
+        seconds = get_operation_timeout_seconds(key, db_path)
+        snapshot[f'{key}_seconds'] = seconds
+        if key not in {'network_probe'}:
+            snapshot[f'{key}_milliseconds'] = int(round(seconds * 1000))
+    return snapshot
+
+
 def get_operation_timeout_seconds(setting_key, db_path=None):
     normalized_key = str(setting_key or '').strip()
     spec = OPERATION_TIMEOUT_SPEC_MAP.get(normalized_key)
     if spec is None:
         raise ValueError(f'Unknown operation timeout setting: {normalized_key}')
     override = _load_overrides(db_path, keys=[normalized_key]).get(normalized_key)
-    return spec['default'] if override is None else override
+    if override is None:
+        return float(spec['default'])
+    try:
+        return validate_timeout_seconds(
+            override,
+            name=normalized_key,
+            minimum=spec['minimum'],
+            maximum=spec['maximum'],
+        )
+    except ValueError:
+        return float(spec['default'])
 
 
 def get_operation_timeout_milliseconds(setting_key, db_path=None):
-    return max(1, int(round(get_operation_timeout_seconds(setting_key, db_path) * 1000)))
+    from app.core.timeout_policy import validate_timeout_milliseconds
+
+    return validate_timeout_milliseconds(
+        get_operation_timeout_seconds(setting_key, db_path) * 1000,
+        name=f'{setting_key} timeout',
+    )
 
 
 def set_operation_timeout_overrides(values, db_path=None):

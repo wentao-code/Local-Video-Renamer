@@ -199,3 +199,70 @@ def test_network_guard_reads_runtime_timeout_for_each_probe(monkeypatch):
 
     assert service.probe()['is_online'] is True
     assert observed_timeouts == [1.25]
+
+
+def test_timeout_validation_rejects_non_finite_and_c_timeval_overflow():
+    from app.core.timeout_policy import (
+        MAX_SOCKET_TIMEOUT_SECONDS,
+        validate_timeout_milliseconds,
+        validate_timeout_seconds,
+    )
+
+    assert validate_timeout_seconds(30, name='http') == 30.0
+    assert validate_timeout_milliseconds(120000, name='browser') == 120000
+    with pytest.raises(ValueError, match='http'):
+        validate_timeout_seconds(float('inf'), name='http')
+    with pytest.raises(ValueError, match='socket'):
+        validate_timeout_seconds(MAX_SOCKET_TIMEOUT_SECONDS + 1, name='socket')
+
+
+def test_backend_client_sends_validated_http_timeout(monkeypatch):
+    import app.backend.client as client_module
+    from app.backend.client import BackendClient
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {'ok': True}
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    calls = []
+    monkeypatch.setattr(client_module.requests, 'get', lambda url, timeout=None: calls.append(timeout) or Response())
+    assert BackendClient(base_url='http://127.0.0.1:8766', timeout=60)._get('/health') == {'ok': True}
+    assert calls == [60.0]
+
+
+def test_backend_client_normalizes_legacy_millisecond_timeout():
+    from app.backend.client import BackendClient
+
+    client = BackendClient(base_url='http://127.0.0.1:8766', timeout=3_000_000)
+
+    assert client.timeout == 3000.0
+
+
+def test_task_trace_logger_records_exception_traceback_and_timeout_snapshot(tmp_path):
+    from app.services.enrichment.task_trace_logger import TaskTraceLogger
+
+    logger = TaskTraceLogger('test', 'timeout', 'timeout test', log_dir=tmp_path)
+    try:
+        raise OverflowError("timeout doesn't fit into C timeval")
+    except Exception as exc:
+        logger.log_exception(
+            'ERROR',
+            '请求异常',
+            exc,
+            phase='http',
+            timeout_seconds=60.0,
+            timeout_milliseconds=120000,
+        )
+
+    contents = logger.log_path.read_text(encoding='utf-8')
+    assert 'OverflowError' in contents
+    assert "timeout doesn't fit into C timeval" in contents
+    assert 'phase=http' in contents
+    assert 'timeout_seconds=60.0' in contents

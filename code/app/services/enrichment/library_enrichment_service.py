@@ -6,6 +6,7 @@ from app.core.enrichment_sources import (
     JAVTXT_VIDEO_SOURCE,
     SUPPLEMENT_TASK_SOURCE,
 )
+from app.core.operation_timeout_settings import get_effective_timeout_snapshot
 from app.core.enrichment_targets import (
     ACTOR_BIRTHDAY_TARGET,
     ACTOR_LIBRARY_TARGET,
@@ -99,6 +100,11 @@ class LibraryEnrichmentService:
                 limit=max(0, int(limit or 0)),
                 show_browser=bool(self.show_browser),
                 cooldown_before_search=bool(self.cooldown_before_search),
+            )
+            self.logger.log(
+                'INFO',
+                '最终超时配置',
+                timeout_snapshot=get_effective_timeout_snapshot(self.database.db_path),
             )
 
         if target_type == VIDEO_LIBRARY_TARGET:

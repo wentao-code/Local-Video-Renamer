@@ -146,6 +146,24 @@ class GuiTaskQueueTest(unittest.TestCase):
         self.assertTrue(records[0].exhausted)
         self.assertEqual(records[0].last_error, 'boom again')
 
+    def test_transient_enrichment_conflict_waits_without_being_completed(self):
+        started = []
+        record = self.queue.enqueue(
+            '补全',
+            'test',
+            lambda current: started.append(current.attempts),
+            task_category=TASK_CATEGORY_ENRICHMENT,
+        )
+        _process_events()
+
+        self.queue.retry_later(record.task_id, '当前已有补全任务正在执行', delay_ms=1000)
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.status, TASK_STATUS_WAITING)
+        self.assertEqual(current.attempts, 0)
+        self.assertEqual(current.last_error, '当前已有补全任务正在执行')
+        self.assertEqual(started, [1])
+
     def test_non_retryable_failure_is_not_queued_again(self):
         started = []
         record = self.queue.enqueue(

@@ -12,6 +12,7 @@ from uuid import uuid4
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
 from app.core.app_logging import append_jsonl_log, bind_log_context, get_logger, reset_log_context
 from app.core.operation_timeout_settings import (
+    get_effective_timeout_snapshot,
     list_operation_timeout_settings,
     reset_operation_timeout_overrides,
     set_operation_timeout_overrides,
@@ -210,6 +211,7 @@ class BackendService:
             self.load_database()
 
     def health(self):
+        self._reconcile_stale_enrichment_state()
         return {
             'ok': True,
             'backend_revision': BACKEND_API_REVISION,
@@ -3825,6 +3827,9 @@ class BackendService:
                 )
             if source_key == JAVTXT_VIDEO_SOURCE:
                 return CodePrefixJavtxtEnrichmentService(self.db).list_plan_candidate_items(limit)
+            sql_candidate_getter = getattr(self.db, 'list_sql_code_prefix_candidates', None)
+            if source_key == AVFAN_VIDEO_SOURCE and callable(sql_candidate_getter):
+                return list(sql_candidate_getter(source_key, limit) or [])
             else:
                 prefixes = CodePrefixEnrichmentService(self.db).list_plan_candidate_prefixes(limit)
             return [{'prefix': prefix} for prefix in prefixes]
@@ -3843,10 +3848,16 @@ class BackendService:
                 )
             if source_key == JAVTXT_VIDEO_SOURCE:
                 return ActorJavtxtEnrichmentService(self.db).list_plan_candidate_items(limit)
+            sql_candidate_getter = getattr(self.db, 'list_sql_enrichment_candidates', None)
+            if source_key == AVFAN_VIDEO_SOURCE and callable(sql_candidate_getter):
+                return sql_candidate_getter(task_kind, source_key, limit)
             else:
                 actor_names = ActorEnrichmentService(self.db).list_plan_candidate_names(limit)
             return [{'actor_name': actor_name} for actor_name in actor_names]
         if task_kind == 'actor_birthday':
+            sql_candidate_getter = getattr(self.db, 'list_sql_enrichment_candidates', None)
+            if callable(sql_candidate_getter):
+                return list(sql_candidate_getter(task_kind, source_key, limit) or [])
             if source_key == BAOMU_ACTOR_SOURCE:
                 actor_names = ActorBaomuEnrichmentService(self.db).list_actor_library_plan_candidate_names(limit)
             else:
@@ -3855,6 +3866,22 @@ class BackendService:
         return []
 
     def _exclude_enrichment_queue_candidates(self, task_kind, source_key, candidates):
+        sql_candidate_methods = {
+            ('actor', AVFAN_VIDEO_SOURCE): 'list_sql_enrichment_candidates',
+            ('actor', JAVTXT_VIDEO_SOURCE): 'list_sql_javtxt_candidate_items',
+            ('actor', SUPPLEMENT_TASK_SOURCE): 'list_sql_supplement_candidates',
+            ('actor_birthday', BINGHUO_ACTOR_SOURCE): 'list_sql_enrichment_candidates',
+            ('actor_birthday', BAOMU_ACTOR_SOURCE): 'list_sql_enrichment_candidates',
+            ('code_prefix', AVFAN_VIDEO_SOURCE): 'list_sql_code_prefix_candidates',
+            ('code_prefix', JAVTXT_VIDEO_SOURCE): 'list_sql_javtxt_candidate_items',
+            ('code_prefix', SUPPLEMENT_TASK_SOURCE): 'list_sql_supplement_candidates',
+            ('video', JAVTXT_VIDEO_SOURCE): 'list_sql_javtxt_video_candidates',
+            ('video', SUPPLEMENT_TASK_SOURCE): 'list_sql_supplement_candidates',
+            ('video', AVFAN_VIDEO_SOURCE): 'list_sql_supplement_candidates',
+        }
+        method_name = sql_candidate_methods.get((task_kind, source_key))
+        if method_name and callable(getattr(self.db, method_name, None)):
+            return list(candidates or [])
         getter = getattr(self.db, 'get_enrichment_queue_keys', None)
         if not callable(getter):
             return list(candidates or [])
@@ -3913,7 +3940,19 @@ class BackendService:
         )
         if cached is not None:
             return cached
-        candidates = list(builder() or [])
+        sql_candidate_getter = getattr(self.db, 'list_sql_supplement_candidates', None)
+        if callable(sql_candidate_getter):
+            sql_rows = list(sql_candidate_getter(target_kind, max(limit * 20, limit)) or [])
+            candidates = [
+                {
+                    **dict(movie or {}),
+                    **build_supplement_candidate(movie, filter_settings=filter_settings),
+                }
+                for movie in sql_rows
+                if build_supplement_candidate(movie, filter_settings=filter_settings)
+            ]
+        else:
+            candidates = list(builder() or [])
         self.db.replace_enrichment_candidate_index(
             target_kind,
             source_key,
@@ -3948,6 +3987,9 @@ class BackendService:
             str((item or {}).get('code', '') or '').strip()
             for item in running_items
         )
+        if running_items and processed_count <= 0 and not current_result.get('stopped'):
+            current_result['stopped'] = True
+            current_result['message'] = '本轮未实际处理任何候选，已释放任务并暂停计划，等待再次执行。'
         mark_by_identity = (
             not has_concrete_code_items
             and self._should_mark_plan_items_by_result_identity(normalized_task_kind, result_rows)
@@ -3968,20 +4010,6 @@ class BackendService:
                 processed_count,
                 result_rows,
             )
-        if not current_result.get('stopped'):
-            for item in self.db.list_enrichment_batch_items(
-                normalized_plan_id,
-                normalized_task_kind,
-                status='running',
-                limit=None,
-            ):
-                self.db.mark_enrichment_batch_item(
-                    normalized_plan_id,
-                    normalized_task_kind,
-                    item.get('sequence_index'),
-                    'completed',
-                    error='已无须继续补全',
-                )
         if hasattr(self.db, 'release_enrichment_batch_items'):
             self.db.release_enrichment_batch_items(
                 normalized_plan_id,
@@ -4256,7 +4284,15 @@ class BackendService:
         except Exception as exc:
             self._pause_enrichment_plan_after_error(plan_id, plan_task_kind, exc)
             self.enrichment_progress.finish(message='补全任务异常结束。', stopped=True)
-            logger.log('ERROR', '单任务补全异常结束', target_type=target_type or '', source_key=source_key or '')
+            logger.log_exception(
+                'ERROR',
+                '单任务补全异常结束',
+                exc,
+                phase='enrichment_request',
+                target_type=target_type or '',
+                source_key=source_key or '',
+                timeout_snapshot=get_effective_timeout_snapshot(self.db.db_path),
+            )
             raise
         finally:
             self._mark_enrichment_data_changed(target_type=target_type, source_key=source_key)
@@ -4296,8 +4332,16 @@ class BackendService:
             result['run_id'] = logger.run_id
             result['correlation_id'] = logger.correlation_id
             return result
-        except Exception:
+        except Exception as exc:
             self.combo_progress.finish(message='组合任务异常结束。', stopped=True)
+            logger.log_exception(
+                'ERROR',
+                '组合补全异常结束',
+                exc,
+                phase='combo_enrichment_request',
+                combo_key=normalized_combo_key,
+                timeout_snapshot=get_effective_timeout_snapshot(self.db.db_path),
+            )
             raise
         finally:
             self._mark_enrichment_data_changed(combo=True)
@@ -4320,6 +4364,7 @@ class BackendService:
         return self.library_status_sync_service.sync()
 
     def _begin_enrichment_task(self, task_kind):
+        self._reconcile_stale_enrichment_state()
         self.enrichment_task_state.begin(
             task_kind,
             reset_progress=lambda: (
@@ -4330,6 +4375,19 @@ class BackendService:
 
     def _end_enrichment_task(self):
         self.enrichment_task_state.end()
+
+    def _reconcile_stale_enrichment_state(self):
+        if not self.enrichment_task_state.is_running:
+            return False
+        has_running_items = self.db.has_running_enrichment_items()
+        reconciled = self.enrichment_task_state.reconcile(has_running_items)
+        if reconciled:
+            self.enrichment_progress.finish(
+                message='检测到数据库没有运行中的补全任务，已释放后台残留任务锁。',
+                stopped=True,
+            )
+            LOGGER.warning('已释放与数据库状态不一致的内存补全任务锁')
+        return reconciled
 
     def _mark_enrichment_data_changed(self, target_type='', source_key='', combo=False):
         if combo:
