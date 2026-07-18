@@ -188,5 +188,37 @@ class ActorBaomuEnrichmentServiceTest(unittest.TestCase):
         self.assertNotIn(actor_name, [row["actor_name"] for row in service._candidate_actors()])
 
 
+    def test_planned_items_bypass_canglangge_candidate_scan(self):
+        actor_name = "计划演员"
+        self._insert_actor(actor_name, birthday="", age="")
+        self.db.save_binghuo_actor_profile(
+            actor_name,
+            ENRICHED_STATUS,
+            birthday="1984-05-20",
+            age="42",
+            height="",
+            bust="",
+            waist="",
+            hip="",
+        )
+
+        class ExplodingCandidateService:
+            def list_candidates(self):
+                raise AssertionError("planned enrichment must not scan Canglangge candidates")
+
+        scraper = FakeBaomuScraper(profiles={actor_name: {"height": "171"}})
+        service = ActorBaomuEnrichmentService(
+            self.db,
+            scraper=scraper,
+            candidate_service=ExplodingCandidateService(),
+            planned_items=[{"actor_name": actor_name}],
+        )
+
+        result = service.enrich_next_actors(1)
+
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(scraper.open_calls, [actor_name])
+
+
 if __name__ == "__main__":
     unittest.main()

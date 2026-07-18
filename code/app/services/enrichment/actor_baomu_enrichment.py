@@ -25,6 +25,7 @@ class ActorBaomuEnrichmentService:
         progress_tracker=None,
         logger=None,
         planned_actor_names=None,
+        planned_items=None,
     ):
         self.database = database
         self.scraper = scraper or BaomuActorScraper(headless=not show_browser)
@@ -33,6 +34,11 @@ class ActorBaomuEnrichmentService:
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
+        self.planned_items = [dict(item or {}) for item in (planned_items or [])]
+        if self.planned_items:
+            self.planned_actor_names = self._normalize_planned_actor_names(
+                item.get('actor_name', '') for item in self.planned_items
+            )
 
     @staticmethod
     def _normalize_planned_actor_names(planned_actor_names):
@@ -57,13 +63,27 @@ class ActorBaomuEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        candidates = self._candidate_actors()
+        candidates = (
+            [
+                {'actor_name': actor_name, 'priority': 0}
+                for actor_name in self.planned_actor_names
+            ]
+            if self.planned_items
+            else self._candidate_actors()
+        )
         target_candidates = candidates[:limit]
         results = []
         success_count = 0
         failed_count = 0
         stopped = False
         source_label = get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)
+
+        self._log(
+            'INFO',
+            '保木补全候选读取完成',
+            planned_item_count=len(self.planned_items),
+            candidate_count=len(target_candidates),
+        )
 
         if self.progress_tracker is not None:
             start_progress_tracker(
@@ -77,7 +97,9 @@ class ActorBaomuEnrichmentService:
                 log_path=str(getattr(self.logger, 'log_path', '') or ''),
                 task_kind='single',
             )
+            self._log('INFO', '保木补全进度初始化完成', total_count=len(target_candidates))
 
+        self._log('INFO', '保木补全浏览器会话启动')
         with self.scraper.session() as page:
             for candidate in target_candidates:
                 actor_name = candidate['actor_name']
@@ -120,6 +142,11 @@ class ActorBaomuEnrichmentService:
         }
 
     def _candidate_actors(self):
+        if self.planned_items:
+            return [
+                {'actor_name': actor_name, 'priority': 0}
+                for actor_name in self.planned_actor_names
+            ]
         actor_rows = self.database.list_actors() if hasattr(self.database, 'list_actors') else []
         enrichment_records = self.database.list_actor_enrichment_records()
         candidates = []
@@ -238,3 +265,7 @@ class ActorBaomuEnrichmentService:
     def _finish_progress(self, message, stopped=False):
         if self.progress_tracker is not None:
             self.progress_tracker.finish(message=message, stopped=stopped)
+
+    def _log(self, level, message, **fields):
+        if self.logger is not None and hasattr(self.logger, 'log'):
+            self.logger.log(level, message, service='actor_baomu_enrichment', **fields)

@@ -1,12 +1,73 @@
 import json
+import threading
+import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.scraper.baomu_actor_scraper import BaomuActorScraper
 from app.scraper.browser_window import minimize_browser_window_if_needed
 
 
 class BaomuActorScraperParseProfileTest(unittest.TestCase):
+    def test_open_session_times_out_when_playwright_runtime_start_hangs(self):
+        manager = MagicMock()
+        playwright = MagicMock()
+
+        def delayed_start():
+            time.sleep(0.2)
+            return playwright
+
+        manager.start.side_effect = delayed_start
+        sync_playwright = MagicMock(return_value=manager)
+
+        with (
+            patch('app.scraper.baomu_actor_scraper.import_sync_playwright', return_value=sync_playwright),
+            patch('app.scraper.baomu_actor_scraper.get_operation_timeout_milliseconds', return_value=20),
+        ):
+            scraper = BaomuActorScraper(headless=True)
+            started_at = time.perf_counter()
+            with self.assertRaisesRegex(TimeoutError, '浏览器启动超时'):
+                scraper.open_session()
+
+        self.assertLess(time.perf_counter() - started_at, 0.15)
+
+    def test_open_session_uses_configured_browser_launch_timeout(self):
+        manager = MagicMock()
+        playwright = manager.start.return_value
+        browser = playwright.chromium.launch.return_value
+        context = browser.new_context.return_value
+        context.new_page.return_value = MagicMock()
+        sync_playwright = MagicMock(return_value=manager)
+
+        with (
+            patch('app.scraper.baomu_actor_scraper.import_sync_playwright', return_value=sync_playwright),
+            patch('app.scraper.baomu_actor_scraper.get_scraper_browser_channel', return_value='chrome'),
+            patch('app.scraper.baomu_actor_scraper.get_operation_timeout_milliseconds', return_value=12000),
+        ):
+            scraper = BaomuActorScraper(headless=True)
+            scraper.open_session()
+
+        playwright.chromium.launch.assert_called_once_with(
+            headless=True,
+            channel='chrome',
+            timeout=12000,
+        )
+
+    def test_open_session_creates_playwright_session_on_calling_thread(self):
+        scraper = BaomuActorScraper(headless=True)
+        calling_thread_id = threading.get_ident()
+        session_thread_ids = []
+
+        with patch.object(scraper, '_probe_playwright_start'):
+            with patch.object(
+                scraper,
+                '_open_session_impl',
+                side_effect=lambda: session_thread_ids.append(threading.get_ident()) or object(),
+            ):
+                scraper.open_session()
+
+        self.assertEqual(session_thread_ids, [calling_thread_id])
+
     def test_minimize_browser_window_minimizes_visible_browser_sessions(self):
         page = MagicMock()
         cdp_session = page.context.new_cdp_session.return_value

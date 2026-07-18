@@ -32,6 +32,8 @@ from app.core.enrichment_sources import (
     SUPPLEMENT_TASK_SOURCE,
     build_library_enrichment_status_text,
 )
+from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
+from app.core.actor_profile_completion_status import build_actor_final_completion_status, build_actor_source_completion_status
 from app.core.library_refresh_expiry import effective_library_refresh_status
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
@@ -1802,6 +1804,89 @@ class BackendService:
         self._write_page_snapshot(key, payload)
         return payload
 
+    def add_canglangge_candidates_to_tasks(self, actor_names=None):
+        self.ensure_database_loaded()
+        normalized_names = [
+            str(value or '').strip() for value in (actor_names or []) if str(value or '').strip()
+        ]
+        candidates = list(self.db.list_canglangge_actor_candidates(normalized_names) or [])
+        active_names = set(self.db.list_canglangge_actor_task_names(
+            [row.get('actor_name', '') for row in candidates]
+        ) or set())
+        binghuo_candidates = []
+        baomu_candidates = []
+        for row in candidates:
+            actor_name = str(row.get('actor_name', '') or '').strip()
+            if not actor_name or actor_name in active_names:
+                continue
+            binghuo_status = str(row.get('binghuo_enrichment_status', '') or '').strip()
+            if binghuo_status == UNENRICHED_STATUS:
+                binghuo_candidates.append(row)
+            elif str(row.get('binghuo_completion_status', '') or '').strip() != '状态0':
+                baomu_candidates.append(row)
+
+        plans = []
+        plan_progresses = []
+        for source_key, source_candidates in (
+            (BINGHUO_ACTOR_SOURCE, binghuo_candidates),
+            (BAOMU_ACTOR_SOURCE, baomu_candidates),
+        ):
+            if not source_candidates:
+                continue
+            plan = self.db.create_enrichment_batch_plan(
+                'actor_birthday',
+                ACTOR_BIRTHDAY_TARGET,
+                source_key,
+                batch_limit=len(source_candidates),
+                batch_count_limit=1,
+                candidates=source_candidates,
+            )
+            plans.append(plan)
+            plan_progresses.append(
+                self.db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor_birthday')
+            )
+        result = {
+            'queued_count': len(binghuo_candidates) + len(baomu_candidates),
+            'plans': plans,
+            'plan_progresses': plan_progresses,
+        }
+        if len(plans) == 1:
+            result['plan'] = plans[0]
+            result['plan_progress'] = plan_progresses[0]
+        return result
+
+    def _queue_baomu_candidates_after_binghuo(self, actor_names):
+        rows = list(self.db.list_canglangge_actor_candidates(actor_names) or [])
+        candidates = []
+        for row in rows:
+            status = build_actor_source_completion_status(row, BINGHUO_ACTOR_SOURCE)
+            if status == '状态0':
+                continue
+            if str(row.get('binghuo_enrichment_status', '') or '').strip() == UNENRICHED_STATUS:
+                continue
+            candidates.append(row)
+        if not candidates:
+            return {}
+        return self.db.create_enrichment_batch_plan(
+            'actor_birthday',
+            ACTOR_BIRTHDAY_TARGET,
+            BAOMU_ACTOR_SOURCE,
+            batch_limit=len(candidates),
+            batch_count_limit=1,
+            candidates=candidates,
+        )
+
+    def _remove_completed_canglangge_candidates(self, actor_names):
+        rows = list(self.db.list_canglangge_actor_candidates(actor_names) or [])
+        completed_names = [
+            row['actor_name']
+            for row in rows
+            if build_actor_final_completion_status(row) == '状态0'
+        ]
+        if completed_names:
+            self.db.delete_canglangge_actor_candidates(completed_names)
+        return completed_names
+
     def update_queen_profile(self, queen_name, profile):
         saved_profile = self.queen_library_service.save_queen_profile(queen_name, profile)
         self._delete_page_snapshot_prefix('queen_library')
@@ -1978,9 +2063,22 @@ class BackendService:
                     self._canglangge_snapshot = snapshot
             if snapshot is None or force_refresh:
                 rows = self.canglangge_candidate_service.list_candidates()
-                snapshot = self._build_snapshot_payload(candidates=[dict(row or {}) for row in rows])
+                normalized_rows = [dict(row or {}) for row in rows]
+                candidate_db = getattr(self, 'db', None)
+                persist_candidates = getattr(candidate_db, 'replace_canglangge_actor_candidates', None)
+                if callable(persist_candidates):
+                    persist_candidates(normalized_rows)
+                    load_candidates = getattr(candidate_db, 'list_canglangge_actor_candidates', None)
+                    if callable(load_candidates):
+                        normalized_rows = list(load_candidates() or [])
+                snapshot = self._build_snapshot_payload(candidates=normalized_rows)
                 self._canglangge_snapshot = snapshot
                 self._write_page_snapshot('canglangge/index', snapshot)
+            elif callable(getattr(getattr(self, 'db', None), 'list_canglangge_actor_candidates', None)):
+                persisted_rows = list(self.db.list_canglangge_actor_candidates() or [])
+                if persisted_rows:
+                    snapshot = self._build_snapshot_payload(candidates=persisted_rows)
+                    self._canglangge_snapshot = snapshot
             return {
                 'candidates': [dict(row or {}) for row in (snapshot or {}).get('candidates', []) or []],
                 'refreshed_at': self._snapshot_refreshed_at(snapshot),
@@ -1999,6 +2097,9 @@ class BackendService:
             ]
             self._canglangge_snapshot = self._build_snapshot_payload(candidates=remaining_rows)
             self._write_page_snapshot('canglangge/index', self._canglangge_snapshot)
+            delete_candidates = getattr(getattr(self, 'db', None), 'delete_canglangge_actor_candidates', None)
+            if callable(delete_candidates):
+                delete_candidates(actor_names)
 
     def _load_actor_snapshots(self):
         snapshot_file = getattr(self, '_actor_snapshot_file', None)
@@ -3694,6 +3795,25 @@ class BackendService:
                 )
             current_result['plan_progress'] = progress
             current_result['has_more_pending'] = has_more_pending
+            if (
+                not current_result.get('stopped')
+                and normalized_task_kind == 'actor_birthday'
+                and running_items
+            ):
+                actor_names = [
+                    str(item.get('actor_name', '') or '').strip()
+                    for item in running_items
+                    if str(item.get('actor_name', '') or '').strip()
+                ]
+                if progress.get('source_key') == BINGHUO_ACTOR_SOURCE:
+                    completed_names = self._remove_completed_canglangge_candidates(actor_names)
+                    baomu_plan = self._queue_baomu_candidates_after_binghuo(actor_names)
+                    if baomu_plan:
+                        current_result['baomu_plan'] = baomu_plan
+                    if completed_names:
+                        current_result['completed_canglangge_candidates'] = completed_names
+                elif progress.get('source_key') == BAOMU_ACTOR_SOURCE:
+                    current_result['completed_canglangge_candidates'] = self._remove_completed_canglangge_candidates(actor_names)
         else:
             remaining_plan_items = self.db.list_enrichment_batch_items(
                 normalized_plan_id,

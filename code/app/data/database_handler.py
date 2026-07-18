@@ -229,6 +229,48 @@ class VideoDatabase(
                 )
             ''')
             cursor.execute('''
+                CREATE TABLE IF NOT EXISTS canglangge_actor_candidates (
+                    actor_name TEXT PRIMARY KEY,
+                    source_prefixes_json TEXT NOT NULL DEFAULT '[]',
+                    discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    refreshed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    binghuo_enrichment_status TEXT NOT NULL DEFAULT '未补全',
+                    binghuo_completion_status TEXT NOT NULL DEFAULT '状态1',
+                    binghuo_last_error TEXT NOT NULL DEFAULT '',
+                    binghuo_last_enriched_at TEXT,
+                    binghuo_person_id TEXT NOT NULL DEFAULT '',
+                    binghuo_birthday TEXT NOT NULL DEFAULT '',
+                    binghuo_age TEXT NOT NULL DEFAULT '',
+                    binghuo_height TEXT NOT NULL DEFAULT '',
+                    binghuo_bust TEXT NOT NULL DEFAULT '',
+                    binghuo_cup TEXT NOT NULL DEFAULT '',
+                    binghuo_measurements_raw TEXT NOT NULL DEFAULT '',
+                    binghuo_waist TEXT NOT NULL DEFAULT '',
+                    binghuo_hip TEXT NOT NULL DEFAULT '',
+                    baomu_enrichment_status TEXT NOT NULL DEFAULT '未补全',
+                    baomu_completion_status TEXT NOT NULL DEFAULT '状态1',
+                    baomu_last_error TEXT NOT NULL DEFAULT '',
+                    baomu_last_enriched_at TEXT,
+                    baomu_birthday TEXT NOT NULL DEFAULT '',
+                    baomu_height TEXT NOT NULL DEFAULT '',
+                    baomu_bust TEXT NOT NULL DEFAULT '',
+                    baomu_cup TEXT NOT NULL DEFAULT '',
+                    baomu_measurements_raw TEXT NOT NULL DEFAULT '',
+                    baomu_waist TEXT NOT NULL DEFAULT '',
+                    baomu_hip TEXT NOT NULL DEFAULT '',
+                    candidate_status TEXT NOT NULL DEFAULT 'pending',
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            self._ensure_column(cursor, 'canglangge_actor_candidates', 'binghuo_completion_status', "TEXT NOT NULL DEFAULT '状态1'")
+            self._ensure_column(cursor, 'canglangge_actor_candidates', 'baomu_completion_status', "TEXT NOT NULL DEFAULT '状态1'")
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_canglangge_actor_candidate_status '
+                'ON canglangge_actor_candidates (binghuo_enrichment_status, baomu_enrichment_status, candidate_status)'
+            )
+            cursor.execute('''
                 CREATE TABLE IF NOT EXISTS masterpiece_entries (
                     code TEXT PRIMARY KEY,
                     display_title TEXT DEFAULT '',
@@ -4018,6 +4060,258 @@ class VideoDatabase(
             for prefix, rows in results.items()
         }
 
+    def replace_canglangge_actor_candidates(self, candidates):
+        normalized_rows = []
+        seen = set()
+        for candidate in candidates or []:
+            row = dict(candidate or {})
+            actor_name = str(row.get('actor_name', '') or '').strip()
+            if not actor_name or actor_name in seen:
+                continue
+            seen.add(actor_name)
+            prefixes = row.get('prefixes', row.get('source_prefixes', [])) or []
+            if isinstance(prefixes, str):
+                prefixes = [value.strip() for value in prefixes.split(',') if value.strip()]
+            normalized_rows.append(
+                (
+                    actor_name,
+                    json.dumps(sorted({str(value or '').strip().upper() for value in prefixes if str(value or '').strip()}), ensure_ascii=False),
+                    str(row.get('binghuo_enrichment_status', UNENRICHED_STATUS) or UNENRICHED_STATUS).strip(),
+                    str(row.get('binghuo_birthday', row.get('birthday', '')) or '').strip(),
+                    str(row.get('binghuo_age', row.get('age', '')) or '').strip(),
+                    str(row.get('binghuo_height', '') or '').strip(),
+                    str(row.get('binghuo_bust', '') or '').strip(),
+                    str(row.get('binghuo_cup', '') or '').strip().upper(),
+                    str(row.get('binghuo_waist', '') or '').strip(),
+                    str(row.get('binghuo_hip', '') or '').strip(),
+                    str(row.get('baomu_enrichment_status', UNENRICHED_STATUS) or UNENRICHED_STATUS).strip(),
+                    str(row.get('baomu_birthday', '') or '').strip(),
+                    str(row.get('baomu_height', '') or '').strip(),
+                    str(row.get('baomu_bust', '') or '').strip(),
+                    str(row.get('baomu_cup', '') or '').strip().upper(),
+                    str(row.get('baomu_waist', '') or '').strip(),
+                    str(row.get('baomu_hip', '') or '').strip(),
+                )
+            )
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                '''
+                INSERT INTO canglangge_actor_candidates (
+                    actor_name, source_prefixes_json, refreshed_at, updated_at,
+                    binghuo_enrichment_status, binghuo_birthday, binghuo_age,
+                    binghuo_height, binghuo_bust, binghuo_cup, binghuo_waist, binghuo_hip,
+                    baomu_enrichment_status, baomu_birthday, baomu_height, baomu_bust,
+                    baomu_cup, baomu_waist, baomu_hip
+                )
+                VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(actor_name) DO UPDATE SET
+                    source_prefixes_json = excluded.source_prefixes_json,
+                    refreshed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                normalized_rows,
+            )
+            for actor_name, _source_prefixes, *_ in normalized_rows:
+                self._refresh_canglangge_completion_status(cursor, actor_name)
+            current_names = [row[0] for row in normalized_rows]
+            current_placeholders = ','.join('?' for _ in current_names)
+            stale_sql = f'''
+                DELETE FROM canglangge_actor_candidates AS candidate
+                WHERE candidate.actor_name NOT IN ({current_placeholders})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM pending_actor_binghuo
+                      WHERE actor_name = candidate.actor_name
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM pending_actor_baomu
+                      WHERE actor_name = candidate.actor_name
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM enrichment_running_items
+                      WHERE actor_name = candidate.actor_name
+                  )
+            '''
+            if current_names:
+                cursor.execute(stale_sql, current_names)
+            else:
+                cursor.execute(
+                    '''
+                    DELETE FROM canglangge_actor_candidates AS candidate
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM pending_actor_binghuo
+                        WHERE actor_name = candidate.actor_name
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM pending_actor_baomu
+                        WHERE actor_name = candidate.actor_name
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM enrichment_running_items
+                        WHERE actor_name = candidate.actor_name
+                    )
+                    '''
+                )
+            conn.commit()
+        return len(normalized_rows)
+
+    def list_canglangge_actor_candidates(self, actor_names=None):
+        normalized_names = [
+            str(value or '').strip() for value in (actor_names or []) if str(value or '').strip()
+        ]
+        where_sql = ''
+        parameters = []
+        if normalized_names:
+            placeholders = ','.join('?' for _ in normalized_names)
+            where_sql = f'WHERE actor_name IN ({placeholders})'
+            parameters.extend(normalized_names)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT actor_name, source_prefixes_json, discovered_at, refreshed_at,
+                       binghuo_enrichment_status, binghuo_last_error, binghuo_last_enriched_at,
+                       binghuo_person_id, binghuo_birthday, binghuo_age, binghuo_height,
+                       binghuo_bust, binghuo_cup, binghuo_measurements_raw, binghuo_waist, binghuo_hip,
+                       baomu_enrichment_status, baomu_last_error, baomu_last_enriched_at,
+                       baomu_birthday, baomu_height, baomu_bust, baomu_cup,
+                       baomu_measurements_raw, baomu_waist, baomu_hip,
+                       candidate_status, retry_count, last_error, updated_at,
+                       binghuo_completion_status, baomu_completion_status
+                FROM canglangge_actor_candidates
+                {where_sql}
+                ORDER BY actor_name ASC
+                ''',
+                parameters,
+            ).fetchall()
+        result = []
+        for row in rows:
+            prefixes = []
+            try:
+                prefixes = list(json.loads(row[1] or '[]') or [])
+            except (TypeError, ValueError):
+                prefixes = []
+            result.append({
+                'actor_name': row[0] or '',
+                'prefixes': prefixes,
+                'birthday': row[8] or row[19] or '',
+                'age': row[9] or '',
+                'discovered_at': row[2] or '',
+                'refreshed_at': row[3] or '',
+                'binghuo_enrichment_status': row[4] or UNENRICHED_STATUS,
+                'binghuo_completion_status': row[30] or '状态1',
+                'binghuo_last_error': row[5] or '',
+                'binghuo_last_enriched_at': row[6] or '',
+                'binghuo_person_id': row[7] or '',
+                'binghuo_birthday': row[8] or '',
+                'binghuo_age': row[9] or '',
+                'binghuo_height': row[10] or '',
+                'binghuo_bust': row[11] or '',
+                'binghuo_cup': row[12] or '',
+                'binghuo_measurements_raw': row[13] or '',
+                'binghuo_waist': row[14] or '',
+                'binghuo_hip': row[15] or '',
+                'baomu_enrichment_status': row[16] or UNENRICHED_STATUS,
+                'baomu_completion_status': row[31] or '状态1',
+                'baomu_last_error': row[17] or '',
+                'baomu_last_enriched_at': row[18] or '',
+                'baomu_birthday': row[19] or '',
+                'baomu_height': row[20] or '',
+                'baomu_bust': row[21] or '',
+                'baomu_cup': row[22] or '',
+                'baomu_measurements_raw': row[23] or '',
+                'baomu_waist': row[24] or '',
+                'baomu_hip': row[25] or '',
+                'candidate_status': row[26] or 'pending',
+                'retry_count': int(row[27] or 0),
+                'last_error': row[28] or '',
+                'updated_at': row[29] or '',
+            })
+        return result
+
+    def _refresh_canglangge_completion_status(self, cursor, actor_name):
+        row = cursor.execute(
+            '''
+            SELECT binghuo_enrichment_status, binghuo_person_id,
+                   binghuo_birthday, binghuo_age, binghuo_height, binghuo_bust,
+                   binghuo_cup, binghuo_waist, binghuo_hip,
+                   baomu_enrichment_status, baomu_birthday, baomu_height,
+                   baomu_bust, baomu_cup, baomu_waist, baomu_hip
+            FROM canglangge_actor_candidates
+            WHERE actor_name = ?
+            ''',
+            (str(actor_name or '').strip(),),
+        ).fetchone()
+        if row is None:
+            return
+        candidate = {
+            'binghuo_enrichment_status': row[0] or UNENRICHED_STATUS,
+            'binghuo_person_id': row[1] or '',
+            'binghuo_birthday': row[2] or '',
+            'binghuo_age': row[3] or '',
+            'binghuo_height': row[4] or '',
+            'binghuo_bust': row[5] or '',
+            'binghuo_cup': row[6] or '',
+            'binghuo_waist': row[7] or '',
+            'binghuo_hip': row[8] or '',
+            'baomu_enrichment_status': row[9] or UNENRICHED_STATUS,
+            'baomu_birthday': row[10] or '',
+            'baomu_height': row[11] or '',
+            'baomu_bust': row[12] or '',
+            'baomu_cup': row[13] or '',
+            'baomu_waist': row[14] or '',
+            'baomu_hip': row[15] or '',
+        }
+        cursor.execute(
+            '''
+            UPDATE canglangge_actor_candidates
+            SET binghuo_completion_status = ?,
+                baomu_completion_status = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE actor_name = ?
+            ''',
+            (
+                build_actor_source_completion_status(candidate, BINGHUO_ACTOR_SOURCE),
+                build_actor_source_completion_status(candidate, BAOMU_ACTOR_SOURCE),
+                str(actor_name or '').strip(),
+            ),
+        )
+
+    def delete_canglangge_actor_candidates(self, actor_names):
+        normalized_names = [
+            str(value or '').strip() for value in (actor_names or []) if str(value or '').strip()
+        ]
+        if not normalized_names:
+            return 0
+        placeholders = ','.join('?' for _ in normalized_names)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f'DELETE FROM canglangge_actor_candidates WHERE actor_name IN ({placeholders})',
+                normalized_names,
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def list_canglangge_actor_task_names(self, actor_names):
+        normalized_names = [
+            str(value or '').strip() for value in (actor_names or []) if str(value or '').strip()
+        ]
+        if not normalized_names:
+            return set()
+        placeholders = ','.join('?' for _ in normalized_names)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT actor_name FROM pending_actor_binghuo WHERE actor_name IN ({placeholders})
+                UNION
+                SELECT actor_name FROM pending_actor_baomu WHERE actor_name IN ({placeholders})
+                UNION
+                SELECT actor_name FROM enrichment_running_items WHERE actor_name IN ({placeholders})
+                ''',
+                [*normalized_names, *normalized_names, *normalized_names],
+            ).fetchall()
+        return {str(row[0] or '').strip() for row in rows if str(row[0] or '').strip()}
+
     def list_actor_enrichment_records(self):
         with self._connect() as conn:
             cursor = conn.cursor()
@@ -4538,6 +4832,40 @@ class VideoDatabase(
                     normalized_name,
                 ),
             )
+            cursor.execute(
+                '''
+                UPDATE canglangge_actor_candidates
+                SET binghuo_enrichment_status = ?,
+                    binghuo_last_error = ?,
+                    binghuo_last_enriched_at = CURRENT_TIMESTAMP,
+                    binghuo_person_id = COALESCE(NULLIF(?, ''), binghuo_person_id),
+                    binghuo_birthday = COALESCE(NULLIF(?, ''), binghuo_birthday),
+                    binghuo_age = COALESCE(NULLIF(?, ''), binghuo_age),
+                    binghuo_height = COALESCE(NULLIF(?, ''), binghuo_height),
+                    binghuo_bust = COALESCE(NULLIF(?, ''), binghuo_bust),
+                    binghuo_cup = COALESCE(NULLIF(?, ''), binghuo_cup),
+                    binghuo_measurements_raw = COALESCE(NULLIF(?, ''), binghuo_measurements_raw),
+                    binghuo_waist = COALESCE(NULLIF(?, ''), binghuo_waist),
+                    binghuo_hip = COALESCE(NULLIF(?, ''), binghuo_hip),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE actor_name = ?
+                ''',
+                (
+                    normalized_status,
+                    normalized_error,
+                    normalized_person_id,
+                    normalized_birthday,
+                    normalized_age,
+                    normalized_height,
+                    normalized_bust,
+                    normalized_cup,
+                    normalized_measurements_raw,
+                    normalized_waist,
+                    normalized_hip,
+                    normalized_name,
+                ),
+            )
+            self._refresh_canglangge_completion_status(cursor, normalized_name)
             conn.commit()
             return int(cursor.rowcount or 0)
 
@@ -4605,6 +4933,36 @@ class VideoDatabase(
                     normalized_name,
                 ),
             )
+            cursor.execute(
+                '''
+                UPDATE canglangge_actor_candidates
+                SET baomu_enrichment_status = ?,
+                    baomu_last_error = ?,
+                    baomu_last_enriched_at = CURRENT_TIMESTAMP,
+                    baomu_birthday = COALESCE(NULLIF(?, ''), baomu_birthday),
+                    baomu_height = COALESCE(NULLIF(?, ''), baomu_height),
+                    baomu_bust = COALESCE(NULLIF(?, ''), baomu_bust),
+                    baomu_cup = COALESCE(NULLIF(?, ''), baomu_cup),
+                    baomu_measurements_raw = COALESCE(NULLIF(?, ''), baomu_measurements_raw),
+                    baomu_waist = COALESCE(NULLIF(?, ''), baomu_waist),
+                    baomu_hip = COALESCE(NULLIF(?, ''), baomu_hip),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE actor_name = ?
+                ''',
+                (
+                    normalized_status,
+                    normalized_error,
+                    normalized_birthday,
+                    normalized_height,
+                    normalized_bust,
+                    normalized_cup,
+                    normalized_measurements_raw,
+                    normalized_waist,
+                    normalized_hip,
+                    normalized_name,
+                ),
+            )
+            self._refresh_canglangge_completion_status(cursor, normalized_name)
             conn.commit()
             return int(cursor.rowcount or 0)
 

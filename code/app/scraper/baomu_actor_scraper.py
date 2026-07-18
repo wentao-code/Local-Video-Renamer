@@ -1,5 +1,6 @@
 import json
 import re
+import threading
 from contextlib import contextmanager
 from urllib.parse import quote
 
@@ -42,11 +43,49 @@ class BaomuActorScraper:
         if self._context is not None and self._page is not None:
             return self._page
 
+        timeout_milliseconds = get_operation_timeout_milliseconds('browser_launch')
+        self._probe_playwright_start(timeout_milliseconds)
+        return self._open_session_impl()
+
+    def _probe_playwright_start(self, timeout_milliseconds):
+        startup_result = {}
+        startup_finished = threading.Event()
+
+        def probe_start():
+            manager = None
+            try:
+                sync_playwright = import_sync_playwright()
+                manager = sync_playwright()
+                manager.start()
+            except BaseException as exc:
+                startup_result['error'] = exc
+            finally:
+                if manager is not None:
+                    try:
+                        manager.stop()
+                    except BaseException:
+                        pass
+                startup_finished.set()
+
+        threading.Thread(
+            target=probe_start,
+            name='baomu-browser-runtime-probe',
+            daemon=True,
+        ).start()
+        if not startup_finished.wait(max(1, int(timeout_milliseconds)) / 1000.0):
+            raise TimeoutError(f'浏览器启动超时（{timeout_milliseconds}毫秒）')
+        if 'error' in startup_result:
+            raise startup_result['error']
+
+    def _open_session_impl(self):
         sync_playwright = import_sync_playwright()
         self._playwright_manager = sync_playwright()
         self._playwright = self._playwright_manager.start()
         browser_channel = get_scraper_browser_channel()
-        launch_options = {'headless': self.headless}
+        launch_options = {
+            'headless': self.headless,
+            'timeout': get_operation_timeout_milliseconds('browser_launch'),
+        }
         if browser_channel:
             launch_options['channel'] = browser_channel
         try:

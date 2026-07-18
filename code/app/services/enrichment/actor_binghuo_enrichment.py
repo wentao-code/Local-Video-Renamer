@@ -31,6 +31,7 @@ class ActorBinghuoEnrichmentService:
         progress_tracker=None,
         logger=None,
         planned_actor_names=None,
+        planned_items=None,
     ):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
@@ -39,6 +40,11 @@ class ActorBinghuoEnrichmentService:
         self.scraper = scraper or BinghuoActorScraper(headless=not show_browser, logger=logger)
         self.canglangge_candidate_service = candidate_service or CanglanggeCandidateService(database)
         self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
+        self.planned_items = [dict(item or {}) for item in (planned_items or [])]
+        if self.planned_items:
+            self.planned_actor_names = self._normalize_planned_actor_names(
+                item.get('actor_name', '') for item in self.planned_items
+            )
 
     @staticmethod
     def _normalize_planned_actor_names(planned_actor_names):
@@ -63,7 +69,14 @@ class ActorBinghuoEnrichmentService:
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
 
-        candidates = self._candidate_actors()
+        candidates = (
+            [
+                {'actor_name': actor_name, 'priority': 0}
+                for actor_name in self.planned_actor_names
+            ]
+            if self.planned_items
+            else self._candidate_actors()
+        )
         target_candidates = candidates[:limit]
         results = []
         success_count = 0
@@ -162,6 +175,11 @@ class ActorBinghuoEnrichmentService:
         ]
 
     def _candidate_actors(self):
+        if self.planned_items:
+            return [
+                {'actor_name': actor_name, 'priority': 0}
+                for actor_name in self.planned_actor_names
+            ]
         actor_rows = self.database.list_actors() if hasattr(self.database, 'list_actors') else []
         enrichment_records = self.database.list_actor_enrichment_records()
         candidates = []

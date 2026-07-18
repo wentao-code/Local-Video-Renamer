@@ -41,6 +41,9 @@ class CanglanggeViewerWindow(AsyncTaskHostMixin, QDialog):
         self.btn_batch_admit = QPushButton(tr('canglangge.batch_admit'))
         self.btn_batch_admit.clicked.connect(self.admit_selected_candidates)
 
+        self.btn_add_task = QPushButton(tr('canglangge.add_task'))
+        self.btn_add_task.clicked.connect(self.add_all_to_tasks)
+
         self.btn_batch_delete = QPushButton(tr('canglangge.batch_delete'))
         self.btn_batch_delete.clicked.connect(self.delete_selected_candidates)
 
@@ -50,6 +53,7 @@ class CanglanggeViewerWindow(AsyncTaskHostMixin, QDialog):
 
         action_layout.addWidget(self.last_refreshed_label)
         action_layout.addStretch()
+        action_layout.addWidget(self.btn_add_task)
         action_layout.addWidget(self.btn_batch_admit)
         action_layout.addWidget(self.btn_batch_delete)
         action_layout.addWidget(self.btn_refresh)
@@ -73,6 +77,7 @@ class CanglanggeViewerWindow(AsyncTaskHostMixin, QDialog):
         self.set_async_busy_widgets(
             [
                 self.btn_batch_admit,
+                self.btn_add_task,
                 self.btn_batch_delete,
                 self.btn_refresh,
                 self.table,
@@ -137,6 +142,32 @@ class CanglanggeViewerWindow(AsyncTaskHostMixin, QDialog):
             QMessageBox.information(self, tr('common.no_selection'), tr('canglangge.select_rows'))
             return
         self.admit_candidates(actor_names)
+
+    def add_all_to_tasks(self):
+        self.start_async_task(
+            lambda: self.backend_client.add_canglangge_candidates_to_tasks(),
+            self._on_add_to_tasks_finished,
+            tr('canglangge.add_task_failed'),
+        )
+
+    def _on_add_to_tasks_finished(self, result):
+        count = int((result or {}).get('queued_count', 0) or 0)
+        plan_progresses = list((result or {}).get('plan_progresses', []) or [])
+        if not plan_progresses:
+            progress = dict((result or {}).get('plan_progress', {}) or {})
+            if progress:
+                plan_progresses = [progress]
+        parent = self.parent()
+        enqueue_plan = getattr(parent, '_enqueue_resumed_enrichment_plan', None)
+        if callable(enqueue_plan):
+            for plan_progress in plan_progresses:
+                if plan_progress.get('plan_id'):
+                    enqueue_plan(plan_progress)
+        QMessageBox.information(
+            self,
+            tr('canglangge.add_task'),
+            tr('canglangge.add_task_completed', count=count),
+        )
 
     def admit_candidates(self, actor_names):
         normalized_names = self._normalize_actor_names(actor_names)

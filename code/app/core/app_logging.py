@@ -103,6 +103,9 @@ def configure_logging(
     max_total_bytes=DEFAULT_MAX_TOTAL_BYTES,
     force=False,
 ):
+    # Logging failures must never block application work or fill a captured
+    # stderr pipe when Windows prevents a multi-process log rollover.
+    logging.raiseExceptions = False
     target_dir = Path(log_dir) if log_dir else LOG_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     cleanup_old_logs(target_dir, max_age_days=max_age_days, max_total_bytes=max_total_bytes)
@@ -178,6 +181,7 @@ def _build_rotating_handler(path, level, formatter, context_filter, max_bytes, b
         maxBytes=max(1, int(max_bytes or DEFAULT_MAX_BYTES)),
         backupCount=max(1, int(backup_count or DEFAULT_BACKUP_COUNT)),
         encoding='utf-8',
+        delay=True,
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)

@@ -48,6 +48,18 @@ class CanglanggeCandidateService:
                             'age': str((enrichment_records.get(actor_name, {}) or {}).get('binghuo_age', '') or '').strip(),
                         },
                     )
+                    record = enrichment_records.get(actor_name, {}) or {}
+                    for field_name in (
+                        'binghuo_enrichment_status', 'binghuo_person_id',
+                        'binghuo_birthday', 'binghuo_age', 'binghuo_height',
+                        'binghuo_bust', 'binghuo_cup', 'binghuo_measurements_raw',
+                        'binghuo_waist', 'binghuo_hip', 'baomu_enrichment_status',
+                        'baomu_birthday', 'baomu_height', 'baomu_bust',
+                        'baomu_cup', 'baomu_measurements_raw', 'baomu_waist',
+                        'baomu_hip',
+                    ):
+                        if field_name not in current:
+                            current[field_name] = record.get(field_name, '')
                     current['prefixes'].add(normalized_prefix)
 
         return [

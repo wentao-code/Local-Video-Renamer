@@ -11,6 +11,7 @@ EXPECTED_KEYS = [
     'automatic_login',
     'manual_verification',
     'manual_login',
+    'browser_launch',
     'avfan_page_load',
     'javtxt_page_load',
     'binghuo_page_load',
@@ -32,7 +33,7 @@ def test_timeout_registry_lists_defaults_in_stable_order(tmp_path):
     assert rows[0]['custom_value_seconds'] is None
     assert rows[0]['effective_value_seconds'] == 30
     assert rows[0]['uses_default'] is True
-    assert rows[11]['default_value_seconds'] == 0.8
+    assert rows[12]['default_value_seconds'] == 0.8
 
 
 def test_timeout_override_supports_decimals_and_selected_reset(tmp_path):

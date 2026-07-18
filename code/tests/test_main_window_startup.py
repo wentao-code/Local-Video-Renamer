@@ -26,6 +26,21 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_refresh_snapshot_pages_collects_all_pages_without_record_callback(self):
+        payloads = iter(
+            [
+                {'videos': [{'code': 'AAA-001'}], 'total_count': 2, 'limit': 1},
+                {'videos': [{'code': 'AAA-002'}], 'total_count': 2, 'limit': 1},
+            ]
+        )
+
+        rows = main_window.VidNormApp._refresh_snapshot_pages(
+            lambda offset: next(payloads),
+            'videos',
+        )
+
+        self.assertEqual(rows, [{'code': 'AAA-001'}, {'code': 'AAA-002'}])
+
     def test_enrichment_plan_and_already_running_errors_are_non_retryable(self):
         self.assertTrue(
             main_window.VidNormApp._is_non_retryable_enrichment_error(

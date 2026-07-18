@@ -462,5 +462,31 @@ class ActorBinghuoEnrichmentServiceTest(unittest.TestCase):
         self.assertEqual(record["binghuo_birthday"], "")
 
 
+    def test_planned_items_bypass_canglangge_candidate_scan(self):
+        actor_name = "计划演员"
+        scraper = FakeBinghuoScraper(
+            search_results={
+                actor_name: [{"title": actor_name, "href": "https://www.fouroursonsinc.com/person/1"}],
+            },
+            profiles={"1": {"person_id": "1", "birthday": "2000-01-01", "age": "26"}},
+        )
+
+        class ExplodingCandidateService:
+            def list_candidates(self):
+                raise AssertionError("planned enrichment must not scan Canglangge candidates")
+
+        service = ActorBinghuoEnrichmentService(
+            self.db,
+            scraper=scraper,
+            candidate_service=ExplodingCandidateService(),
+            planned_items=[{"actor_name": actor_name}],
+        )
+
+        result = service.enrich_next_actors(1)
+
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(scraper.search_calls, [actor_name])
+
+
 if __name__ == "__main__":
     unittest.main()

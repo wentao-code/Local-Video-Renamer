@@ -455,6 +455,9 @@ class BackendClient:
     def admit_canglangge_candidates(self, actor_names):
         return self._post('/canglangge/admit', {'actor_names': actor_names}).get('admitted_count', 0)
 
+    def add_canglangge_candidates_to_tasks(self, actor_names=None):
+        return self._post('/canglangge/tasks', {'actor_names': actor_names or []})
+
     def delete_canglangge_candidates(self, actor_names):
         return self._post('/canglangge/delete', {'actor_names': actor_names}).get('deleted_count', 0)
 

@@ -230,6 +230,8 @@ def make_handler(service):
                 return service.list_canglangge_candidates(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'POST' and path == '/canglangge/admit':
                 return service.admit_canglangge_candidates(body.get('actor_names', []))
+            if method == 'POST' and path == '/canglangge/tasks':
+                return service.add_canglangge_candidates_to_tasks(body.get('actor_names', []))
             if method == 'POST' and path == '/canglangge/delete':
                 return service.delete_canglangge_candidates(body.get('actor_names', []))
             if method == 'POST' and path == '/database/actors/reset':

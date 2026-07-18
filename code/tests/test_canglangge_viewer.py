@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.canglangge_viewer import CanglanggeViewerWindow
@@ -73,6 +73,9 @@ class CanglanggeViewerTest(unittest.TestCase):
                 self.assertEqual(window.table.item(0, 0).text(), 'ActorA')
                 self.assertEqual(window.table.item(0, 1).text(), 'IPX')
                 self.assertEqual(window.table.columnCount(), 5)
+                self.assertEqual(window.btn_add_task.text(), '加入任务')
+                action_buttons = window.table.cellWidget(0, 4).findChildren(QPushButton)
+                self.assertNotIn('加入任务', [button.text() for button in action_buttons])
                 self.assertEqual(backend.snapshot_refresh_flags, [False])
                 self.assertIn('2026-06-21 21:20:00', window.last_refreshed_label.text())
             finally:

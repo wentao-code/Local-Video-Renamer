@@ -13,6 +13,7 @@ OPERATION_TIMEOUT_SPECS = (
     {'key': 'automatic_login', 'name': '\u81ea\u52a8\u767b\u5f55', 'default': 660, 'minimum': 30, 'maximum': 3600},
     {'key': 'manual_verification', 'name': '\u4eba\u5de5\u9a8c\u8bc1', 'default': 600, 'minimum': 30, 'maximum': 3600},
     {'key': 'manual_login', 'name': '\u624b\u52a8\u767b\u5f55', 'default': 300, 'minimum': 30, 'maximum': 3600},
+    {'key': 'browser_launch', 'name': '\u6d4f\u89c8\u5668\u542f\u52a8', 'default': 30, 'minimum': 5, 'maximum': 300},
     {'key': 'avfan_page_load', 'name': '\u5929\u9668\u9601\u9875\u9762\u52a0\u8f7d', 'default': 60, 'minimum': 5, 'maximum': 600},
     {'key': 'javtxt_page_load', 'name': '\u8f9b\u805a\u9601\u9875\u9762\u52a0\u8f7d', 'default': 60, 'minimum': 5, 'maximum': 600},
     {'key': 'binghuo_page_load', 'name': '\u5e76\u706b\u9875\u9762\u52a0\u8f7d', 'default': 60, 'minimum': 5, 'maximum': 600},

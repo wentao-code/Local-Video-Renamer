@@ -24,6 +24,27 @@ class _HealthService:
 
 
 class AppLoggingTest(unittest.TestCase):
+    def test_configure_logging_opens_module_handlers_lazily_and_suppresses_internal_errors(self):
+        original_raise_exceptions = logging.raiseExceptions
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    configure_logging(log_dir=Path(temp_dir), force=True)
+                    task_handlers = [
+                        handler
+                        for handler in logging.getLogger('app.task').handlers
+                        if getattr(handler, '_local_video_renamer_logging_handler', False)
+                    ]
+
+                    self.assertTrue(task_handlers)
+                    self.assertTrue(all(handler.delay for handler in task_handlers))
+                    self.assertTrue(all(handler.stream is None for handler in task_handlers))
+                    self.assertFalse(logging.raiseExceptions)
+                finally:
+                    logging.shutdown()
+        finally:
+            logging.raiseExceptions = original_raise_exceptions
+
     def test_configure_logging_routes_each_functional_module_to_its_own_log_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             log_dir = Path(temp_dir)

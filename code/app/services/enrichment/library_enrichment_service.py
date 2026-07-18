@@ -217,6 +217,7 @@ class LibraryEnrichmentService:
                 progress_tracker=self.progress_tracker,
                 logger=self.logger,
                 planned_actor_names=self._planned_actor_names(),
+                planned_items=self.planned_items,
             )
             result = service.enrich_next_actors(limit)
             result.setdefault('source_key', source_key or BINGHUO_ACTOR_SOURCE)

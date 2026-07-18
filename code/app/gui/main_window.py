@@ -2414,6 +2414,25 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             task_title='主界面 全量刷新快照',
         )
 
+    @staticmethod
+    def _refresh_snapshot_pages(loader, row_key):
+        """Refresh every default-sorted page and return all rows seen."""
+        rows = []
+        offset = 0
+        first_page = True
+        total_count = 0
+        while first_page or offset < total_count:
+            payload = dict(loader(offset=offset) or {})
+            page_rows = [dict(row or {}) for row in payload.get(row_key, []) or []]
+            rows.extend(page_rows)
+            first_page = False
+            total_count = int(payload.get('total_count', 0) or 0)
+            page_limit = int(payload.get('limit', 0) or 0)
+            if not page_rows or page_limit <= 0:
+                break
+            offset += page_limit
+        return rows
+
     def _refresh_all_snapshots(self):
         """Prebuild all snapshots addressable from the current database state."""
         refresh_client = _build_refresh_client(
@@ -2422,30 +2441,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
         context = {}
 
-        def refresh_pages(loader, row_key):
-            """Refresh every default-sorted page and return all rows seen."""
-            rows = []
-            offset = 0
-            first_page = True
-            while first_page or offset < total_count:
-                payload = dict(loader(offset=offset) or {})
-                page_rows = [dict(row or {}) for row in payload.get(row_key, []) or []]
-                rows.extend(page_rows)
-                if first_page:
-                    record(f'{row_key}_pages')
-                first_page = False
-                total_count = int(payload.get('total_count', 0) or 0)
-                page_limit = int(payload.get('limit', 0) or 0)
-                if not page_rows or page_limit <= 0:
-                    break
-                offset += page_limit
-            return rows
-
         def refresh_detail():
             return refresh_client.rebuild_detail_snapshots()
 
         def refresh_video_library():
-            rows = refresh_pages(
+            rows = VidNormApp._refresh_snapshot_pages(
                 lambda offset: refresh_client.list_videos_page(force_refresh=True, offset=offset),
                 'videos',
             )
@@ -2453,7 +2453,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             return {'count': len(rows)}
 
         def refresh_actor_library():
-            rows = refresh_pages(
+            rows = VidNormApp._refresh_snapshot_pages(
                 lambda offset: refresh_client.list_actors_snapshot(
                     force_refresh=True,
                     include_update_status=False,
@@ -2465,7 +2465,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             return {'count': len(rows)}
 
         def refresh_code_prefix_library():
-            rows = refresh_pages(
+            rows = VidNormApp._refresh_snapshot_pages(
                 lambda offset: refresh_client.list_code_prefixes_snapshot(force_refresh=True, offset=offset),
                 'prefixes',
             )
