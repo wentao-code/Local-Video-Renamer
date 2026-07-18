@@ -59,7 +59,7 @@ class LadderRepositoryMixin:
 
         return self._ladder_entry_from_row(row) if row else {}
 
-    def save_ladder_entry(self, board_key, entity_type, entity_name, tier):
+    def save_ladder_entry(self, board_key, entity_type, entity_name, tier, timeout_seconds=None):
         normalized_board_key = normalize_ladder_board_key(board_key)
         normalized_entity_type = normalize_ladder_entity_type(entity_type)
         normalized_name = str(entity_name or '').strip()
@@ -71,7 +71,7 @@ class LadderRepositoryMixin:
         if not normalized_tier:
             raise ValueError('缺少榜单等级')
 
-        with self._connect() as conn:
+        with self._connect(timeout_seconds=timeout_seconds) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''

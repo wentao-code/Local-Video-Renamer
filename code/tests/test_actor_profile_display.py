@@ -154,10 +154,10 @@ class ActorProfileDisplayTest(unittest.TestCase):
 
             self.assertEqual(len(rows), 1)
             expected_status = (
-                f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: {ENRICHED_STATUS} | '
-                f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: {FAILED_STATUS} | '
+                f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: f | '
+                f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: s | '
                 f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态3 | '
-                f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: {UNENRICHED_STATUS}'
+                f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: 状态18'
             )
             self.assertEqual(rows[0]['enrichment_status'], expected_status)
 
@@ -205,10 +205,10 @@ class ActorProfileDisplayTest(unittest.TestCase):
             self.assertEqual(rows[0]['javtxt_enrichment_status'], UNENRICHED_STATUS)
             self.assertEqual(rows[0]['binghuo_enrichment_status'], NO_VIDEO_DETAIL_STATUS)
             expected_status = (
-                f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: {UNENRICHED_STATUS} | '
-                f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: {UNENRICHED_STATUS} | '
+                f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: x | '
+                f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: x | '
                 f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态2 | '
-                f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: {UNENRICHED_STATUS}'
+                f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: 状态18'
             )
             self.assertEqual(rows[0]['enrichment_status'], expected_status)
 
@@ -249,8 +249,8 @@ class ActorProfileDisplayTest(unittest.TestCase):
             self.assertEqual(rows[0]['age'], '35')
             self.assertEqual(rows[0]['baomu_enrichment_status'], ENRICHED_STATUS)
             expected_status = (
-                f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: {ENRICHED_STATUS} | '
-                f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: {UNENRICHED_STATUS} | '
+                f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: f | '
+                f'{get_video_enrichment_source_label(JAVTXT_VIDEO_SOURCE)}: x | '
                 f'{get_video_enrichment_source_label(BINGHUO_ACTOR_SOURCE)}: 状态2 | '
                 f'{get_video_enrichment_source_label(BAOMU_ACTOR_SOURCE)}: 状态16'
             )

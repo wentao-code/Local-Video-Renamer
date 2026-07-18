@@ -7,8 +7,10 @@ from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 TASK_STATUS_WAITING = '等待中'
 TASK_STATUS_RUNNING = '正在执行'
 TASK_STATUS_PAUSED = '已暂停'
+TASK_STATUS_CANCELLING = '取消中'
 TASK_STATUS_COMPLETED = '已完成'
 TASK_STATUS_PARTIAL = '部分完成'
+TASK_STATUS_DELETED = '已删除'
 
 RUN_MODE_VIEW = 'view'
 RUN_MODE_TASK = 'task'
@@ -62,6 +64,7 @@ class GuiTaskQueue(QObject):
         self._records = []
         self._waiting_records = []
         self._start_callbacks = {}
+        self._cancel_callbacks = {}
         self._running_task_id = None
         self._next_task_id = 1
         self._run_mode = RUN_MODE_TASK
@@ -76,6 +79,7 @@ class GuiTaskQueue(QObject):
         task_kind='',
         plan_id='',
         plan_progress=None,
+        cancel_callback=None,
     ):
         record = TaskRecord(
             task_id=self._next_task_id,
@@ -93,6 +97,10 @@ class GuiTaskQueue(QObject):
         self._records.append(record)
         self._waiting_records.append(record)
         self._start_callbacks[record.task_id] = start_callback
+        if cancel_callback is not None:
+            if not hasattr(self, '_cancel_callbacks'):
+                self._cancel_callbacks = {}
+            self._cancel_callbacks[record.task_id] = cancel_callback
         self.changed.emit()
         self._schedule_start_next()
         return record
@@ -121,6 +129,8 @@ class GuiTaskQueue(QObject):
     def mark_completed(self, task_id):
         record = self._find_record(task_id)
         if record is None:
+            return
+        if record.status in {TASK_STATUS_DELETED, TASK_STATUS_CANCELLING}:
             return
         if record.pause_requested:
             record.status = TASK_STATUS_PAUSED
@@ -158,6 +168,8 @@ class GuiTaskQueue(QObject):
         record = self._find_record(task_id)
         if record is None:
             return True
+        if record.status in {TASK_STATUS_DELETED, TASK_STATUS_CANCELLING}:
+            return False
         record.last_error = str(error_message or '')
         if self._running_task_id == task_id:
             self._running_task_id = None
@@ -171,8 +183,36 @@ class GuiTaskQueue(QObject):
         record.completed_at = _now_text()
         record.exhausted = True
         self._start_callbacks.pop(task_id, None)
+        getattr(self, '_cancel_callbacks', {}).pop(task_id, None)
         self.changed.emit()
         self._schedule_start_next()
+        return True
+
+    def mark_deleted(self, task_id, reason='用户删除任务'):
+        record = self._find_record(task_id)
+        if record is None:
+            return False
+        record.status = TASK_STATUS_DELETED
+        record.last_error = str(reason or '').strip()
+        record.pause_reason = record.last_error
+        record.completed_at = _now_text()
+        self._waiting_records = [item for item in self._waiting_records if item.task_id != task_id]
+        self._start_callbacks.pop(task_id, None)
+        getattr(self, '_cancel_callbacks', {}).pop(task_id, None)
+        if self._running_task_id == task_id:
+            self._running_task_id = None
+        self.changed.emit()
+        self._schedule_start_next()
+        return True
+
+    def restore_cancel_failure(self, task_id, error_message):
+        record = self._find_record(task_id)
+        if record is None or record.status != TASK_STATUS_CANCELLING:
+            return False
+        record.status = TASK_STATUS_RUNNING
+        record.last_error = str(error_message or '').strip()
+        record.pause_reason = ''
+        self.changed.emit()
         return True
 
     def records(self):
@@ -215,6 +255,42 @@ class GuiTaskQueue(QObject):
             record.status = TASK_STATUS_PAUSED
         self.changed.emit()
 
+    def cancel_task(self, task_id, reason='用户删除任务'):
+        record = self._find_record(task_id)
+        if record is None or record.status in {
+            TASK_STATUS_COMPLETED,
+            TASK_STATUS_PARTIAL,
+            TASK_STATUS_DELETED,
+        }:
+            return False
+        normalized_reason = str(reason or '').strip() or '用户删除任务'
+        if self._running_task_id == task_id or record.status in {
+            TASK_STATUS_RUNNING,
+            TASK_STATUS_CANCELLING,
+        }:
+            if record.status == TASK_STATUS_CANCELLING:
+                return True
+            record.status = TASK_STATUS_CANCELLING
+            record.pause_reason = normalized_reason
+            callback = getattr(self, '_cancel_callbacks', {}).get(task_id)
+            if callable(callback):
+                callback(record)
+            self.changed.emit()
+            return True
+        self._waiting_records = [item for item in self._waiting_records if item.task_id != task_id]
+        record.status = TASK_STATUS_DELETED
+        record.last_error = normalized_reason
+        record.pause_reason = normalized_reason
+        record.completed_at = _now_text()
+        self._start_callbacks.pop(task_id, None)
+        getattr(self, '_cancel_callbacks', {}).pop(task_id, None)
+        self.changed.emit()
+        self._schedule_start_next()
+        return True
+
+    def cancel_tasks(self, task_ids, reason='用户删除任务'):
+        return sum(1 for task_id in task_ids or [] if self.cancel_task(task_id, reason))
+
     def is_all_done(self):
         if not self._records:
             return True
@@ -223,7 +299,7 @@ class GuiTaskQueue(QObject):
         if self._waiting_records:
             return False
         return all(
-            record.status in {TASK_STATUS_COMPLETED, TASK_STATUS_PARTIAL}
+            record.status in {TASK_STATUS_COMPLETED, TASK_STATUS_PARTIAL, TASK_STATUS_DELETED}
             for record in self._records
         )
 
@@ -231,6 +307,7 @@ class GuiTaskQueue(QObject):
         self._records.clear()
         self._waiting_records.clear()
         self._start_callbacks.clear()
+        self._cancel_callbacks = {}
         self._running_task_id = None
         self._next_task_id = 1
         self._run_mode = RUN_MODE_TASK
@@ -245,6 +322,9 @@ class GuiTaskQueue(QObject):
         if not self._waiting_records:
             return
         record = self._waiting_records.pop(0)
+        if record.status == TASK_STATUS_DELETED:
+            self._schedule_start_next()
+            return
         if self._should_pause_record(record):
             record.status = TASK_STATUS_PAUSED
             self._waiting_records.insert(0, record)

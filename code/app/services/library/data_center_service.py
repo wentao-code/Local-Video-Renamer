@@ -24,6 +24,7 @@ from app.core.enrichment_status import (
     NO_VIDEO_DETAIL_STATUS,
     UNENRICHED_STATUS,
 )
+from app.core.enrichment_display_status import get_source_display_status
 from app.core.javtxt_entry_state import JAVTXT_SEARCH_STATE_NO_RESULT, classify_search_state
 from app.core.supplement_task_state import build_supplement_candidate
 from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
@@ -88,6 +89,7 @@ class DataCenterService:
         self._summary_cache_refresh_duration_ms = 0
         self._summary_cache_refresh_duration_text = ''
         self._summary_cache_lock = Lock()
+        self._summary_build_lock = Lock()
         self._analysis_cache = {}
         self._analysis_cache_lock = Lock()
         self._dashboard_items_cache = {}
@@ -102,42 +104,57 @@ class DataCenterService:
         return self.get_summary_snapshot(force_refresh=force_refresh)['summary']
 
     def get_summary_snapshot(self, force_refresh=False):
-        with self._summary_cache_lock:
-            filter_settings = self._refresh_filter_settings_state()
-            if self._is_complete_summary_snapshot(self._summary_cache) and not force_refresh:
+        filter_settings = self._refresh_filter_settings_state()
+
+        def cached_payload():
+            with self._summary_cache_lock:
+                if not self._is_complete_summary_snapshot(self._summary_cache):
+                    return None
                 return {
                     'summary': dict(self._summary_cache or {}),
                     'refreshed_at': self._summary_cache_refreshed_at,
                     'refresh_duration_ms': self._summary_cache_refresh_duration_ms,
                     'refresh_duration_text': self._summary_cache_refresh_duration_text,
                 }
+
+        if not force_refresh:
+            cached = cached_payload()
+            if cached is not None:
+                return cached
+
+        with self._summary_build_lock:
             if not force_refresh:
-                self._summary_cache = None
-                self._summary_cache_refreshed_at = ''
-                self._summary_cache_refresh_duration_ms = 0
-                self._summary_cache_refresh_duration_text = ''
+                cached = cached_payload()
+                if cached is not None:
+                    return cached
 
             started_at = perf_counter()
             summary = self._run_with_build_cache(lambda: self._build_summary(filter_settings=filter_settings))
             refresh_duration_ms = self._build_duration_ms(started_at)
-            self._summary_cache = summary
-            self._summary_cache_refreshed_at = self._current_cache_timestamp()
-            self._summary_cache_refresh_duration_ms = refresh_duration_ms
-            self._summary_cache_refresh_duration_text = self._format_duration_text(refresh_duration_ms)
+            refreshed_at = self._current_cache_timestamp()
+            refresh_duration_text = self._format_duration_text(refresh_duration_ms)
+
+            with self._summary_cache_lock:
+                self._summary_cache = summary
+                self._summary_cache_refreshed_at = refreshed_at
+                self._summary_cache_refresh_duration_ms = refresh_duration_ms
+                self._summary_cache_refresh_duration_text = refresh_duration_text
+                persisted_summary = self._build_persisted_summary_snapshot()
+
             self._persist_snapshots()
-            self._persist_view_snapshot('data_center_summary', self._build_persisted_summary_snapshot())
-            self._record_view_registry('data_center_summary', self._summary_cache_refreshed_at, refresh_duration_ms, dirty=False)
+            self._persist_view_snapshot('data_center_summary', persisted_summary)
+            self._record_view_registry('data_center_summary', refreshed_at, refresh_duration_ms, dirty=False)
             self._log_refresh(
                 snapshot_key='data_center',
-                refreshed_at=self._summary_cache_refreshed_at,
+                refreshed_at=refreshed_at,
                 refresh_duration_ms=refresh_duration_ms,
                 cache_kind='summary',
             )
             return {
                 'summary': dict(summary or {}),
-                'refreshed_at': self._summary_cache_refreshed_at,
-                'refresh_duration_ms': self._summary_cache_refresh_duration_ms,
-                'refresh_duration_text': self._summary_cache_refresh_duration_text,
+                'refreshed_at': refreshed_at,
+                'refresh_duration_ms': refresh_duration_ms,
+                'refresh_duration_text': refresh_duration_text,
             }
 
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
@@ -989,8 +1006,23 @@ class DataCenterService:
         return self._build_video_status_summary(label, visible_rows, 'avfan_enrichment_status')
 
     def _build_video_status_summary(self, label, rows, status_field):
-        statuses = [str((row or {}).get(status_field, '') or '').strip() or UNENRICHED_STATUS for row in rows or []]
-        summary = self._build_status_summary(label, statuses)
+        source_key = AVFAN_VIDEO_SOURCE if status_field == 'avfan_enrichment_status' else JAVTXT_VIDEO_SOURCE
+        queue_getter = getattr(self.database, 'get_enrichment_queue_keys', None)
+        queue_keys = (
+            queue_getter('video', source_key)
+            if callable(queue_getter)
+            else {'codes': set()}
+        ) or {'codes': set()}
+        queued_codes = {str(code or '').strip().upper() for code in queue_keys.get('codes', set()) or set()}
+        statuses = [
+            get_source_display_status(
+                source_key,
+                row,
+                selected=str((row or {}).get('code', '') or '').strip().upper() in queued_codes,
+            )
+            for row in rows or []
+        ]
+        summary = self._build_display_status_summary(label, statuses)
         summary['count_label'] = COMPLETED_LABEL
         summary['list_kind'] = 'video'
         summary['issue_groups'] = self._build_status_issue_groups(
@@ -1019,11 +1051,22 @@ class DataCenterService:
 
         records = self.database.list_code_prefix_enrichment_records()
         prefix_rows = [row for row in self._list_code_prefix_rows() if row.get('prefix')]
+        queue_getter = getattr(self.database, 'get_enrichment_queue_keys', None)
+        queue_keys = (
+            queue_getter('code_prefix', source_key)
+            if callable(queue_getter)
+            else {'prefixes': set()}
+        ) or {'prefixes': set()}
+        queued_prefixes = {str(value or '').strip().upper() for value in queue_keys.get('prefixes', set()) or set()}
         statuses = [
-            self._get_source_status(records.get(row.get('prefix', ''), {}), source_key)
+            get_source_display_status(
+                source_key,
+                records.get(row.get('prefix', ''), {}),
+                selected=str(row.get('prefix', '') or '').strip().upper() in queued_prefixes,
+            )
             for row in prefix_rows
         ]
-        summary = self._build_status_summary(self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key), statuses)
+        summary = self._build_display_status_summary(self._build_source_label(CODE_PREFIX_LIBRARY_LABEL, source_key), statuses)
         summary['list_kind'] = 'code_prefix'
         summary['issue_groups'] = self._build_status_issue_groups(
             prefix_rows,
@@ -1057,7 +1100,9 @@ class DataCenterService:
 
     def _build_actor_source_summary(self, source_key, filter_settings=None):
         if source_key == BINGHUO_ACTOR_SOURCE:
-            return self._build_actor_binghuo_source_summary()
+            return self._build_actor_profile_source_summary(source_key)
+        if source_key == BAOMU_ACTOR_SOURCE:
+            return self._build_actor_profile_source_summary(source_key)
         if source_key == JAVTXT_VIDEO_SOURCE:
             actor_names = self._list_actor_names()
             return self._build_javtxt_library_video_summary(
@@ -1069,11 +1114,22 @@ class DataCenterService:
 
         records = self.database.list_actor_enrichment_records()
         actor_rows = [row for row in self._list_actor_rows() if str(row.get('name', '')).strip()]
+        queue_getter = getattr(self.database, 'get_enrichment_queue_keys', None)
+        queue_keys = (
+            queue_getter('actor', source_key)
+            if callable(queue_getter)
+            else {'actor_names': set()}
+        ) or {'actor_names': set()}
+        queued_names = set(queue_keys.get('actor_names', set()) or set())
         statuses = [
-            self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key)
+            get_source_display_status(
+                source_key,
+                records.get(str(row.get('name', '')).strip(), {}),
+                selected=str(row.get('name', '')).strip() in queued_names,
+            )
             for row in actor_rows
         ]
-        summary = self._build_status_summary(self._build_source_label(ACTOR_LIBRARY_LABEL, source_key), statuses)
+        summary = self._build_display_status_summary(self._build_source_label(ACTOR_LIBRARY_LABEL, source_key), statuses)
         summary['list_kind'] = 'actor'
         summary['issue_groups'] = self._build_status_issue_groups(
             actor_rows,
@@ -1081,6 +1137,99 @@ class DataCenterService:
             lambda row: self._get_source_status(records.get(str(row.get('name', '')).strip(), {}), source_key),
         )
         return summary
+
+    def _build_actor_profile_source_summary(self, source_key):
+        records = self.database.list_actor_enrichment_records()
+        queue_getter = getattr(self.database, 'get_enrichment_queue_keys', None)
+        queue_keys = (
+            queue_getter('actor_birthday', source_key)
+            if callable(queue_getter)
+            else {'actor_names': set()}
+        ) or {'actor_names': set()}
+        queued_names = set(queue_keys.get('actor_names', set()) or set())
+        statuses = []
+        no_search_items = []
+        no_detail_items = []
+        failed_items = []
+        pending_items = []
+        missing_age_items = []
+        missing_measurements_items = []
+        missing_height_items = []
+        prefix = 'binghuo' if source_key == BINGHUO_ACTOR_SOURCE else 'baomu'
+
+        for row in self._list_actor_rows():
+            actor_name = str((row or {}).get('name', '') or '').strip()
+            if not actor_name:
+                continue
+            record = dict(records.get(actor_name, {}) or {})
+            display_status = get_source_display_status(
+                source_key,
+                record,
+                selected=actor_name in queued_names,
+            )
+            statuses.append(display_status)
+            item = self._build_actor_issue_item(actor_name)
+            if display_status == '状态1':
+                no_search_items.append(item)
+            elif display_status == '状态20':
+                failed_items.append(item)
+            elif display_status in {'状态18', '状态19'}:
+                pending_items.append(item)
+            elif display_status != '状态0':
+                no_detail_items.append(item)
+                if prefix == 'binghuo':
+                    if self._is_missing_binghuo_age(record):
+                        missing_age_items.append(item)
+                    if self._is_missing_binghuo_measurements(record):
+                        missing_measurements_items.append(item)
+                    if self._is_missing_binghuo_height(record):
+                        missing_height_items.append(item)
+
+        success_count = sum(1 for status in statuses if status == '状态0')
+        no_search_count = sum(1 for status in statuses if status == '状态1')
+        no_detail_count = sum(
+            1
+            for status in statuses
+            if status not in {'状态0', '状态1', '状态18', '状态19', '状态20'}
+        )
+        pending_count = sum(1 for status in statuses if status in {'状态18', '状态19'})
+        failed_count = sum(1 for status in statuses if status == '状态20')
+        total_count = len(statuses)
+        issue_groups = [
+            self._build_issue_group('pending', '待补全', pending_items),
+            self._build_issue_group('failed', FAILED_LABEL, failed_items),
+            self._build_issue_group('no_search', NO_SEARCH_LABEL, no_search_items),
+        ]
+        if prefix == 'binghuo':
+            issue_groups.extend([
+                self._build_issue_group('missing_age', MISSING_AGE_LABEL, missing_age_items),
+                self._build_issue_group(
+                    'missing_measurements', MISSING_MEASUREMENTS_LABEL, missing_measurements_items
+                ),
+                self._build_issue_group('missing_height', MISSING_HEIGHT_LABEL, missing_height_items),
+            ])
+        else:
+            issue_groups.append(self._build_issue_group('no_detail', NO_DETAIL_LABEL, no_detail_items))
+
+        enriched_count = success_count + no_search_count + no_detail_count
+        return {
+            'label': self._build_source_label(ACTOR_LIBRARY_LABEL, source_key),
+            'total_count': total_count,
+            'enriched_count': enriched_count,
+            'completed_count': enriched_count,
+            'success_count': success_count,
+            'pending_count': pending_count,
+            'failed_count': failed_count,
+            'no_search_count': no_search_count,
+            'no_detail_count': no_detail_count,
+            'missing_age_count': len(missing_age_items),
+            'missing_measurements_count': len(missing_measurements_items),
+            'missing_height_count': len(missing_height_items),
+            'progress_percent': _build_progress_percent(enriched_count, total_count),
+            'count_label': COMPLETED_LABEL,
+            'list_kind': 'actor',
+            'issue_groups': self._compact_issue_groups(issue_groups),
+        }
 
     def _build_actor_supplement_summary(self, filter_settings=None):
         actor_names = self._list_actor_names()
@@ -1185,6 +1334,37 @@ class DataCenterService:
         no_detail_count = sum(1 for status in statuses if status == NO_VIDEO_DETAIL_STATUS)
         enriched_count = success_count + no_search_count + no_detail_count
         pending_count = max(total_count - enriched_count - failed_count, 0)
+        return {
+            'label': label,
+            'total_count': total_count,
+            'enriched_count': enriched_count,
+            'success_count': success_count,
+            'pending_count': pending_count,
+            'failed_count': failed_count,
+            'no_search_count': no_search_count,
+            'no_detail_count': no_detail_count,
+            'progress_percent': _build_progress_percent(enriched_count, total_count),
+            'count_label': COMPLETED_LABEL,
+        }
+
+    @staticmethod
+    def _build_display_status_summary(label, statuses):
+        normalized = [str(status or '').strip() for status in statuses or []]
+        total_count = len(normalized)
+        success_count = sum(1 for status in normalized if status in {'f', '状态0'})
+        no_search_count = sum(1 for status in normalized if status == 'y' or status == '状态1')
+        no_detail_count = sum(
+            1
+            for status in normalized
+            if status == 'z' or status.startswith('状态') and status not in {'状态0', '状态1', '状态18', '状态19', '状态20'}
+        )
+        failed_count = sum(1 for status in normalized if status in {'s', '状态20'})
+        pending_count = sum(
+            1
+            for status in normalized
+            if status in {'x', 'w', '状态18', '状态19'}
+        )
+        enriched_count = success_count + no_search_count + no_detail_count
         return {
             'label': label,
             'total_count': total_count,

@@ -128,18 +128,67 @@ class LadderBoardWindow(AsyncTaskHostMixin, QDialog):
 
     def admit_entry(self, entity_name, tier):
         board_key = self.current_board_key
+        self._set_admitted_view(tier)
         self.start_async_task(
-            lambda: self._reload_board_after(lambda: self.backend_client.admit_ladder_entry(board_key, entity_name, tier)),
+            lambda: self.backend_client.admit_ladder_entry(board_key, entity_name, tier),
             lambda payload: self._on_admit_completed(payload, tier),
             tr('common.save_failed'),
         )
 
     def _on_admit_completed(self, payload, tier):
         normalized_tier = str(tier or '').strip().upper()
+        if isinstance(payload, dict) and ('board' in payload or 'board_payload' in payload):
+            self._on_board_loaded(payload)
+            return
+        self._set_admitted_view(normalized_tier)
+        self._apply_admitted_entry(payload, normalized_tier)
+
+    def _set_admitted_view(self, tier):
+        normalized_tier = str(tier or '').strip().upper()
         self.current_view_key = (
             normalized_tier if normalized_tier in LADDER_VISIBLE_TIERS else LADDER_VIEW_CANDIDATES
         )
-        self._on_board_loaded(payload)
+        self._refresh_toggle_states()
+        self._apply_view()
+
+    def _apply_admitted_entry(self, payload, tier):
+        payload = dict(payload or {})
+        entity_name = str(payload.get('entity_name', '') or '').strip()
+        if not entity_name:
+            return
+        board = dict(self.current_board_data or {})
+        candidates = [
+            dict(row or {})
+            for row in board.get('candidates', []) or []
+            if str((row or {}).get('entity_name', '') or '').strip() != entity_name
+        ]
+        local_video_count = 0
+        for row in board.get('candidates', []) or []:
+            if str((row or {}).get('entity_name', '') or '').strip() == entity_name:
+                local_video_count = int((row or {}).get('local_video_count', 0) or 0)
+                break
+        selected = [
+            dict(row or {})
+            for row in board.get('selected', []) or []
+            if str((row or {}).get('entity_name', '') or '').strip() != entity_name
+        ]
+        selected.append(
+            {
+                'entity_name': entity_name,
+                'display_name': entity_name,
+                'tier': str(tier or '').strip().upper(),
+                'medal': '',
+                'medals': [],
+                'local_video_count': local_video_count,
+            }
+        )
+        board['candidates'] = candidates
+        board['selected'] = selected
+        self.current_board_data = board
+        self.candidate_panel.set_rows(candidates)
+        self.selected_panel.set_global_medals(self.global_medals)
+        self._update_summary()
+        self._apply_view()
 
     def save_medal(self, entity_name, medal):
         board_key = self.current_board_key

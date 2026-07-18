@@ -19,7 +19,7 @@ class LadderBoardDatabaseStub:
     def __init__(self):
         self.saved_entries = []
 
-    def save_ladder_entry(self, board_key, entity_type, entity_name, tier):
+    def save_ladder_entry(self, board_key, entity_type, entity_name, tier, **_kwargs):
         self.saved_entries.append((board_key, entity_type, entity_name, tier))
 
     def list_ladder_entries(self, *_args):
@@ -269,6 +269,23 @@ class LadderBoardServiceTest(unittest.TestCase):
         )
         self.assertEqual(board['selected'][0]['entity_name'], '演员01')
         self.assertEqual(board['candidates'][0]['entity_name'], '演员02')
+
+    def test_fast_admit_only_persists_selection_without_rebuilding_board(self):
+        database = LadderBoardDatabaseStub()
+        service = LadderBoardService(database)
+
+        result = service.admit_entry_fast(LADDER_BOARD_ACTOR, '演员01', 'S')
+
+        self.assertEqual(result, {
+            'board_key': LADDER_BOARD_ACTOR,
+            'entity_type': 'actor',
+            'entity_name': '演员01',
+            'tier': 'S',
+        })
+        self.assertEqual(
+            database.saved_entries,
+            [(LADDER_BOARD_ACTOR, 'actor', '演员01', 'S')],
+        )
 
 
     def test_d_tier_entries_are_hidden_from_selected_rows(self):

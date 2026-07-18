@@ -352,6 +352,8 @@ def make_handler(service):
                 )
             if method == 'POST' and path == '/database/enrich/batch-plan':
                 return service.create_enrichment_batch_plan(body)
+            if method == 'POST' and path == '/database/enrich/select':
+                return service.select_enrichment_candidates(body)
             if method == 'POST' and path == '/database/enrich/combo':
                 return service.enrich_combo(
                     body.get('combo_key'),
@@ -379,6 +381,12 @@ def make_handler(service):
                     body.get('plan_id', ''),
                     body.get('task_kind', ''),
                     body.get('reason', '补全任务异常暂停'),
+                )
+            if method == 'POST' and path == '/database/enrich/plan/cancel':
+                return service.cancel_enrichment_plan(
+                    body.get('plan_id', ''),
+                    body.get('task_kind', ''),
+                    body.get('reason', '用户删除任务'),
                 )
             if method == 'POST' and path == '/database/enrich/cancel':
                 return service.cancel_enrichment()

@@ -76,6 +76,9 @@ class BackendClient:
     def create_enrichment_batch_plan(self, payload):
         return self._post('/database/enrich/batch-plan', dict(payload or {}))
 
+    def select_enrichment_candidates(self, payload):
+        return self._post('/database/enrich/select', dict(payload or {}))
+
     def enrich_combo(
         self,
         combo_key,
@@ -330,6 +333,12 @@ class BackendClient:
             '/database/enrich/plan/pause',
             {'plan_id': plan_id, 'task_kind': task_kind, 'reason': reason},
         ).get('progress', {})
+
+    def cancel_enrichment_plan(self, plan_id, task_kind, reason='用户删除任务'):
+        return self._post(
+            '/database/enrich/plan/cancel',
+            {'plan_id': plan_id, 'task_kind': task_kind, 'reason': reason},
+        )
 
     def reset_video_enrichments(self, codes, source_key=None):
         return self._post('/database/videos/reset', {'codes': codes, 'source_key': source_key}).get('reset_count', 0)

@@ -13,6 +13,7 @@ from app.core.enrichment_status import (
     FAILED_STATUS,
     NO_SEARCH_RESULTS_STATUS,
     NO_VIDEO_DETAIL_STATUS,
+    PENDING_STATUS,
     UNENRICHED_STATUS,
     is_no_result_status,
 )
@@ -140,9 +141,10 @@ class VideoDatabase(
         self._init_db()
 
     @contextmanager
-    def _connect(self):
+    def _connect(self, timeout_seconds=None):
         try:
-            timeout_seconds = get_operation_timeout_seconds('database_wait', self.db_path)
+            if timeout_seconds is None:
+                timeout_seconds = get_operation_timeout_seconds('database_wait', self.db_path)
         except Exception:
             timeout_seconds = 60
         conn = sqlite3.connect(self.db_path, timeout=timeout_seconds)
@@ -173,7 +175,7 @@ class VideoDatabase(
                     release_date TEXT,
                     maker TEXT,
                     publisher TEXT,
-                    enrichment_status TEXT DEFAULT '未补全',
+                    enrichment_status TEXT DEFAULT 'UNENRICHED',
                     enrichment_error TEXT,
                     enriched_at TEXT
                 )
@@ -194,13 +196,13 @@ class VideoDatabase(
             self._ensure_column(cursor, 'processed_videos', 'release_date', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'maker', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'publisher', 'TEXT')
-            self._ensure_column(cursor, 'processed_videos', 'enrichment_status', "TEXT DEFAULT '未补全'")
+            self._ensure_column(cursor, 'processed_videos', 'enrichment_status', "TEXT DEFAULT 'UNENRICHED'")
             self._ensure_column(cursor, 'processed_videos', 'enrichment_error', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'enriched_at', 'TEXT')
-            self._ensure_column(cursor, 'processed_videos', 'avfan_enrichment_status', "TEXT DEFAULT '未补全'")
+            self._ensure_column(cursor, 'processed_videos', 'avfan_enrichment_status', "TEXT DEFAULT 'UNENRICHED'")
             self._ensure_column(cursor, 'processed_videos', 'avfan_enrichment_error', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'avfan_enriched_at', 'TEXT')
-            self._ensure_column(cursor, 'processed_videos', 'javtxt_enrichment_status', "TEXT DEFAULT '未补全'")
+            self._ensure_column(cursor, 'processed_videos', 'javtxt_enrichment_status', "TEXT DEFAULT 'UNENRICHED'")
             self._ensure_column(cursor, 'processed_videos', 'javtxt_enrichment_error', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'javtxt_enriched_at', 'TEXT')
             self._ensure_column(cursor, 'processed_videos', 'supplement_enrichment_status', 'TEXT DEFAULT ""')
@@ -208,7 +210,7 @@ class VideoDatabase(
             self._ensure_column(cursor, 'processed_videos', 'supplement_enriched_at', 'TEXT')
             cursor.execute('''
                 UPDATE processed_videos
-                SET enrichment_status = '未补全'
+                SET enrichment_status = 'UNENRICHED'
                 WHERE enrichment_status IS NULL OR enrichment_status = ''
             ''')
             cursor.execute('''
@@ -234,7 +236,7 @@ class VideoDatabase(
                     source_prefixes_json TEXT NOT NULL DEFAULT '[]',
                     discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     refreshed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    binghuo_enrichment_status TEXT NOT NULL DEFAULT '未补全',
+                    binghuo_enrichment_status TEXT NOT NULL DEFAULT 'UNENRICHED',
                     binghuo_completion_status TEXT NOT NULL DEFAULT '状态1',
                     binghuo_last_error TEXT NOT NULL DEFAULT '',
                     binghuo_last_enriched_at TEXT,
@@ -247,7 +249,7 @@ class VideoDatabase(
                     binghuo_measurements_raw TEXT NOT NULL DEFAULT '',
                     binghuo_waist TEXT NOT NULL DEFAULT '',
                     binghuo_hip TEXT NOT NULL DEFAULT '',
-                    baomu_enrichment_status TEXT NOT NULL DEFAULT '未补全',
+                    baomu_enrichment_status TEXT NOT NULL DEFAULT 'UNENRICHED',
                     baomu_completion_status TEXT NOT NULL DEFAULT '状态1',
                     baomu_last_error TEXT NOT NULL DEFAULT '',
                     baomu_last_enriched_at TEXT,
@@ -878,7 +880,56 @@ class VideoDatabase(
                 'avfan_enrichment_status, javtxt_enrichment_status, prefix',
             )
             self._ensure_index(cursor, 'idx_ladder_entries_board', 'ladder_entries', 'board_key, entity_type, tier, entity_name')
+            self._migrate_enrichment_status_values(cursor)
             conn.commit()
+
+    def _migrate_enrichment_status_values(self, cursor):
+        """Normalize legacy human-readable source statuses to stable codes."""
+        status_columns = {
+            'processed_videos': ('enrichment_status', 'avfan_enrichment_status', 'javtxt_enrichment_status', 'supplement_enrichment_status'),
+            'actor_enrichments': ('enrichment_status', 'avfan_enrichment_status', 'javtxt_enrichment_status', 'binghuo_enrichment_status', 'baomu_enrichment_status'),
+            'actor_movies': ('javtxt_enrichment_status', 'supplement_enrichment_status'),
+            'code_prefix_enrichments': ('avfan_enrichment_status', 'javtxt_enrichment_status'),
+            'code_prefix_movies': ('javtxt_enrichment_status', 'supplement_enrichment_status'),
+            'excluded_actor_movies': ('javtxt_enrichment_status', 'supplement_enrichment_status'),
+            'excluded_code_prefix_movies': ('javtxt_enrichment_status', 'supplement_enrichment_status'),
+            'actor_library_summary': ('avfan_enrichment_status', 'javtxt_enrichment_status'),
+            'code_prefix_library_summary': ('avfan_enrichment_status', 'javtxt_enrichment_status'),
+            'canglangge_actor_candidates': ('binghuo_enrichment_status', 'baomu_enrichment_status'),
+        }
+        legacy_to_code = {
+            '未补全': UNENRICHED_STATUS,
+            '无搜索结果': NO_SEARCH_RESULTS_STATUS,
+            '无视频详情': NO_VIDEO_DETAIL_STATUS,
+            '已补全': ENRICHED_STATUS,
+            '补全失败': FAILED_STATUS,
+            '等待补全': PENDING_STATUS,
+            'x': UNENRICHED_STATUS,
+            'y': NO_SEARCH_RESULTS_STATUS,
+            'z': NO_VIDEO_DETAIL_STATUS,
+            'f': ENRICHED_STATUS,
+            's': FAILED_STATUS,
+            'w': PENDING_STATUS,
+        }
+        for table_name, columns in status_columns.items():
+            table_columns = {
+                str(row[1] or '').strip()
+                for row in cursor.execute(f'PRAGMA table_info({table_name})').fetchall()
+            }
+            for column_name in columns:
+                if column_name not in table_columns:
+                    continue
+                cases = ' '.join('WHEN ? THEN ?' for _ in legacy_to_code)
+                parameters = []
+                for legacy_value, code_value in legacy_to_code.items():
+                    parameters.extend((legacy_value, code_value))
+                cursor.execute(
+                    f'''UPDATE {table_name}
+                        SET {column_name} = CASE TRIM(COALESCE({column_name}, '')) {cases}
+                            ELSE {column_name} END
+                        WHERE TRIM(COALESCE({column_name}, '')) IN ({','.join('?' for _ in legacy_to_code)})''',
+                    [*parameters, *legacy_to_code],
+                )
 
     @staticmethod
     def _ensure_library_refresh_tracking_tables(cursor):
@@ -2376,14 +2427,14 @@ class VideoDatabase(
                     INSERT INTO processed_videos (
                         code, title, author, duration, size, storage_location, enrichment_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, '未补全')
+                    VALUES (?, ?, ?, ?, ?, ?, 'UNENRICHED')
                     ON CONFLICT(code) DO UPDATE SET
                         title = excluded.title,
                         author = excluded.author,
                         duration = excluded.duration,
                         size = excluded.size,
                         storage_location = excluded.storage_location,
-                        enrichment_status = COALESCE(NULLIF(processed_videos.enrichment_status, ''), '未补全')
+                        enrichment_status = COALESCE(NULLIF(processed_videos.enrichment_status, ''), 'UNENRICHED')
                 ''', (
                     normalized_code,
                     plan.metadata.title,
@@ -6942,7 +6993,8 @@ class VideoDatabase(
                 paused_reason TEXT NOT NULL DEFAULT '',
                 item_table TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_started_at TEXT
+                last_started_at TEXT,
+                show_browser INTEGER NOT NULL DEFAULT 0
             )
             '''
         )
@@ -6956,6 +7008,7 @@ class VideoDatabase(
         )
         self._ensure_column(cursor, 'enrichment_batch_plans', 'updated_at', 'TEXT')
         self._ensure_column(cursor, 'enrichment_batch_plans', 'last_started_at', 'TEXT')
+        self._ensure_column(cursor, 'enrichment_batch_plans', 'show_browser', 'INTEGER NOT NULL DEFAULT 0')
         item_tables = set(self._ENRICHMENT_BATCH_ITEM_TABLES.values()) | set(
             self._ENRICHMENT_PENDING_SOURCE_TABLES.values()
         )
@@ -7089,11 +7142,16 @@ class VideoDatabase(
         batch_count_limit,
         combo_key='',
         candidates=None,
+        initial_status='running',
+        show_browser=False,
     ):
         table_name = self._enrichment_pending_source_table(task_kind, source_key)
         normalized_batch_limit = max(1, int(batch_limit or 1))
         normalized_batch_count = max(1, int(batch_count_limit or 1))
         max_items = normalized_batch_limit * normalized_batch_count
+        normalized_initial_status = str(initial_status or 'running').strip()
+        if normalized_initial_status not in {'running', 'selected'}:
+            raise ValueError(f'非法补全计划初始状态: {initial_status}')
         plan_id = uuid.uuid4().hex
         item_rows = [
             self._build_enrichment_batch_item(candidate, source_key)
@@ -7106,9 +7164,9 @@ class VideoDatabase(
                 '''
                 INSERT INTO enrichment_batch_plans (
                     plan_id, task_kind, target_type, source_key, combo_key, item_table,
-                    status, batch_limit, batch_count_limit, started_at
+                    status, batch_limit, batch_count_limit, started_at, show_browser
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 ''',
                 (
                     plan_id,
@@ -7117,8 +7175,10 @@ class VideoDatabase(
                     str(source_key or '').strip(),
                     str(combo_key or '').strip(),
                     table_name,
+                    normalized_initial_status,
                     normalized_batch_limit,
                     normalized_batch_count,
+                    1 if show_browser else 0,
                 ),
             )
             cursor.executemany(
@@ -7164,6 +7224,7 @@ class VideoDatabase(
             'batch_count_limit': normalized_batch_count,
             'item_count': len(item_rows),
             'item_table': table_name,
+            'show_browser': bool(show_browser),
         }
 
     def list_enrichment_batch_items(self, plan_id, task_kind, status='pending', limit=None):
@@ -7289,7 +7350,7 @@ class VideoDatabase(
                 raise RuntimeError('当前已有补全任务正在执行')
             cursor.execute(
                 '''
-                SELECT batch_limit, batch_count_limit, completed_batch_count
+                SELECT status, batch_limit, batch_count_limit, completed_batch_count
                 FROM enrichment_batch_plans
                 WHERE plan_id = ? AND task_kind = ?
                 ''',
@@ -7299,7 +7360,10 @@ class VideoDatabase(
             if plan_row is None:
                 conn.commit()
                 return []
-            normalized_limit = min(normalized_limit, max(0, int(plan_row[0] or 0)))
+            if str(plan_row[0] or '').strip() == 'cancelled':
+                conn.commit()
+                return []
+            normalized_limit = min(normalized_limit, max(0, int(plan_row[1] or 0)))
             if normalized_limit <= 0:
                 conn.commit()
                 return []
@@ -7481,6 +7545,72 @@ class VideoDatabase(
             conn.commit()
             return restored_count
 
+    def cancel_enrichment_batch_plan(self, plan_id, task_kind, reason='用户删除任务'):
+        normalized_plan_id = str(plan_id or '').strip()
+        normalized_task_kind = str(task_kind or '').strip()
+        if not normalized_plan_id or not normalized_task_kind:
+            return {
+                'plan_id': normalized_plan_id,
+                'status': 'cancelled',
+                'released_count': 0,
+                'deleted_item_count': 0,
+            }
+        table_name = self._enrichment_plan_item_table(normalized_plan_id, normalized_task_kind)
+        normalized_reason = str(reason or '').strip() or '用户删除任务'
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('BEGIN IMMEDIATE')
+            cursor.execute(
+                '''
+                SELECT status
+                FROM enrichment_batch_plans
+                WHERE plan_id = ? AND task_kind = ?
+                ''',
+                (normalized_plan_id, normalized_task_kind),
+            )
+            plan_row = cursor.fetchone()
+            if plan_row is None:
+                conn.commit()
+                return {
+                    'plan_id': normalized_plan_id,
+                    'status': 'cancelled',
+                    'released_count': 0,
+                    'deleted_item_count': 0,
+                }
+            cursor.execute(
+                '''
+                DELETE FROM enrichment_running_items
+                WHERE plan_id = ? AND task_kind = ?
+                ''',
+                (normalized_plan_id, normalized_task_kind),
+            )
+            released_count = int(cursor.rowcount or 0)
+            cursor.execute(
+                f'DELETE FROM {table_name} WHERE plan_id = ?',
+                (normalized_plan_id,),
+            )
+            deleted_item_count = int(cursor.rowcount or 0)
+            cursor.execute(
+                '''
+                UPDATE enrichment_batch_plans
+                SET status = 'cancelled',
+                    last_error = ?,
+                    paused_reason = ?,
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE plan_id = ? AND task_kind = ?
+                ''',
+                (normalized_reason, normalized_reason, normalized_plan_id, normalized_task_kind),
+            )
+            conn.commit()
+        return {
+            'plan_id': normalized_plan_id,
+            'status': 'cancelled',
+            'released_count': released_count,
+            'deleted_item_count': released_count + deleted_item_count,
+            'source_item_count': deleted_item_count,
+        }
+
     def get_enrichment_batch_plan_progress(self, plan_id, task_kind):
         table_name = self._enrichment_plan_item_table(plan_id, task_kind)
         normalized_plan_id = str(plan_id or '').strip()
@@ -7494,7 +7624,7 @@ class VideoDatabase(
                 SELECT plan_id, task_kind, target_type, source_key, combo_key, status,
                        batch_limit, batch_count_limit, completed_batch_count,
                        created_at, started_at, completed_at, last_error,
-                       paused_reason, updated_at, last_started_at, completed_item_count
+                       paused_reason, updated_at, last_started_at, completed_item_count, show_browser
                 FROM enrichment_batch_plans
                 WHERE plan_id = ?
                 ''',
@@ -7550,6 +7680,7 @@ class VideoDatabase(
             'paused_reason': plan_row[13] or '',
             'updated_at': plan_row[14] or '',
             'last_started_at': plan_row[15] or '',
+            'show_browser': bool(plan_row[17]),
             'total_count': total_count,
             'pending_count': pending_count,
             'running_count': running_count,
@@ -7571,6 +7702,8 @@ class VideoDatabase(
         progress = self.get_enrichment_batch_plan_progress(plan_id, task_kind)
         if not progress:
             return {}
+        if progress.get('status') == 'cancelled':
+            return progress
         if status is None:
             has_unfinished = bool(
                 progress['pending_count']
@@ -7608,6 +7741,23 @@ class VideoDatabase(
             conn.commit()
         return self.get_enrichment_batch_plan_progress(plan_id, task_kind)
 
+    def update_enrichment_batch_plan_options(self, plan_id, show_browser=False):
+        normalized_plan_id = str(plan_id or '').strip()
+        if not normalized_plan_id:
+            return False
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE enrichment_batch_plans
+                SET show_browser = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE plan_id = ?
+                ''',
+                (1 if show_browser else 0, normalized_plan_id),
+            )
+            conn.commit()
+            return bool(cursor.rowcount)
+
     def list_enrichment_batch_plans(self, statuses=None):
         normalized_statuses = [
             str(status or '').strip() for status in (statuses or []) if str(status or '').strip()
@@ -7623,6 +7773,126 @@ class VideoDatabase(
             cursor.execute(sql, params)
             identities = cursor.fetchall()
         return [self.get_enrichment_batch_plan_progress(plan_id, task_kind) for plan_id, task_kind in identities]
+
+    def find_selected_enrichment_plan(self, task_kind, target_type, source_key):
+        table_name = self._enrichment_pending_source_table(task_kind, source_key)
+        with self._connect() as conn:
+            row = conn.execute(
+                f'''
+                SELECT plan_id, task_kind
+                FROM enrichment_batch_plans
+                WHERE status IN ('selected', 'paused')
+                  AND task_kind = ?
+                  AND target_type = ?
+                  AND source_key = ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM {table_name} AS pending_items
+                      WHERE pending_items.plan_id = enrichment_batch_plans.plan_id
+                        AND (
+                            pending_items.status = 'pending'
+                            OR (
+                                pending_items.status = 'failed'
+                                AND pending_items.attempt_count < ?
+                            )
+                        )
+                  )
+                ORDER BY CASE WHEN status = 'selected' THEN 0 ELSE 1 END,
+                         created_at ASC,
+                         plan_id ASC
+                LIMIT 1
+                ''',
+                (
+                    str(task_kind or '').strip(),
+                    str(target_type or '').strip(),
+                    str(source_key or '').strip(),
+                    self._ENRICHMENT_ITEM_MAX_ATTEMPTS,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_enrichment_batch_plan_progress(row[0], row[1])
+
+    def get_enrichment_queue_keys(self, task_kind, source_key):
+        table_name = self._enrichment_pending_source_table(task_kind, source_key)
+        with self._connect() as conn:
+            pending = conn.execute(
+                f'''
+                SELECT target_key, prefix, actor_name, code
+                FROM {table_name}
+                WHERE status IN ('pending', 'failed')
+                ''',
+            ).fetchall()
+            running = conn.execute(
+                '''
+                SELECT target_key, prefix, actor_name, code
+                FROM enrichment_running_items
+                WHERE task_kind = ? AND origin_table = ?
+                ''',
+                (str(task_kind or '').strip(), table_name),
+            ).fetchall()
+        rows = pending + running
+        return {
+            'target_keys': {str(row[0] or '').strip() for row in rows if str(row[0] or '').strip()},
+            'prefixes': {str(row[1] or '').strip().upper() for row in rows if str(row[1] or '').strip()},
+            'actor_names': {str(row[2] or '').strip() for row in rows if str(row[2] or '').strip()},
+            'codes': {str(row[3] or '').strip().upper() for row in rows if str(row[3] or '').strip()},
+        }
+
+    @staticmethod
+    def _aggregate_supplement_statuses(statuses):
+        normalized = [str(status or '').strip() for status in statuses if str(status or '').strip()]
+        if not normalized:
+            return UNENRICHED_STATUS
+        if FAILED_STATUS in normalized:
+            return FAILED_STATUS
+        if NO_VIDEO_DETAIL_STATUS in normalized:
+            return NO_VIDEO_DETAIL_STATUS
+        if NO_SEARCH_RESULTS_STATUS in normalized:
+            return NO_SEARCH_RESULTS_STATUS
+        if all(status == ENRICHED_STATUS for status in normalized):
+            return ENRICHED_STATUS
+        return UNENRICHED_STATUS
+
+    def get_actor_supplement_statuses(self, actor_names):
+        names = [str(name or '').strip() for name in actor_names or [] if str(name or '').strip()]
+        if not names:
+            return {}
+        placeholders = ','.join('?' for _ in names)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT actor_name, supplement_enrichment_status
+                FROM actor_movies
+                WHERE actor_name IN ({placeholders})
+                  AND TRIM(COALESCE(supplement_enrichment_status, '')) <> ''
+                ''',
+                names,
+            ).fetchall()
+        grouped = {name: [] for name in names}
+        for actor_name, status in rows:
+            grouped.setdefault(str(actor_name or '').strip(), []).append(status)
+        return {name: self._aggregate_supplement_statuses(statuses) for name, statuses in grouped.items()}
+
+    def get_code_prefix_supplement_statuses(self, prefixes):
+        normalized = [str(prefix or '').strip().upper() for prefix in prefixes or [] if str(prefix or '').strip()]
+        if not normalized:
+            return {}
+        placeholders = ','.join('?' for _ in normalized)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT UPPER(prefix), supplement_enrichment_status
+                FROM code_prefix_movies
+                WHERE UPPER(prefix) IN ({placeholders})
+                  AND TRIM(COALESCE(supplement_enrichment_status, '')) <> ''
+                ''',
+                normalized,
+            ).fetchall()
+        grouped = {prefix: [] for prefix in normalized}
+        for prefix, status in rows:
+            grouped.setdefault(str(prefix or '').strip().upper(), []).append(status)
+        return {prefix: self._aggregate_supplement_statuses(statuses) for prefix, statuses in grouped.items()}
 
     def list_resumable_enrichment_plans(self):
         rows = self.list_enrichment_batch_plans(statuses=['running', 'paused'])

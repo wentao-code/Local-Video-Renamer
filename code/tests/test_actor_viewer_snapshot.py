@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QApplication
 import app.gui.actor_viewer as actor_viewer
 from app.gui.actor_viewer import ACTOR_COLUMN_STATUS, ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -71,6 +72,37 @@ class _BackendStub:
 
 
 class ActorViewerSnapshotTest(unittest.TestCase):
+    def test_select_enrichment_tasks_keeps_actor_page_usable_and_queues_enrichment(self):
+        backend = _BackendStub()
+
+        with (
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_sync_async_task),
+            patch(
+                'app.gui.actor_viewer.load_actor_library_settings',
+                return_value={'sort_field': 'name', 'sort_order': 'asc'},
+            ),
+            patch('app.gui.actor_viewer.save_actor_library_settings'),
+        ):
+            window = ActorViewerWindow(backend)
+            try:
+                window._captured_async_calls = []
+                source_key = actor_viewer.AVFAN_VIDEO_SOURCE
+                source_label = actor_viewer.get_video_enrichment_source_label(source_key)
+                with (
+                    patch('app.gui.actor_viewer.QInputDialog.getItem', return_value=(source_label, True)),
+                    patch.object(window, 'start_async_task') as start_task,
+                ):
+                    window.select_enrichment_tasks()
+
+                kwargs = start_task.call_args.kwargs
+                self.assertFalse(kwargs['block_ui'])
+                self.assertTrue(kwargs['show_in_task_queue'])
+                self.assertEqual(kwargs['task_category'], TASK_CATEGORY_ENRICHMENT)
+                self.assertEqual(kwargs['task_kind'], 'actor')
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_actor_table_shows_source_and_final_completion_status_columns(self):
         backend = _BackendStub()
         with (

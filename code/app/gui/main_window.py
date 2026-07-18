@@ -71,12 +71,17 @@ from app.gui.task_queue import (
     TASK_CATEGORY_ENRICHMENT,
     TASK_CATEGORY_MAINTENANCE,
     TASK_CATEGORY_VIEW,
+    TASK_STATUS_CANCELLING,
+    TASK_STATUS_COMPLETED,
+    TASK_STATUS_DELETED,
+    TASK_STATUS_PARTIAL,
     TASK_STATUS_PAUSED,
     TASK_STATUS_RUNNING,
     TASK_STATUS_WAITING,
     get_gui_task_queue,
 )
 from app.gui.snapshot_refresh_orchestrator import SnapshotRefreshOrchestrator
+from app.gui.status_rule_viewer import StatusRuleViewerWindow
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
@@ -715,6 +720,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_timeout_settings = QPushButton('超时器')
         self.btn_timeout_settings.clicked.connect(self.show_timeout_settings_viewer)
 
+        self.btn_status_rules = QPushButton(tr('main.status_rules'))
+        self.btn_status_rules.clicked.connect(self.show_status_rules_viewer)
+
         self.btn_execute = QPushButton(tr('main.execute_rename'))
         self.btn_execute.clicked.connect(self.execute_rename)
         self.btn_execute.setEnabled(False)
@@ -756,6 +764,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_refresh_detail_snapshots)
         bottom_button_row.addWidget(self.btn_task_queue)
         bottom_button_row.addWidget(self.btn_timeout_settings)
+        bottom_button_row.addWidget(self.btn_status_rules)
         bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
         bottom_button_row.addWidget(self.btn_disguise)
@@ -950,17 +959,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
         resume_plan = dict(resume_plan or getattr(self, '_active_enrichment_batch_plan_state', None) or {})
-        plan_batch_count_limit = (
-            (self.batch_enrichment_config or {}).get('batch_count_limit', 1)
-            if mode == 'batch'
-            else int(resume_plan.get('batch_count_limit', 1) or 1)
-        )
-        batch_plan_payload = None if resume_plan.get('plan_id') else VidNormApp._build_enrichment_batch_plan_payload(
-            target_type,
-            source_key,
-            limit,
-            plan_batch_count_limit,
-        )
+        # Candidate selection is an explicit action in the library viewers.
+        # Execution must consume an existing selected or resumed plan.
+        batch_plan_payload = None
         batch_plan_state = dict(resume_plan)
         self._queued_enrichment_worker_factory = (
             lambda: EnrichmentWorker(
@@ -1581,7 +1582,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'limit': batch_limit,
                 'batch_count_limit': batch_total,
                 'interval_minutes': 1,
-                'show_browser': False,
+                'show_browser': bool(plan.get('show_browser', False)),
                 'cooldown_before_search': False,
                 'target_type': target_type,
                 'source_key': source_key,
@@ -1592,7 +1593,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.batch_enrichment_config = None
         self.start_enrichment(
             batch_limit,
-            False,
+            bool(plan.get('show_browser', False)),
             False,
             target_type,
             source_key,
@@ -1617,6 +1618,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         plan_id='',
         plan_progress=None,
         max_attempts=5,
+        cancel_callback=None,
     ):
         def start_runner(record):
             if callable(before_start):
@@ -1632,6 +1634,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             worker = worker_factory()
 
             def handle_finished(result):
+                if record.status == TASK_STATUS_CANCELLING:
+                    return
                 if isinstance(result, dict) and result.get('plan_id'):
                     get_gui_task_queue().update_record_plan(
                         record.task_id,
@@ -1651,6 +1655,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 try:
                     if callable(cleanup_handler):
                         cleanup_handler()
+                    if record.status == TASK_STATUS_CANCELLING:
+                        get_gui_task_queue().mark_deleted(record.task_id, record.pause_reason or '用户删除任务')
+                        return
                     if attempt_state['failed']:
                         message = attempt_state['message']
                         retryable = not VidNormApp._is_non_retryable_enrichment_error(
@@ -1691,6 +1698,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if plan_id:
             enqueue_kwargs['plan_id'] = plan_id
             enqueue_kwargs['plan_progress'] = plan_progress
+        if cancel_callback is not None:
+            enqueue_kwargs['cancel_callback'] = cancel_callback
         get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
         return True
 
@@ -2757,6 +2766,45 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 viewer.destroyed.connect(
                     lambda *_args: setattr(self, 'timeout_settings_window', None)
                 )
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
+
+    def cancel_task_records(self, records):
+        queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
+        cancelled_count = 0
+        for record in records or []:
+            if record.status in {TASK_STATUS_COMPLETED, TASK_STATUS_PARTIAL, TASK_STATUS_DELETED}:
+                continue
+            was_running = record.status in {TASK_STATUS_RUNNING, TASK_STATUS_CANCELLING}
+            if not queue.cancel_task(record.task_id, '用户删除任务'):
+                continue
+            try:
+                if record.plan_id and record.plan_task_kind:
+                    self.backend_client.cancel_enrichment_plan(
+                        record.plan_id,
+                        record.plan_task_kind,
+                        '用户删除任务',
+                    )
+                if was_running:
+                    self.backend_client.cancel_enrichment()
+            except Exception as exc:
+                record_error = str(exc or '').strip() or '取消任务失败'
+                queue.restore_cancel_failure(record.task_id, record_error)
+                QMessageBox.critical(self, '删除任务失败', record_error)
+                continue
+            if not was_running:
+                queue.mark_deleted(record.task_id, '用户删除任务')
+            cancelled_count += 1
+        return cancelled_count
+
+    def show_status_rules_viewer(self):
+        viewer = self.__dict__.get('status_rules_window')
+        if viewer is None:
+            viewer = StatusRuleViewerWindow(parent=self)
+            self.status_rules_window = viewer
+            if hasattr(viewer, 'destroyed'):
+                viewer.destroyed.connect(lambda *_args: setattr(self, 'status_rules_window', None))
         viewer.show()
         viewer.raise_()
         viewer.activateWindow()

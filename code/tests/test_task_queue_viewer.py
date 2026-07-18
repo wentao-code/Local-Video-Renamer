@@ -77,6 +77,26 @@ class TaskQueueViewerWindowTest(unittest.TestCase):
             viewer.close()
             viewer.deleteLater()
 
+    def test_delete_selected_button_cancels_selected_waiting_task(self):
+        viewer = TaskQueueViewerWindow()
+        try:
+            first = self.queue.enqueue('first', 'test', lambda _record: None)
+            second = self.queue.enqueue('second', 'test', lambda _record: None)
+            _APP.processEvents()
+            viewer.refresh_rows()
+            viewer.table.selectRow(1)
+            viewer.confirm_delete = lambda _records: True
+
+            self.assertTrue(viewer.btn_delete_selected.isEnabled())
+            viewer.delete_selected_tasks()
+            _APP.processEvents()
+
+            self.assertEqual(self.queue.records()[0].task_id, first.task_id)
+            self.assertEqual(self.queue.records()[1].status, '已删除')
+        finally:
+            viewer.close()
+            viewer.deleteLater()
+
 
 if __name__ == '__main__':
     unittest.main()

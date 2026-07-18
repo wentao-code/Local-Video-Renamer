@@ -202,6 +202,27 @@ class LadderBoardViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_fast_admit_updates_tier_view_without_waiting_for_board_snapshot(self):
+        backend = LadderBoardBackendStub()
+        backend.admit_ladder_entry = lambda _board_key, entity_name, tier: {
+            'board_key': LADDER_BOARD_ACTOR,
+            'entity_name': entity_name,
+            'tier': tier,
+            'refresh': {'status': 'queued'},
+        }
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = LadderBoardWindow(backend)
+            try:
+                window.admit_entry('ActorA', 'B')
+
+                self.assertEqual(window.current_view_key, 'B')
+                self.assertEqual(window.stacked_widget.currentIndex(), 1)
+                self.assertEqual(window.selected_panel.table.item(0, 1).text(), 'B')
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_admitting_to_hidden_d_tier_returns_to_candidates(self):
         backend = LadderBoardBackendStub()
 

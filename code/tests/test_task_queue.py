@@ -13,6 +13,8 @@ from app.gui.task_queue import (
     TASK_CATEGORY_ENRICHMENT,
     TASK_CATEGORY_VIEW,
     TASK_STATUS_COMPLETED,
+    TASK_STATUS_CANCELLING,
+    TASK_STATUS_DELETED,
     TASK_STATUS_PAUSED,
     TASK_STATUS_PARTIAL,
     TASK_STATUS_RUNNING,
@@ -64,6 +66,59 @@ class GuiTaskQueueTest(unittest.TestCase):
         records = self.queue.records()
         self.assertEqual(records[0].status, TASK_STATUS_COMPLETED)
         self.assertEqual(records[1].status, TASK_STATUS_RUNNING)
+
+    def test_deleting_waiting_task_removes_it_from_scheduler(self):
+        started = []
+        first = self.queue.enqueue('first', 'test', lambda record: started.append(record.task_id))
+        second = self.queue.enqueue('second', 'test', lambda record: started.append(record.task_id))
+
+        _process_events()
+        self.assertTrue(self.queue.cancel_task(second.task_id, '用户删除任务'))
+        self.queue.mark_completed(first.task_id)
+        _process_events()
+
+        records = self.queue.records()
+        self.assertEqual(started, [first.task_id])
+        self.assertEqual(records[1].status, TASK_STATUS_DELETED)
+
+    def test_deleting_running_task_waits_for_cleanup_and_ignores_late_result(self):
+        cancellation = []
+        record = self.queue.enqueue(
+            '补全',
+            'test',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            cancel_callback=lambda task_record: cancellation.append(task_record.task_id),
+        )
+        _process_events()
+
+        self.assertTrue(self.queue.cancel_task(record.task_id, '用户删除任务'))
+        self.assertEqual(self.queue.records()[0].status, TASK_STATUS_CANCELLING)
+        self.assertEqual(cancellation, [record.task_id])
+
+        self.queue.mark_deleted(record.task_id, '用户删除任务')
+        self.queue.mark_completed(record.task_id)
+        self.queue.mark_failed(record.task_id, '迟到错误')
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.status, TASK_STATUS_DELETED)
+        self.assertEqual(current.last_error, '用户删除任务')
+
+    def test_cancel_failure_restores_running_task_for_retry(self):
+        record = self.queue.enqueue(
+            '补全',
+            'test',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+        )
+        _process_events()
+
+        self.queue.cancel_task(record.task_id, '用户删除任务')
+        self.queue.restore_cancel_failure(record.task_id, '后台接口不可用')
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.status, TASK_STATUS_RUNNING)
+        self.assertEqual(current.last_error, '后台接口不可用')
 
     def test_failed_task_moves_to_queue_tail_until_retry_limit(self):
         started = []

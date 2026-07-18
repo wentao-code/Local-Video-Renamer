@@ -141,7 +141,7 @@ class ActorBaomuEnrichmentService:
             'remaining_label': '剩余未补全演员',
         }
 
-    def _candidate_actors(self):
+    def _candidate_actors(self, include_canglangge=True):
         if self.planned_items:
             return [
                 {'actor_name': actor_name, 'priority': 0}
@@ -152,7 +152,8 @@ class ActorBaomuEnrichmentService:
         candidates = []
         seen = set()
 
-        for row in self.canglangge_candidate_service.list_candidates():
+        candidate_rows = self.canglangge_candidate_service.list_candidates() if include_canglangge else []
+        for row in candidate_rows:
             actor_name = str((row or {}).get('actor_name', '') or '').strip()
             if not actor_name or actor_name in seen:
                 continue
@@ -171,10 +172,16 @@ class ActorBaomuEnrichmentService:
         return self._filter_planned_candidates(sorted(candidates, key=lambda item: (item['priority'], item['actor_name'])))
 
     def list_plan_candidate_names(self, limit):
+        return self._list_plan_candidate_names(limit, include_canglangge=True)
+
+    def list_actor_library_plan_candidate_names(self, limit):
+        return self._list_plan_candidate_names(limit, include_canglangge=False)
+
+    def _list_plan_candidate_names(self, limit, include_canglangge):
         limit = max(0, int(limit or 0))
         return [
             str(item.get('actor_name', '') or '').strip()
-            for item in self._candidate_actors()[:limit]
+            for item in self._candidate_actors(include_canglangge=include_canglangge)[:limit]
             if str(item.get('actor_name', '') or '').strip()
         ]
 

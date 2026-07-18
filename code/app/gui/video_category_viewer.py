@@ -45,6 +45,9 @@ COLUMN_COLLECTION = 4
 COLUMN_STAGE = 5
 COLUMN_AVFAN_DETAIL = 6
 COLUMN_JAVTXT_DETAIL = 7
+COLUMN_AVFAN_STATUS = 8
+COLUMN_JAVTXT_STATUS = 9
+COLUMN_SUPPLEMENT_STATUS = 10
 
 CATEGORY_COLUMNS = {
     COLUMN_SINGLE: VIDEO_CATEGORY_SINGLE,
@@ -82,7 +85,7 @@ class VideoCategoryTableModel(QAbstractTableModel):
     def columnCount(self, parent=QModelIndex()):
         if parent.isValid():
             return 0
-        return 8
+        return 11
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
@@ -103,6 +106,12 @@ class VideoCategoryTableModel(QAbstractTableModel):
                 return tr('video.category.avfan_detail')
             if column == COLUMN_JAVTXT_DETAIL:
                 return tr('video.category.javtxt_detail')
+            if column == COLUMN_AVFAN_STATUS:
+                return str(row.get('avfan_display_status', '') or '').strip()
+            if column == COLUMN_JAVTXT_STATUS:
+                return str(row.get('javtxt_display_status', '') or '').strip()
+            if column == COLUMN_SUPPLEMENT_STATUS:
+                return str(row.get('supplement_display_status', '') or '').strip()
             return ''
 
         if role == Qt.TextAlignmentRole:
@@ -488,6 +497,9 @@ class VideoCategoryViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog
         for index in (COLUMN_STAGE, COLUMN_AVFAN_DETAIL, COLUMN_JAVTXT_DETAIL):
             self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Fixed)
             self.table.setColumnWidth(index, ACTION_COLUMN_WIDTH)
+        for index in (COLUMN_AVFAN_STATUS, COLUMN_JAVTXT_STATUS, COLUMN_SUPPLEMENT_STATUS):
+            self.table.horizontalHeader().setSectionResizeMode(index, QHeaderView.Fixed)
+            self.table.setColumnWidth(index, 64)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

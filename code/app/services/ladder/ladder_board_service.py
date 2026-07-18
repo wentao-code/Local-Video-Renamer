@@ -119,6 +119,29 @@ class LadderBoardService:
         )
         return self._build_board_from_local_counts(config, local_counts)
 
+    def admit_entry_fast(self, board_key, entity_name, tier):
+        config = get_ladder_board_config(board_key)
+        normalized_name = str(entity_name or '').strip()
+        normalized_tier = normalize_ladder_tier(tier)
+        if not normalized_name:
+            raise ValueError('缺少入选名称')
+        if not normalized_tier:
+            raise ValueError('请选择有效等级')
+
+        self.database.save_ladder_entry(
+            config['board_key'],
+            config['entity_type'],
+            normalized_name,
+            normalized_tier,
+            timeout_seconds=3,
+        )
+        return {
+            'board_key': config['board_key'],
+            'entity_type': config['entity_type'],
+            'entity_name': normalized_name,
+            'tier': normalized_tier,
+        }
+
     def update_medal(self, board_key, entity_name, medal):
         config = get_ladder_board_config(board_key)
         normalized_name = str(entity_name or '').strip()

@@ -126,14 +126,14 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
 
     @patch('app.backend.service.ActorBaomuEnrichmentService')
     def test_baomu_plan_uses_only_incomplete_binghuo_candidates(self, service_class):
-        service_class.return_value.list_plan_candidate_names.return_value = ['演员甲']
+        service_class.return_value.list_actor_library_plan_candidate_names.return_value = ['演员甲']
 
         candidates = self.service._build_enrichment_batch_plan_candidates(
             'actor_birthday', 'actor_birthday', 'baomu', 1
         )
 
         self.assertEqual(candidates, [{'actor_name': '演员甲'}])
-        service_class.return_value.list_plan_candidate_names.assert_called_once_with(1)
+        service_class.return_value.list_actor_library_plan_candidate_names.assert_called_once_with(1)
 
     def test_video_avfan_plan_uses_only_javtxt_supplement_candidates(self):
         self.service.db.list_video_supplement_candidates = lambda limit: [

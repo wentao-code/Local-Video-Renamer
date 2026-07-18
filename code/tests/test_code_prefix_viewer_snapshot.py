@@ -7,8 +7,10 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication, QHeaderView
 
+import app.gui.code_prefix_viewer as code_prefix_viewer
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.code_prefix_viewer import CodePrefixViewerWindow
+from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -117,6 +119,37 @@ class _TimeoutAfterSnapshotBackendStub(_BackendStub):
 
 
 class CodePrefixViewerSnapshotTest(unittest.TestCase):
+    def test_select_enrichment_tasks_keeps_code_prefix_page_usable_and_queues_enrichment(self):
+        backend = _BackendStub()
+
+        with (
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_sync_async_task),
+            patch(
+                'app.gui.code_prefix_viewer.load_code_prefix_library_settings',
+                return_value={'sort_field': 'prefix', 'sort_order': 'asc'},
+            ),
+            patch('app.gui.code_prefix_viewer.save_code_prefix_library_settings'),
+        ):
+            window = CodePrefixViewerWindow(backend)
+            try:
+                window._captured_async_calls = []
+                source_key = code_prefix_viewer.AVFAN_VIDEO_SOURCE
+                source_label = code_prefix_viewer.get_video_enrichment_source_label(source_key)
+                with (
+                    patch('app.gui.code_prefix_viewer.QInputDialog.getItem', return_value=(source_label, True)),
+                    patch.object(window, 'start_async_task') as start_task,
+                ):
+                    window.select_enrichment_tasks()
+
+                kwargs = start_task.call_args.kwargs
+                self.assertFalse(kwargs['block_ui'])
+                self.assertTrue(kwargs['show_in_task_queue'])
+                self.assertEqual(kwargs['task_category'], TASK_CATEGORY_ENRICHMENT)
+                self.assertEqual(kwargs['task_kind'], 'code_prefix')
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_table_expands_status_and_release_date_columns(self):
         backend = _BackendStub()
 

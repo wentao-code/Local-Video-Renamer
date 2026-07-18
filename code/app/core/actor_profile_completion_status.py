@@ -57,6 +57,11 @@ def build_actor_source_completion_status(record, source_key):
     return build_actor_profile_completion_status(_source_profile(record, prefix), has_result=True)
 
 
+ACTOR_STATUS_UNENRICHED = '状态18'
+ACTOR_STATUS_PENDING = '状态19'
+ACTOR_STATUS_FAILED = '状态20'
+
+
 def build_actor_final_completion_status(record):
     record = dict(record or {})
     source_statuses = {

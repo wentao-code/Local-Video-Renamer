@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -19,6 +20,7 @@ from PyQt5.QtWidgets import (
 from app.core.enrichment_sources import (
     AVFAN_VIDEO_SOURCE,
     JAVTXT_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
     get_video_enrichment_source_label,
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
@@ -40,6 +42,7 @@ from app.gui.deferred_reload_mixin import DeferredReloadMixin
 from app.gui.i18n import tr
 from app.gui.library_update_status_colors import update_status_foreground
 from app.gui.snapshot_refresh_utils import resolve_refresh_duration_text
+from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
 from app.core.enrichment_sources import build_library_enrichment_status_text
 from app.core.enrichment_status import UNENRICHED_STATUS
 from app.services.detail import CODE_PREFIX_DETAIL_FILTER_OPTIONS, DETAIL_FILTER_ALL, filter_library_rows
@@ -674,6 +677,43 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             if item and item.text().strip():
                 prefixes.append(item.text().strip())
         return prefixes
+
+    def select_enrichment_tasks(self):
+        source_keys = (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE)
+        labels = [get_video_enrichment_source_label(key) for key in source_keys]
+        source_label, accepted = QInputDialog.getItem(
+            self, tr('enrichment.select_tasks'), tr('enrichment.select_source'), labels, 0, False
+        )
+        if not accepted:
+            return
+        source_key = source_keys[labels.index(source_label)]
+        self.start_async_task(
+            lambda: self.backend_client.select_enrichment_candidates({
+                'task_kind': 'code_prefix',
+                'target_type': 'code_prefix_library',
+                'source_key': source_key,
+                'batch_count_limit': 1,
+                'all_candidates': True,
+            }),
+            lambda result: self._on_select_tasks_finished(result, source_key),
+            tr('enrichment.select_failed'),
+            task_title=tr('enrichment.select_tasks'),
+            block_ui=False,
+            show_in_task_queue=True,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            task_kind='code_prefix',
+        )
+
+    def _on_select_tasks_finished(self, result, source_key):
+        plan = dict((result or {}).get('plan', result or {}) or {})
+        QMessageBox.information(
+            self,
+            tr('enrichment.select_tasks'),
+            tr('enrichment.select_completed',
+               source_label=get_video_enrichment_source_label(source_key),
+               count=int(plan.get('item_count', 0) or 0)),
+        )
+        self.load_data(force_refresh=True, silent_errors=True, block_ui=False)
 
     def current_selected_prefix(self):
         prefixes = self.selected_prefixes()

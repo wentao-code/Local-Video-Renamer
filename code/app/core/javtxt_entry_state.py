@@ -3,6 +3,7 @@ from app.core.enrichment_status import (
     FAILED_STATUS,
     UNENRICHED_STATUS,
     is_no_result_status,
+    normalize_enrichment_status,
 )
 from app.core.second_source_actor_text import is_unpublished_actor_text, normalize_second_source_actor_text
 
@@ -49,8 +50,7 @@ def classify_actor_state(record=None, cached_row=None):
 
 
 def normalize_javtxt_search_status(value):
-    text = str(value or '').strip()
-    return text or UNENRICHED_STATUS
+    return normalize_enrichment_status(value)
 
 
 def has_detail_reference(record=None, cached_row=None):

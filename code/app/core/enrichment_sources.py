@@ -1,7 +1,11 @@
 from app.core.enrichment_status import (
     ENRICHED_STATUS,
     FAILED_STATUS,
+    NO_SEARCH_RESULTS_STATUS,
+    PENDING_STATUS,
     UNENRICHED_STATUS,
+    get_enrichment_status_display_code,
+    normalize_enrichment_status,
     is_no_result_status,
 )
 
@@ -41,8 +45,8 @@ def build_video_enrichment_status_text(avfan_status, javtxt_status):
     normalized_avfan = normalize_source_enrichment_status(avfan_status, AVFAN_VIDEO_SOURCE)
     normalized_javtxt = normalize_source_enrichment_status(javtxt_status, JAVTXT_VIDEO_SOURCE)
     return (
-        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {normalized_avfan} | '
-        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {normalized_javtxt}'
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {_format_library_display_status(avfan_status)} | '
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {_format_library_display_status(javtxt_status)}'
     )
 
 
@@ -50,21 +54,44 @@ def build_library_enrichment_status_text(avfan_status, javtxt_status, binghuo_st
     normalized_avfan = normalize_source_enrichment_status(avfan_status, AVFAN_VIDEO_SOURCE)
     normalized_javtxt = normalize_source_enrichment_status(javtxt_status, JAVTXT_VIDEO_SOURCE)
     parts = [
-        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {normalized_avfan}',
-        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {normalized_javtxt}',
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[AVFAN_VIDEO_SOURCE]}: {_format_library_display_status(avfan_status)}',
+        f'{VIDEO_ENRICHMENT_SOURCE_LABELS[JAVTXT_VIDEO_SOURCE]}: {_format_library_display_status(javtxt_status)}',
     ]
     if binghuo_status is not None:
-        normalized_binghuo = normalize_source_enrichment_status(binghuo_status, BINGHUO_ACTOR_SOURCE)
-        parts.append(f'{VIDEO_ENRICHMENT_SOURCE_LABELS[BINGHUO_ACTOR_SOURCE]}: {normalized_binghuo}')
+        parts.append(
+            f'{VIDEO_ENRICHMENT_SOURCE_LABELS[BINGHUO_ACTOR_SOURCE]}: '
+            f'{_format_actor_display_status(binghuo_status)}'
+        )
     if baomu_status is not None:
-        normalized_baomu = normalize_source_enrichment_status(baomu_status, BAOMU_ACTOR_SOURCE)
-        parts.append(f'{VIDEO_ENRICHMENT_SOURCE_LABELS[BAOMU_ACTOR_SOURCE]}: {normalized_baomu}')
+        parts.append(
+            f'{VIDEO_ENRICHMENT_SOURCE_LABELS[BAOMU_ACTOR_SOURCE]}: '
+            f'{_format_actor_display_status(baomu_status)}'
+        )
     return ' | '.join(parts)
 
 
-def normalize_video_enrichment_status(status):
+def _format_actor_display_status(status):
     text = str(status or '').strip()
-    return text or UNENRICHED_STATUS
+    if text.startswith('状态'):
+        return text
+    normalized = normalize_enrichment_status(text)
+    return {
+        UNENRICHED_STATUS: '状态18',
+        PENDING_STATUS: '状态19',
+        FAILED_STATUS: '状态20',
+        NO_SEARCH_RESULTS_STATUS: '状态1',
+    }.get(normalized, get_enrichment_status_display_code(normalized))
+
+
+def _format_library_display_status(status):
+    text = str(status or '').strip()
+    if text in {'已过期', '已更新', '无本地视频', '未检查'}:
+        return text
+    return get_enrichment_status_display_code(text)
+
+
+def normalize_video_enrichment_status(status):
+    return normalize_enrichment_status(status)
 
 
 def normalize_source_enrichment_status(status, source_key):

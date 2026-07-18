@@ -32,7 +32,8 @@ from app.core.enrichment_sources import (
     SUPPLEMENT_TASK_SOURCE,
     build_library_enrichment_status_text,
 )
-from app.core.enrichment_status import ENRICHED_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_display_status import get_source_display_status
 from app.core.actor_profile_completion_status import build_actor_final_completion_status, build_actor_source_completion_status
 from app.core.library_refresh_expiry import effective_library_refresh_status
 from app.core.javtxt_video_state import is_javtxt_eligible_movie
@@ -148,6 +149,8 @@ class BackendService:
         self._snapshot_lock = threading.Lock()
         self._canglangge_snapshot_lock = threading.Lock()
         self._ladder_board_snapshots = {}
+        self._ladder_refresh_lock = threading.Lock()
+        self._ladder_refresh_threads = {}
         self._path_library_snapshot = None
         self._canglangge_snapshot = None
         self._snapshot_refresh_log_file = SNAPSHOT_REFRESH_LOG_FILE
@@ -699,9 +702,11 @@ class BackendService:
 
     def list_videos_requiring_manual_category(self):
         overview = self.list_unfiltered_videos_requiring_manual_category()
+        videos = [dict(row or {}) for row in (overview or {}).get('videos', []) or []]
+        self._attach_video_display_statuses(videos)
         return {
             **dict(overview or {}),
-            'videos': self.video_filter_service.filter_video_rows((overview or {}).get('videos', []) or []),
+            'videos': self.video_filter_service.filter_video_rows(videos),
         }
 
     def list_unfiltered_videos_requiring_manual_category(self):
@@ -722,8 +727,11 @@ class BackendService:
                 and not force_refresh
                 and self._is_video_category_snapshot_current(snapshot)
             ):
+                cached_payload = self._clone_video_category_snapshot(snapshot)
+                self._attach_video_display_statuses(cached_payload.get('videos', []))
+                self._attach_video_display_statuses(cached_payload.get('raw_videos', []))
                 return {
-                    **self._clone_video_category_snapshot(snapshot),
+                    **cached_payload,
                     'cache_hit': True,
                 }
 
@@ -731,6 +739,7 @@ class BackendService:
         overview = self.list_unfiltered_videos_requiring_manual_category()
         refresh_duration_ms = self._build_refresh_duration_ms(started_at)
         raw_videos = [dict(row or {}) for row in (overview or {}).get('videos', []) or []]
+        self._attach_video_display_statuses(raw_videos)
         if normalized_tier:
             raw_videos = [
                 row
@@ -870,8 +879,10 @@ class BackendService:
         with self._snapshot_guard():
             snapshot = (self._actor_library_snapshots or {}).get(snapshot_key)
             if snapshot is not None and not force_refresh:
+                cached_payload = self._clone_actor_list_snapshot(snapshot)
+                self._attach_actor_display_statuses(cached_payload.get('actors', []))
                 return {
-                    **self._clone_actor_list_snapshot(snapshot),
+                    **cached_payload,
                     'cache_hit': True,
                 }
 
@@ -884,6 +895,7 @@ class BackendService:
             offset=normalized_offset,
             include_update_status=include_update_status,
         )
+        self._attach_actor_display_statuses(payload.get('actors', []))
         refresh_duration_ms = self._build_refresh_duration_ms(started_at)
         snapshot = self._build_snapshot_payload(
             actors=[dict(row or {}) for row in payload.get('actors', []) or []],
@@ -1051,12 +1063,82 @@ class BackendService:
                 offset=normalized_offset,
             )
         )
+        self._attach_code_prefix_display_statuses(rows)
         return {
             'prefixes': rows,
             'total_count': self._count_code_prefixes_for_listing(search_text, fallback_rows=rows),
             'offset': normalized_offset,
             'limit': normalized_limit,
         }
+
+    def _attach_video_display_statuses(self, rows):
+        queue_keys = {
+            source_key: self._get_enrichment_queue_keys('video', source_key)
+            for source_key in (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE)
+        }
+        for row in rows or []:
+            code = str((row or {}).get('code', '') or '').strip().upper()
+            statuses = {}
+            for source_key, field_name in (
+                (AVFAN_VIDEO_SOURCE, 'avfan_enrichment_status'),
+                (JAVTXT_VIDEO_SOURCE, 'javtxt_enrichment_status'),
+                (SUPPLEMENT_TASK_SOURCE, 'supplement_enrichment_status'),
+            ):
+                statuses[source_key] = get_source_display_status(
+                    source_key,
+                    row,
+                    selected=code in queue_keys[source_key]['codes'],
+                )
+            row['avfan_display_status'] = statuses[AVFAN_VIDEO_SOURCE]
+            row['javtxt_display_status'] = statuses[JAVTXT_VIDEO_SOURCE]
+            row['supplement_display_status'] = statuses[SUPPLEMENT_TASK_SOURCE]
+
+    def _attach_code_prefix_display_statuses(self, rows):
+        queue_keys = {
+            source_key: self._get_enrichment_queue_keys('code_prefix', source_key)
+            for source_key in (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE)
+        }
+        supplement_statuses = self._get_code_prefix_supplement_statuses(
+            [str((row or {}).get('prefix', '') or '').strip() for row in rows or []]
+        )
+        for row in rows or []:
+            prefix = str((row or {}).get('prefix', '') or '').strip().upper()
+            avfan_status = get_source_display_status(
+                AVFAN_VIDEO_SOURCE,
+                row,
+                selected=prefix in queue_keys[AVFAN_VIDEO_SOURCE]['prefixes'],
+            )
+            javtxt_status = get_source_display_status(
+                JAVTXT_VIDEO_SOURCE,
+                row,
+                selected=prefix in queue_keys[JAVTXT_VIDEO_SOURCE]['prefixes'],
+            )
+            supplement_status = get_source_display_status(
+                SUPPLEMENT_TASK_SOURCE,
+                row,
+                selected=prefix in queue_keys[SUPPLEMENT_TASK_SOURCE]['prefixes'],
+                status_override=supplement_statuses.get(prefix),
+            )
+            row['avfan_display_status'] = avfan_status
+            row['javtxt_display_status'] = javtxt_status
+            row['supplement_display_status'] = supplement_status
+            row['enrichment_status'] = (
+                f'天限阁:{avfan_status} | 辛聚谷:{javtxt_status} | 补充:{supplement_status}'
+            )
+
+    def _get_enrichment_queue_keys(self, task_kind, source_key):
+        getter = getattr(getattr(self, 'db', None), 'get_enrichment_queue_keys', None)
+        if not callable(getter):
+            return {'target_keys': set(), 'prefixes': set(), 'actor_names': set(), 'codes': set()}
+        return getter(task_kind, source_key)
+
+    def _get_actor_supplement_statuses(self, actor_names):
+        getter = getattr(getattr(self, 'db', None), 'get_actor_supplement_statuses', None)
+        return getter(actor_names) if callable(getter) else {}
+
+    def _get_code_prefix_supplement_statuses(self, prefixes):
+        getter = getattr(getattr(self, 'db', None), 'get_code_prefix_supplement_statuses', None)
+        return getter(prefixes) if callable(getter) else {}
 
     def list_code_prefixes_snapshot(
         self,
@@ -1083,8 +1165,10 @@ class BackendService:
         with self._snapshot_guard():
             snapshot = (self._code_prefix_library_snapshots or {}).get(snapshot_key)
             if snapshot is not None and not force_refresh:
+                cached_payload = self._clone_code_prefix_list_snapshot(snapshot)
+                self._attach_code_prefix_display_statuses(cached_payload.get('prefixes', []))
                 return {
-                    **self._clone_code_prefix_list_snapshot(snapshot),
+                    **cached_payload,
                     'cache_hit': True,
                 }
 
@@ -1352,12 +1436,55 @@ class BackendService:
 
     def admit_ladder_entry(self, board_key, entity_name, tier):
         self.ensure_database_loaded()
-        board = self.ladder_board_service.admit_entry(board_key, entity_name, tier)
+        fast_admit = getattr(self.ladder_board_service, 'admit_entry_fast', None)
+        if callable(fast_admit):
+            result = fast_admit(board_key, entity_name, tier)
+        else:
+            board = self.ladder_board_service.admit_entry(board_key, entity_name, tier)
+            result = {
+                'board_key': str(board_key or '').strip(),
+                'entity_name': str(entity_name or '').strip(),
+                'tier': str(tier or '').strip().upper(),
+                'board': board,
+            }
         if str(board_key or '').strip() == LADDER_BOARD_CODE_PREFIX:
             self._invalidate_code_prefix_snapshots()
         if str(board_key or '').strip() == LADDER_BOARD_ACTOR:
             self._invalidate_actor_ladder_snapshots(entity_name)
-        return self._store_ladder_board_snapshot(board_key, board)
+        result['refresh'] = self._queue_ladder_board_snapshot_refresh(board_key)
+        return result
+
+    def _queue_ladder_board_snapshot_refresh(self, board_key):
+        normalized_board_key = str(board_key or '').strip()
+        if not normalized_board_key:
+            return {'status': 'ignored'}
+        if not hasattr(self, '_ladder_refresh_lock'):
+            self._ladder_refresh_lock = threading.Lock()
+        if not hasattr(self, '_ladder_refresh_threads'):
+            self._ladder_refresh_threads = {}
+        with self._ladder_refresh_lock:
+            existing = self._ladder_refresh_threads.get(normalized_board_key)
+            if existing is not None and existing.is_alive():
+                return {'status': 'running'}
+            worker = threading.Thread(
+                target=self._run_ladder_board_snapshot_refresh,
+                args=(normalized_board_key,),
+                name=f'ladder-snapshot-{normalized_board_key}',
+                daemon=True,
+            )
+            self._ladder_refresh_threads[normalized_board_key] = worker
+            worker.start()
+        return {'status': 'queued'}
+
+    def _run_ladder_board_snapshot_refresh(self, board_key):
+        try:
+            board = self.ladder_board_service.get_board(board_key)
+            self._store_ladder_board_snapshot(board_key, board)
+        except Exception:
+            LOGGER.exception('天梯榜后台快照刷新失败 board_key=%s', board_key)
+        finally:
+            with self._ladder_refresh_lock:
+                self._ladder_refresh_threads.pop(str(board_key or '').strip(), None)
 
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
         self.ensure_database_loaded()
@@ -1803,6 +1930,60 @@ class BackendService:
         }
         self._write_page_snapshot(key, payload)
         return payload
+
+    def _attach_actor_display_statuses(self, rows):
+        queue_keys = {
+            source_key: self._get_enrichment_queue_keys(task_kind, source_key)
+            for task_kind, source_key in (
+                ('actor', AVFAN_VIDEO_SOURCE),
+                ('actor', JAVTXT_VIDEO_SOURCE),
+                ('actor', SUPPLEMENT_TASK_SOURCE),
+                ('actor_birthday', BINGHUO_ACTOR_SOURCE),
+                ('actor_birthday', BAOMU_ACTOR_SOURCE),
+            )
+        }
+        supplement_statuses = self._get_actor_supplement_statuses(
+            [str((row or {}).get('name', '') or '').strip() for row in rows or []]
+        )
+        for row in rows or []:
+            actor_name = str((row or {}).get('name', '') or '').strip()
+            avfan_status = get_source_display_status(
+                AVFAN_VIDEO_SOURCE,
+                row,
+                selected=actor_name in queue_keys[AVFAN_VIDEO_SOURCE]['actor_names'],
+            )
+            javtxt_status = get_source_display_status(
+                JAVTXT_VIDEO_SOURCE,
+                row,
+                selected=actor_name in queue_keys[JAVTXT_VIDEO_SOURCE]['actor_names'],
+            )
+            supplement_status = get_source_display_status(
+                SUPPLEMENT_TASK_SOURCE,
+                row,
+                selected=actor_name in queue_keys[SUPPLEMENT_TASK_SOURCE]['actor_names'],
+                status_override=supplement_statuses.get(actor_name),
+            )
+            binghuo_status = get_source_display_status(
+                BINGHUO_ACTOR_SOURCE,
+                row,
+                selected=actor_name in queue_keys[BINGHUO_ACTOR_SOURCE]['actor_names'],
+            )
+            baomu_status = get_source_display_status(
+                BAOMU_ACTOR_SOURCE,
+                row,
+                selected=actor_name in queue_keys[BAOMU_ACTOR_SOURCE]['actor_names'],
+            )
+            row['avfan_display_status'] = avfan_status
+            row['javtxt_display_status'] = javtxt_status
+            row['supplement_display_status'] = supplement_status
+            row['binghuo_display_status'] = binghuo_status
+            row['baomu_display_status'] = baomu_status
+            row['enrichment_status'] = build_library_enrichment_status_text(
+                avfan_status,
+                javtxt_status,
+                binghuo_status,
+                baomu_status,
+            )
 
     def add_canglangge_candidates_to_tasks(self, actor_names=None):
         self.ensure_database_loaded()
@@ -3488,10 +3669,16 @@ class BackendService:
 
     def create_enrichment_batch_plan(self, payload):
         self.ensure_database_loaded()
+        request = dict(payload or {})
+        selection_only = bool(request.get('selection_only'))
+        select_all_candidates = bool(request.get('all_candidates'))
         if self.enrichment_task_state.is_running:
             raise RuntimeError('当前已有补全任务正在运行，请稍后再试。')
-        request = dict(payload or {})
-        batch_limit = max(1, int(request.get('batch_limit', 1) or 1))
+        batch_limit = (
+            1000000
+            if select_all_candidates
+            else max(1, int(request.get('batch_limit', 1) or 1))
+        )
         batch_count_limit = max(1, int(request.get('batch_count_limit', 1) or 1))
         max_items = batch_limit * batch_count_limit
         target_type = str(request.get('target_type') or VIDEO_LIBRARY_TARGET).strip() or VIDEO_LIBRARY_TARGET
@@ -3517,6 +3704,8 @@ class BackendService:
             source_key,
             max_items,
         )
+        if select_all_candidates:
+            candidates = self._exclude_enrichment_queue_candidates(task_kind, source_key, candidates)
         plan = self.db.create_enrichment_batch_plan(
             task_kind,
             target_type,
@@ -3525,8 +3714,15 @@ class BackendService:
             batch_count_limit=batch_count_limit,
             combo_key=request.get('combo_key', ''),
             candidates=candidates,
+            initial_status='selected' if selection_only else 'running',
+            show_browser=bool(request.get('show_browser', False)),
         )
         return {'plan': plan}
+
+    def select_enrichment_candidates(self, payload):
+        request = dict(payload or {})
+        request['selection_only'] = True
+        return self.create_enrichment_batch_plan(request)
 
     def list_enrichment_plans(self, resumable_only=False):
         self.ensure_database_loaded()
@@ -3552,6 +3748,10 @@ class BackendService:
         return {
             'progress': self.db.get_enrichment_batch_plan_progress(plan_id, task_kind),
         }
+
+    def cancel_enrichment_plan(self, plan_id, task_kind, reason='用户删除任务'):
+        self.ensure_database_loaded()
+        return self.db.cancel_enrichment_batch_plan(plan_id, task_kind, reason=reason)
 
     def _pause_enrichment_plan_after_error(self, plan_id, task_kind, error):
         normalized_plan_id = str(plan_id or '').strip()
@@ -3648,11 +3848,37 @@ class BackendService:
             return [{'actor_name': actor_name} for actor_name in actor_names]
         if task_kind == 'actor_birthday':
             if source_key == BAOMU_ACTOR_SOURCE:
-                actor_names = ActorBaomuEnrichmentService(self.db).list_plan_candidate_names(limit)
+                actor_names = ActorBaomuEnrichmentService(self.db).list_actor_library_plan_candidate_names(limit)
             else:
-                actor_names = ActorBinghuoEnrichmentService(self.db).list_plan_candidate_names(limit)
+                actor_names = ActorBinghuoEnrichmentService(self.db).list_actor_library_plan_candidate_names(limit)
             return [{'actor_name': actor_name} for actor_name in actor_names]
         return []
+
+    def _exclude_enrichment_queue_candidates(self, task_kind, source_key, candidates):
+        getter = getattr(self.db, 'get_enrichment_queue_keys', None)
+        if not callable(getter):
+            return list(candidates or [])
+        queued = getter(task_kind, source_key) or {}
+        actor_names = set(queued.get('actor_names', set()) or set())
+        codes = {str(value or '').strip().upper() for value in queued.get('codes', set()) or set()}
+        prefixes = {str(value or '').strip().upper() for value in queued.get('prefixes', set()) or set()}
+        filtered = []
+        for candidate in candidates or []:
+            row = dict(candidate or {})
+            if task_kind in {'actor', 'actor_birthday'}:
+                actor_name = str(row.get('actor_name', '') or row.get('name', '') or '').strip()
+                if actor_name and actor_name in actor_names:
+                    continue
+            elif task_kind == 'code_prefix':
+                prefix = str(row.get('prefix', '') or '').strip().upper()
+                if prefix and prefix in prefixes:
+                    continue
+            elif task_kind == 'video':
+                code = str(row.get('code', '') or '').strip().upper()
+                if code and code in codes:
+                    continue
+            filtered.append(row)
+        return filtered
 
     def _list_all_code_prefix_movies_for_filter(self, rule_set=None):
         try:
@@ -3858,7 +4084,7 @@ class BackendService:
     @staticmethod
     def _plan_result_item_status(row):
         status = str((row or {}).get('status', '') or '').strip()
-        failed_statuses = {'failed', '补全失败'}
+        failed_statuses = {'failed', FAILED_STATUS}
         return 'failed' if status in failed_statuses else 'completed'
 
     def _mark_enrichment_plan_items_by_results(self, plan_id, task_kind, result_rows):
@@ -3963,7 +4189,23 @@ class BackendService:
         plan_id='',
         plan_task_kind='',
     ):
+        self.ensure_database_loaded()
+        target_type = str(target_type or VIDEO_LIBRARY_TARGET).strip() or VIDEO_LIBRARY_TARGET
+        source_key = str(source_key or '').strip()
+        plan_task_kind = str(plan_task_kind or '').strip() or self._batch_plan_task_kind_for_target(target_type)
+        if not str(plan_id or '').strip():
+            selected_plan = self.db.find_selected_enrichment_plan(
+                plan_task_kind,
+                target_type,
+                source_key,
+            )
+            if selected_plan is not None:
+                plan_id = str(selected_plan.get('plan_id', '') or '').strip()
+            else:
+                return self._empty_enrichment_plan_result(limit, target_type, source_key)
         try:
+            if hasattr(self.db, 'update_enrichment_batch_plan_options'):
+                self.db.update_enrichment_batch_plan_options(plan_id, show_browser=bool(show_browser))
             self._begin_enrichment_task('single')
         except Exception as exc:
             self._pause_enrichment_plan_after_error(plan_id, plan_task_kind, exc)

@@ -209,6 +209,8 @@ class LibraryEnrichmentService:
             return result
 
         if target_type == ACTOR_BIRTHDAY_TARGET:
+            if not self.planned_items:
+                raise ValueError('演员生日补全必须先从候选表领取任务。')
             service_class = ActorBaomuEnrichmentService if source_key == BAOMU_ACTOR_SOURCE else ActorBinghuoEnrichmentService
             service = service_class(
                 self.database,

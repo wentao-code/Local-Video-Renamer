@@ -71,6 +71,102 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
         self.assertEqual(claimed[0]['sequence_index'], 1)
         self.assertEqual(claimed[0]['origin_table'], 'pending_actor_javtxt')
 
+    def test_candidate_selection_can_leave_plan_waiting_before_claim(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                'avfan',
+                batch_limit=2,
+                batch_count_limit=1,
+                candidates=[{'actor_name': '演员甲'}],
+                initial_status='selected',
+            )
+            progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor')
+            selected = db.find_selected_enrichment_plan('actor', 'actor_library', 'avfan')
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'actor', 1)
+
+        self.assertEqual(progress['status'], 'selected')
+        self.assertEqual(progress['pending_count'], 1)
+        self.assertEqual(selected['plan_id'], plan['plan_id'])
+        self.assertEqual(claimed[0]['actor_name'], '演员甲')
+
+    def test_paused_plan_with_pending_items_is_selected_for_next_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor_birthday',
+                'actor_birthday',
+                'baomu',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[{'actor_name': '演员甲'}],
+                initial_status='selected',
+            )
+            db.pause_enrichment_batch_plan(plan['plan_id'], 'actor_birthday', '浏览器启动失败')
+
+            selected = db.find_selected_enrichment_plan(
+                'actor_birthday', 'actor_birthday', 'baomu'
+            )
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'actor_birthday', 1)
+
+        self.assertEqual(selected['plan_id'], plan['plan_id'])
+        self.assertEqual(claimed[0]['actor_name'], '演员甲')
+
+    def test_cancel_plan_removes_pending_and_running_items_and_blocks_late_updates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor_birthday',
+                'actor_birthday',
+                'baomu',
+                batch_limit=2,
+                batch_count_limit=1,
+                candidates=[
+                    {'actor_name': '演员甲'},
+                    {'actor_name': '演员乙'},
+                ],
+                initial_status='selected',
+            )
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'actor_birthday', 1)
+
+            result = db.cancel_enrichment_batch_plan(
+                plan['plan_id'], 'actor_birthday', '用户删除任务'
+            )
+            late_update = db.mark_enrichment_batch_item(
+                plan['plan_id'], 'actor_birthday', claimed[0]['sequence_index'], 'completed'
+            )
+            progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor_birthday')
+            claimed_again = db.claim_enrichment_batch_items(plan['plan_id'], 'actor_birthday', 1)
+
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(result['deleted_item_count'], 2)
+        self.assertEqual(late_update, 0)
+        self.assertEqual(progress['status'], 'cancelled')
+        self.assertEqual(progress['pending_count'], 0)
+        self.assertEqual(claimed_again, [])
+
+    def test_enrichment_plan_persists_show_browser_option(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor_birthday',
+                'actor_birthday',
+                'baomu',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[{'actor_name': '演员甲'}],
+                show_browser=True,
+            )
+            progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor_birthday')
+
+        self.assertTrue(progress['show_browser'])
+
     def test_completed_running_item_is_deleted_without_returning_to_source_queue(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

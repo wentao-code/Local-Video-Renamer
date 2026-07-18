@@ -980,6 +980,30 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(titles[3], '单次补全 - 演员生日 / 并火 / 5项')
         self.assertEqual(titles[4], '分批补全 2/9 - 演员生日 / 保木 / 4项')
 
+    def test_resumed_enrichment_plan_restores_show_browser(self):
+        captured = {}
+        stub = SimpleNamespace(
+            task_queue=SimpleNamespace(has_plan=lambda _plan_id: False),
+            batch_enrichment_active=False,
+            batch_enrichment_config=None,
+            batch_enrichment_round=0,
+            start_enrichment=lambda *args, **kwargs: captured.update(args=args, kwargs=kwargs),
+        )
+        plan = {
+            'plan_id': 'plan-browser',
+            'task_kind': 'actor_birthday',
+            'target_type': 'actor_birthday',
+            'source_key': 'baomu',
+            'batch_limit': 5,
+            'batch_count_limit': 1,
+            'show_browser': True,
+        }
+
+        result = main_window.VidNormApp._enqueue_resumed_enrichment_plan(stub, plan)
+
+        self.assertTrue(result)
+        self.assertTrue(captured['args'][1])
+
     def test_combo_task_queue_title_describes_combo_settings(self):
         single_title = main_window.VidNormApp._build_combo_task_queue_title(
             'combo_single',
@@ -1060,7 +1084,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(scheduled, [])
         self.assertEqual(stopped, ['分批补全已达到设定批次数。'])
 
-    def test_batch_plan_is_created_when_queued_task_starts_not_when_submitted(self):
+    def test_batch_execution_does_not_create_candidates_implicitly(self):
         plan_calls = []
         captured = {}
 
@@ -1150,11 +1174,9 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(plan_calls, [])
         captured['worker_factory']().run()
 
-        self.assertEqual(len(plan_calls), 1)
-        self.assertEqual(plan_calls[0]['batch_limit'], 5)
-        self.assertEqual(plan_calls[0]['batch_count_limit'], 2)
+        self.assertEqual(plan_calls, [])
 
-    def test_single_enrichment_creates_resume_plan_when_queued_task_starts(self):
+    def test_single_enrichment_consumes_selected_plan_without_creating_candidates(self):
         plan_calls = []
         captured = {}
 
@@ -1228,14 +1250,8 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(plan_calls, [])
         worker.run()
 
-        self.assertEqual(len(plan_calls), 1)
-        self.assertEqual(plan_calls[0]['task_kind'], 'actor')
-        self.assertEqual(plan_calls[0]['target_type'], 'actor_library')
-        self.assertEqual(plan_calls[0]['source_key'], 'javtxt')
-        self.assertEqual(plan_calls[0]['batch_limit'], 7)
-        self.assertEqual(plan_calls[0]['batch_count_limit'], 1)
-        self.assertEqual(worker.plan_state['plan_id'], 'single-plan')
-        self.assertEqual(worker.plan_state['task_kind'], 'actor')
+        self.assertEqual(plan_calls, [])
+        self.assertEqual(worker.plan_state, {})
 
     # ── _queued_gui_task_runners lifecycle tests ──────────────────────────
 

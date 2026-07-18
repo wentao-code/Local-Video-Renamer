@@ -3,6 +3,8 @@ import json
 import shutil
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -731,9 +733,9 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             binghuo_summary = summary["actor_library"]["sources"][BINGHUO_ACTOR_SOURCE]
 
             self.assertEqual(binghuo_summary["total_count"], 5)
-            self.assertEqual(binghuo_summary["success_count"], 1)
+            self.assertEqual(binghuo_summary["success_count"], 0)
             self.assertEqual(binghuo_summary["no_search_count"], 1)
-            self.assertEqual(binghuo_summary["no_detail_count"], 1)
+            self.assertEqual(binghuo_summary["no_detail_count"], 2)
             self.assertEqual(binghuo_summary["failed_count"], 1)
             self.assertEqual(binghuo_summary["pending_count"], 1)
             self.assertEqual(binghuo_summary["enriched_count"], 3)
@@ -777,11 +779,12 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             baomu_summary = summary["actor_library"]["sources"][BAOMU_ACTOR_SOURCE]
 
             self.assertEqual(baomu_summary["total_count"], 4)
-            self.assertEqual(baomu_summary["success_count"], 1)
+            self.assertEqual(baomu_summary["success_count"], 0)
             self.assertEqual(baomu_summary["no_search_count"], 1)
             self.assertEqual(baomu_summary["failed_count"], 1)
             self.assertEqual(baomu_summary["pending_count"], 1)
             self.assertEqual(baomu_summary["enriched_count"], 2)
+            self.assertEqual(baomu_summary["no_detail_count"], 1)
             self.assertEqual(baomu_summary["progress_percent"], 50.0)
             self.assertEqual(baomu_summary["list_kind"], "actor")
         finally:
@@ -890,6 +893,53 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         self.assertEqual(first["refreshed_at"], "2026-06-21 10:00:00")
         self.assertEqual(second["refreshed_at"], "2026-06-21 10:00:00")
         self.assertEqual(refreshed["refreshed_at"], "2026-06-21 10:05:00")
+
+    def test_cached_summary_read_does_not_wait_for_background_refresh(self):
+        service = DataCenterService(
+            database=None,
+            video_filter_service=VideoFilterService(settings_loader=lambda: None),
+        )
+        cached_summary = _build_complete_summary_stub(1)
+        refreshed_summary = _build_complete_summary_stub(2)
+        build_started = threading.Event()
+        release_build = threading.Event()
+
+        service._summary_cache = cached_summary
+        service._summary_cache_refreshed_at = "2026-06-21 10:00:00"
+        service._summary_cache_refresh_duration_ms = 1
+        service._summary_cache_refresh_duration_text = "1秒"
+
+        def slow_build(*args, **kwargs):
+            build_started.set()
+            self.assertTrue(release_build.wait(timeout=2))
+            return refreshed_summary
+
+        with patch.object(
+            service,
+            "_build_summary",
+            side_effect=slow_build,
+        ), patch.object(service, "_current_cache_timestamp", return_value="2026-06-21 10:05:00"):
+            refresh_thread = threading.Thread(
+                target=lambda: service.get_summary_snapshot(force_refresh=True),
+                daemon=True,
+            )
+            refresh_thread.start()
+            self.assertTrue(build_started.wait(timeout=2))
+
+            started_at = time.perf_counter()
+            cached = service.get_summary_snapshot()
+            elapsed = time.perf_counter() - started_at
+
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(cached["refreshed_at"], "2026-06-21 10:00:00")
+            self.assertEqual(
+                cached["summary"]["video_library"]["sources"][AVFAN_VIDEO_SOURCE]["total_count"],
+                1,
+            )
+
+            release_build.set()
+            refresh_thread.join(timeout=2)
+            self.assertFalse(refresh_thread.is_alive())
 
     def test_summary_snapshot_persists_across_service_restarts(self):
         temp_dir = tempfile.mkdtemp()
