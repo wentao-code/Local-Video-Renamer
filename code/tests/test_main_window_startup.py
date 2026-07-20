@@ -26,6 +26,42 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_cancelled_plan_task_is_deleted_after_backend_plan_cancel_succeeds(self):
+        calls = []
+        record = SimpleNamespace(
+            task_id=7,
+            status=main_window.TASK_STATUS_CANCELLING,
+            plan_id='plan-1',
+            plan_task_kind='actor',
+        )
+
+        class FakeQueue:
+            def cancel_task(self, task_id, reason):
+                calls.append(('cancel_task', task_id, reason))
+                return True
+
+            def mark_deleted(self, task_id, reason):
+                calls.append(('mark_deleted', task_id, reason))
+
+            def restore_cancel_failure(self, task_id, message):
+                calls.append(('restore_cancel_failure', task_id, message))
+
+        stub = SimpleNamespace(
+            task_queue=FakeQueue(),
+            backend_client=SimpleNamespace(
+                cancel_enrichment_plan=lambda *args: calls.append(('cancel_plan', args)),
+                cancel_enrichment=lambda: calls.append(('cancel_enrichment',)) or {
+                    'cancel_requested': False,
+                },
+            ),
+        )
+
+        cancelled = main_window.VidNormApp.cancel_task_records(stub, [record])
+
+        self.assertEqual(cancelled, 1)
+        self.assertIn(('cancel_plan', ('plan-1', 'actor', '用户删除任务')), calls)
+        self.assertIn(('mark_deleted', 7, '用户删除任务'), calls)
+
     def test_refresh_snapshot_pages_collects_all_pages_without_record_callback(self):
         payloads = iter(
             [

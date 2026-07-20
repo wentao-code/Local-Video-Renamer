@@ -83,6 +83,20 @@ class BackendClient:
     def select_enrichment_candidates(self, payload):
         return self._post('/database/enrich/select', dict(payload or {}))
 
+    def get_enrichment_selection_job(self, job_id):
+        query = '?' + urlencode({'job_id': str(job_id or '').strip()})
+        return self._get('/database/enrich/select/status' + query)
+
+    def wait_for_enrichment_selection_job(self, payload, poll_interval=1.0):
+        response = self.select_enrichment_candidates(payload)
+        job = dict(response.get('job', response) or {})
+        job_id = str(job.get('job_id') or '').strip()
+        while job_id and str(job.get('status') or '').strip() in {'queued', 'running'}:
+            if float(poll_interval or 0) > 0:
+                time.sleep(float(poll_interval))
+            job = dict(self.get_enrichment_selection_job(job_id).get('job', {}) or {})
+        return {'job': job}
+
     def enrich_combo(
         self,
         combo_key,

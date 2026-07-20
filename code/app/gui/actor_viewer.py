@@ -1,4 +1,5 @@
 import logging
+from uuid import uuid4
 
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor
@@ -853,8 +854,10 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
             return
         source_key = source_keys[labels.index(source_label)]
         is_actor_birthday_source = source_key in {BINGHUO_ACTOR_SOURCE, BAOMU_ACTOR_SOURCE}
+        selection_job_id = f'select-{uuid4().hex}'
         self.start_async_task(
-            lambda: self.backend_client.select_enrichment_candidates({
+            lambda: self.backend_client.wait_for_enrichment_selection_job({
+                'selection_job_id': selection_job_id,
                 'task_kind': 'actor_birthday' if is_actor_birthday_source else 'actor',
                 'target_type': 'actor_birthday' if is_actor_birthday_source else 'actor_library',
                 'source_key': source_key,
@@ -871,7 +874,11 @@ class ActorViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
 
     def _on_select_tasks_finished(self, result, source_key):
-        plan = dict((result or {}).get('plan', result or {}) or {})
+        job = dict((result or {}).get('job', result or {}) or {})
+        if str(job.get('status') or '').strip() != 'completed':
+            QMessageBox.critical(self, tr('enrichment.select_tasks'), str(job.get('error') or '入选任务执行失败'))
+            return
+        plan = dict(job.get('plan', {}) or {})
         QMessageBox.information(
             self,
             tr('enrichment.select_tasks'),

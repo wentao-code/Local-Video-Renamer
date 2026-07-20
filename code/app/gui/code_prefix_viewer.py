@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
@@ -687,8 +689,10 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         if not accepted:
             return
         source_key = source_keys[labels.index(source_label)]
+        selection_job_id = f'select-{uuid4().hex}'
         self.start_async_task(
-            lambda: self.backend_client.select_enrichment_candidates({
+            lambda: self.backend_client.wait_for_enrichment_selection_job({
+                'selection_job_id': selection_job_id,
                 'task_kind': 'code_prefix',
                 'target_type': 'code_prefix_library',
                 'source_key': source_key,
@@ -705,7 +709,11 @@ class CodePrefixViewerWindow(DeferredReloadMixin, AsyncTaskHostMixin, QDialog):
         )
 
     def _on_select_tasks_finished(self, result, source_key):
-        plan = dict((result or {}).get('plan', result or {}) or {})
+        job = dict((result or {}).get('job', result or {}) or {})
+        if str(job.get('status') or '').strip() != 'completed':
+            QMessageBox.critical(self, tr('enrichment.select_tasks'), str(job.get('error') or '入选任务执行失败'))
+            return
+        plan = dict(job.get('plan', {}) or {})
         QMessageBox.information(
             self,
             tr('enrichment.select_tasks'),

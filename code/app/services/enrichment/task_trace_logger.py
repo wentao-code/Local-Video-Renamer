@@ -62,6 +62,14 @@ class TaskTraceLogger:
         fields.setdefault('traceback', ''.join(traceback.format_exception(type(error), error, error.__traceback__)))
         self.log(level, message, **fields)
 
+    def log_phase(self, phase, phase_status, **fields):
+        """Record a structured execution phase without changing the log format."""
+        fields.update({
+            'phase': str(phase or '').strip(),
+            'phase_status': str(phase_status or '').strip(),
+        })
+        self.log('INFO', '阶段日志', **fields)
+
     def log_emphasis_block(self, title, lines=None, level='NOTICE'):
         border = '=' * 18
         text_lines = [str(line).strip() for line in (lines or []) if str(line).strip()]

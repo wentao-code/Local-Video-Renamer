@@ -4,27 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="563fbf47-c796-4a7a-859a-256c18b2517d" name="更改" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/.name" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.name" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/Local-Video-Renamer.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Local-Video-Renamer.iml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/backend/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/backend/client.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/core/operation_timeout_settings.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/core/operation_timeout_settings.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/data/database_handler.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/data/database_handler.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/gui/backend_task_worker.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/gui/backend_task_worker.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/gui/main_window.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/gui/main_window.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/gui/task_queue.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/gui/task_queue.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/gui/task_queue_viewer.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/gui/task_queue_viewer.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/gui/video_category_viewer.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/gui/video_category_viewer.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/app/services/library/data_center_service.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/app/services/library/data_center_service.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/code/requirements.txt" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/tests/test_data_center_actor_metric_clickthrough.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/tests/test_data_center_actor_metric_clickthrough.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/tests/test_data_center_dashboard.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/tests/test_data_center_dashboard.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/tests/test_data_center_summary.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/tests/test_data_center_summary.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/tests/test_detail_snapshot_support.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/tests/test_detail_snapshot_support.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/code/tests/test_task_queue.py" beforeDir="false" afterPath="$PROJECT_DIR$/code/tests/test_task_queue.py" afterDir="false" />
-    </list>
+    <list default="true" id="563fbf47-c796-4a7a-859a-256c18b2517d" name="更改" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />

@@ -5,6 +5,7 @@ from contextlib import closing
 from pathlib import Path
 
 from app.backend.service import BackendService
+from app.core.enrichment_status import NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.data.database_handler import VideoDatabase
 
 
@@ -33,6 +34,44 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
                 }
 
         self.assertTrue(self.QUEUE_TABLES.issubset(existing))
+
+    def test_plan_progress_separates_current_status_and_previous_run_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                'supplement',
+                batch_limit=2,
+                batch_count_limit=1,
+                candidates=[{'actor_name': '演员甲', 'code': 'AA-001'}],
+            )
+
+            initial = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor')
+            self.assertEqual(initial['status'], 'running')
+            self.assertEqual(initial['current_status'], 'running')
+            self.assertEqual(initial['paused_reason'], '')
+            self.assertEqual(initial['last_run_id'], '')
+            self.assertEqual(initial['last_run_result'], {})
+
+            db.save_enrichment_plan_run_result(
+                plan['plan_id'],
+                'actor',
+                {
+                    'run_id': 'run-001',
+                    'phase_counts': {'claim': 1, 'resolve': 1, 'execute': 1, 'release': 1},
+                    'processed_count': 1,
+                    'success_count': 1,
+                },
+            )
+
+            progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor')
+
+        self.assertEqual(progress['current_status'], 'running')
+        self.assertEqual(progress['last_run_id'], 'run-001')
+        self.assertEqual(progress['last_run_result']['processed_count'], 1)
+        self.assertEqual(progress['last_run_result']['phase_counts']['release'], 1)
 
     def test_claim_physically_moves_rows_from_source_queue_to_single_running_table(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -71,6 +110,54 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
         self.assertEqual(claimed[0]['sequence_index'], 1)
         self.assertEqual(claimed[0]['origin_table'], 'pending_actor_javtxt')
 
+    def test_supplement_candidates_include_running_items_from_current_plan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO actor_movies (
+                        actor_name, code, title, author, release_date,
+                        avfan_url, page_number, javtxt_enrichment_status,
+                        javtxt_movie_id, javtxt_url, supplement_enrichment_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        '演员甲', 'SDDE-714', '已有标题', '', '2025-01-01',
+                        'https://avfan.example/movies/714', 1, NO_SEARCH_RESULTS_STATUS,
+                        '714', 'https://javtxt.example/714', UNENRICHED_STATUS,
+                    ),
+                )
+                conn.commit()
+
+            plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                'supplement',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[{'actor_name': '演员甲', 'code': 'SDDE-714'}],
+            )
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'actor', 1)
+
+            current_plan_rows = db.list_sql_supplement_candidates(
+                'actor',
+                100,
+                include_queued=True,
+                running_plan_id=plan['plan_id'],
+            )
+            without_current_plan = db.list_sql_supplement_candidates(
+                'actor',
+                100,
+                include_queued=True,
+            )
+
+        self.assertEqual(claimed[0]['code'], 'SDDE-714')
+        self.assertEqual([row['code'] for row in current_plan_rows], ['SDDE-714'])
+        self.assertEqual(without_current_plan, [])
+
     def test_candidate_selection_can_leave_plan_waiting_before_claim(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -92,6 +179,47 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
         self.assertEqual(progress['pending_count'], 1)
         self.assertEqual(selected['plan_id'], plan['plan_id'])
         self.assertEqual(claimed[0]['actor_name'], '演员甲')
+
+    def test_append_plan_candidates_writes_incremental_pages_with_plan_cap(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                'avfan',
+                batch_limit=2,
+                batch_count_limit=2,
+                candidates=[{'actor_name': '演员甲'}],
+                initial_status='selected',
+            )
+
+            added = db.append_enrichment_batch_plan_candidates(
+                plan['plan_id'],
+                'actor',
+                [
+                    {'actor_name': '演员乙'},
+                    {'actor_name': '演员丙'},
+                    {'actor_name': '演员丁'},
+                ],
+            )
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                rows = conn.execute(
+                    '''
+                    SELECT sequence_index, actor_name
+                    FROM pending_actor_avfan
+                    WHERE plan_id = ?
+                    ORDER BY sequence_index
+                    ''',
+                    (plan['plan_id'],),
+                ).fetchall()
+
+        self.assertEqual(added, 3)
+        self.assertEqual(
+            rows,
+            [(1, '演员甲'), (2, '演员乙'), (3, '演员丙'), (4, '演员丁')],
+        )
 
     def test_paused_plan_with_pending_items_is_selected_for_next_retry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -116,7 +244,7 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
         self.assertEqual(selected['plan_id'], plan['plan_id'])
         self.assertEqual(claimed[0]['actor_name'], '演员甲')
 
-    def test_cancel_plan_removes_pending_and_running_items_and_blocks_late_updates(self):
+    def test_cancel_plan_restores_pending_and_running_items_and_blocks_late_updates(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
@@ -142,13 +270,72 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
             )
             progress = db.get_enrichment_batch_plan_progress(plan['plan_id'], 'actor_birthday')
             claimed_again = db.claim_enrichment_batch_items(plan['plan_id'], 'actor_birthday', 1)
+            with closing(sqlite3.connect(db_path)) as conn:
+                restored_rows = conn.execute(
+                    '''
+                    SELECT actor_name, status, last_error, attempt_count
+                    FROM pending_actor_baomu
+                    WHERE plan_id = ?
+                    ORDER BY sequence_index
+                    ''',
+                    (plan['plan_id'],),
+                ).fetchall()
 
         self.assertEqual(result['status'], 'cancelled')
-        self.assertEqual(result['deleted_item_count'], 2)
+        self.assertEqual(result['released_count'], 1)
+        self.assertEqual(result['deleted_item_count'], 0)
         self.assertEqual(late_update, 0)
         self.assertEqual(progress['status'], 'cancelled')
-        self.assertEqual(progress['pending_count'], 0)
+        self.assertEqual(progress['pending_count'], 2)
         self.assertEqual(claimed_again, [])
+        self.assertEqual(
+            restored_rows,
+            [
+                ('演员甲', 'pending', '用户删除任务', 1),
+                ('演员乙', 'pending', '', 0),
+            ],
+        )
+
+    def test_cancel_restores_running_items_for_every_enrichment_source(self):
+        cases = [
+            ('video', 'video_library', 'javtxt', 'pending_video_javtxt', {'code': 'AAA-001'}),
+            ('code_prefix', 'code_prefix_library', 'avfan', 'pending_code_prefix_avfan', {'prefix': 'AAA'}),
+            ('actor', 'actor_library', 'supplement', 'pending_actor_supplement', {'actor_name': '演员甲'}),
+            ('actor_birthday', 'actor_birthday', 'binghuo', 'pending_actor_binghuo', {'actor_name': '演员乙'}),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plans = []
+            for task_kind, target_type, source_key, table_name, candidate in cases:
+                plan = db.create_enrichment_batch_plan(
+                    task_kind,
+                    target_type,
+                    source_key,
+                    batch_limit=1,
+                    batch_count_limit=1,
+                    candidates=[candidate],
+                    initial_status='selected',
+                )
+                db.claim_enrichment_batch_items(plan['plan_id'], task_kind, 1)
+                result = db.cancel_enrichment_batch_plan(
+                    plan['plan_id'], task_kind, '用户删除任务'
+                )
+                self.assertEqual(result['released_count'], 1)
+                plans.append((plan, task_kind, table_name))
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                for plan, _task_kind, table_name in plans:
+                    row = conn.execute(
+                        f'''SELECT status, last_error FROM {table_name} WHERE plan_id = ?''',
+                        (plan['plan_id'],),
+                    ).fetchone()
+                    self.assertEqual(row, ('pending', '用户删除任务'), table_name)
+                self.assertEqual(
+                    conn.execute('SELECT COUNT(*) FROM enrichment_running_items').fetchone()[0],
+                    0,
+                )
 
     def test_enrichment_plan_persists_show_browser_option(self):
         with tempfile.TemporaryDirectory() as temp_dir:

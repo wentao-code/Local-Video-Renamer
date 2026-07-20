@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
@@ -53,6 +53,8 @@ class TaskRecord:
     plan_success_count: int = 0
     plan_failed_count: int = 0
     pause_reason: str = ''
+    last_run_id: str = ''
+    last_run_result: dict = field(default_factory=dict)
     pause_requested: bool = False
 
 
@@ -389,6 +391,15 @@ class GuiTaskQueue(QObject):
         )
         if 'paused_reason' in payload:
             record.pause_reason = str(payload.get('paused_reason') or '').strip()
+        if 'current_status' in payload and record.status not in {
+            TASK_STATUS_RUNNING,
+            TASK_STATUS_CANCELLING,
+        }:
+            record.status = str(payload.get('current_status') or record.status).strip() or record.status
+        if 'last_run_id' in payload:
+            record.last_run_id = str(payload.get('last_run_id') or '').strip()
+        if 'last_run_result' in payload:
+            record.last_run_result = dict(payload.get('last_run_result') or {})
 
     def _find_record(self, task_id):
         for record in self._records:

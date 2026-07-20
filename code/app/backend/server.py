@@ -354,6 +354,10 @@ def make_handler(service):
                 return service.create_enrichment_batch_plan(body)
             if method == 'POST' and path == '/database/enrich/select':
                 return service.select_enrichment_candidates(body)
+            if method == 'GET' and path == '/database/enrich/select/status':
+                return service.get_enrichment_selection_job(
+                    query.get('job_id', [''])[0],
+                )
             if method == 'POST' and path == '/database/enrich/combo':
                 return service.enrich_combo(
                     body.get('combo_key'),

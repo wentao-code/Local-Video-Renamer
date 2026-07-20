@@ -79,6 +79,12 @@ class _SupplementBaseService:
         self.logger = logger
         self.filter_settings = filter_settings
         self.planned_items = [dict(item or {}) for item in (planned_items or [])]
+        planned_plan_ids = {
+            str((item or {}).get('plan_id', '') or '').strip()
+            for item in self.planned_items
+            if str((item or {}).get('plan_id', '') or '').strip()
+        }
+        self.running_plan_id = next(iter(planned_plan_ids), '') if len(planned_plan_ids) == 1 else ''
 
     @staticmethod
     def _unique_planned_values(planned_items, key_name):
@@ -258,6 +264,7 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
         candidates = self.database.list_video_supplement_candidates(
             candidate_limit,
             include_queued=bool(self.planned_items),
+            running_plan_id=self.running_plan_id,
         )
         candidates = self._select_planned_rows(candidates, 'code', limit)
         results = []
@@ -513,7 +520,12 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     **dict(movie or {}),
                     **build_supplement_candidate(movie, filter_settings=self.filter_settings),
                 }
-                for movie in sql_candidate_getter('code_prefix', 1000000, include_queued=bool(self.planned_items))
+                for movie in sql_candidate_getter(
+                    'code_prefix',
+                    1000000,
+                    include_queued=bool(self.planned_items),
+                    running_plan_id=self.running_plan_id,
+                )
                 if str((movie or {}).get('prefix', '') or '').strip().upper() == normalized_prefix
                 and build_supplement_candidate(movie, filter_settings=self.filter_settings)
             ]
@@ -737,7 +749,12 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     **dict(movie or {}),
                     **build_supplement_candidate(movie, filter_settings=self.filter_settings),
                 }
-                for movie in sql_candidate_getter('actor', 1000000, include_queued=bool(self.planned_items))
+                for movie in sql_candidate_getter(
+                    'actor',
+                    1000000,
+                    include_queued=bool(self.planned_items),
+                    running_plan_id=self.running_plan_id,
+                )
                 if str((movie or {}).get('actor_name', '') or '').strip() == normalized_name
                 and build_supplement_candidate(movie, filter_settings=self.filter_settings)
             ]

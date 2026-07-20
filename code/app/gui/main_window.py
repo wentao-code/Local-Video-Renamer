@@ -2796,6 +2796,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             was_running = record.status in {TASK_STATUS_RUNNING, TASK_STATUS_CANCELLING}
             if not queue.cancel_task(record.task_id, '用户删除任务'):
                 continue
+            plan_cancelled = False
             try:
                 if record.plan_id and record.plan_task_kind:
                     self.backend_client.cancel_enrichment_plan(
@@ -2803,6 +2804,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                         record.plan_task_kind,
                         '用户删除任务',
                     )
+                    plan_cancelled = True
                 if was_running:
                     self.backend_client.cancel_enrichment()
             except Exception as exc:
@@ -2810,7 +2812,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 queue.restore_cancel_failure(record.task_id, record_error)
                 QMessageBox.critical(self, '删除任务失败', record_error)
                 continue
-            if not was_running:
+            if plan_cancelled or not was_running:
                 queue.mark_deleted(record.task_id, '用户删除任务')
             cancelled_count += 1
         return cancelled_count

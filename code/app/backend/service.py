@@ -147,6 +147,8 @@ class BackendService:
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
         self.enrichment_task_state = EnrichmentTaskState()
+        self._enrichment_selection_jobs = {}
+        self._enrichment_selection_jobs_lock = threading.Lock()
         self._snapshot_lock = threading.Lock()
         self._canglangge_snapshot_lock = threading.Lock()
         self._ladder_board_snapshots = {}
@@ -3723,8 +3725,157 @@ class BackendService:
 
     def select_enrichment_candidates(self, payload):
         request = dict(payload or {})
-        request['selection_only'] = True
-        return self.create_enrichment_batch_plan(request)
+        job_id = str(request.get('selection_job_id') or '').strip() or f'select-{uuid4().hex}'
+        with self._enrichment_selection_jobs_lock:
+            existing = self._enrichment_selection_jobs.get(job_id)
+            if existing is not None:
+                return {'job': dict(existing)}
+            state = {
+                'job_id': job_id,
+                'status': 'queued',
+                'task_kind': str(request.get('task_kind') or '').strip(),
+                'target_type': str(request.get('target_type') or '').strip(),
+                'source_key': str(request.get('source_key') or '').strip(),
+                'candidate_count': 0,
+                'page_count': 0,
+                'plan': {},
+                'error': '',
+            }
+            self._enrichment_selection_jobs[job_id] = state
+        worker = threading.Thread(
+            target=self._run_enrichment_selection_job,
+            args=(job_id, request),
+            name=f'enrichment-selection-{job_id[-12:]}',
+            daemon=True,
+        )
+        worker.start()
+        return {'job': dict(state)}
+
+    def get_enrichment_selection_job(self, job_id):
+        normalized_job_id = str(job_id or '').strip()
+        with self._enrichment_selection_jobs_lock:
+            state = self._enrichment_selection_jobs.get(normalized_job_id)
+            if state is None:
+                return {'job_id': normalized_job_id, 'status': 'not_found', 'error': '入选任务不存在'}
+            return {'job': dict(state)}
+
+    def _update_enrichment_selection_job(self, job_id, **updates):
+        with self._enrichment_selection_jobs_lock:
+            state = self._enrichment_selection_jobs.get(job_id)
+            if state is not None:
+                state.update(updates)
+
+    def _selection_page_candidates(self, task_kind, target_type, source_key, page_size):
+        normalized_limit = max(1, int(page_size or 1))
+        sql_getter = getattr(self.db, 'list_sql_enrichment_candidates', None)
+        if task_kind in {'actor', 'actor_birthday'} and callable(sql_getter):
+            if source_key in {
+                AVFAN_VIDEO_SOURCE,
+                BINGHUO_ACTOR_SOURCE,
+                BAOMU_ACTOR_SOURCE,
+            }:
+                return list(sql_getter(task_kind, source_key, normalized_limit) or [])
+        supplement_getter = getattr(self.db, 'list_sql_supplement_candidates', None)
+        if source_key == SUPPLEMENT_TASK_SOURCE and callable(supplement_getter):
+            supplement_target = {
+                'video': 'video',
+                'code_prefix': 'code_prefix',
+                'actor': 'actor',
+            }.get(task_kind, target_type)
+            return list(supplement_getter(supplement_target, normalized_limit) or [])
+        if task_kind == 'video' and source_key == JAVTXT_VIDEO_SOURCE:
+            getter = getattr(self.db, 'list_sql_javtxt_video_candidates', None)
+            if callable(getter):
+                return list(getter(normalized_limit) or [])
+        if task_kind in {'actor', 'code_prefix'} and source_key == JAVTXT_VIDEO_SOURCE:
+            getter = getattr(self.db, 'list_sql_javtxt_candidate_items', None)
+            if callable(getter):
+                return list(getter(task_kind, normalized_limit) or [])
+        if task_kind == 'code_prefix' and source_key == AVFAN_VIDEO_SOURCE:
+            getter = getattr(self.db, 'list_sql_code_prefix_candidates', None)
+            if callable(getter):
+                return list(getter(source_key, normalized_limit) or [])
+        return list(
+            self._build_enrichment_batch_plan_candidates(
+                task_kind,
+                target_type,
+                source_key,
+                normalized_limit,
+            ) or []
+        )
+
+    def _run_enrichment_selection_job(self, job_id, request):
+        try:
+            self._update_enrichment_selection_job(job_id, status='running')
+            selection_request = dict(request or {})
+            selection_request['selection_only'] = True
+            task_kind = str(selection_request.get('task_kind') or '').strip()
+            target_type = str(selection_request.get('target_type') or '').strip() or VIDEO_LIBRARY_TARGET
+            source_key = str(selection_request.get('source_key') or '').strip()
+            page_size = max(100, min(2000, int(selection_request.get('selection_page_size', 500) or 500)))
+            batch_limit = 1000000 if selection_request.get('all_candidates') else max(
+                1, int(selection_request.get('batch_limit', 1) or 1)
+            )
+            batch_count_limit = max(1, int(selection_request.get('batch_count_limit', 1) or 1))
+            max_candidates = batch_limit * batch_count_limit
+            plan = None
+            seen_keys = set()
+            while len(seen_keys) < max_candidates:
+                page = self._selection_page_candidates(task_kind, target_type, source_key, page_size)
+                page = self._exclude_enrichment_queue_candidates(task_kind, source_key, page)
+                fresh = []
+                for candidate in page:
+                    row = dict(candidate or {})
+                    key = str(
+                        row.get('code') or row.get('prefix') or row.get('actor_name') or row.get('name') or ''
+                    ).strip().upper()
+                    if not key or key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    fresh.append(row)
+                    if len(seen_keys) >= max_candidates:
+                        break
+                if fresh:
+                    if plan is None:
+                        plan = self.db.create_enrichment_batch_plan(
+                            task_kind,
+                            target_type,
+                            source_key,
+                            batch_limit=batch_limit,
+                            batch_count_limit=batch_count_limit,
+                            candidates=fresh,
+                            initial_status='selected',
+                        )
+                    else:
+                        self.db.append_enrichment_batch_plan_candidates(
+                            plan['plan_id'], task_kind, fresh
+                        )
+                    self._update_enrichment_selection_job(
+                        job_id,
+                        candidate_count=len(seen_keys),
+                        page_count=int(len(seen_keys) / page_size) + 1,
+                        plan=dict(plan),
+                    )
+                if len(page) < page_size or not fresh:
+                    break
+            if plan is None:
+                plan = self.db.create_enrichment_batch_plan(
+                    task_kind,
+                    target_type,
+                    source_key,
+                    batch_limit=batch_limit,
+                    batch_count_limit=batch_count_limit,
+                    candidates=[],
+                    initial_status='selected',
+                )
+            completed_plan = {
+                **dict(plan),
+                'item_count': len(seen_keys),
+            }
+            self._update_enrichment_selection_job(job_id, status='completed', plan=completed_plan)
+        except Exception as exc:
+            LOGGER.exception('入选任务后台执行失败 job_id=%s', job_id)
+            self._update_enrichment_selection_job(job_id, status='failed', error=str(exc))
 
     def list_enrichment_plans(self, resumable_only=False):
         self.ensure_database_loaded()
@@ -4245,11 +4396,42 @@ class BackendService:
         )
         active_filter_settings = self.video_filter_service.load_settings()
         context_tokens = bind_log_context(logger.run_id, logger.correlation_id)
+        run_started_at = datetime.now().isoformat(timespec='seconds')
+        phase_counts = {'claim': 0, 'resolve': 0, 'execute': 0, 'release': 0}
+
+        def log_phase(phase, phase_status, **fields):
+            if hasattr(logger, 'log_phase'):
+                logger.log_phase(
+                    phase,
+                    phase_status,
+                    plan_id=str(plan_id or '').strip(),
+                    task_kind=plan_task_kind,
+                    **fields,
+                )
+            if phase_status == 'completed':
+                phase_counts[phase] = phase_counts.get(phase, 0) + 1
+
         try:
+            log_phase('claim', 'started', requested_count=max(0, int(limit or 0)))
             planned_items = self._pending_enrichment_plan_items_for_run(plan_id, plan_task_kind, limit)
+            log_phase('claim', 'completed', claimed_count=len(planned_items))
             if str(plan_id or '').strip() and str(plan_task_kind or '').strip() and not planned_items:
                 result = self._empty_enrichment_plan_result(limit, target_type, source_key)
+                result['phase_counts'] = dict(phase_counts)
+                log_phase('release', 'started', released_count=0)
                 result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
+                log_phase('release', 'completed', released_count=0)
+                result['phase_counts'] = dict(phase_counts)
+                self.db.save_enrichment_plan_run_result(
+                    plan_id,
+                    plan_task_kind,
+                    {
+                        **result,
+                        'run_id': logger.run_id,
+                        'started_at': run_started_at,
+                        'phase_counts': dict(phase_counts),
+                    },
+                )
                 result['log_path'] = str(logger.log_path)
                 result['run_id'] = logger.run_id
                 result['correlation_id'] = logger.correlation_id
@@ -4272,7 +4454,23 @@ class BackendService:
                 self.actor_library_sync_service.sync_from_video_library()
 
             result = enrichment_service.run(target_type, effective_limit, source_key=source_key, batch_mode=batch_mode)
+            phase_counts.update(dict(result.get('phase_counts', {}) or {}))
+            log_phase('resolve', 'completed', resolved_count=len(planned_items))
+            log_phase('execute', 'completed', processed_count=int(result.get('processed_count', 0) or 0))
+            log_phase('release', 'started', released_count=len(planned_items))
             result = self._apply_enrichment_batch_plan_result(plan_id, plan_task_kind, result)
+            log_phase('release', 'completed', released_count=len(planned_items))
+            result['phase_counts'] = dict(phase_counts)
+            self.db.save_enrichment_plan_run_result(
+                plan_id,
+                plan_task_kind,
+                {
+                    **result,
+                    'run_id': logger.run_id,
+                    'started_at': run_started_at,
+                    'phase_counts': dict(phase_counts),
+                },
+            )
             result['log_path'] = str(logger.log_path)
             result['run_id'] = logger.run_id
             result['correlation_id'] = logger.correlation_id
@@ -4282,7 +4480,38 @@ class BackendService:
 
             return result
         except Exception as exc:
+            log_phase('execute', 'failed', exception_type=type(exc).__name__, exception=str(exc))
+            log_phase('release', 'started', released_count=0)
+            try:
+                self.db.save_enrichment_plan_run_result(
+                    plan_id,
+                    plan_task_kind,
+                    {
+                        'run_id': logger.run_id,
+                        'started_at': run_started_at,
+                        'phase_counts': dict(phase_counts),
+                        'error': str(exc),
+                        'exception_type': type(exc).__name__,
+                    },
+                )
+            except Exception:
+                pass
             self._pause_enrichment_plan_after_error(plan_id, plan_task_kind, exc)
+            log_phase('release', 'completed', released_count=0)
+            try:
+                self.db.save_enrichment_plan_run_result(
+                    plan_id,
+                    plan_task_kind,
+                    {
+                        'run_id': logger.run_id,
+                        'started_at': run_started_at,
+                        'phase_counts': dict(phase_counts),
+                        'error': str(exc),
+                        'exception_type': type(exc).__name__,
+                    },
+                )
+            except Exception:
+                pass
             self.enrichment_progress.finish(message='补全任务异常结束。', stopped=True)
             logger.log_exception(
                 'ERROR',

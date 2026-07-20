@@ -87,6 +87,51 @@ class LibraryEnrichmentService:
 
         return candidate_filter
 
+    def _run_enrichment_service(self, operation, target_type, source_key, limit):
+        planned_count = len(self.planned_items)
+        if self.logger is not None and hasattr(self.logger, 'log_phase'):
+            self.logger.log_phase(
+                'resolve',
+                'started',
+                plan_id=str((self.planned_items[0] or {}).get('plan_id', '') or '') if self.planned_items else '',
+                target_type=target_type,
+                source_key=source_key or '',
+                planned_count=planned_count,
+                limit=max(0, int(limit or 0)),
+            )
+            self.logger.log_phase(
+                'execute',
+                'started',
+                target_type=target_type,
+                source_key=source_key or '',
+                planned_count=planned_count,
+            )
+        result = operation()
+        if self.logger is not None and hasattr(self.logger, 'log_phase'):
+            self.logger.log_phase(
+                'resolve',
+                'completed',
+                target_type=target_type,
+                source_key=source_key or '',
+                planned_count=planned_count,
+                resolved_count=max(
+                    0,
+                    int(result.get('processed_count', 0) or 0)
+                    + int(result.get('failed_count', 0) or 0),
+                ),
+            )
+            self.logger.log_phase(
+                'execute',
+                'completed',
+                target_type=target_type,
+                source_key=source_key or '',
+                processed_count=int(result.get('processed_count', 0) or 0),
+                success_count=int(result.get('success_count', 0) or 0),
+                failed_count=int(result.get('failed_count', 0) or 0),
+                stopped=bool(result.get('stopped')),
+            )
+        return result
+
     def run(self, target_type, limit, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE, batch_mode=False):
         if not target_type:
             target_type = VIDEO_LIBRARY_TARGET
@@ -118,7 +163,12 @@ class LibraryEnrichmentService:
                     filter_settings=self.video_filter_settings,
                     planned_items=self.planned_items,
                 )
-                result = service.enrich_next_videos(limit, estimate_remaining=batch_mode)
+                result = self._run_enrichment_service(
+                    lambda: service.enrich_next_videos(limit, estimate_remaining=batch_mode),
+                    target_type,
+                    source_key,
+                    limit,
+                )
             else:
                 service = VideoSourceEnrichmentService(
                     self.database,
@@ -130,7 +180,9 @@ class LibraryEnrichmentService:
                     logger=self.logger,
                     candidate_filter=self._planned_video_candidate_filter(),
                 )
-                result = service.enrich_next_videos(limit)
+                result = self._run_enrichment_service(
+                    lambda: service.enrich_next_videos(limit), target_type, source_key, limit
+                )
             result.setdefault('entity_label', '视频')
             return result
 
@@ -165,9 +217,16 @@ class LibraryEnrichmentService:
                     planned_prefixes=self._planned_prefixes(),
                 )
             if source_key == SUPPLEMENT_TASK_SOURCE:
-                result = service.enrich_next_prefixes(limit, estimate_remaining=batch_mode)
+                result = self._run_enrichment_service(
+                    lambda: service.enrich_next_prefixes(limit, estimate_remaining=batch_mode),
+                    target_type,
+                    source_key,
+                    limit,
+                )
             else:
-                result = service.enrich_next_prefixes(limit)
+                result = self._run_enrichment_service(
+                    lambda: service.enrich_next_prefixes(limit), target_type, source_key, limit
+                )
             result.setdefault(
                 'source_key',
                 source_key or (SUPPLEMENT_TASK_SOURCE if source_key == SUPPLEMENT_TASK_SOURCE else AVFAN_VIDEO_SOURCE),
@@ -205,9 +264,16 @@ class LibraryEnrichmentService:
                     planned_actor_names=self._planned_actor_names(),
                 )
             if source_key == SUPPLEMENT_TASK_SOURCE:
-                result = service.enrich_next_actors(limit, estimate_remaining=batch_mode)
+                result = self._run_enrichment_service(
+                    lambda: service.enrich_next_actors(limit, estimate_remaining=batch_mode),
+                    target_type,
+                    source_key,
+                    limit,
+                )
             else:
-                result = service.enrich_next_actors(limit)
+                result = self._run_enrichment_service(
+                    lambda: service.enrich_next_actors(limit), target_type, source_key, limit
+                )
             result.setdefault(
                 'source_key',
                 source_key or (SUPPLEMENT_TASK_SOURCE if source_key == SUPPLEMENT_TASK_SOURCE else AVFAN_VIDEO_SOURCE),
@@ -227,7 +293,9 @@ class LibraryEnrichmentService:
                 planned_actor_names=self._planned_actor_names(),
                 planned_items=self.planned_items,
             )
-            result = service.enrich_next_actors(limit)
+            result = self._run_enrichment_service(
+                lambda: service.enrich_next_actors(limit), target_type, source_key, limit
+            )
             result.setdefault('source_key', source_key or BINGHUO_ACTOR_SOURCE)
             return result
 
