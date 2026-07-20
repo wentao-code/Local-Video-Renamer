@@ -110,6 +110,119 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
         self.assertEqual(claimed[0]['sequence_index'], 1)
         self.assertEqual(claimed[0]['origin_table'], 'pending_actor_javtxt')
 
+    def test_supplement_avfan_fields_are_isolated_from_non_supplement_tasks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            supplement_plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                'supplement',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[
+                    {
+                        'code': 'SDDE-714',
+                        'avfan_url': 'https://avfan.example/movies/714',
+                        'avfan_movie_id': '714',
+                        'supplement_mode': 'actors_only',
+                    }
+                ],
+            )
+            normal_plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                'javtxt',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[
+                    {
+                        'code': 'SDDE-715',
+                        'avfan_url': 'https://must-not-be-used.example/715',
+                        'avfan_movie_id': '715',
+                    }
+                ],
+            )
+
+            supplement_claimed = db.claim_enrichment_batch_items(supplement_plan['plan_id'], 'video', 1)
+            with closing(sqlite3.connect(db_path)) as conn:
+                supplement_row = conn.execute(
+                    'SELECT avfan_url, avfan_movie_id, supplement_mode FROM enrichment_running_items WHERE plan_id = ?',
+                    (supplement_plan['plan_id'],),
+                ).fetchone()
+            db.release_enrichment_batch_items(supplement_plan['plan_id'], 'video')
+            normal_claimed = db.claim_enrichment_batch_items(normal_plan['plan_id'], 'video', 1)
+            with closing(sqlite3.connect(db_path)) as conn:
+                normal_row = conn.execute(
+                    'SELECT avfan_url, avfan_movie_id, supplement_mode FROM enrichment_running_items WHERE plan_id = ?',
+                    (normal_plan['plan_id'],),
+                ).fetchone()
+
+        self.assertEqual(supplement_claimed[0]['avfan_url'], 'https://avfan.example/movies/714')
+        self.assertEqual(supplement_row, ('https://avfan.example/movies/714', '714', 'actors_only'))
+        self.assertEqual(normal_claimed[0]['avfan_url'], '')
+        self.assertEqual(normal_row, ('', '', ''))
+
+    def test_legacy_supplement_queue_rows_are_backfilled_from_source_tables(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    '''
+                    INSERT INTO actor_movies (actor_name, code, avfan_url)
+                    VALUES (?, ?, ?)
+                    ''',
+                    ('演员甲', 'AAA-001', 'https://avfan.example/movies/aaa-001'),
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO pending_actor_supplement (
+                        plan_id, sequence_index, target_key, code, actor_name, source_key
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ''',
+                    ('legacy-plan', 1, '演员甲', 'AAA-001', '演员甲', 'supplement'),
+                )
+                conn.commit()
+
+            VideoDatabase(db_path)
+            with closing(sqlite3.connect(db_path)) as conn:
+                row = conn.execute(
+                    '''
+                    SELECT avfan_url, avfan_movie_id
+                    FROM pending_actor_supplement
+                    WHERE plan_id = ? AND sequence_index = ?
+                    ''',
+                    ('legacy-plan', 1),
+                ).fetchone()
+
+        self.assertEqual(row, ('https://avfan.example/movies/aaa-001', ''))
+
+    def test_supplement_claim_keeps_full_and_actor_only_items_in_separate_batches(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                'supplement',
+                batch_limit=2,
+                batch_count_limit=2,
+                candidates=[
+                    {'code': 'FULL-001', 'supplement_mode': 'full'},
+                    {'code': 'ACTOR-001', 'supplement_mode': 'actors_only'},
+                    {'code': 'ACTOR-002', 'supplement_mode': 'actors_only'},
+                ],
+            )
+
+            first = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2)
+            for item in first:
+                db.mark_enrichment_batch_item(plan['plan_id'], 'video', item['sequence_index'], 'completed')
+            second = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2)
+
+        self.assertEqual([item['supplement_mode'] for item in first], ['actors_only', 'actors_only'])
+        self.assertEqual([item['supplement_mode'] for item in second], ['full'])
+
     def test_supplement_candidates_include_running_items_from_current_plan(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

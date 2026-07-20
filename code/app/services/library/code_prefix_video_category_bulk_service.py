@@ -29,6 +29,7 @@ class CodePrefixVideoCategoryBulkService:
         }
 
     def _collect_target_codes(self, prefix):
+        staged_codes = self.database.list_staged_video_category_codes()
         seen = set()
         matched_codes = []
         for row in self.database.list_code_prefix_movies(prefix):
@@ -36,6 +37,8 @@ class CodePrefixVideoCategoryBulkService:
             if not normalized_code or normalized_code in seen:
                 continue
             seen.add(normalized_code)
+            if normalized_code not in staged_codes:
+                continue
             if normalize_video_category((row or {}).get('video_category', '')):
                 continue
             if not is_javtxt_eligible_movie(row):

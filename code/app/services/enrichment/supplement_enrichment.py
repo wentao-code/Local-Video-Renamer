@@ -1,7 +1,7 @@
 from urllib.parse import quote
 
 from app.core.enrichment_sources import SUPPLEMENT_TASK_SOURCE, get_video_enrichment_source_label
-from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
 from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 from app.core.runtime_config import get_avfan_base_url
 from app.core.supplement_task_state import SUPPLEMENT_MODE_ACTORS_ONLY, build_supplement_candidate
@@ -241,12 +241,37 @@ class _SupplementBaseService:
         return {status_key: 'failed'}
 
     def _persist_batch_updates(self, updated_rows, successful_rows, terminal_rows, bulk_updater):
-        if updated_rows:
-            bulk_updater(updated_rows)
-        for success_row in successful_rows or []:
-            self._save_terminal_status(success_row, ENRICHED_STATUS)
-        for terminal_row, status, error_message in terminal_rows or []:
-            self._save_terminal_status(terminal_row, status, error_message)
+        successful_keys = {self._supplement_row_identity(row) for row in successful_rows or []}
+        terminal_by_key = {
+            self._supplement_row_identity(row): (status, error_message)
+            for row, status, error_message in terminal_rows or []
+        }
+        persisted_rows = []
+        persisted_keys = set()
+        for row in updated_rows or []:
+            current = dict(row or {})
+            key = self._supplement_row_identity(current)
+            status, error_message = terminal_by_key.get(key, (ENRICHED_STATUS if key in successful_keys else UNENRICHED_STATUS, ''))
+            current['_supplement_status'] = status
+            current['_supplement_error'] = error_message
+            persisted_rows.append(current)
+            persisted_keys.add(key)
+        status_only_rows = [
+            (row, status, error_message)
+            for row, status, error_message in terminal_rows or []
+            if self._supplement_row_identity(row) not in persisted_keys
+        ]
+        if persisted_rows or status_only_rows:
+            bulk_updater(persisted_rows, status_updates=status_only_rows)
+
+    @staticmethod
+    def _supplement_row_identity(row):
+        current = dict(row or {})
+        return (
+            str(current.get('actor_name', '') or '').strip(),
+            str(current.get('prefix', '') or '').strip().upper(),
+            str(current.get('code', '') or '').strip().upper(),
+        )
 
 
 class VideoSupplementEnrichmentService(_SupplementBaseService):
@@ -260,24 +285,36 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
         limit = int(limit or 0)
         if limit <= 0:
             raise ValueError('补全数量必须大于 0')
-        candidate_limit = 999999 if self._planned_codes() else limit
-        candidates = self.database.list_video_supplement_candidates(
-            candidate_limit,
-            include_queued=bool(self.planned_items),
-            running_plan_id=self.running_plan_id,
-        )
-        candidates = self._select_planned_rows(candidates, 'code', limit)
+        if self.planned_items:
+            candidates = [dict(item) for item in self.planned_items if str(item.get('code', '') or '').strip()][:limit]
+        else:
+            candidates = self.database.list_video_supplement_candidates(limit)
         results = []
         success_count = 0
         failed_count = 0
+        batch_updated_rows = []
+        batch_successful_rows = []
+        batch_terminal_rows = []
+        if self.planned_items:
+            remaining_loader = lambda: max(0, len(self.planned_items) - len(results))
+            has_more_loader = lambda: bool(max(0, len(self.planned_items) - len(results)))
+        else:
+            remaining_loader = lambda: self.database.count_pending_video_supplements()
+            has_more_loader = lambda: bool(self.database.list_video_supplement_candidates(1))
         self._start_progress(len(candidates))
         with self.scraper.session():
             for row in candidates:
                 if self.should_stop():
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_processed_videos_for_supplement,
+                    )
                     remaining_count, has_more_pending = self._resolve_remaining_state(
                         estimate_remaining,
-                        self.database.count_pending_video_supplements,
-                        lambda: self.database.list_video_supplement_candidates(1),
+                        remaining_loader,
+                        has_more_loader,
                     )
                     result = self._result(
                         limit,
@@ -294,29 +331,36 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                 try:
                     info = self._fetch_movie_info(row)
                     if not info.get('found'):
-                        self._save_terminal_status(row, NO_SEARCH_RESULTS_STATUS, info.get('error', ''))
+                        batch_terminal_rows.append((row, NO_SEARCH_RESULTS_STATUS, info.get('error', '')))
                         failed_count += 1
                         results.append({'code': code, 'status': 'failed', 'error': info.get('error', '')})
                     else:
                         merged_row = _merge_video_supplement_row(row, info)
-                        self.database.bulk_update_processed_videos_for_supplement([merged_row])
+                        batch_updated_rows.append(merged_row)
                         if build_supplement_candidate(merged_row):
                             error_message = self._resolve_incomplete_error(merged_row)
-                            self._save_terminal_status(merged_row, NO_SEARCH_RESULTS_STATUS, error_message)
+                            batch_terminal_rows.append((merged_row, NO_SEARCH_RESULTS_STATUS, error_message))
                             failed_count += 1
                             results.append({'code': code, 'status': 'failed', 'error': error_message})
                         else:
-                            self._save_terminal_status(merged_row, ENRICHED_STATUS)
+                            batch_successful_rows.append(merged_row)
                             success_count += 1
                             results.append({'code': code, 'status': 'ok'})
                 except HumanVerificationRequiredError as exc:
+                    batch_terminal_rows.append((row, FAILED_STATUS, str(exc)))
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_processed_videos_for_supplement,
+                    )
                     failed_count += 1
                     results.append({'code': code, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(len(results), success_count, failed_count, code)
                     remaining_count, has_more_pending = self._resolve_remaining_state(
                         estimate_remaining,
-                        self.database.count_pending_video_supplements,
-                        lambda: self.database.list_video_supplement_candidates(1),
+                        remaining_loader,
+                        has_more_loader,
                     )
                     result = self._result(
                         limit,
@@ -332,14 +376,20 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
-                    self._save_terminal_status(row, FAILED_STATUS, str(exc))
+                    batch_terminal_rows.append((row, FAILED_STATUS, str(exc)))
                     failed_count += 1
                     results.append({'code': code, 'status': 'failed', 'error': str(exc)})
                 self._update_progress(len(results), success_count, failed_count, code)
+        self._persist_batch_updates(
+            batch_updated_rows,
+            batch_successful_rows,
+            batch_terminal_rows,
+            self.database.bulk_update_processed_videos_for_supplement,
+        )
         remaining_count, has_more_pending = self._resolve_remaining_state(
             estimate_remaining,
-            self.database.count_pending_video_supplements,
-            lambda: self.database.list_video_supplement_candidates(1),
+            remaining_loader,
+            has_more_loader,
         )
         result = self._result(
             limit,
@@ -392,6 +442,9 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
         processed_count = 0
         success_count = 0
         failed_count = 0
+        batch_updated_rows = []
+        batch_successful_rows = []
+        batch_terminal_rows = []
         self._start_progress(sum(len(rows) for _, rows in candidates))
         with self.scraper.session():
             for prefix, rows in candidates:
@@ -422,10 +475,13 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                             failed_count += 1
                         self._update_progress(processed_count, success_count, failed_count, code)
                 except HumanVerificationRequiredError as exc:
+                    batch_updated_rows.extend(updated_rows)
+                    batch_successful_rows.extend(successful_rows)
+                    batch_terminal_rows.extend(terminal_rows)
                     self._persist_batch_updates(
-                        updated_rows,
-                        successful_rows,
-                        terminal_rows,
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
                         self.database.bulk_update_code_prefix_movies_for_supplement,
                     )
                     failed_count += 1
@@ -451,31 +507,31 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
-                    self._persist_batch_updates(
-                        updated_rows,
-                        successful_rows,
-                        terminal_rows,
-                        self.database.bulk_update_code_prefix_movies_for_supplement,
-                    )
+                    batch_updated_rows.extend(updated_rows)
+                    batch_successful_rows.extend(successful_rows)
+                    batch_terminal_rows.extend(terminal_rows)
                     if 'row' in locals():
-                        self._save_terminal_status(row, FAILED_STATUS, str(exc))
+                        batch_terminal_rows.append((row, FAILED_STATUS, str(exc)))
                     failed_count += 1
                     results.append({'prefix': prefix, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(processed_count, success_count, failed_count, prefix)
                     continue
 
-                self._persist_batch_updates(
-                    updated_rows,
-                    successful_rows,
-                    terminal_rows,
-                    self.database.bulk_update_code_prefix_movies_for_supplement,
-                )
+                batch_updated_rows.extend(updated_rows)
+                batch_successful_rows.extend(successful_rows)
+                batch_terminal_rows.extend(terminal_rows)
                 if updated_rows and not terminal_rows:
                     results.append({'prefix': prefix, 'status': 'ok'})
                 elif updated_rows or terminal_rows:
                     results.append({'prefix': prefix, 'status': 'failed'})
 
                 if stop_requested:
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_code_prefix_movies_for_supplement,
+                    )
                     remaining_count, has_more_pending = self._resolve_remaining_state(
                         estimate_remaining,
                         self._remaining_video_count,
@@ -494,6 +550,12 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(self.stop_message, stopped=True)
                     return result
 
+        self._persist_batch_updates(
+            batch_updated_rows,
+            batch_successful_rows,
+            batch_terminal_rows,
+            self.database.bulk_update_code_prefix_movies_for_supplement,
+        )
         remaining_count, has_more_pending = self._resolve_remaining_state(
             estimate_remaining,
             self._remaining_video_count,
@@ -557,7 +619,6 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
     def _planned_prefix_batches(self, limit):
         batches = []
         remaining_limit = max(0, int(limit or 0))
-        rows_by_prefix = {}
         used_codes = set()
         for item in self.planned_items:
             if remaining_limit <= 0:
@@ -566,18 +627,12 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
             code = str((item or {}).get('code', '') or '').strip()
             if not prefix:
                 continue
-            if prefix not in rows_by_prefix:
-                rows_by_prefix[prefix] = self._candidate_rows_for_prefix(prefix)
-            candidates = rows_by_prefix[prefix]
-            selected_row = None
-            for row in candidates:
-                row_code = str((row or {}).get('code', '') or '').strip()
-                if code and row_code != code:
-                    continue
-                if row_code and row_code in used_codes:
-                    continue
-                selected_row = row
-                break
+            selected_row = dict(item)
+            row_code = str(selected_row.get('code', '') or '').strip()
+            if code and row_code != code:
+                continue
+            if row_code and row_code in used_codes:
+                continue
             if not selected_row:
                 continue
             selected_code = str((selected_row or {}).get('code', '') or '').strip()
@@ -621,6 +676,9 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
         processed_count = 0
         success_count = 0
         failed_count = 0
+        batch_updated_rows = []
+        batch_successful_rows = []
+        batch_terminal_rows = []
         self._start_progress(sum(len(rows) for _, rows in candidates))
         with self.scraper.session():
             for actor_name, rows in candidates:
@@ -651,10 +709,13 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                             failed_count += 1
                         self._update_progress(processed_count, success_count, failed_count, code)
                 except HumanVerificationRequiredError as exc:
+                    batch_updated_rows.extend(updated_rows)
+                    batch_successful_rows.extend(successful_rows)
+                    batch_terminal_rows.extend(terminal_rows)
                     self._persist_batch_updates(
-                        updated_rows,
-                        successful_rows,
-                        terminal_rows,
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
                         self.database.bulk_update_actor_movies_for_supplement,
                     )
                     failed_count += 1
@@ -680,31 +741,31 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
-                    self._persist_batch_updates(
-                        updated_rows,
-                        successful_rows,
-                        terminal_rows,
-                        self.database.bulk_update_actor_movies_for_supplement,
-                    )
+                    batch_updated_rows.extend(updated_rows)
+                    batch_successful_rows.extend(successful_rows)
+                    batch_terminal_rows.extend(terminal_rows)
                     if 'row' in locals():
-                        self._save_terminal_status(row, FAILED_STATUS, str(exc))
+                        batch_terminal_rows.append((row, FAILED_STATUS, str(exc)))
                     failed_count += 1
                     results.append({'actor_name': actor_name, 'status': 'failed', 'error': str(exc)})
                     self._update_progress(processed_count, success_count, failed_count, actor_name)
                     continue
 
-                self._persist_batch_updates(
-                    updated_rows,
-                    successful_rows,
-                    terminal_rows,
-                    self.database.bulk_update_actor_movies_for_supplement,
-                )
+                batch_updated_rows.extend(updated_rows)
+                batch_successful_rows.extend(successful_rows)
+                batch_terminal_rows.extend(terminal_rows)
                 if updated_rows and not terminal_rows:
                     results.append({'actor_name': actor_name, 'status': 'ok'})
                 elif updated_rows or terminal_rows:
                     results.append({'actor_name': actor_name, 'status': 'failed'})
 
                 if stop_requested:
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_actor_movies_for_supplement,
+                    )
                     remaining_count, has_more_pending = self._resolve_remaining_state(
                         estimate_remaining,
                         self._remaining_video_count,
@@ -723,6 +784,12 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(self.stop_message, stopped=True)
                     return result
 
+        self._persist_batch_updates(
+            batch_updated_rows,
+            batch_successful_rows,
+            batch_terminal_rows,
+            self.database.bulk_update_actor_movies_for_supplement,
+        )
         remaining_count, has_more_pending = self._resolve_remaining_state(
             estimate_remaining,
             self._remaining_video_count,
@@ -786,7 +853,6 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
     def _planned_actor_batches(self, limit):
         batches = []
         remaining_limit = max(0, int(limit or 0))
-        rows_by_actor = {}
         used_codes = set()
         for item in self.planned_items:
             if remaining_limit <= 0:
@@ -795,18 +861,12 @@ class ActorSupplementEnrichmentService(_SupplementBaseService):
             code = str((item or {}).get('code', '') or '').strip()
             if not actor_name:
                 continue
-            if actor_name not in rows_by_actor:
-                rows_by_actor[actor_name] = self._candidate_rows_for_actor(actor_name)
-            candidates = rows_by_actor[actor_name]
-            selected_row = None
-            for row in candidates:
-                row_code = str((row or {}).get('code', '') or '').strip()
-                if code and row_code != code:
-                    continue
-                if row_code and row_code in used_codes:
-                    continue
-                selected_row = row
-                break
+            selected_row = dict(item)
+            row_code = str(selected_row.get('code', '') or '').strip()
+            if code and row_code != code:
+                continue
+            if row_code and row_code in used_codes:
+                continue
             if not selected_row:
                 continue
             selected_code = str((selected_row or {}).get('code', '') or '').strip()

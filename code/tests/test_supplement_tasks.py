@@ -496,6 +496,57 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(reset_count, 1)
         self.assertEqual(third['processed_count'], 1)
 
+    def test_planned_video_supplement_uses_persisted_avfan_url_without_candidate_scan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            self._insert_processed_video(
+                db_path,
+                code='AAA-019',
+                title='Planned Video',
+                release_date='2024-01-19',
+                javtxt_status=ENRICHED_STATUS,
+                javtxt_movie_id='m19',
+                javtxt_url='https://javtxt.example/m19',
+                javtxt_title='Planned Video',
+                javtxt_release_date='2024-01-19',
+            )
+            scraper = _FakeScraper(
+                payload_by_url={
+                    'https://avfan.example/movies/19': {
+                        'found': True,
+                        'title': 'Filled Planned Video',
+                        'actors': ['Actor 19'],
+                        'release_date': '2024-01-19',
+                    }
+                }
+            )
+
+            class PlannedDatabase(VideoDatabase):
+                def list_video_supplement_candidates(self, *args, **kwargs):
+                    raise AssertionError('planned supplement must not rescan candidate tables')
+
+            planned_db = PlannedDatabase(db_path)
+            service = VideoSupplementEnrichmentService(
+                planned_db,
+                scraper=scraper,
+                planned_items=[
+                    {
+                        'plan_id': 'plan-019',
+                        'code': 'AAA-019',
+                        'avfan_url': 'https://avfan.example/movies/19',
+                        'avfan_movie_id': '19',
+                        'supplement_mode': 'full',
+                    }
+                ],
+            )
+
+            result = service.enrich_next_videos(1)
+
+        self.assertEqual(result['success_count'], 1)
+        self.assertEqual(scraper.url_calls, ['https://avfan.example/movies/19'])
+        self.assertEqual(scraper.code_calls, [])
+
     def test_video_supplement_incomplete_actor_payload_is_skipped_until_manual_reset(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -578,6 +629,38 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['success_count'], 1)
         self.assertEqual(rows['AAA-022']['supplement_enrichment_status'], ENRICHED_STATUS)
 
+    def test_actor_supplement_writes_all_videos_in_one_batch_across_actors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                conn.executemany(
+                    "INSERT INTO actors (name, birthday, age, matched) VALUES (?, '', '', 0)",
+                    [('Actor A',), ('Actor B',)],
+                )
+                conn.commit()
+            db.replace_actor_movies(
+                'Actor A',
+                [self._build_library_movie('AAA-101', 'Need A', '', '2024-01-01', NO_SEARCH_RESULTS_STATUS)],
+            )
+            db.replace_actor_movies(
+                'Actor B',
+                [self._build_library_movie('BBB-101', 'Need B', '', '2024-01-02', NO_SEARCH_RESULTS_STATUS)],
+            )
+            scraper = _FakeScraper(
+                payload_by_code={
+                    'AAA-101': {'found': True, 'title': 'Filled A', 'actors': ['Actor A'], 'release_date': '2024-01-01'},
+                    'BBB-101': {'found': True, 'title': 'Filled B', 'actors': ['Actor B'], 'release_date': '2024-01-02'},
+                }
+            )
+            original_update = db.bulk_update_actor_movies_for_supplement
+            with patch.object(db, 'bulk_update_actor_movies_for_supplement', wraps=original_update) as update_mock:
+                result = ActorSupplementEnrichmentService(db, scraper=scraper).enrich_next_actors(2)
+
+        self.assertEqual(result['success_count'], 2)
+        self.assertEqual(update_mock.call_count, 1)
+        self.assertEqual(len(update_mock.call_args.args[0]), 2)
+
     def test_code_prefix_supplement_reports_video_progress_counts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
@@ -624,6 +707,32 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(result['success_count'], 2)
         self.assertEqual(result['remaining_count'], 0)
         self.assertEqual(result['count_unit'], '视频')
+
+    def test_code_prefix_supplement_writes_all_videos_in_one_batch_across_prefixes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.replace_code_prefix_movies(
+                'AAA',
+                [self._build_library_movie('AAA-101', 'Need A', '', '2024-01-01', NO_SEARCH_RESULTS_STATUS)],
+            )
+            db.replace_code_prefix_movies(
+                'BBB',
+                [self._build_library_movie('BBB-101', 'Need B', '', '2024-01-02', NO_SEARCH_RESULTS_STATUS)],
+            )
+            scraper = _FakeScraper(
+                payload_by_code={
+                    'AAA-101': {'found': True, 'title': 'Filled A', 'actors': ['Actor A'], 'release_date': '2024-01-01'},
+                    'BBB-101': {'found': True, 'title': 'Filled B', 'actors': ['Actor B'], 'release_date': '2024-01-02'},
+                }
+            )
+            original_update = db.bulk_update_code_prefix_movies_for_supplement
+            with patch.object(db, 'bulk_update_code_prefix_movies_for_supplement', wraps=original_update) as update_mock:
+                result = CodePrefixSupplementEnrichmentService(db, scraper=scraper).enrich_next_prefixes(2)
+
+        self.assertEqual(result['success_count'], 2)
+        self.assertEqual(update_mock.call_count, 1)
+        self.assertEqual(len(update_mock.call_args.args[0]), 2)
 
     def test_code_prefix_supplement_success_marks_status_completed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
