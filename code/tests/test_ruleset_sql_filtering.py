@@ -104,7 +104,7 @@ class RuleSetDatabaseFilteringTest(unittest.TestCase):
             with sqlite3.connect(str(db_path)) as conn:
                 conn.executemany(
                     '''
-                    INSERT INTO processed_videos (
+                    INSERT INTO video_entities (
                         code, title, release_date, javtxt_enrichment_status,
                         javtxt_tags, javtxt_url
                     ) VALUES (?, ?, ?, ?, ?, ?)
@@ -128,30 +128,20 @@ class RuleSetDatabaseFilteringTest(unittest.TestCase):
         try:
             db_path = Path(temp_dir) / 'video_database.db'
             database = VideoDatabase(db_path)
-            with sqlite3.connect(str(db_path)) as conn:
-                conn.executemany(
-                    '''
-                    INSERT INTO actor_movies (
-                        actor_name, code, title, javtxt_enrichment_status, javtxt_tags, javtxt_url
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    ''',
-                    [
-                        ('Actor A', 'SDDE-001', 'ordinary title', ENRICHED_STATUS, '', 'https://example.com/1'),
-                        ('Actor A', 'AAA-002', 'ordinary title', ENRICHED_STATUS, '', 'https://example.com/2'),
-                    ],
+            for actor_name, code, prefix in (
+                ('Actor A', 'SDDE-001', 'SDDE'),
+                ('Actor A', 'AAA-002', 'AAA'),
+            ):
+                database.upsert_video_entity(
+                    {
+                        'code': code,
+                        'title': 'ordinary title',
+                        'javtxt_enrichment_status': ENRICHED_STATUS,
+                        'javtxt_url': f'https://example.com/{1 if prefix == "SDDE" else 2}',
+                    },
+                    actor_relations=[{'actor_name': actor_name}],
+                    prefix_relations=[{'prefix': prefix}],
                 )
-                conn.executemany(
-                    '''
-                    INSERT INTO code_prefix_movies (
-                        prefix, code, title, javtxt_enrichment_status, javtxt_tags, javtxt_url
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    ''',
-                    [
-                        ('SDDE', 'SDDE-001', 'ordinary title', ENRICHED_STATUS, '', 'https://example.com/1'),
-                        ('AAA', 'AAA-002', 'ordinary title', ENRICHED_STATUS, '', 'https://example.com/2'),
-                    ],
-                )
-                conn.commit()
 
             ruleset = RuleSet.normalize({'rules': {FILTER_FIELD_CODE: ['SDDE']}})
             actor_rows = database.list_actor_movies_by_names(['Actor A'], rule_set=ruleset)
@@ -171,7 +161,7 @@ class RuleSetDatabaseFilteringTest(unittest.TestCase):
             with sqlite3.connect(str(db_path)) as conn:
                 conn.executemany(
                     '''
-                    INSERT INTO processed_videos (
+                    INSERT INTO video_entities (
                         code, title, avfan_enrichment_status, javtxt_enrichment_status
                     ) VALUES (?, ?, ?, ?)
                     ''',

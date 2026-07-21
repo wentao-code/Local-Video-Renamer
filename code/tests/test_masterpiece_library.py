@@ -47,58 +47,32 @@ class MasterpieceLibraryTest(unittest.TestCase):
         video_category='鍗曚綋',
         release_date='2024-05-01',
     ):
+        self.db.upsert_video_entity(
+            {
+                'code': code,
+                'title': title,
+                'author': author,
+                'avfan_movie_id': 'avfan-001',
+                'release_date': release_date,
+                'maker': 'Maker A',
+                'publisher': 'Publisher A',
+                'javtxt_movie_id': 'javtxt-001',
+                'javtxt_url': javtxt_url,
+                'javtxt_title': title,
+                'javtxt_actors': author,
+                'javtxt_tags': javtxt_tags,
+                'javtxt_release_date': '2024-05-02',
+                'video_category': '单体',
+                'avfan_enrichment_status': '已补全',
+                'javtxt_enrichment_status': '已补全',
+                'supplement_enrichment_status': supplement_status,
+            },
+            local_record={'duration': '01:30:00', 'size': '3.20', 'storage_location': r'D:\videos'},
+        )
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                '''
-                INSERT INTO processed_videos (
-                    code,
-                    title,
-                    author,
-                    duration,
-                    size,
-                    storage_location,
-                    avfan_movie_id,
-                    release_date,
-                    maker,
-                    publisher,
-                    javtxt_movie_id,
-                    javtxt_url,
-                    javtxt_title,
-                    javtxt_actors,
-                    javtxt_tags,
-                    javtxt_release_date,
-                    video_category,
-                    avfan_enrichment_status,
-                    javtxt_enrichment_status,
-                    supplement_enrichment_status,
-                    supplement_enrichment_error,
-                    supplement_enriched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    code,
-                    title,
-                    author,
-                    '01:30:00',
-                    '3.20',
-                    r'D:\videos',
-                    'avfan-001',
-                    release_date,
-                    'Maker A',
-                    'Publisher A',
-                    'javtxt-001',
-                    javtxt_url,
-                    title,
-                    author,
-                    javtxt_tags,
-                    '2024-05-02',
-                    '单体',
-                    '已补全',
-                    '已补全',
-                    supplement_status,
-                    '',
-                    '2026-07-06 00:00:00',
-                ),
+                'UPDATE video_entities SET avfan_enrichment_status = ?, javtxt_enrichment_status = ?, supplement_enrichment_status = ? WHERE code = ?',
+                ('已补全', '已补全', supplement_status, code),
             )
             conn.commit()
 
@@ -109,72 +83,30 @@ class MasterpieceLibraryTest(unittest.TestCase):
         self.db.replace_actor_movies(actor_name, movies)
 
     def _update_processed_video_author(self, code, author, release_date='2024-05-01'):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                '''
-                UPDATE processed_videos
-                SET author = ?, javtxt_actors = ?, release_date = ?, javtxt_release_date = ?
-                WHERE code = ?
-                ''',
-                (author, author, release_date, release_date, code),
-            )
-            conn.commit()
+        self.db.upsert_video_entity(
+            {
+                'code': code,
+                'author': author,
+                'javtxt_actors': author,
+                'release_date': release_date,
+                'javtxt_release_date': release_date,
+            }
+        )
 
     def _insert_collaboration_video(self, code, author, release_date):
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                '''
-                INSERT INTO processed_videos (
-                    code,
-                    title,
-                    author,
-                    duration,
-                    size,
-                    storage_location,
-                    avfan_movie_id,
-                    release_date,
-                    maker,
-                    publisher,
-                    javtxt_movie_id,
-                    javtxt_url,
-                    javtxt_title,
-                    javtxt_actors,
-                    javtxt_tags,
-                    javtxt_release_date,
-                    video_category,
-                    avfan_enrichment_status,
-                    javtxt_enrichment_status,
-                    supplement_enrichment_status,
-                    supplement_enrichment_error,
-                    supplement_enriched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    code,
-                    code,
-                    author,
-                    '01:10:00',
-                    '2.10',
-                    r'D:\videos',
-                    '',
-                    release_date,
-                    '',
-                    '',
-                    '',
-                    '',
-                    code,
-                    author,
-                    '',
-                    release_date,
-                    VIDEO_CATEGORY_CO_STAR,
-                    '',
-                    '',
-                    '',
-                    '',
-                    '',
-                ),
-            )
-            conn.commit()
+        self.db.upsert_video_entity(
+            {
+                'code': code,
+                'title': code,
+                'author': author,
+                'javtxt_title': code,
+                'javtxt_actors': author,
+                'release_date': release_date,
+                'javtxt_release_date': release_date,
+                'video_category': VIDEO_CATEGORY_CO_STAR,
+            },
+            local_record={'duration': '01:10:00', 'size': '2.10', 'storage_location': r'D:\videos'},
+        )
 
     def test_add_masterpiece_entry_lists_video_and_normalizes_medals(self):
         entry = self.db.add_masterpiece_entry('pfsa-001')
@@ -629,11 +561,15 @@ class MasterpieceLibraryTest(unittest.TestCase):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 '''
-                UPDATE processed_videos
-                SET duration = ?, javtxt_tags = ?, javtxt_description = ?
+                UPDATE video_entities
+                SET javtxt_tags = ?, javtxt_description = ?
                 WHERE code = ?
                 ''',
-                ('130 分钟', 'Drama,Newcomer', 'Second source plot description', 'PFSA-001'),
+                ('Drama,Newcomer', 'Second source plot description', 'PFSA-001'),
+            )
+            conn.execute(
+                'UPDATE local_video_records SET duration = ? WHERE code = ?',
+                ('130 分钟', 'PFSA-001'),
             )
             conn.commit()
 

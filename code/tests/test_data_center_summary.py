@@ -124,8 +124,12 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             )
             with sqlite3.connect(str(db_path)) as conn:
                 conn.execute(
-                    "INSERT INTO actor_movies (actor_name, code, title, video_category) VALUES (?, ?, ?, ?)",
-                    ("Actor", "AAA-002", "A2", VIDEO_CATEGORY_CO_STAR),
+                    "INSERT INTO video_entities (code, title, video_category) VALUES (?, ?, ?)",
+                    ("AAA-002", "A2", VIDEO_CATEGORY_CO_STAR),
+                )
+                conn.execute(
+                    "INSERT INTO video_actor_relations (actor_name, video_code) VALUES (?, ?)",
+                    ("Actor", "AAA-002"),
                 )
                 conn.commit()
 
@@ -1872,7 +1876,7 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 """
-                INSERT INTO processed_videos (
+                INSERT INTO video_entities (
                     code,
                     title,
                     author,

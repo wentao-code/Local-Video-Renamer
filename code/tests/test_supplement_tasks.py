@@ -1423,7 +1423,7 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         with closing(sqlite3.connect(str(db_path))) as conn:
             conn.execute(
                 '''
-                INSERT INTO processed_videos (
+                INSERT INTO video_entities (
                     code,
                     title,
                     author,

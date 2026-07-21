@@ -170,9 +170,16 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
-                    INSERT INTO actor_movies (actor_name, code, avfan_url)
-                    VALUES (?, ?, ?)
+                    INSERT INTO video_entities (code) VALUES (?)
                     ''',
+                    ('AAA-001',),
+                )
+                conn.execute(
+                    'INSERT INTO video_actor_relations (actor_name, video_code) VALUES (?, ?)',
+                    ('演员甲', 'AAA-001'),
+                )
+                conn.execute(
+                    'INSERT INTO video_actor_relation_meta (actor_name, video_code, avfan_url) VALUES (?, ?, ?)',
                     ('演员甲', 'AAA-001', 'https://avfan.example/movies/aaa-001'),
                 )
                 conn.execute(
@@ -230,18 +237,24 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     '''
-                    INSERT INTO actor_movies (
-                        actor_name, code, title, author, release_date,
-                        avfan_url, page_number, javtxt_enrichment_status,
+                    INSERT INTO video_entities (
+                        code, title, author, release_date, javtxt_enrichment_status,
                         javtxt_movie_id, javtxt_url, supplement_enrichment_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
-                        '演员甲', 'SDDE-714', '已有标题', '', '2025-01-01',
-                        'https://avfan.example/movies/714', 1, NO_SEARCH_RESULTS_STATUS,
+                        'SDDE-714', '已有标题', '', '2025-01-01', NO_SEARCH_RESULTS_STATUS,
                         '714', 'https://javtxt.example/714', UNENRICHED_STATUS,
                     ),
+                )
+                conn.execute(
+                    'INSERT INTO video_actor_relations (actor_name, video_code) VALUES (?, ?)',
+                    ('演员甲', 'SDDE-714'),
+                )
+                conn.execute(
+                    'INSERT INTO video_actor_relation_meta (actor_name, video_code, avfan_url) VALUES (?, ?, ?)',
+                    ('演员甲', 'SDDE-714', 'https://avfan.example/movies/714'),
                 )
                 conn.commit()
 
@@ -597,7 +610,7 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
             rows = [(f'BIG-{index:04d}', '演员甲') for index in range(1200)]
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.executemany(
-                    'INSERT INTO processed_videos (code, javtxt_actors) VALUES (?, ?)',
+                    'INSERT INTO video_entities (code, javtxt_actors) VALUES (?, ?)',
                     rows,
                 )
                 conn.commit()

@@ -110,18 +110,15 @@ def test_sql_javtxt_candidates_join_processed_video_cache():
                 ('Actor A', ENRICHED_STATUS, 2),
             )
             connection.execute(
-                '''INSERT INTO actor_movies(
-                    actor_name, code, title, author, release_date,
+                '''INSERT INTO video_entities(
+                    code, title, author, release_date, javtxt_actors, javtxt_movie_id, javtxt_url,
                     javtxt_enrichment_status, javtxt_release_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                ('Actor A', 'ABC-001', 'Title', '', '2025-01-01', UNENRICHED_STATUS, '2025-01-01'),
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                ('ABC-001', 'Title', '', '2025-01-01', 'Cached Actor', '1', 'https://example.test/1', UNENRICHED_STATUS, '2025-01-01'),
             )
             connection.execute(
-                '''INSERT INTO processed_videos(
-                    code, javtxt_actors, javtxt_movie_id, javtxt_url,
-                    javtxt_enrichment_status, javtxt_release_date, release_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                ('ABC-001', 'Cached Actor', '1', 'https://example.test/1', ENRICHED_STATUS, '2025-01-01', '2025-01-01'),
+                'INSERT INTO video_actor_relations (actor_name, video_code) VALUES (?, ?)',
+                ('Actor A', 'ABC-001'),
             )
             connection.commit()
 
@@ -138,7 +135,7 @@ def test_sql_supplement_candidates_exclude_pending_rows():
         database = VideoDatabase(Path(temp_dir) / 'video_database.db')
         with database._connect() as connection:
             connection.execute(
-                '''INSERT INTO processed_videos(
+                '''INSERT INTO video_entities(
                     code, title, author, javtxt_movie_id, javtxt_url,
                     javtxt_enrichment_status, supplement_enrichment_status
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)''',

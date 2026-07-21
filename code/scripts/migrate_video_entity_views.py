@@ -1,4 +1,4 @@
-"""Convert legacy movie tables to writable canonical compatibility views."""
+"""Finalize migration from legacy movie objects to canonical tables."""
 
 import sys
 import traceback
@@ -16,10 +16,7 @@ def main():
     database = object.__new__(VideoDatabase)
     database.db_path = Path(DATABASE_FILE)
     database._startup_maintenance_completed = False
-    with database._connect() as conn:
-        database._ensure_video_entity_compatibility_columns(conn.cursor())
-        conn.commit()
-    database.convert_legacy_tables_to_compatibility_views()
+    database.finalize_legacy_schema()
     with database._connect() as conn:
         rows = conn.execute(
             """

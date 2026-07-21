@@ -51,13 +51,13 @@ class CodePrefixVideoCategoryBulkServiceTest(unittest.TestCase):
 
             with sqlite3.connect(str(db_path)) as conn:
                 processed_rows = conn.execute(
-                    "SELECT code, video_category FROM processed_videos WHERE code LIKE 'NEM-%' ORDER BY code"
+                    "SELECT code, video_category FROM video_entities WHERE code LIKE 'NEM-%' ORDER BY code"
                 ).fetchall()
                 prefix_rows = conn.execute(
-                    "SELECT code, video_category FROM code_prefix_movies WHERE prefix = 'NEM' ORDER BY code"
+                    "SELECT entity.code, entity.video_category FROM video_code_prefix_relations relation JOIN video_entities entity ON entity.code = relation.video_code WHERE relation.prefix = 'NEM' ORDER BY entity.code"
                 ).fetchall()
                 actor_rows = conn.execute(
-                    "SELECT code, video_category FROM actor_movies WHERE actor_name = '演员A' ORDER BY code"
+                    "SELECT entity.code, entity.video_category FROM video_actor_relations relation JOIN video_entities entity ON entity.code = relation.video_code WHERE relation.actor_name = '演员A' ORDER BY entity.code"
                 ).fetchall()
                 staged_codes = conn.execute(
                     "SELECT code FROM manual_category_staging ORDER BY code"
@@ -86,7 +86,7 @@ class CodePrefixVideoCategoryBulkServiceTest(unittest.TestCase):
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 """
-                INSERT INTO processed_videos (
+                INSERT OR IGNORE INTO video_entities (
                     code, title, author, release_date, javtxt_release_date,
                     enrichment_status, avfan_enrichment_status, javtxt_enrichment_status,
                     javtxt_movie_id, javtxt_url, javtxt_actors, javtxt_actors_raw, javtxt_tags, video_category
@@ -117,25 +117,29 @@ class CodePrefixVideoCategoryBulkServiceTest(unittest.TestCase):
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 """
-                INSERT INTO code_prefix_movies (
-                    prefix, code, title, author, release_date, avfan_url, page_number,
-                    javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date, author_raw, video_category
+                INSERT OR IGNORE INTO video_entities (
+                    code, title, author, release_date, javtxt_release_date,
+                    javtxt_enrichment_status, javtxt_movie_id, javtxt_url,
+                    javtxt_actors_raw, video_category
                 )
-                VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    prefix,
                     code,
                     code,
                     '演员A',
+                    release_date,
                     release_date,
                     ENRICHED_STATUS,
                     code,
                     f'https://example.com/{code}',
-                    release_date,
                     '演员A',
                     video_category,
                 ),
+            )
+            conn.execute(
+                'INSERT INTO video_code_prefix_relations (video_code, prefix) VALUES (?, ?)',
+                (code, prefix),
             )
             conn.commit()
 
@@ -144,25 +148,29 @@ class CodePrefixVideoCategoryBulkServiceTest(unittest.TestCase):
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
                 """
-                INSERT INTO actor_movies (
-                    actor_name, code, title, author, release_date, avfan_url, page_number,
-                    javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date, author_raw, video_category
+                INSERT OR IGNORE INTO video_entities (
+                    code, title, author, release_date, javtxt_release_date,
+                    javtxt_enrichment_status, javtxt_movie_id, javtxt_url,
+                    javtxt_actors_raw, video_category
                 )
-                VALUES (?, ?, ?, ?, ?, '', 1, ?, ?, ?, '', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    actor_name,
                     code,
                     code,
                     '演员A',
+                    release_date,
                     release_date,
                     ENRICHED_STATUS,
                     code,
                     f'https://example.com/{code}',
-                    release_date,
                     '演员A',
                     video_category,
                 ),
+            )
+            conn.execute(
+                'INSERT INTO video_actor_relations (video_code, actor_name) VALUES (?, ?)',
+                (code, actor_name),
             )
             conn.commit()
 
