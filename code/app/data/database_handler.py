@@ -149,6 +149,7 @@ class VideoDatabase(
         except Exception:
             timeout_seconds = 60
         conn = sqlite3.connect(self.db_path, timeout=timeout_seconds)
+        has_compatibility_view = False
         try:
             has_compatibility_view = conn.execute(
                 """
@@ -159,13 +160,17 @@ class VideoDatabase(
                 LIMIT 1
                 """
             ).fetchone() is not None
-            if not has_compatibility_view:
-                conn.execute('PRAGMA journal_mode = WAL')
+        except AttributeError:
+            # Keep compatibility with lightweight connection doubles used by
+            # callers that do not expose cursor.fetchone().
+            has_compatibility_view = False
         except sqlite3.OperationalError:
             # A migrated database may be held in a non-WAL journal mode by an
             # older SQLite runtime. Keep the current mode and let normal SQL
             # operations report any real write failure.
-            pass
+            has_compatibility_view = True
+        if not has_compatibility_view:
+            conn.execute('PRAGMA journal_mode = WAL')
         conn.execute(f'PRAGMA busy_timeout = {max(1, int(timeout_seconds * 1000))}')
         conn.execute('PRAGMA synchronous = NORMAL')
         conn.create_function('effective_actor_birthday_sql', 3, self._sql_effective_actor_birthday)
@@ -1483,7 +1488,7 @@ class VideoDatabase(
         return normalized_code
 
     def convert_legacy_tables_to_compatibility_views(self):
-        """Replace legacy movie tables with writable canonical compatibility views.
+        """Replace legacy movie tables with read-only canonical compatibility views.
 
         The renamed tables are retained as rollback snapshots. This operation is
         intentionally explicit so normal startup never changes a user's schema.
@@ -1560,6 +1565,15 @@ class VideoDatabase(
                 LEFT JOIN local_video_records l ON l.code = e.code
                 '''
             )
+            for trigger_name in (
+                'trg_actor_movies_view_insert',
+                'trg_actor_movies_view_update',
+                'trg_actor_movies_view_delete',
+                'trg_code_prefix_movies_view_insert',
+                'trg_code_prefix_movies_view_update',
+                'trg_code_prefix_movies_view_delete',
+            ):
+                cursor.execute(f'DROP TRIGGER IF EXISTS {trigger_name}')
             self._create_compatibility_view_triggers(cursor)
             conn.commit()
 
@@ -1585,6 +1599,14 @@ class VideoDatabase(
         ):
             if column_name not in columns:
                 cursor.execute(f'ALTER TABLE video_entities ADD COLUMN {column_name} {column_type}')
+
+    @staticmethod
+    def _legacy_table_name(cursor, name):
+        row = cursor.execute(
+            'SELECT name FROM sqlite_master WHERE type = ? AND name = ?',
+            ('table', name),
+        ).fetchone()
+        return str(row[0]) if row else ''
 
     @staticmethod
     def _backfill_video_entity_compatibility_columns(cursor, source_table):
@@ -1617,113 +1639,6 @@ class VideoDatabase(
     def _create_compatibility_view_triggers(cursor):
         cursor.executescript(
             '''
-            CREATE TRIGGER IF NOT EXISTS trg_actor_movies_view_insert
-            INSTEAD OF INSERT ON actor_movies
-            BEGIN
-                INSERT INTO video_entities (code, title, author, release_date,
-                    javtxt_movie_id, javtxt_url, javtxt_enrichment_status,
-                    javtxt_tags, javtxt_release_date, javtxt_actors_raw,
-                    video_category, supplement_enrichment_status,
-                    supplement_enrichment_error, supplement_enriched_at)
-                VALUES (NEW.code, COALESCE(NEW.title, ''), COALESCE(NEW.author, ''),
-                    COALESCE(NEW.release_date, ''), COALESCE(NEW.javtxt_movie_id, ''),
-                    COALESCE(NEW.javtxt_url, ''), COALESCE(NEW.javtxt_enrichment_status, ''),
-                    COALESCE(NEW.javtxt_tags, ''), COALESCE(NEW.javtxt_release_date, ''),
-                    COALESCE(NEW.author_raw, ''), COALESCE(NEW.video_category, ''),
-                    COALESCE(NEW.supplement_enrichment_status, ''),
-                    COALESCE(NEW.supplement_enrichment_error, ''),
-                    COALESCE(NEW.supplement_enriched_at, ''))
-                ON CONFLICT(code) DO UPDATE SET
-                    title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE video_entities.title END,
-                    author = CASE WHEN excluded.author <> '' THEN excluded.author ELSE video_entities.author END,
-                    release_date = CASE WHEN excluded.release_date <> '' THEN excluded.release_date ELSE video_entities.release_date END,
-                    video_category = CASE WHEN excluded.video_category <> '' THEN excluded.video_category ELSE video_entities.video_category END;
-                INSERT OR IGNORE INTO video_actor_relations (video_code, actor_name)
-                VALUES (NEW.code, NEW.actor_name);
-                INSERT INTO video_actor_relation_meta (video_code, actor_name, avfan_url, avfan_movie_id, page_number)
-                VALUES (NEW.code, NEW.actor_name, COALESCE(NEW.avfan_url, ''), COALESCE(NEW.javtxt_movie_id, ''), COALESCE(NEW.page_number, 1))
-                ON CONFLICT(video_code, actor_name) DO UPDATE SET
-                    avfan_url = CASE WHEN excluded.avfan_url <> '' THEN excluded.avfan_url ELSE video_actor_relation_meta.avfan_url END,
-                    avfan_movie_id = CASE WHEN excluded.avfan_movie_id <> '' THEN excluded.avfan_movie_id ELSE video_actor_relation_meta.avfan_movie_id END,
-                    page_number = CASE WHEN excluded.page_number > 0 THEN excluded.page_number ELSE video_actor_relation_meta.page_number END;
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS trg_actor_movies_view_update
-            INSTEAD OF UPDATE ON actor_movies
-            BEGIN
-                UPDATE video_entities SET
-                    title = COALESCE(NEW.title, title), author = COALESCE(NEW.author, author),
-                    release_date = COALESCE(NEW.release_date, release_date),
-                    javtxt_enrichment_status = COALESCE(NEW.javtxt_enrichment_status, javtxt_enrichment_status),
-                    video_category = COALESCE(NEW.video_category, video_category),
-                    javtxt_tags = COALESCE(NEW.javtxt_tags, javtxt_tags),
-                    javtxt_release_date = COALESCE(NEW.javtxt_release_date, javtxt_release_date)
-                WHERE code = OLD.code;
-                DELETE FROM video_actor_relations WHERE video_code = OLD.code AND actor_name = OLD.actor_name;
-                DELETE FROM video_actor_relation_meta WHERE video_code = OLD.code AND actor_name = OLD.actor_name;
-                INSERT OR IGNORE INTO video_actor_relations (video_code, actor_name) VALUES (NEW.code, NEW.actor_name);
-                INSERT OR REPLACE INTO video_actor_relation_meta (video_code, actor_name, avfan_url, avfan_movie_id, page_number)
-                VALUES (NEW.code, NEW.actor_name, COALESCE(NEW.avfan_url, ''), COALESCE(NEW.javtxt_movie_id, ''), COALESCE(NEW.page_number, 1));
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS trg_actor_movies_view_delete
-            INSTEAD OF DELETE ON actor_movies
-            BEGIN
-                DELETE FROM video_actor_relations WHERE video_code = OLD.code AND actor_name = OLD.actor_name;
-                DELETE FROM video_actor_relation_meta WHERE video_code = OLD.code AND actor_name = OLD.actor_name;
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS trg_code_prefix_movies_view_insert
-            INSTEAD OF INSERT ON code_prefix_movies
-            BEGIN
-                INSERT INTO video_entities (code, title, author, release_date,
-                    javtxt_movie_id, javtxt_url, javtxt_enrichment_status,
-                    javtxt_tags, javtxt_release_date, javtxt_actors_raw,
-                    video_category, supplement_enrichment_status,
-                    supplement_enrichment_error, supplement_enriched_at)
-                VALUES (NEW.code, COALESCE(NEW.title, ''), COALESCE(NEW.author, ''),
-                    COALESCE(NEW.release_date, ''), COALESCE(NEW.javtxt_movie_id, ''),
-                    COALESCE(NEW.javtxt_url, ''), COALESCE(NEW.javtxt_enrichment_status, ''),
-                    COALESCE(NEW.javtxt_tags, ''), COALESCE(NEW.javtxt_release_date, ''),
-                    COALESCE(NEW.author_raw, ''), COALESCE(NEW.video_category, ''),
-                    COALESCE(NEW.supplement_enrichment_status, ''),
-                    COALESCE(NEW.supplement_enrichment_error, ''),
-                    COALESCE(NEW.supplement_enriched_at, ''))
-                ON CONFLICT(code) DO UPDATE SET
-                    title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE video_entities.title END,
-                    author = CASE WHEN excluded.author <> '' THEN excluded.author ELSE video_entities.author END,
-                    release_date = CASE WHEN excluded.release_date <> '' THEN excluded.release_date ELSE video_entities.release_date END,
-                    video_category = CASE WHEN excluded.video_category <> '' THEN excluded.video_category ELSE video_entities.video_category END;
-                INSERT OR IGNORE INTO video_code_prefix_relations (video_code, prefix) VALUES (NEW.code, UPPER(NEW.prefix));
-                INSERT OR REPLACE INTO video_prefix_relation_meta (video_code, prefix, avfan_url, avfan_movie_id, page_number)
-                VALUES (NEW.code, UPPER(NEW.prefix), COALESCE(NEW.avfan_url, ''), COALESCE(NEW.javtxt_movie_id, ''), COALESCE(NEW.page_number, 1));
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS trg_code_prefix_movies_view_update
-            INSTEAD OF UPDATE ON code_prefix_movies
-            BEGIN
-                UPDATE video_entities SET
-                    title = COALESCE(NEW.title, title), author = COALESCE(NEW.author, author),
-                    release_date = COALESCE(NEW.release_date, release_date),
-                    javtxt_enrichment_status = COALESCE(NEW.javtxt_enrichment_status, javtxt_enrichment_status),
-                    video_category = COALESCE(NEW.video_category, video_category),
-                    javtxt_tags = COALESCE(NEW.javtxt_tags, javtxt_tags),
-                    javtxt_release_date = COALESCE(NEW.javtxt_release_date, javtxt_release_date)
-                WHERE code = OLD.code;
-                DELETE FROM video_code_prefix_relations WHERE video_code = OLD.code AND prefix = OLD.prefix;
-                DELETE FROM video_prefix_relation_meta WHERE video_code = OLD.code AND prefix = OLD.prefix;
-                INSERT OR IGNORE INTO video_code_prefix_relations (video_code, prefix) VALUES (NEW.code, UPPER(NEW.prefix));
-                INSERT OR REPLACE INTO video_prefix_relation_meta (video_code, prefix, avfan_url, avfan_movie_id, page_number)
-                VALUES (NEW.code, UPPER(NEW.prefix), COALESCE(NEW.avfan_url, ''), COALESCE(NEW.javtxt_movie_id, ''), COALESCE(NEW.page_number, 1));
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS trg_code_prefix_movies_view_delete
-            INSTEAD OF DELETE ON code_prefix_movies
-            BEGIN
-                DELETE FROM video_code_prefix_relations WHERE video_code = OLD.code AND prefix = OLD.prefix;
-                DELETE FROM video_prefix_relation_meta WHERE video_code = OLD.code AND prefix = OLD.prefix;
-            END;
-
             CREATE TRIGGER IF NOT EXISTS trg_processed_videos_view_insert
             INSTEAD OF INSERT ON processed_videos
             BEGIN
@@ -2054,13 +1969,13 @@ class VideoDatabase(
         )
         cursor.execute(
             '''
-            UPDATE code_prefix_movies
+            UPDATE video_entities
             SET javtxt_enrichment_status = COALESCE(
                     NULLIF(javtxt_enrichment_status, ''),
                     (
                         SELECT COALESCE(NULLIF(p.javtxt_enrichment_status, ''), ?)
                         FROM processed_videos p
-                        WHERE p.code = code_prefix_movies.code
+                        WHERE p.code = video_entities.code
                     ),
                     ?
                 ),
@@ -2069,7 +1984,7 @@ class VideoDatabase(
                     (
                         SELECT p.javtxt_movie_id
                         FROM processed_videos p
-                        WHERE p.code = code_prefix_movies.code
+                        WHERE p.code = video_entities.code
                     ),
                     ''
                 ),
@@ -2078,7 +1993,7 @@ class VideoDatabase(
                     (
                         SELECT p.javtxt_url
                         FROM processed_videos p
-                        WHERE p.code = code_prefix_movies.code
+                        WHERE p.code = video_entities.code
                     ),
                     ''
                 ),
@@ -2087,7 +2002,7 @@ class VideoDatabase(
                     (
                         SELECT p.javtxt_tags
                         FROM processed_videos p
-                        WHERE p.code = code_prefix_movies.code
+                        WHERE p.code = video_entities.code
                     ),
                     ''
                 ),
@@ -2096,65 +2011,26 @@ class VideoDatabase(
                     (
                         SELECT p.javtxt_release_date
                         FROM processed_videos p
-                        WHERE p.code = code_prefix_movies.code
+                        WHERE p.code = video_entities.code
                     ),
                     ''
                 ),
-                author_raw = COALESCE(NULLIF(author_raw, ''), NULLIF(author, ''), '')
+                javtxt_actors_raw = COALESCE(NULLIF(javtxt_actors_raw, ''), NULLIF(author, ''), '')
             ''',
             (UNENRICHED_STATUS, UNENRICHED_STATUS),
         )
         cursor.execute(
             '''
-            UPDATE actor_movies
-            SET javtxt_enrichment_status = COALESCE(
-                    NULLIF(javtxt_enrichment_status, ''),
-                    (
-                        SELECT COALESCE(NULLIF(p.javtxt_enrichment_status, ''), ?)
-                        FROM processed_videos p
-                        WHERE p.code = actor_movies.code
-                    ),
-                    ?
-                ),
-                javtxt_movie_id = COALESCE(
-                    NULLIF(javtxt_movie_id, ''),
-                    (
-                        SELECT p.javtxt_movie_id
-                        FROM processed_videos p
-                        WHERE p.code = actor_movies.code
-                    ),
-                    ''
-                ),
-                javtxt_url = COALESCE(
-                    NULLIF(javtxt_url, ''),
-                    (
-                        SELECT p.javtxt_url
-                        FROM processed_videos p
-                        WHERE p.code = actor_movies.code
-                    ),
-                    ''
-                ),
-                javtxt_tags = COALESCE(
-                    NULLIF(javtxt_tags, ''),
-                    (
-                        SELECT p.javtxt_tags
-                        FROM processed_videos p
-                        WHERE p.code = actor_movies.code
-                    ),
-                    ''
-                ),
-                javtxt_release_date = COALESCE(
-                    NULLIF(javtxt_release_date, ''),
-                    (
-                        SELECT p.javtxt_release_date
-                        FROM processed_videos p
-                        WHERE p.code = actor_movies.code
-                    ),
-                    ''
-                ),
-                author_raw = COALESCE(NULLIF(author_raw, ''), NULLIF(author, ''), '')
+            UPDATE video_entities
+            SET javtxt_enrichment_status = COALESCE(NULLIF(javtxt_enrichment_status, ''), ?),
+                javtxt_movie_id = COALESCE(NULLIF(javtxt_movie_id, ''), ''),
+                javtxt_url = COALESCE(NULLIF(javtxt_url, ''), ''),
+                javtxt_tags = COALESCE(NULLIF(javtxt_tags, ''), ''),
+                javtxt_release_date = COALESCE(NULLIF(javtxt_release_date, ''), ''),
+                javtxt_actors_raw = COALESCE(NULLIF(javtxt_actors_raw, ''), NULLIF(author, ''), '')
+            WHERE code IN (SELECT video_code FROM video_actor_relations)
             ''',
-            (UNENRICHED_STATUS, UNENRICHED_STATUS),
+            (UNENRICHED_STATUS,),
         )
         cursor.execute(
             '''
@@ -2349,16 +2225,26 @@ class VideoDatabase(
                 (auto_category, code),
             )
 
+    @staticmethod
+    def _web_movie_storage_target(cursor, table_name):
+        object_type = cursor.execute(
+            'SELECT type FROM sqlite_master WHERE name = ?', (table_name,)
+        ).fetchone()
+        if object_type and object_type[0] == 'view':
+            return 'video_entities', 'javtxt_actors_raw'
+        return table_name, 'author_raw'
+
     def _backfill_web_movie_categories(self, cursor, table_name, filter_settings=None):
+        storage_table, _author_raw_column = self._web_movie_storage_target(cursor, table_name)
         cursor.execute(
             f'''
-            SELECT rowid, code, author, javtxt_tags, video_category
+            SELECT code, author, javtxt_tags, video_category
             FROM {table_name}
             WHERE COALESCE(video_category, '') = ''
             '''
         )
         rows = cursor.fetchall()
-        for rowid, code, author, javtxt_tags, current_category in rows:
+        for code, author, javtxt_tags, current_category in rows:
             normalized_code = standardize_video_code(code)
             processed_category = ''
             if normalized_code:
@@ -2384,11 +2270,11 @@ class VideoDatabase(
 
             cursor.execute(
                 f'''
-                UPDATE {table_name}
+                UPDATE {storage_table}
                 SET video_category = ?
-                WHERE rowid = ?
+                WHERE code = ?
                 ''',
-                (auto_category, rowid),
+                (auto_category, normalized_code),
             )
 
     def _clear_staged_video_categories_for_categorized_codes(self, cursor):
@@ -2422,11 +2308,11 @@ class VideoDatabase(
     def _clear_ineligible_web_movie_javtxt_state(self, cursor, table_name):
         if table_name not in {'code_prefix_movies', 'actor_movies'}:
             raise ValueError(f'Unsupported web movie table: {table_name}')
+        storage_table, author_raw_column = self._web_movie_storage_target(cursor, table_name)
 
         cursor.execute(
             f'''
-            SELECT rowid,
-                   code,
+            SELECT code,
                    title,
                    release_date,
                    javtxt_tags,
@@ -2441,10 +2327,9 @@ class VideoDatabase(
             ''',
             (UNENRICHED_STATUS,),
         )
-        rowids_to_mark_no_result = []
-        rowids_to_preserve_terminal = []
+        codes_to_mark_no_result = []
+        codes_to_preserve_terminal = []
         for (
-            rowid,
             code,
             title,
             release_date,
@@ -2465,37 +2350,41 @@ class VideoDatabase(
             ):
                 continue
             if is_no_result_status(javtxt_status):
-                rowids_to_preserve_terminal.append(rowid)
+                codes_to_preserve_terminal.append(standardize_video_code(code))
             else:
-                rowids_to_mark_no_result.append(rowid)
+                codes_to_mark_no_result.append(standardize_video_code(code))
 
-        for index in range(0, len(rowids_to_preserve_terminal), 500):
-            chunk = rowids_to_preserve_terminal[index:index + 500]
+        for index in range(0, len(codes_to_preserve_terminal), 500):
+            chunk = [code for code in codes_to_preserve_terminal[index:index + 500] if code]
+            if not chunk:
+                continue
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
-                UPDATE {table_name}
+                UPDATE {storage_table}
                 SET author = '',
-                    author_raw = '',
+                    {author_raw_column} = '',
                     javtxt_movie_id = '',
                     javtxt_url = ''
-                WHERE rowid IN ({placeholders})
+                WHERE code IN ({placeholders})
                 ''',
                 (*chunk,),
             )
 
-        for index in range(0, len(rowids_to_mark_no_result), 500):
-            chunk = rowids_to_mark_no_result[index:index + 500]
+        for index in range(0, len(codes_to_mark_no_result), 500):
+            chunk = [code for code in codes_to_mark_no_result[index:index + 500] if code]
+            if not chunk:
+                continue
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
-                UPDATE {table_name}
+                UPDATE {storage_table}
                 SET author = '',
-                    author_raw = '',
+                    {author_raw_column} = '',
                     javtxt_enrichment_status = ?,
                     javtxt_movie_id = '',
                     javtxt_url = ''
-                WHERE rowid IN ({placeholders})
+                WHERE code IN ({placeholders})
                 ''',
                 (NO_SEARCH_RESULTS_STATUS, *chunk),
             )
@@ -2503,10 +2392,11 @@ class VideoDatabase(
     def _clear_web_movie_javtxt_state_without_detail_reference(self, cursor, table_name):
         if table_name not in {'code_prefix_movies', 'actor_movies'}:
             raise ValueError(f'Unsupported web movie table: {table_name}')
+        storage_table, author_raw_column = self._web_movie_storage_target(cursor, table_name)
 
         cursor.execute(
             f'''
-            SELECT rowid
+            SELECT code
             FROM {table_name}
             WHERE COALESCE(javtxt_movie_id, '') = ''
               AND COALESCE(javtxt_url, '') = ''
@@ -2518,21 +2408,23 @@ class VideoDatabase(
             ''',
             (ENRICHED_STATUS,),
         )
-        rowids_to_clear = [row[0] for row in cursor.fetchall() if row and row[0] is not None]
-        for index in range(0, len(rowids_to_clear), 500):
-            chunk = rowids_to_clear[index:index + 500]
+        codes_to_clear = [standardize_video_code(row[0]) for row in cursor.fetchall() if row and row[0]]
+        for index in range(0, len(codes_to_clear), 500):
+            chunk = [code for code in codes_to_clear[index:index + 500] if code]
+            if not chunk:
+                continue
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
-                UPDATE {table_name}
+                UPDATE {storage_table}
                 SET author = '',
-                    author_raw = '',
+                    {author_raw_column} = '',
                     javtxt_enrichment_status = ?,
                     javtxt_movie_id = '',
                     javtxt_url = '',
                     javtxt_tags = '',
                     javtxt_release_date = ''
-                WHERE rowid IN ({placeholders})
+                WHERE code IN ({placeholders})
                 ''',
                 (UNENRICHED_STATUS, *chunk),
             )
@@ -2540,10 +2432,11 @@ class VideoDatabase(
     def _clear_legacy_web_movie_javtxt_state_without_release_date(self, cursor, table_name):
         if table_name not in {'code_prefix_movies', 'actor_movies'}:
             raise ValueError(f'Unsupported web movie table: {table_name}')
+        storage_table, _author_raw_column = self._web_movie_storage_target(cursor, table_name)
 
         cursor.execute(
             f'''
-            SELECT rowid
+            SELECT code
             FROM {table_name}
             WHERE COALESCE(javtxt_release_date, '') = ''
               AND COALESCE(javtxt_enrichment_status, '') NOT IN (?, ?)
@@ -2556,18 +2449,20 @@ class VideoDatabase(
             ''',
             (NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS),
         )
-        rowids_to_clear = [row[0] for row in cursor.fetchall() if row and row[0] is not None]
-        for index in range(0, len(rowids_to_clear), 500):
-            chunk = rowids_to_clear[index:index + 500]
+        codes_to_clear = [standardize_video_code(row[0]) for row in cursor.fetchall() if row and row[0]]
+        for index in range(0, len(codes_to_clear), 500):
+            chunk = [code for code in codes_to_clear[index:index + 500] if code]
+            if not chunk:
+                continue
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
-                UPDATE {table_name}
+                UPDATE {storage_table}
                 SET javtxt_enrichment_status = ?,
                     javtxt_movie_id = '',
                     javtxt_url = '',
                     javtxt_tags = ''
-                WHERE rowid IN ({placeholders})
+                WHERE code IN ({placeholders})
                 ''',
                 (UNENRICHED_STATUS, *chunk),
             )
@@ -2791,37 +2686,32 @@ class VideoDatabase(
                 (UNENRICHED_STATUS, *chunk),
             )
 
-    def _clear_web_movie_javtxt_rowids(self, cursor, table_name, rowids):
-        if table_name not in {'code_prefix_movies', 'actor_movies'}:
-            raise ValueError(f'Unsupported web movie table: {table_name}')
-        normalized_rowids = []
+    def _clear_web_movie_javtxt_codes(self, cursor, codes):
+        normalized_codes = []
         seen = set()
-        for rowid in rowids or []:
-            try:
-                normalized_rowid = int(rowid)
-            except (TypeError, ValueError):
+        for code in codes or []:
+            normalized_code = standardize_video_code(code)
+            if not normalized_code or normalized_code in seen:
                 continue
-            if normalized_rowid <= 0 or normalized_rowid in seen:
-                continue
-            seen.add(normalized_rowid)
-            normalized_rowids.append(normalized_rowid)
-        if not normalized_rowids:
+            seen.add(normalized_code)
+            normalized_codes.append(normalized_code)
+        if not normalized_codes:
             return
 
-        for index in range(0, len(normalized_rowids), 500):
-            chunk = normalized_rowids[index:index + 500]
+        for index in range(0, len(normalized_codes), 500):
+            chunk = normalized_codes[index:index + 500]
             placeholders = ','.join('?' for _ in chunk)
             cursor.execute(
                 f'''
-                UPDATE {table_name}
+                UPDATE video_entities
                 SET author = '',
-                    author_raw = '',
+                    javtxt_actors_raw = '',
                     javtxt_enrichment_status = ?,
                     javtxt_movie_id = '',
                     javtxt_url = '',
                     javtxt_tags = '',
                     javtxt_release_date = ''
-                WHERE rowid IN ({placeholders})
+                WHERE code IN ({placeholders})
                 ''',
                 (UNENRICHED_STATUS, *chunk),
             )
@@ -2845,6 +2735,7 @@ class VideoDatabase(
                 cursor.execute('UPDATE processed_videos SET code = ? WHERE code = ?', (normalized_code, code))
 
     def _normalize_code_prefix_movie_codes(self, cursor):
+        legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
         cursor.execute('SELECT prefix, code FROM code_prefix_movies')
         for prefix, code in cursor.fetchall():
             normalized_code = standardize_video_code(code)
@@ -2853,44 +2744,141 @@ class VideoDatabase(
                 continue
             if normalized_code == code and normalized_prefix == prefix:
                 continue
-            cursor.execute(
-                'SELECT 1 FROM code_prefix_movies WHERE prefix = ? AND code = ?',
-                (normalized_prefix, normalized_code),
+            duplicate_sql = (
+                f'SELECT 1 FROM {legacy_code_prefix_movies} WHERE prefix = ? AND code = ?'
+                if legacy_code_prefix_movies
+                else 'SELECT 1 FROM video_code_prefix_relations WHERE prefix = ? AND video_code = ?'
             )
+            cursor.execute(duplicate_sql, (normalized_prefix, normalized_code))
             if cursor.fetchone():
                 cursor.execute(
-                    'DELETE FROM code_prefix_movies WHERE prefix = ? AND code = ?',
+                    'DELETE FROM video_prefix_relation_meta WHERE prefix = ? AND video_code = ?',
                     (prefix, code),
                 )
+                cursor.execute(
+                    'DELETE FROM video_code_prefix_relations WHERE prefix = ? AND video_code = ?',
+                    (prefix, code),
+                )
+                if legacy_code_prefix_movies:
+                    cursor.execute(
+                        f'DELETE FROM {legacy_code_prefix_movies} WHERE prefix = ? AND code = ?',
+                        (prefix, code),
+                    )
             else:
                 cursor.execute(
-                    '''
-                    UPDATE code_prefix_movies
-                    SET prefix = ?, code = ?
-                    WHERE prefix = ? AND code = ?
-                    ''',
+                    'UPDATE video_code_prefix_relations SET prefix = ?, video_code = ? WHERE prefix = ? AND video_code = ?',
                     (normalized_prefix, normalized_code, prefix, code),
                 )
+                cursor.execute(
+                    'UPDATE video_prefix_relation_meta SET prefix = ?, video_code = ? WHERE prefix = ? AND video_code = ?',
+                    (normalized_prefix, normalized_code, prefix, code),
+                )
+                if legacy_code_prefix_movies:
+                    cursor.execute(
+                        f'UPDATE {legacy_code_prefix_movies} SET prefix = ?, code = ? WHERE prefix = ? AND code = ?',
+                        (normalized_prefix, normalized_code, prefix, code),
+                    )
 
     def _normalize_actor_movie_codes(self, cursor):
+        legacy_actor_movies = self._legacy_table_name(cursor, 'actor_movies')
+        if legacy_actor_movies:
+            legacy_rows = cursor.execute(
+                f'SELECT actor_name, code FROM {legacy_actor_movies}'
+            ).fetchall()
+            for actor_name, code in legacy_rows:
+                normalized_code = standardize_video_code(code)
+                if not normalized_code or normalized_code == code:
+                    continue
+                duplicate = cursor.execute(
+                    f'SELECT 1 FROM {legacy_actor_movies} WHERE actor_name = ? AND code = ?',
+                    (actor_name, normalized_code),
+                ).fetchone()
+                if duplicate:
+                    cursor.execute(
+                        f'DELETE FROM {legacy_actor_movies} WHERE actor_name = ? AND code = ?',
+                        (actor_name, code),
+                    )
+                    cursor.execute(
+                        'DELETE FROM video_actor_relation_meta WHERE actor_name = ? AND video_code = ?',
+                        (actor_name, code),
+                    )
+                    cursor.execute(
+                        'DELETE FROM video_actor_relations WHERE actor_name = ? AND video_code = ?',
+                        (actor_name, code),
+                    )
+                else:
+                    cursor.execute(
+                        f'UPDATE {legacy_actor_movies} SET code = ? WHERE actor_name = ? AND code = ?',
+                        (normalized_code, actor_name, code),
+                    )
+                    canonical_duplicate = cursor.execute(
+                        'SELECT 1 FROM video_actor_relations WHERE actor_name = ? AND video_code = ?',
+                        (actor_name, normalized_code),
+                    ).fetchone()
+                    if canonical_duplicate:
+                        cursor.execute(
+                            'DELETE FROM video_actor_relation_meta WHERE actor_name = ? AND video_code = ?',
+                            (actor_name, code),
+                        )
+                        cursor.execute(
+                            'DELETE FROM video_actor_relations WHERE actor_name = ? AND video_code = ?',
+                            (actor_name, code),
+                        )
+                    else:
+                        cursor.execute(
+                            'UPDATE video_actor_relations SET video_code = ? WHERE actor_name = ? AND video_code = ?',
+                            (normalized_code, actor_name, code),
+                        )
+                        cursor.execute(
+                            'UPDATE video_actor_relation_meta SET video_code = ? WHERE actor_name = ? AND video_code = ?',
+                            (normalized_code, actor_name, code),
+                        )
         cursor.execute('SELECT actor_name, code FROM actor_movies')
         for actor_name, code in cursor.fetchall():
             normalized_code = standardize_video_code(code)
             if not normalized_code or normalized_code == code:
                 continue
-            cursor.execute(
-                'SELECT 1 FROM actor_movies WHERE actor_name = ? AND code = ?',
-                (actor_name, normalized_code),
+            duplicate_sql = (
+                f'SELECT 1 FROM {legacy_actor_movies} WHERE actor_name = ? AND code = ?'
+                if legacy_actor_movies
+                else 'SELECT 1 FROM video_actor_relations WHERE actor_name = ? AND video_code = ?'
             )
+            cursor.execute(duplicate_sql, (actor_name, normalized_code))
             if cursor.fetchone():
                 cursor.execute(
-                    'DELETE FROM actor_movies WHERE actor_name = ? AND code = ?',
+                    'DELETE FROM video_actor_relation_meta WHERE actor_name = ? AND video_code = ?',
                     (actor_name, code),
                 )
+                cursor.execute(
+                    'DELETE FROM video_actor_relations WHERE actor_name = ? AND video_code = ?',
+                    (actor_name, code),
+                )
+                if legacy_actor_movies:
+                    cursor.execute(
+                        f'DELETE FROM {legacy_actor_movies} WHERE actor_name = ? AND code = ?',
+                        (actor_name, code),
+                    )
             else:
                 cursor.execute(
-                    'UPDATE actor_movies SET code = ? WHERE actor_name = ? AND code = ?',
+                    'UPDATE video_actor_relations SET video_code = ? WHERE actor_name = ? AND video_code = ?',
                     (normalized_code, actor_name, code),
+                )
+                cursor.execute(
+                    'UPDATE video_actor_relation_meta SET video_code = ? WHERE actor_name = ? AND video_code = ?',
+                    (normalized_code, actor_name, code),
+                )
+                if legacy_actor_movies:
+                    cursor.execute(
+                        f'UPDATE {legacy_actor_movies} SET code = ? WHERE actor_name = ? AND code = ?',
+                        (normalized_code, actor_name, code),
+                    )
+            if cursor.execute(
+                'SELECT 1 FROM video_actor_relations WHERE actor_name = ? AND video_code = ?',
+                (actor_name, normalized_code),
+            ).fetchone() is None:
+                cursor.execute(
+                    'INSERT OR IGNORE INTO video_actor_relations (video_code, actor_name) VALUES (?, ?)',
+                    (normalized_code, actor_name),
                 )
 
     def _normalize_manual_category_staging_codes(self, cursor):
@@ -3158,17 +3146,30 @@ class VideoDatabase(
             )
             for code, state in best_by_code.items()
         ]
-        updated_count = 0
-        for table_name in ('code_prefix_movies', 'actor_movies'):
+        cursor.executemany(
+            '''
+            UPDATE video_entities
+            SET author = ?,
+                javtxt_actors_raw = ?,
+                javtxt_enrichment_status = ?,
+                javtxt_movie_id = ?,
+                javtxt_url = ?,
+                javtxt_tags = ?,
+                javtxt_release_date = COALESCE(NULLIF(?, ''), javtxt_release_date),
+                release_date = COALESCE(NULLIF(?, ''), release_date),
+                video_category = COALESCE(NULLIF(?, ''), video_category),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE code = ?
+            ''',
+            updates,
+        )
+        legacy_actor_movies = self._legacy_table_name(cursor, 'actor_movies')
+        if legacy_actor_movies:
             cursor.executemany(
                 f'''
-                UPDATE {table_name}
-                SET author = ?,
-                    author_raw = ?,
-                    javtxt_enrichment_status = ?,
-                    javtxt_movie_id = ?,
-                    javtxt_url = ?,
-                    javtxt_tags = ?,
+                UPDATE {legacy_actor_movies}
+                SET author = ?, author_raw = ?, javtxt_enrichment_status = ?,
+                    javtxt_movie_id = ?, javtxt_url = ?, javtxt_tags = ?,
                     javtxt_release_date = COALESCE(NULLIF(?, ''), javtxt_release_date),
                     release_date = COALESCE(NULLIF(?, ''), release_date),
                     video_category = COALESCE(NULLIF(?, ''), video_category)
@@ -3176,8 +3177,7 @@ class VideoDatabase(
                 ''',
                 updates,
             )
-            updated_count += int(cursor.rowcount or 0)
-        return updated_count
+        return int(cursor.rowcount or 0)
 
     def _propagate_existing_web_movie_javtxt_state(self, cursor):
         cursor.execute(
@@ -4651,7 +4651,8 @@ class VideoDatabase(
                 if str(row[0] or '').strip()
             }
 
-        last_row_id = 0
+        last_owner = ''
+        last_code = ''
         migrated_count = 0
         columns = (
             f'{owner_column}, code, title, author, release_date, avfan_url, page_number, '
@@ -4664,40 +4665,38 @@ class VideoDatabase(
                 cursor = conn.cursor()
                 cursor.execute(
                     f'''
-                    SELECT rowid, {columns}
+                    SELECT {columns}
                     FROM {table_name}
-                    WHERE rowid > ?
-                    ORDER BY rowid
+                    WHERE ({owner_column} > ? OR ({owner_column} = ? AND code > ?))
+                    ORDER BY {owner_column}, code
                     LIMIT ?
                     ''',
-                    (last_row_id, batch_size),
+                    (last_owner, last_owner, last_code, batch_size),
                 )
                 rows = cursor.fetchall()
                 if not rows:
                     break
 
                 to_archive = []
-                row_ids = []
                 for row in rows:
-                    row_id = int(row[0])
-                    owner = str(row[1] or '').strip()
+                    owner = str(row[0] or '').strip()
                     movie = {
-                        'code': row[2] or '',
-                        'title': row[3] or '',
-                        'author': row[4] or '',
-                        'release_date': row[5] or '',
-                        'avfan_url': row[6] or '',
-                        'page_number': row[7] or 1,
-                        'javtxt_enrichment_status': row[8] or '',
-                        'javtxt_movie_id': row[9] or '',
-                        'javtxt_url': row[10] or '',
-                        'javtxt_tags': row[11] or '',
-                        'javtxt_release_date': row[12] or '',
-                        'author_raw': row[13] or '',
-                        'video_category': row[14] or '',
-                        'supplement_enrichment_status': row[15] or '',
-                        'supplement_enrichment_error': row[16] or '',
-                        'supplement_enriched_at': row[17] or '',
+                        'code': row[1] or '',
+                        'title': row[2] or '',
+                        'author': row[3] or '',
+                        'release_date': row[4] or '',
+                        'avfan_url': row[5] or '',
+                        'page_number': row[6] or 1,
+                        'javtxt_enrichment_status': row[7] or '',
+                        'javtxt_movie_id': row[8] or '',
+                        'javtxt_url': row[9] or '',
+                        'javtxt_tags': row[10] or '',
+                        'javtxt_release_date': row[11] or '',
+                        'author_raw': row[12] or '',
+                        'video_category': row[13] or '',
+                        'supplement_enrichment_status': row[14] or '',
+                        'supplement_enrichment_error': row[15] or '',
+                        'supplement_enriched_at': row[16] or '',
                     }
                     reason = self._resolve_web_movie_exclusion_reason(
                         movie,
@@ -4707,7 +4706,6 @@ class VideoDatabase(
                     )
                     if reason:
                         to_archive.append((owner, movie, reason))
-                        row_ids.append(row_id)
 
                 if to_archive:
                     by_owner = {}
@@ -4722,13 +4720,14 @@ class VideoDatabase(
                             movies,
                             ','.join(sorted({movie['exclude_reason'] for movie in movies})),
                         )
-                    placeholders = ','.join('?' for _ in row_ids)
-                    cursor.execute(
-                        f'DELETE FROM {table_name} WHERE rowid IN ({placeholders})',
-                        row_ids,
-                    )
-                    migrated_count += len(row_ids)
-                last_row_id = max(int(row[0]) for row in rows)
+                    for owner, movie, _reason in to_archive:
+                        cursor.execute(
+                            f'DELETE FROM {table_name} WHERE {owner_column} = ? AND code = ?',
+                            (owner, movie['code']),
+                        )
+                    migrated_count += len(to_archive)
+                last_owner = str(rows[-1][0] or '').strip()
+                last_code = str(rows[-1][1] or '').strip()
                 conn.commit()
         return migrated_count
 
@@ -4788,6 +4787,53 @@ class VideoDatabase(
         )
         return bool(cursor.fetchone())
 
+    @staticmethod
+    def _upsert_code_prefix_movie_canonical(cursor, prefix, movie):
+        prefix = str(prefix or '').strip().upper()
+        code = standardize_video_code((movie or {}).get('code', ''))
+        if not prefix or not code:
+            return
+        fields = (
+            'title', 'author', 'release_date', 'avfan_url', 'javtxt_movie_id',
+            'javtxt_url', 'javtxt_tags', 'javtxt_release_date',
+            'javtxt_enrichment_status', 'javtxt_actors_raw', 'video_category',
+            'supplement_enrichment_status', 'supplement_enrichment_error',
+            'supplement_enriched_at',
+        )
+        values = [str((movie or {}).get(field, '') or '').strip() for field in fields]
+        cursor.execute(
+            f'''
+            INSERT INTO video_entities (code, {', '.join(fields)})
+            VALUES ({', '.join('?' for _ in ('code', *fields))})
+            ON CONFLICT(code) DO UPDATE SET
+                {', '.join(f"{field} = CASE WHEN excluded.{field} <> '' THEN excluded.{field} ELSE video_entities.{field} END" for field in fields)},
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            [code, *values],
+        )
+        cursor.execute(
+            'INSERT OR IGNORE INTO video_code_prefix_relations (video_code, prefix) VALUES (?, ?)',
+            (code, prefix),
+        )
+        cursor.execute(
+            '''
+            INSERT INTO video_prefix_relation_meta (
+                video_code, prefix, avfan_url, avfan_movie_id, page_number
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(video_code, prefix) DO UPDATE SET
+                avfan_url = CASE WHEN excluded.avfan_url <> '' THEN excluded.avfan_url ELSE video_prefix_relation_meta.avfan_url END,
+                avfan_movie_id = CASE WHEN excluded.avfan_movie_id <> '' THEN excluded.avfan_movie_id ELSE video_prefix_relation_meta.avfan_movie_id END,
+                page_number = CASE WHEN excluded.page_number > 0 THEN excluded.page_number ELSE video_prefix_relation_meta.page_number END
+            ''',
+            (
+                code,
+                prefix,
+                str((movie or {}).get('avfan_url', '') or '').strip(),
+                str((movie or {}).get('javtxt_movie_id', '') or '').strip(),
+                max(1, int((movie or {}).get('page_number', 1) or 1)),
+            ),
+        )
+
     def replace_code_prefix_movies(self, prefix, movies):
         prefix = str(prefix or '').strip().upper()
         normalized_movies = []
@@ -4814,7 +4860,11 @@ class VideoDatabase(
         )
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM code_prefix_movies WHERE prefix = ?', (prefix,))
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
+            cursor.execute('DELETE FROM video_prefix_relation_meta WHERE prefix = ?', (prefix,))
+            cursor.execute('DELETE FROM video_code_prefix_relations WHERE prefix = ?', (prefix,))
+            if legacy_code_prefix_movies:
+                cursor.execute(f'DELETE FROM {legacy_code_prefix_movies} WHERE prefix = ?', (prefix,))
             if normalized_movies:
                 values = []
                 excluded_movies = []
@@ -4884,25 +4934,17 @@ class VideoDatabase(
                         excluded_movies.append({**stored_movie, 'exclude_reason': exclusion_reason})
                         continue
                     active_codes.append(normalized_code)
+                    self._upsert_code_prefix_movie_canonical(cursor, prefix, stored_movie)
                     values.append(
                         (
-                            prefix,
-                            normalized_code,
-                            stored_movie.get('title', ''),
-                            stored_movie.get('author', ''),
-                            stored_movie.get('release_date', ''),
-                            stored_movie.get('avfan_url', ''),
-                            int(stored_movie.get('page_number', 1) or 1),
-                            stored_movie.get('javtxt_enrichment_status', ''),
-                            stored_movie.get('javtxt_movie_id', ''),
-                            stored_movie.get('javtxt_url', ''),
-                            stored_movie.get('javtxt_tags', ''),
-                            stored_movie.get('javtxt_release_date', ''),
-                            stored_movie.get('author_raw', ''),
-                            stored_movie.get('video_category', ''),
+                            prefix, normalized_code, stored_movie.get('title', ''), stored_movie.get('author', ''),
+                            stored_movie.get('release_date', ''), stored_movie.get('avfan_url', ''),
+                            int(stored_movie.get('page_number', 1) or 1), stored_movie.get('javtxt_enrichment_status', ''),
+                            stored_movie.get('javtxt_movie_id', ''), stored_movie.get('javtxt_url', ''),
+                            stored_movie.get('javtxt_tags', ''), stored_movie.get('javtxt_release_date', ''),
+                            stored_movie.get('author_raw', ''), stored_movie.get('video_category', ''),
                             stored_movie.get('supplement_enrichment_status', UNENRICHED_STATUS),
-                            stored_movie.get('supplement_enrichment_error', ''),
-                            stored_movie.get('supplement_enriched_at', ''),
+                            stored_movie.get('supplement_enrichment_error', ''), stored_movie.get('supplement_enriched_at', ''),
                         )
                     )
                 if excluded_movies:
@@ -4914,17 +4956,17 @@ class VideoDatabase(
                         excluded_movies,
                         ','.join(sorted({movie.get('exclude_reason', '') for movie in excluded_movies})),
                     )
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO code_prefix_movies (
+                if legacy_code_prefix_movies:
+                    cursor.executemany(f'''
+                    INSERT OR REPLACE INTO {legacy_code_prefix_movies} (
                         prefix, code, title, author, release_date, avfan_url, page_number,
                         javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date, author_raw, video_category,
                         supplement_enrichment_status, supplement_enrichment_error, supplement_enriched_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', values)
+                    ''', values)
                 if values:
                     self._propagate_web_movie_javtxt_state_for_codes(cursor, active_codes)
-            self._migrate_video_entities(cursor)
             conn.commit()
         self.refresh_code_prefix_javtxt_statuses([prefix])
 
@@ -6654,6 +6696,53 @@ class VideoDatabase(
             conn.commit()
             return int(cursor.rowcount or 0)
 
+    @staticmethod
+    def _upsert_actor_movie_canonical(cursor, actor_name, movie):
+        code = standardize_video_code((movie or {}).get('code', ''))
+        actor_name = str(actor_name or '').strip()
+        if not code or not actor_name:
+            return
+        fields = (
+            'title', 'author', 'release_date', 'avfan_url', 'javtxt_movie_id',
+            'javtxt_url', 'javtxt_tags', 'javtxt_release_date',
+            'javtxt_enrichment_status', 'javtxt_actors_raw', 'video_category',
+            'supplement_enrichment_status', 'supplement_enrichment_error',
+            'supplement_enriched_at',
+        )
+        values = [str((movie or {}).get(field, '') or '').strip() for field in fields]
+        cursor.execute(
+            f'''
+            INSERT INTO video_entities (code, {', '.join(fields)})
+            VALUES ({', '.join('?' for _ in ('code', *fields))})
+            ON CONFLICT(code) DO UPDATE SET
+                {', '.join(f"{field} = CASE WHEN excluded.{field} <> '' THEN excluded.{field} ELSE video_entities.{field} END" for field in fields)},
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            [code, *values],
+        )
+        cursor.execute(
+            'INSERT OR IGNORE INTO video_actor_relations (video_code, actor_name) VALUES (?, ?)',
+            (code, actor_name),
+        )
+        cursor.execute(
+            '''
+            INSERT INTO video_actor_relation_meta (
+                video_code, actor_name, avfan_url, avfan_movie_id, page_number
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(video_code, actor_name) DO UPDATE SET
+                avfan_url = CASE WHEN excluded.avfan_url <> '' THEN excluded.avfan_url ELSE video_actor_relation_meta.avfan_url END,
+                avfan_movie_id = CASE WHEN excluded.avfan_movie_id <> '' THEN excluded.avfan_movie_id ELSE video_actor_relation_meta.avfan_movie_id END,
+                page_number = CASE WHEN excluded.page_number > 0 THEN excluded.page_number ELSE video_actor_relation_meta.page_number END
+            ''',
+            (
+                code,
+                actor_name,
+                str((movie or {}).get('avfan_url', '') or '').strip(),
+                str((movie or {}).get('javtxt_movie_id', '') or '').strip(),
+                max(1, int((movie or {}).get('page_number', 1) or 1)),
+            ),
+        )
+
     def replace_actor_movies(self, actor_name, movies):
         normalized_name = str(actor_name or '').strip()
         normalized_movies = []
@@ -6679,10 +6768,23 @@ class VideoDatabase(
         )
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
+            legacy_actor_movies = self._legacy_table_name(cursor, 'actor_movies')
+            cursor.execute(
+                'DELETE FROM video_actor_relation_meta WHERE actor_name = ?',
+                (normalized_name,),
+            )
+            cursor.execute(
+                'DELETE FROM video_actor_relations WHERE actor_name = ?',
+                (normalized_name,),
+            )
+            if legacy_actor_movies:
+                cursor.execute(
+                    f'DELETE FROM {legacy_actor_movies} WHERE actor_name = ?',
+                    (normalized_name,),
+                )
             if normalized_movies:
-                values = []
                 excluded_movies = []
+                legacy_values = []
                 active_codes = []
                 owner_blacklisted = self._is_hidden_web_movie_owner(
                     cursor,
@@ -6749,25 +6851,17 @@ class VideoDatabase(
                         excluded_movies.append({**stored_movie, 'exclude_reason': exclusion_reason})
                         continue
                     active_codes.append(normalized_code)
-                    values.append(
+                    self._upsert_actor_movie_canonical(cursor, normalized_name, stored_movie)
+                    legacy_values.append(
                         (
-                            normalized_name,
-                            normalized_code,
-                            stored_movie.get('title', ''),
-                            stored_movie.get('author', ''),
-                            stored_movie.get('release_date', ''),
-                            stored_movie.get('avfan_url', ''),
-                            int(stored_movie.get('page_number', 1) or 1),
-                            stored_movie.get('javtxt_enrichment_status', ''),
-                            stored_movie.get('javtxt_movie_id', ''),
-                            stored_movie.get('javtxt_url', ''),
-                            stored_movie.get('javtxt_tags', ''),
-                            stored_movie.get('javtxt_release_date', ''),
-                            stored_movie.get('author_raw', ''),
-                            stored_movie.get('video_category', ''),
-                            stored_movie.get('supplement_enrichment_status', UNENRICHED_STATUS),
-                            stored_movie.get('supplement_enrichment_error', ''),
-                            stored_movie.get('supplement_enriched_at', ''),
+                            normalized_name, normalized_code, stored_movie.get('title', ''),
+                            stored_movie.get('author', ''), stored_movie.get('release_date', ''),
+                            stored_movie.get('avfan_url', ''), int(stored_movie.get('page_number', 1) or 1),
+                            stored_movie.get('javtxt_enrichment_status', ''), stored_movie.get('javtxt_movie_id', ''),
+                            stored_movie.get('javtxt_url', ''), stored_movie.get('javtxt_tags', ''),
+                            stored_movie.get('javtxt_release_date', ''), stored_movie.get('author_raw', ''),
+                            stored_movie.get('video_category', ''), stored_movie.get('supplement_enrichment_status', UNENRICHED_STATUS),
+                            stored_movie.get('supplement_enrichment_error', ''), stored_movie.get('supplement_enriched_at', ''),
                         )
                     )
                 if excluded_movies:
@@ -6779,17 +6873,20 @@ class VideoDatabase(
                         excluded_movies,
                         ','.join(sorted({movie.get('exclude_reason', '') for movie in excluded_movies})),
                     )
-                cursor.executemany('''
-                    INSERT OR IGNORE INTO actor_movies (
-                        actor_name, code, title, author, release_date, avfan_url, page_number,
-                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date, author_raw, video_category,
-                        supplement_enrichment_status, supplement_enrichment_error, supplement_enriched_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', values)
-                if values:
+                if active_codes:
                     self._propagate_web_movie_javtxt_state_for_codes(cursor, active_codes)
-            self._migrate_video_entities(cursor)
+                if legacy_actor_movies and legacy_values:
+                    cursor.executemany(
+                        f'''
+                        INSERT OR REPLACE INTO {legacy_actor_movies} (
+                            actor_name, code, title, author, release_date, avfan_url, page_number,
+                            javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags,
+                            javtxt_release_date, author_raw, video_category,
+                            supplement_enrichment_status, supplement_enrichment_error, supplement_enriched_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        legacy_values,
+                    )
             conn.commit()
         self.refresh_actor_javtxt_statuses([normalized_name])
 
@@ -7474,9 +7571,9 @@ class VideoDatabase(
                 status_column, error_column, at_column = self._library_source_columns(normalized_source)
                 cursor.execute(
                     f'''
-                    UPDATE actor_movies
+                    UPDATE video_entities
                     SET author = '',
-                        author_raw = '',
+                        javtxt_actors_raw = '',
                         supplement_enrichment_status = ?,
                         supplement_enrichment_error = '',
                         supplement_enriched_at = NULL,
@@ -7485,7 +7582,10 @@ class VideoDatabase(
                         javtxt_url = '',
                         javtxt_tags = '',
                         video_category = ''
-                    WHERE actor_name IN ({placeholders})
+                    WHERE code IN (
+                        SELECT video_code FROM video_actor_relations
+                        WHERE actor_name IN ({placeholders})
+                    )
                     ''',
                     [UNENRICHED_STATUS, UNENRICHED_STATUS, *normalized_names],
                 )
@@ -7540,16 +7640,6 @@ class VideoDatabase(
             elif normalized_source == SUPPLEMENT_TASK_SOURCE:
                 cursor.execute(
                     f'''
-                    UPDATE actor_movies
-                    SET supplement_enrichment_status = ?,
-                        supplement_enrichment_error = '',
-                        supplement_enriched_at = NULL
-                    WHERE actor_name IN ({placeholders})
-                    ''',
-                    [UNENRICHED_STATUS, *normalized_names],
-                )
-                cursor.execute(
-                    f'''
                     UPDATE video_entities
                     SET supplement_enrichment_status = ?,
                         supplement_enrichment_error = '',
@@ -7563,10 +7653,14 @@ class VideoDatabase(
                     [UNENRICHED_STATUS, *normalized_names],
                 )
             else:
-                cursor.execute(f'''
-                    DELETE FROM actor_movies
-                    WHERE actor_name IN ({placeholders})
-                ''', normalized_names)
+                cursor.execute(
+                    f'DELETE FROM video_actor_relation_meta WHERE actor_name IN ({placeholders})',
+                    normalized_names,
+                )
+                cursor.execute(
+                    f'DELETE FROM video_actor_relations WHERE actor_name IN ({placeholders})',
+                    normalized_names,
+                )
                 cursor.execute(f'''
                     DELETE FROM actor_enrichments
                     WHERE actor_name IN ({placeholders})
@@ -7614,7 +7708,11 @@ class VideoDatabase(
                 (normalized_new_name, normalized_old_name),
             )
             cursor.execute(
-                'UPDATE actor_movies SET actor_name = ? WHERE actor_name = ?',
+                'UPDATE video_actor_relations SET actor_name = ? WHERE actor_name = ?',
+                (normalized_new_name, normalized_old_name),
+            )
+            cursor.execute(
+                'UPDATE video_actor_relation_meta SET actor_name = ? WHERE actor_name = ?',
                 (normalized_new_name, normalized_old_name),
             )
             cursor.execute(
@@ -7685,7 +7783,14 @@ class VideoDatabase(
                     excluded_movies,
                     'actor_blacklist',
                 )
-            cursor.execute('DELETE FROM actor_movies WHERE actor_name = ?', (normalized_name,))
+            cursor.execute(
+                'DELETE FROM video_actor_relation_meta WHERE actor_name = ?',
+                (normalized_name,),
+            )
+            cursor.execute(
+                'DELETE FROM video_actor_relations WHERE actor_name = ?',
+                (normalized_name,),
+            )
             cursor.execute('DELETE FROM actor_enrichments WHERE actor_name = ?', (normalized_name,))
             cursor.execute('DELETE FROM actors WHERE name = ?', (normalized_name,))
             cursor.execute(
@@ -7709,22 +7814,17 @@ class VideoDatabase(
         placeholders = ','.join('?' for _ in normalized_prefixes)
         with self._connect() as conn:
             cursor = conn.cursor()
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
             if normalized_source == JAVTXT_VIDEO_SOURCE:
                 status_column, error_column, at_column = self._library_source_columns(normalized_source)
                 cursor.execute(
                     f'''
-                    UPDATE code_prefix_movies
-                    SET author = '',
-                        author_raw = '',
-                        supplement_enrichment_status = ?,
-                        supplement_enrichment_error = '',
-                        supplement_enriched_at = NULL,
-                        javtxt_enrichment_status = ?,
-                        javtxt_movie_id = '',
-                        javtxt_url = '',
-                        javtxt_tags = '',
-                        video_category = ''
-                    WHERE prefix IN ({placeholders})
+                    UPDATE video_entities
+                    SET author = '', javtxt_actors_raw = '',
+                        supplement_enrichment_status = ?, supplement_enrichment_error = '', supplement_enriched_at = NULL,
+                        javtxt_enrichment_status = ?, javtxt_movie_id = '', javtxt_url = '', javtxt_tags = '', video_category = '',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE code IN (SELECT video_code FROM video_code_prefix_relations WHERE prefix IN ({placeholders}))
                     ''',
                     [UNENRICHED_STATUS, UNENRICHED_STATUS, *normalized_prefixes],
                 )
@@ -7744,16 +7844,6 @@ class VideoDatabase(
             elif normalized_source == SUPPLEMENT_TASK_SOURCE:
                 cursor.execute(
                     f'''
-                    UPDATE code_prefix_movies
-                    SET supplement_enrichment_status = ?,
-                        supplement_enrichment_error = '',
-                        supplement_enriched_at = NULL
-                    WHERE prefix IN ({placeholders})
-                    ''',
-                    [UNENRICHED_STATUS, *normalized_prefixes],
-                )
-                cursor.execute(
-                    f'''
                     UPDATE video_entities
                     SET supplement_enrichment_status = ?,
                         supplement_enrichment_error = '',
@@ -7767,10 +7857,14 @@ class VideoDatabase(
                     [UNENRICHED_STATUS, *normalized_prefixes],
                 )
             else:
-                cursor.execute(f'''
-                    DELETE FROM code_prefix_movies
-                    WHERE prefix IN ({placeholders})
-                ''', normalized_prefixes)
+                cursor.execute(
+                    f'DELETE FROM video_prefix_relation_meta WHERE prefix IN ({placeholders})',
+                    normalized_prefixes,
+                )
+                cursor.execute(
+                    f'DELETE FROM video_code_prefix_relations WHERE prefix IN ({placeholders})',
+                    normalized_prefixes,
+                )
                 cursor.execute(f'''
                     DELETE FROM code_prefix_enrichments
                     WHERE prefix IN ({placeholders})
@@ -7851,12 +7945,29 @@ class VideoDatabase(
             for old_code, new_code in normalized_web_movie_updates:
                 cursor.execute(
                     '''
-                    UPDATE code_prefix_movies
-                    SET prefix = ?, code = ?
-                    WHERE prefix = ? AND code = ?
+                    UPDATE video_code_prefix_relations
+                    SET prefix = ?, video_code = ?
+                    WHERE prefix = ? AND video_code = ?
                     ''',
                     (normalized_new_prefix, new_code, normalized_old_prefix, old_code),
                 )
+                cursor.execute(
+                    '''
+                    UPDATE video_prefix_relation_meta
+                    SET prefix = ?, video_code = ?
+                    WHERE prefix = ? AND video_code = ?
+                    ''',
+                    (normalized_new_prefix, new_code, normalized_old_prefix, old_code),
+                )
+                if legacy_code_prefix_movies:
+                    cursor.execute(
+                        f'''
+                        UPDATE {legacy_code_prefix_movies}
+                        SET prefix = ?, code = ?
+                        WHERE prefix = ? AND code = ?
+                        ''',
+                        (normalized_new_prefix, new_code, normalized_old_prefix, old_code),
+                    )
                 cursor.execute(
                     '''
                     UPDATE excluded_code_prefix_movies
@@ -7868,9 +7979,18 @@ class VideoDatabase(
 
             if not normalized_web_movie_updates:
                 cursor.execute(
-                    'UPDATE code_prefix_movies SET prefix = ? WHERE prefix = ?',
+                    'UPDATE video_code_prefix_relations SET prefix = ? WHERE prefix = ?',
                     (normalized_new_prefix, normalized_old_prefix),
                 )
+                cursor.execute(
+                    'UPDATE video_prefix_relation_meta SET prefix = ? WHERE prefix = ?',
+                    (normalized_new_prefix, normalized_old_prefix),
+                )
+                if legacy_code_prefix_movies:
+                    cursor.execute(
+                        f'UPDATE {legacy_code_prefix_movies} SET prefix = ? WHERE prefix = ?',
+                        (normalized_new_prefix, normalized_old_prefix),
+                    )
                 cursor.execute(
                     'UPDATE excluded_code_prefix_movies SET prefix = ? WHERE prefix = ?',
                     (normalized_new_prefix, normalized_old_prefix),
@@ -7908,6 +8028,7 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
             cursor.executemany(
                 'INSERT OR IGNORE INTO hidden_code_prefixes (prefix) VALUES (?)',
                 [(prefix,) for prefix in normalized_prefixes],
@@ -7963,9 +8084,18 @@ class VideoDatabase(
                         'code_blacklist',
                     )
             cursor.execute(
-                f'DELETE FROM code_prefix_movies WHERE prefix IN ({placeholders})',
+                f'DELETE FROM video_prefix_relation_meta WHERE prefix IN ({placeholders})',
                 normalized_prefixes,
             )
+            cursor.execute(
+                f'DELETE FROM video_code_prefix_relations WHERE prefix IN ({placeholders})',
+                normalized_prefixes,
+            )
+            if legacy_code_prefix_movies:
+                cursor.execute(
+                    f'DELETE FROM {legacy_code_prefix_movies} WHERE prefix IN ({placeholders})',
+                    normalized_prefixes,
+                )
             cursor.execute(
                 f'DELETE FROM code_prefix_enrichments WHERE prefix IN ({placeholders})',
                 normalized_prefixes,
@@ -8386,6 +8516,16 @@ class VideoDatabase(
         )
 
     @staticmethod
+    def _local_video_where_sql(where_sql=''):
+        local_clause = "COALESCE(p.storage_location, '') <> ''"
+        normalized_where = str(where_sql or '').strip()
+        if not normalized_where:
+            return f'WHERE {local_clause}'
+        if normalized_where[:5].upper() != 'WHERE':
+            raise ValueError('Video filters must start with WHERE')
+        return f'WHERE {local_clause} AND ({normalized_where[5:].strip()})'
+
+    @staticmethod
     def _normalize_limit_offset(limit=None, offset=0):
         normalized_limit = None if limit is None else max(int(limit or 0), 0)
         if normalized_limit == 0:
@@ -8411,6 +8551,7 @@ class VideoDatabase(
             rule_set=rule_set,
             table_alias='p',
         )
+        where_sql = self._local_video_where_sql(where_sql)
         parameters = tuple(parameters or ())
         normalized_limit, normalized_offset = self._normalize_limit_offset(limit, offset)
         limit_sql = ''
@@ -8465,6 +8606,7 @@ class VideoDatabase(
             rule_set=rule_set,
             table_alias='p',
         )
+        where_sql = self._local_video_where_sql(where_sql)
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -10097,16 +10239,6 @@ class VideoDatabase(
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                UPDATE code_prefix_movies
-                SET supplement_enrichment_status = ?,
-                    supplement_enrichment_error = ?,
-                    supplement_enriched_at = CURRENT_TIMESTAMP
-                WHERE prefix = ? AND code = ?
-                ''',
-                (normalized_status, normalized_error, normalized_prefix, normalized_code),
-            )
-            cursor.execute(
-                '''
                 UPDATE video_entities
                 SET supplement_enrichment_status = ?,
                     supplement_enrichment_error = ?,
@@ -10128,16 +10260,6 @@ class VideoDatabase(
         normalized_error = str(error or '').strip()
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                '''
-                UPDATE actor_movies
-                SET supplement_enrichment_status = ?,
-                    supplement_enrichment_error = ?,
-                    supplement_enriched_at = CURRENT_TIMESTAMP
-                WHERE actor_name = ? AND code = ?
-                ''',
-                (normalized_status, normalized_error, normalized_name, normalized_code),
-            )
             cursor.execute(
                 '''
                 UPDATE video_entities
@@ -12396,25 +12518,39 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
             cursor.executemany(
                 '''
-                UPDATE code_prefix_movies
-                SET title = ?,
-                    author = ?,
-                    release_date = ?,
-                    avfan_url = ?,
-                    javtxt_enrichment_status = ?,
-                    javtxt_movie_id = ?,
-                    javtxt_url = ?,
-                    javtxt_tags = ?,
-                    javtxt_release_date = ?,
-                    author_raw = ?,
-                    video_category = ?
-                WHERE prefix = ? AND code = ?
+                UPDATE video_entities
+                SET title = ?, author = ?, release_date = ?, avfan_url = ?,
+                    javtxt_enrichment_status = ?, javtxt_movie_id = ?, javtxt_url = ?,
+                    javtxt_tags = ?, javtxt_release_date = ?, javtxt_actors_raw = ?,
+                    video_category = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
                 ''',
-                normalized_updates,
+                [(*row[:11], row[12]) for row in normalized_updates],
             )
-            self._migrate_video_entities(cursor)
+            cursor.executemany(
+                '''
+                INSERT INTO video_prefix_relation_meta (video_code, prefix, avfan_url, avfan_movie_id, page_number)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(video_code, prefix) DO UPDATE SET
+                    avfan_url = excluded.avfan_url,
+                    avfan_movie_id = excluded.avfan_movie_id
+                ''',
+                [(row[12], row[11], row[3], row[5]) for row in normalized_updates],
+            )
+            if legacy_code_prefix_movies:
+                cursor.executemany(
+                    f'''
+                    UPDATE {legacy_code_prefix_movies}
+                    SET title = ?, author = ?, release_date = ?, avfan_url = ?,
+                        javtxt_enrichment_status = ?, javtxt_movie_id = ?, javtxt_url = ?,
+                        javtxt_tags = ?, javtxt_release_date = ?, author_raw = ?, video_category = ?
+                    WHERE prefix = ? AND code = ?
+                    ''',
+                    normalized_updates,
+                )
             conn.commit()
         self.refresh_code_prefix_javtxt_statuses(sorted({row[-2] for row in normalized_updates}))
         return len(normalized_updates)
@@ -12446,22 +12582,7 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.executemany(
-                '''
-                UPDATE code_prefix_movies
-                SET title = ?,
-                    author = ?,
-                    release_date = ?,
-                    avfan_url = ?,
-                    author_raw = ?,
-                    video_category = ?,
-                    supplement_enrichment_status = ?,
-                    supplement_enrichment_error = ?,
-                    supplement_enriched_at = NULL
-                WHERE prefix = ? AND code = ?
-                ''',
-                normalized_updates,
-            )
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
             status_rows = [
                 (
                     str(status or '').strip() or UNENRICHED_STATUS,
@@ -12473,17 +12594,6 @@ class VideoDatabase(
                 if str((row or {}).get('prefix', '') or '').strip()
                 and standardize_video_code((row or {}).get('code', ''))
             ]
-            if status_rows:
-                cursor.executemany(
-                    '''
-                    UPDATE code_prefix_movies
-                    SET supplement_enrichment_status = ?,
-                        supplement_enrichment_error = ?,
-                        supplement_enriched_at = CURRENT_TIMESTAMP
-                    WHERE prefix = ? AND code = ?
-                    ''',
-                    status_rows,
-                )
             entity_rows = [
                 (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[9])
                 for row in normalized_updates
@@ -12517,6 +12627,38 @@ class VideoDatabase(
                     ''',
                     entity_status_rows,
                 )
+            if normalized_updates:
+                cursor.executemany(
+                    '''
+                    INSERT INTO video_prefix_relation_meta (video_code, prefix, avfan_url, avfan_movie_id, page_number)
+                    VALUES (?, ?, ?, ?, 1)
+                    ON CONFLICT(video_code, prefix) DO UPDATE SET
+                        avfan_url = excluded.avfan_url
+                    ''',
+                    [(row[9], row[8], row[3], '') for row in normalized_updates],
+                )
+            if legacy_code_prefix_movies:
+                if normalized_updates:
+                    cursor.executemany(
+                        f'''
+                        UPDATE {legacy_code_prefix_movies}
+                        SET title = ?, author = ?, release_date = ?, avfan_url = ?,
+                            author_raw = ?, video_category = ?, supplement_enrichment_status = ?,
+                            supplement_enrichment_error = ?, supplement_enriched_at = NULL
+                        WHERE prefix = ? AND code = ?
+                        ''',
+                        normalized_updates,
+                    )
+                if status_rows:
+                    cursor.executemany(
+                        f'''
+                        UPDATE {legacy_code_prefix_movies}
+                        SET supplement_enrichment_status = ?, supplement_enrichment_error = ?,
+                            supplement_enriched_at = CURRENT_TIMESTAMP
+                        WHERE prefix = ? AND code = ?
+                        ''',
+                        status_rows,
+                    )
             conn.commit()
         return len(normalized_updates)
 
@@ -12562,25 +12704,42 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
+            legacy_actor_movies = self._legacy_table_name(cursor, 'actor_movies')
             cursor.executemany(
                 '''
-                UPDATE actor_movies
-                SET title = ?,
-                    author = ?,
-                    release_date = ?,
-                    avfan_url = ?,
-                    javtxt_enrichment_status = ?,
-                    javtxt_movie_id = ?,
-                    javtxt_url = ?,
-                    javtxt_tags = ?,
-                    javtxt_release_date = ?,
-                    author_raw = ?,
-                    video_category = ?
-                WHERE actor_name = ? AND code = ?
+                UPDATE video_entities
+                SET title = ?, author = ?, release_date = ?, avfan_url = ?,
+                    javtxt_enrichment_status = ?, javtxt_movie_id = ?, javtxt_url = ?,
+                    javtxt_tags = ?, javtxt_release_date = ?, javtxt_actors_raw = ?,
+                    video_category = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
                 ''',
-                normalized_updates,
+                [(*row[:11], row[12]) for row in normalized_updates],
             )
-            self._migrate_video_entities(cursor)
+            cursor.executemany(
+                '''
+                INSERT INTO video_actor_relation_meta (video_code, actor_name, avfan_url, avfan_movie_id, page_number)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(video_code, actor_name) DO UPDATE SET
+                    avfan_url = excluded.avfan_url,
+                    avfan_movie_id = excluded.avfan_movie_id
+                ''',
+                [
+                    (row[12], row[11], row[3], row[5])
+                    for row in normalized_updates
+                ],
+            )
+            if legacy_actor_movies:
+                cursor.executemany(
+                    f'''
+                    UPDATE {legacy_actor_movies}
+                    SET title = ?, author = ?, release_date = ?, avfan_url = ?,
+                        javtxt_enrichment_status = ?, javtxt_movie_id = ?, javtxt_url = ?,
+                        javtxt_tags = ?, javtxt_release_date = ?, author_raw = ?, video_category = ?
+                    WHERE actor_name = ? AND code = ?
+                    ''',
+                    normalized_updates,
+                )
             conn.commit()
         self.refresh_actor_javtxt_statuses(sorted({row[-2] for row in normalized_updates}))
         return len(normalized_updates)
@@ -12612,22 +12771,7 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.executemany(
-                '''
-                UPDATE actor_movies
-                SET title = ?,
-                    author = ?,
-                    release_date = ?,
-                    avfan_url = ?,
-                    author_raw = ?,
-                    video_category = ?,
-                    supplement_enrichment_status = ?,
-                    supplement_enrichment_error = ?,
-                    supplement_enriched_at = NULL
-                WHERE actor_name = ? AND code = ?
-                ''',
-                normalized_updates,
-            )
+            legacy_actor_movies = self._legacy_table_name(cursor, 'actor_movies')
             status_rows = [
                 (
                     str(status or '').strip() or UNENRICHED_STATUS,
@@ -12639,17 +12783,6 @@ class VideoDatabase(
                 if str((row or {}).get('actor_name', '') or '').strip()
                 and standardize_video_code((row or {}).get('code', ''))
             ]
-            if status_rows:
-                cursor.executemany(
-                    '''
-                    UPDATE actor_movies
-                    SET supplement_enrichment_status = ?,
-                        supplement_enrichment_error = ?,
-                        supplement_enriched_at = CURRENT_TIMESTAMP
-                    WHERE actor_name = ? AND code = ?
-                    ''',
-                    status_rows,
-                )
             entity_rows = [
                 (row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[9])
                 for row in normalized_updates
@@ -12683,6 +12816,40 @@ class VideoDatabase(
                     ''',
                     entity_status_rows,
                 )
+            if normalized_updates:
+                cursor.executemany(
+                    '''
+                    INSERT INTO video_actor_relation_meta (video_code, actor_name, avfan_url, avfan_movie_id, page_number)
+                    VALUES (?, ?, ?, ?, 1)
+                    ON CONFLICT(video_code, actor_name) DO UPDATE SET
+                        avfan_url = excluded.avfan_url
+                    ''',
+                    [(row[9], row[8], row[3], '') for row in normalized_updates],
+                )
+            if legacy_actor_movies:
+                if normalized_updates:
+                    cursor.executemany(
+                        f'''
+                        UPDATE {legacy_actor_movies}
+                        SET title = ?, author = ?, release_date = ?, avfan_url = ?,
+                            author_raw = ?, video_category = ?,
+                            supplement_enrichment_status = ?, supplement_enrichment_error = ?,
+                            supplement_enriched_at = NULL
+                        WHERE actor_name = ? AND code = ?
+                        ''',
+                        normalized_updates,
+                    )
+                if status_rows:
+                    cursor.executemany(
+                        f'''
+                        UPDATE {legacy_actor_movies}
+                        SET supplement_enrichment_status = ?,
+                            supplement_enrichment_error = ?,
+                            supplement_enriched_at = CURRENT_TIMESTAMP
+                        WHERE actor_name = ? AND code = ?
+                        ''',
+                        status_rows,
+                    )
             conn.commit()
         return len(normalized_updates)
 
@@ -12822,8 +12989,8 @@ class VideoDatabase(
             staged_codes = set(staged_rows)
             manual_rows = {}
             processed_codes_to_clear = []
-            prefix_rowids_to_clear = []
-            actor_rowids_to_clear = []
+            prefix_codes_to_clear = []
+            actor_codes_to_clear = []
 
             cursor.execute(
                 '''
@@ -12873,8 +13040,7 @@ class VideoDatabase(
 
             cursor.execute(
                 '''
-                SELECT rowid,
-                       code,
+                SELECT code,
                        COALESCE(NULLIF(title, ''), code) AS display_title,
                        avfan_url,
                        javtxt_url,
@@ -12889,38 +13055,37 @@ class VideoDatabase(
                 '''
             )
             for row in cursor.fetchall():
-                code = str(row[1] or '').strip().upper()
+                code = str(row[0] or '').strip().upper()
                 if code in staged_codes:
                     continue
                 if not is_javtxt_eligible_movie(
                     {
                         'code': code,
-                        'title': row[2] or '',
-                        'release_date': row[7] or '',
-                        'javtxt_tags': row[8] or '',
-                        'video_category': normalize_video_category(row[9]),
+                        'title': row[1] or '',
+                        'release_date': row[6] or '',
+                        'javtxt_tags': row[7] or '',
+                        'video_category': normalize_video_category(row[8]),
                     }
                 ):
-                    if str(row[4] or '').strip() or str(row[5] or '').strip() or str(row[6] or '').strip():
-                        prefix_rowids_to_clear.append(row[0])
+                    if str(row[3] or '').strip() or str(row[4] or '').strip() or str(row[5] or '').strip():
+                        prefix_codes_to_clear.append(code)
                     continue
                 self._merge_manual_category_row(
                     manual_rows,
                     code=code,
-                    title=row[2],
-                    avfan_url=row[3],
-                    javtxt_url=row[4],
-                    author=row[5],
-                    author_raw=row[6],
-                    release_date=row[7],
-                    javtxt_tags=row[8],
-                    video_category=row[9],
+                    title=row[1],
+                    avfan_url=row[2],
+                    javtxt_url=row[3],
+                    author=row[4],
+                    author_raw=row[5],
+                    release_date=row[6],
+                    javtxt_tags=row[7],
+                    video_category=row[8],
                 )
 
             cursor.execute(
                 '''
-                SELECT rowid,
-                       code,
+                SELECT code,
                        COALESCE(NULLIF(title, ''), code) AS display_title,
                        avfan_url,
                        javtxt_url,
@@ -12935,41 +13100,41 @@ class VideoDatabase(
                 '''
             )
             for row in cursor.fetchall():
-                code = str(row[1] or '').strip().upper()
+                code = str(row[0] or '').strip().upper()
                 if code in staged_codes:
                     continue
                 if not is_javtxt_eligible_movie(
                     {
                         'code': code,
-                        'title': row[2] or '',
-                        'release_date': row[7] or '',
-                        'javtxt_tags': row[8] or '',
-                        'video_category': normalize_video_category(row[9]),
+                        'title': row[1] or '',
+                        'release_date': row[6] or '',
+                        'javtxt_tags': row[7] or '',
+                        'video_category': normalize_video_category(row[8]),
                     }
                 ):
-                    if str(row[4] or '').strip() or str(row[5] or '').strip() or str(row[6] or '').strip():
-                        actor_rowids_to_clear.append(row[0])
+                    if str(row[3] or '').strip() or str(row[4] or '').strip() or str(row[5] or '').strip():
+                        actor_codes_to_clear.append(code)
                     continue
                 self._merge_manual_category_row(
                     manual_rows,
                     code=code,
-                    title=row[2],
-                    avfan_url=row[3],
-                    javtxt_url=row[4],
-                    author=row[5],
-                    author_raw=row[6],
-                    release_date=row[7],
-                    javtxt_tags=row[8],
-                    video_category=row[9],
+                    title=row[1],
+                    avfan_url=row[2],
+                    javtxt_url=row[3],
+                    author=row[4],
+                    author_raw=row[5],
+                    release_date=row[6],
+                    javtxt_tags=row[7],
+                    video_category=row[8],
                 )
 
             if processed_codes_to_clear:
                 self._clear_processed_video_javtxt_codes(cursor, processed_codes_to_clear)
-            if prefix_rowids_to_clear:
-                self._clear_web_movie_javtxt_rowids(cursor, 'code_prefix_movies', prefix_rowids_to_clear)
-            if actor_rowids_to_clear:
-                self._clear_web_movie_javtxt_rowids(cursor, 'actor_movies', actor_rowids_to_clear)
-            if processed_codes_to_clear or prefix_rowids_to_clear or actor_rowids_to_clear:
+            if prefix_codes_to_clear:
+                self._clear_web_movie_javtxt_codes(cursor, prefix_codes_to_clear)
+            if actor_codes_to_clear:
+                self._clear_web_movie_javtxt_codes(cursor, actor_codes_to_clear)
+            if processed_codes_to_clear or prefix_codes_to_clear or actor_codes_to_clear:
                 conn.commit()
         return {
             'videos': [manual_rows[code] for code in sorted(manual_rows)],
@@ -13064,22 +13229,19 @@ class VideoDatabase(
             updated_count += int(cursor.rowcount or 0)
             cursor.executemany(
                 '''
-                UPDATE code_prefix_movies
-                SET video_category = ?
+                UPDATE video_entities
+                SET video_category = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE code = ?
                 ''',
                 update_payload,
             )
             updated_count += int(cursor.rowcount or 0)
-            cursor.executemany(
-                '''
-                UPDATE actor_movies
-                SET video_category = ?
-                WHERE code = ?
-                ''',
-                update_payload,
-            )
-            updated_count += int(cursor.rowcount or 0)
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
+            if legacy_code_prefix_movies:
+                cursor.executemany(
+                    f'UPDATE {legacy_code_prefix_movies} SET video_category = ? WHERE code = ?',
+                    update_payload,
+                )
             cursor.execute('DELETE FROM manual_category_staging')
             conn.commit()
             return {
@@ -13117,6 +13279,8 @@ class VideoDatabase(
         with self._connect() as conn:
             cursor = conn.cursor()
             updated_count = 0
+            legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
+            legacy_actor_movies = self._legacy_table_name(cursor, 'actor_movies')
             cursor.executemany(
                 '''
                 UPDATE processed_videos
@@ -13128,22 +13292,23 @@ class VideoDatabase(
             updated_count += int(cursor.rowcount or 0)
             cursor.executemany(
                 '''
-                UPDATE code_prefix_movies
-                SET video_category = ?
+                UPDATE video_entities
+                SET video_category = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE code = ?
                 ''',
                 payload,
             )
             updated_count += int(cursor.rowcount or 0)
-            cursor.executemany(
-                '''
-                UPDATE actor_movies
-                SET video_category = ?
-                WHERE code = ?
-                ''',
-                payload,
-            )
-            updated_count += int(cursor.rowcount or 0)
+            if legacy_code_prefix_movies:
+                cursor.executemany(
+                    f'UPDATE {legacy_code_prefix_movies} SET video_category = ? WHERE code = ?',
+                    payload,
+                )
+            if legacy_actor_movies:
+                cursor.executemany(
+                    f'UPDATE {legacy_actor_movies} SET video_category = ? WHERE code = ?',
+                    payload,
+                )
 
             cleared_staged_count = 0
             if clear_staged:

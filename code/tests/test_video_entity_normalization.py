@@ -8,51 +8,78 @@ from app.data.database_handler import VideoDatabase
 
 
 class VideoEntityNormalizationTest(unittest.TestCase):
-    def test_legacy_views_route_insert_update_delete_to_canonical_storage(self):
+    def test_actor_movies_compatibility_view_is_read_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.convert_legacy_tables_to_compatibility_views()
+            db.replace_code_prefix_movies(
+                'ABC',
+                [{
+                    'code': 'ABC-001',
+                    'title': 'View title',
+                    'avfan_url': 'https://avfan/prefix',
+                    'page_number': 3,
+                }],
+            )
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                for statement in (
+                    "INSERT INTO actor_movies (actor_name, code) VALUES ('演员A', 'ABC-001')",
+                    "UPDATE actor_movies SET title = 'Updated title' WHERE actor_name = '演员A' AND code = 'ABC-001'",
+                    "DELETE FROM actor_movies WHERE actor_name = '演员A' AND code = 'ABC-001'",
+                ):
+                    with self.assertRaises(sqlite3.OperationalError):
+                        conn.execute(statement)
+                self.assertEqual(
+                    conn.execute('SELECT video_code, prefix FROM video_code_prefix_relations').fetchall(),
+                    [('ABC-001', 'ABC')],
+                )
+
+    def test_code_prefix_movies_compatibility_view_is_read_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
             db.convert_legacy_tables_to_compatibility_views()
 
             with closing(sqlite3.connect(db_path)) as conn:
-                conn.execute(
-                    '''
-                    INSERT INTO actor_movies (
-                        actor_name, code, title, author, avfan_url, page_number,
-                        javtxt_enrichment_status, video_category
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    ('演员A', 'ABC-001', 'View title', '演员A', 'https://avfan/a', 2, 'ENRICHED', '单体作品'),
-                )
-                conn.execute(
-                    '''
-                    INSERT INTO code_prefix_movies (
-                        prefix, code, title, avfan_url, page_number
-                    ) VALUES (?, ?, ?, ?, ?)
-                    ''',
-                    ('ABC', 'ABC-001', 'View title', 'https://avfan/prefix', 3),
-                )
-                conn.execute(
-                    'UPDATE actor_movies SET title = ? WHERE actor_name = ? AND code = ?',
-                    ('Updated title', '演员A', 'ABC-001'),
-                )
-                conn.execute(
-                    'DELETE FROM actor_movies WHERE actor_name = ? AND code = ?',
-                    ('演员A', 'ABC-001'),
-                )
-                conn.commit()
+                for statement in (
+                    "INSERT INTO code_prefix_movies (prefix, code) VALUES ('ABC', 'ABC-001')",
+                    "UPDATE code_prefix_movies SET title = 'Updated title' WHERE prefix = 'ABC' AND code = 'ABC-001'",
+                    "DELETE FROM code_prefix_movies WHERE prefix = 'ABC' AND code = 'ABC-001'",
+                ):
+                    with self.assertRaises(sqlite3.OperationalError):
+                        conn.execute(statement)
 
+            db.replace_code_prefix_movies(
+                'ABC',
+                [{
+                    'code': 'ABC-001',
+                    'title': 'Prefix title',
+                    'release_date': '2024-01-01',
+                    'avfan_url': 'https://avfan/prefix',
+                    'javtxt_url': 'https://javtxt/prefix',
+                    'page_number': 3,
+                    'javtxt_enrichment_status': 'ENRICHED',
+                    'javtxt_movie_id': 'abc-001',
+                }],
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
                 self.assertEqual(
                     conn.execute('SELECT code, title FROM video_entities').fetchall(),
-                    [('ABC-001', 'Updated title')],
-                )
-                self.assertEqual(
-                    conn.execute('SELECT * FROM video_actor_relations').fetchall(),
-                    [],
+                    [('ABC-001', 'Prefix title')],
                 )
                 self.assertEqual(
                     conn.execute('SELECT video_code, prefix FROM video_code_prefix_relations').fetchall(),
                     [('ABC-001', 'ABC')],
+                )
+                self.assertEqual(
+                    conn.execute(
+                        'SELECT avfan_url, avfan_movie_id, page_number FROM video_prefix_relation_meta '
+                        'WHERE video_code = ? AND prefix = ?',
+                        ('ABC-001', 'ABC'),
+                    ).fetchone(),
+                    ('https://avfan/prefix', 'abc-001', 3),
                 )
 
             VideoDatabase(db_path)
@@ -111,11 +138,74 @@ class VideoEntityNormalizationTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     conn.execute(
+                        'SELECT avfan_url, avfan_movie_id FROM video_actor_relation_meta WHERE video_code = ? AND actor_name = ?',
+                        ('XYZ-001', '演员A'),
+                    ).fetchone(),
+                    ('https://avfan/actor', 'xyz-001'),
+                )
+                self.assertEqual(
+                    conn.execute(
                         'SELECT prefix FROM video_code_prefix_relations WHERE video_code = ?',
                         ('XYZ-001',),
                     ).fetchall(),
                     [('XYZ',)],
                 )
+
+    def test_manual_category_listing_works_after_view_conversion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.convert_legacy_tables_to_compatibility_views()
+            db.replace_code_prefix_movies(
+                'XYZ',
+                [{
+                    'code': 'XYZ-001',
+                    'title': 'Prefix movie',
+                    'author': '演员A',
+                    'release_date': '2024-01-01',
+                    'javtxt_enrichment_status': 'ENRICHED',
+                    'javtxt_movie_id': 'xyz-001',
+                }],
+            )
+
+            result = db.list_videos_requiring_manual_category()
+
+            self.assertIsInstance(result, dict)
+            self.assertIn('videos', result)
+
+    def test_javtxt_cleanup_after_view_conversion_updates_canonical_entity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.convert_legacy_tables_to_compatibility_views()
+            db.replace_actor_movies(
+                '演员A',
+                [{
+                    'code': 'XYZ-001',
+                    'title': 'Actor movie',
+                    'author': '演员A',
+                    'javtxt_enrichment_status': 'ENRICHED',
+                    'javtxt_movie_id': '',
+                    'javtxt_url': '',
+                }],
+            )
+
+            with db._connect() as conn:
+                db._clear_web_movie_javtxt_state_without_detail_reference(
+                    conn.cursor(), 'actor_movies'
+                )
+                conn.commit()
+                row = conn.execute(
+                    '''
+                    SELECT author, javtxt_actors_raw, javtxt_enrichment_status,
+                           javtxt_movie_id, javtxt_url
+                    FROM video_entities
+                    WHERE code = ?
+                    ''',
+                    ('XYZ-001',),
+                ).fetchone()
+
+            self.assertEqual(row, ('', '', 'UNENRICHED', '', ''))
 
     def test_canonical_upsert_preserves_relation_specific_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:

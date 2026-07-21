@@ -89,6 +89,25 @@ class LocalVideoMediaImportTest(unittest.TestCase):
             self.assertEqual(logs[0]['current_capacity_mb'], 18800)
             self.assertIn('视频编号RCTD-311删除', logs[0]['message'])
 
+    def test_video_library_lists_only_entities_with_local_storage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+            db.upsert_video_entity({'code': 'WEB-001', 'title': 'Web only'})
+            db.upsert_video_entity(
+                {'code': 'LOC-001', 'title': 'Local video'},
+                local_record={
+                    'duration': '1:00:00',
+                    'size': '1.2',
+                    'storage_location': 'Local folder',
+                },
+            )
+            db.convert_legacy_tables_to_compatibility_views()
+
+            rows = db.list_videos()
+
+            self.assertEqual([row['code'] for row in rows], ['LOC-001'])
+            self.assertEqual(db.count_videos(), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -25,7 +25,7 @@ class VideoLibraryReadPathRegressionTest(unittest.TestCase):
                         release_date, avfan_enrichment_status, javtxt_enrichment_status
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
-                    ('AAA-001', 'Video A', 'Actor A', '', '', '', '2024-01-01', ENRICHED_STATUS, ENRICHED_STATUS),
+                    ('AAA-001', 'Video A', 'Actor A', '', '', 'Local folder', '2024-01-01', ENRICHED_STATUS, ENRICHED_STATUS),
                 )
                 conn.commit()
 
