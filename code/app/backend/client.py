@@ -40,6 +40,13 @@ class BackendClient:
     def scan_folder(self, folder_path):
         return self._post('/scan', {'folder_path': folder_path})
 
+    def generate_subtitles(self, video_paths):
+        return self._post(
+            '/translation/subtitles',
+            {'video_paths': list(video_paths or [])},
+            timeout=max(self.timeout, 20 * 60),
+        )
+
     def import_videos(self, plans):
         return self._post('/database/videos/import', {'plans': plans})
 
@@ -594,6 +601,9 @@ class BackendClient:
 
     def sync_code_prefix_filter_blacklist(self, prefixes):
         return self._post('/database/code-prefixes/filter-blacklist', {'prefixes': list(prefixes or [])})
+
+    def rebuild_video_entity_exclusions(self):
+        return self._post('/database/video-entity-exclusions/rebuild')
 
     def migrate_excluded_web_movies(self, batch_size=500):
         return self._post(

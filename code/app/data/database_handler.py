@@ -121,6 +121,8 @@ def sanitize_actor_text(value):
 
 
 STARTUP_MAINTENANCE_META_KEY = 'startup_maintenance_version'
+VIDEO_ENTITY_MATERIALIZATION_META_KEY = 'video_entity_materialization_version'
+VIDEO_ENTITY_MATERIALIZATION_VERSION = '1'
 STARTUP_MAINTENANCE_VERSION = '2026-06-30-1'
 MASTERPIECE_SOURCE_PRIORITY = ('video_library', 'code_prefix_library', 'actor_library')
 MASTERPIECE_DATE_RE = re.compile(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})')
@@ -140,6 +142,7 @@ class VideoDatabase(
         self._startup_maintenance_completed = False
         self._startup_maintenance_lock = Lock()
         self._init_db()
+        self._ensure_video_entity_materialization()
 
     @contextmanager
     def _connect(self, timeout_seconds=None):
@@ -556,6 +559,24 @@ class VideoDatabase(
                     name TEXT PRIMARY KEY
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS video_entity_exclusions (
+                    code TEXT NOT NULL,
+                    exclusion_type TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'all',
+                    reason TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (code, exclusion_type, scope)
+                )
+            ''')
+            self._ensure_index(
+                cursor,
+                'idx_video_entity_exclusions_scope_code',
+                'video_entity_exclusions',
+                'scope, code',
+            )
             cursor.execute(
                 '''
                 INSERT OR IGNORE INTO hidden_actors (name)
@@ -734,6 +755,20 @@ class VideoDatabase(
                 ('avfan_tags', "TEXT NOT NULL DEFAULT ''"),
             ):
                 self._ensure_column(cursor, 'video_entities', column_name, column_type)
+            for column_name, column_type in (
+                ('enrichment_status', "TEXT NOT NULL DEFAULT ''"),
+                ('enrichment_error', "TEXT NOT NULL DEFAULT ''"),
+                ('enriched_at', "TEXT NOT NULL DEFAULT ''"),
+                ('avfan_enrichment_status', "TEXT NOT NULL DEFAULT ''"),
+                ('avfan_enrichment_error', "TEXT NOT NULL DEFAULT ''"),
+                ('avfan_enriched_at', "TEXT NOT NULL DEFAULT ''"),
+                ('description', "TEXT NOT NULL DEFAULT ''"),
+                ('javtxt_description', "TEXT NOT NULL DEFAULT ''"),
+                ('avfan_actors', "TEXT NOT NULL DEFAULT ''"),
+                ('avfan_tags', "TEXT NOT NULL DEFAULT ''"),
+            ):
+                self._ensure_column(cursor, 'active_video_entities', column_name, column_type)
+            self._ensure_active_video_entity_sync_triggers(cursor)
             self._backfill_legacy_supplement_links(cursor)
             legacy_objects = cursor.execute(
                 """
@@ -841,6 +876,54 @@ class VideoDatabase(
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             '''
+        )
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS active_video_entities (
+                code TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                author TEXT NOT NULL DEFAULT '',
+                release_date TEXT NOT NULL DEFAULT '',
+                maker TEXT NOT NULL DEFAULT '',
+                publisher TEXT NOT NULL DEFAULT '',
+                avfan_url TEXT NOT NULL DEFAULT '',
+                avfan_movie_id TEXT NOT NULL DEFAULT '',
+                javtxt_movie_id TEXT NOT NULL DEFAULT '',
+                javtxt_url TEXT NOT NULL DEFAULT '',
+                javtxt_title TEXT NOT NULL DEFAULT '',
+                javtxt_actors TEXT NOT NULL DEFAULT '',
+                javtxt_actors_raw TEXT NOT NULL DEFAULT '',
+                javtxt_tags TEXT NOT NULL DEFAULT '',
+                javtxt_release_date TEXT NOT NULL DEFAULT '',
+                javtxt_enrichment_status TEXT NOT NULL DEFAULT '',
+                video_category TEXT NOT NULL DEFAULT '',
+                supplement_enrichment_status TEXT NOT NULL DEFAULT '',
+                supplement_enrichment_error TEXT NOT NULL DEFAULT '',
+                supplement_enriched_at TEXT NOT NULL DEFAULT '',
+                enrichment_status TEXT NOT NULL DEFAULT '',
+                enrichment_error TEXT NOT NULL DEFAULT '',
+                enriched_at TEXT NOT NULL DEFAULT '',
+                avfan_enrichment_status TEXT NOT NULL DEFAULT '',
+                avfan_enrichment_error TEXT NOT NULL DEFAULT '',
+                avfan_enriched_at TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                javtxt_description TEXT NOT NULL DEFAULT '',
+                avfan_actors TEXT NOT NULL DEFAULT '',
+                avfan_tags TEXT NOT NULL DEFAULT '',
+                duration TEXT NOT NULL DEFAULT '',
+                size TEXT NOT NULL DEFAULT '',
+                storage_location TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_active_video_entities_storage_code '
+            'ON active_video_entities (storage_location, code)'
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_active_video_entities_release_code '
+            'ON active_video_entities (release_date, code)'
         )
         cursor.execute(
             'CREATE INDEX IF NOT EXISTS idx_video_actor_relation_meta_actor '
@@ -1290,6 +1373,7 @@ class VideoDatabase(
                     ),
                 )
             conn.commit()
+        self.rebuild_video_entity_exclusions()
         return normalized_code
 
     def convert_legacy_tables_to_compatibility_views(self):
@@ -1552,6 +1636,132 @@ class VideoDatabase(
                   AND NOT EXISTS (SELECT 1 FROM video_actor_relations WHERE video_code = OLD.code)
                   AND NOT EXISTS (SELECT 1 FROM video_code_prefix_relations WHERE video_code = OLD.code);
             END;
+            '''
+        )
+
+    @staticmethod
+    def _ensure_active_video_entity_sync_triggers(cursor):
+        entity_columns = (
+            'code, title, author, release_date, maker, publisher, avfan_url, avfan_movie_id, '
+            'javtxt_movie_id, javtxt_url, javtxt_title, javtxt_actors, javtxt_actors_raw, '
+            'javtxt_tags, javtxt_release_date, javtxt_enrichment_status, video_category, '
+            'supplement_enrichment_status, supplement_enrichment_error, supplement_enriched_at, '
+            'enrichment_status, enrichment_error, enriched_at, avfan_enrichment_status, '
+            'avfan_enrichment_error, avfan_enriched_at, description, javtxt_description, '
+            'avfan_actors, avfan_tags'
+        )
+        active_columns = f'{entity_columns}, duration, size, storage_location, updated_at'
+        entity_values = ', '.join(f'NEW.{column}' for column in entity_columns.split(', '))
+        cursor.execute('DROP TRIGGER IF EXISTS trg_video_entities_sync_active_insert')
+        cursor.execute('DROP TRIGGER IF EXISTS trg_video_entities_sync_active_update')
+        cursor.execute('DROP TRIGGER IF EXISTS trg_video_entities_sync_active_delete')
+        cursor.execute('DROP TRIGGER IF EXISTS trg_local_video_records_sync_active_insert')
+        cursor.execute('DROP TRIGGER IF EXISTS trg_local_video_records_sync_active_update')
+        cursor.execute('DROP TRIGGER IF EXISTS trg_active_video_entities_sync_archive_update')
+        cursor.execute(
+            f'''
+            CREATE TRIGGER trg_video_entities_sync_active_insert
+            AFTER INSERT ON video_entities
+            BEGIN
+                DELETE FROM active_video_entities WHERE code = NEW.code;
+                INSERT INTO active_video_entities ({active_columns})
+                SELECT {entity_values}, COALESCE(local.duration, ''), COALESCE(local.size, ''),
+                       COALESCE(local.storage_location, ''), CURRENT_TIMESTAMP
+                FROM video_entities AS entity
+                LEFT JOIN local_video_records AS local ON local.code = entity.code
+                WHERE entity.code = NEW.code
+                  AND NOT EXISTS (
+                      SELECT 1 FROM video_entity_exclusions AS exclusion
+                      WHERE exclusion.code = NEW.code AND exclusion.scope = 'all'
+                  );
+            END
+            '''
+        )
+        cursor.execute(
+            f'''
+            CREATE TRIGGER trg_video_entities_sync_active_update
+            AFTER UPDATE ON video_entities
+            BEGIN
+                DELETE FROM active_video_entities WHERE code = NEW.code;
+                INSERT INTO active_video_entities ({active_columns})
+                SELECT {entity_values}, COALESCE(local.duration, ''), COALESCE(local.size, ''),
+                       COALESCE(local.storage_location, ''), CURRENT_TIMESTAMP
+                FROM video_entities AS entity
+                LEFT JOIN local_video_records AS local ON local.code = entity.code
+                WHERE entity.code = NEW.code
+                  AND NOT EXISTS (
+                      SELECT 1 FROM video_entity_exclusions AS exclusion
+                      WHERE exclusion.code = NEW.code AND exclusion.scope = 'all'
+                  );
+            END
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE TRIGGER trg_video_entities_sync_active_delete
+            AFTER DELETE ON video_entities
+            BEGIN
+                DELETE FROM active_video_entities WHERE code = OLD.code;
+            END
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE TRIGGER trg_local_video_records_sync_active_insert
+            AFTER INSERT ON local_video_records
+            BEGIN
+                UPDATE active_video_entities
+                SET duration = NEW.duration, size = NEW.size,
+                    storage_location = NEW.storage_location,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE code = NEW.code;
+            END
+            '''
+        )
+        cursor.execute(
+            '''
+            CREATE TRIGGER trg_local_video_records_sync_active_update
+            AFTER UPDATE ON local_video_records
+            BEGIN
+                UPDATE active_video_entities
+                SET duration = NEW.duration, size = NEW.size,
+                    storage_location = NEW.storage_location,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE code = NEW.code;
+            END
+            '''
+        )
+        cursor.execute(
+            f'''
+            CREATE TRIGGER trg_active_video_entities_sync_archive_update
+            AFTER UPDATE ON active_video_entities
+            BEGIN
+                UPDATE video_entities
+                SET title = NEW.title, author = NEW.author, release_date = NEW.release_date,
+                    maker = NEW.maker, publisher = NEW.publisher, avfan_url = NEW.avfan_url,
+                    avfan_movie_id = NEW.avfan_movie_id, javtxt_movie_id = NEW.javtxt_movie_id,
+                    javtxt_url = NEW.javtxt_url, javtxt_title = NEW.javtxt_title,
+                    javtxt_actors = NEW.javtxt_actors, javtxt_actors_raw = NEW.javtxt_actors_raw,
+                    javtxt_tags = NEW.javtxt_tags, javtxt_release_date = NEW.javtxt_release_date,
+                    javtxt_enrichment_status = NEW.javtxt_enrichment_status,
+                    video_category = NEW.video_category,
+                    supplement_enrichment_status = NEW.supplement_enrichment_status,
+                    supplement_enrichment_error = NEW.supplement_enrichment_error,
+                    supplement_enriched_at = NEW.supplement_enriched_at,
+                    enrichment_status = NEW.enrichment_status,
+                    enrichment_error = NEW.enrichment_error, enriched_at = NEW.enriched_at,
+                    avfan_enrichment_status = NEW.avfan_enrichment_status,
+                    avfan_enrichment_error = NEW.avfan_enrichment_error,
+                    avfan_enriched_at = NEW.avfan_enriched_at, description = NEW.description,
+                    javtxt_description = NEW.javtxt_description, avfan_actors = NEW.avfan_actors,
+                    avfan_tags = NEW.avfan_tags, updated_at = CURRENT_TIMESTAMP
+                WHERE code = NEW.code;
+                UPDATE local_video_records
+                SET duration = NEW.duration, size = NEW.size,
+                    storage_location = NEW.storage_location,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE code = NEW.code;
+            END
             '''
         )
 
@@ -1826,54 +2036,14 @@ class VideoDatabase(
         cursor.execute(
             '''
             UPDATE video_entities
-            SET javtxt_enrichment_status = COALESCE(
-                    NULLIF(javtxt_enrichment_status, ''),
-                    (
-                        SELECT COALESCE(NULLIF(p.javtxt_enrichment_status, ''), ?)
-                        FROM processed_videos p
-                        WHERE p.code = video_entities.code
-                    ),
-                    ?
-                ),
-                javtxt_movie_id = COALESCE(
-                    NULLIF(javtxt_movie_id, ''),
-                    (
-                        SELECT p.javtxt_movie_id
-                        FROM processed_videos p
-                        WHERE p.code = video_entities.code
-                    ),
-                    ''
-                ),
-                javtxt_url = COALESCE(
-                    NULLIF(javtxt_url, ''),
-                    (
-                        SELECT p.javtxt_url
-                        FROM processed_videos p
-                        WHERE p.code = video_entities.code
-                    ),
-                    ''
-                ),
-                javtxt_tags = COALESCE(
-                    NULLIF(javtxt_tags, ''),
-                    (
-                        SELECT p.javtxt_tags
-                        FROM processed_videos p
-                        WHERE p.code = video_entities.code
-                    ),
-                    ''
-                ),
-                javtxt_release_date = COALESCE(
-                    NULLIF(javtxt_release_date, ''),
-                    (
-                        SELECT p.javtxt_release_date
-                        FROM processed_videos p
-                        WHERE p.code = video_entities.code
-                    ),
-                    ''
-                ),
+            SET javtxt_enrichment_status = COALESCE(NULLIF(javtxt_enrichment_status, ''), ?),
+                javtxt_movie_id = COALESCE(javtxt_movie_id, ''),
+                javtxt_url = COALESCE(javtxt_url, ''),
+                javtxt_tags = COALESCE(javtxt_tags, ''),
+                javtxt_release_date = COALESCE(javtxt_release_date, ''),
                 javtxt_actors_raw = COALESCE(NULLIF(javtxt_actors_raw, ''), NULLIF(author, ''), '')
             ''',
-            (UNENRICHED_STATUS, UNENRICHED_STATUS),
+            (UNENRICHED_STATUS,),
         )
         cursor.execute(
             '''
@@ -1901,22 +2071,12 @@ class VideoDatabase(
         self._backfill_video_categories(cursor)
         self._clear_processed_video_javtxt_state_without_detail_reference(cursor)
         self._clear_ineligible_processed_video_javtxt_state(cursor)
-        self._backfill_web_movie_categories(cursor, 'code_prefix_movies')
-        self._backfill_web_movie_categories(cursor, 'actor_movies')
-        self._normalize_existing_web_movie_codes(cursor)
-        self._propagate_existing_web_movie_javtxt_state(cursor)
-        self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'code_prefix_movies')
-        self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'actor_movies')
-        self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'code_prefix_movies')
-        self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'actor_movies')
-        self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
-        self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
         self._sanitize_legacy_actor_source_status_columns(cursor)
         self._sanitize_ineligible_javtxt_state(cursor)
 
     def _video_source_columns(self, source_key):
         source_key_text = str(source_key or '').strip()
-        normalized_source = normalize_video_enrichment_source(source_key_text) if source_key_text else ''
+        normalized_source = normalize_video_enrichment_source(source_key_text) if source_key_text else DEFAULT_VIDEO_ENRICHMENT_SOURCE
         if normalized_source == JAVTXT_VIDEO_SOURCE:
             return 'javtxt_enrichment_status', 'javtxt_enrichment_error', 'javtxt_enriched_at'
         return 'avfan_enrichment_status', 'avfan_enrichment_error', 'avfan_enriched_at'
@@ -2095,30 +2255,17 @@ class VideoDatabase(
 
     @staticmethod
     def _processed_video_storage_target(cursor):
-        return VideoDatabase._legacy_table_name(cursor, 'processed_videos') or 'video_entities'
+        return 'active_video_entities'
 
     @staticmethod
     def _processed_video_read_sql(cursor=None):
-        if cursor is not None and VideoDatabase._legacy_table_name(cursor, 'processed_videos'):
-            return '''
-                SELECT code, title, author, duration, size, storage_location,
-                       avfan_movie_id, javtxt_movie_id, javtxt_url, javtxt_title,
-                       javtxt_actors, javtxt_tags, video_category,
-                       release_date, maker, publisher,
-                       avfan_enrichment_status, javtxt_enrichment_status
-                FROM processed_videos
-            '''
         return '''
-            SELECT e.code, e.title, e.author,
-                   COALESCE(l.duration, '') AS duration,
-                   COALESCE(l.size, '') AS size,
-                   COALESCE(l.storage_location, '') AS storage_location,
+            SELECT e.code, e.title, e.author, e.duration, e.size, e.storage_location,
                    e.avfan_movie_id, e.javtxt_movie_id, e.javtxt_url, e.javtxt_title,
                    e.javtxt_actors, e.javtxt_tags, e.video_category,
                    e.release_date, e.maker, e.publisher,
                    e.avfan_enrichment_status, e.javtxt_enrichment_status
-            FROM video_entities AS e
-            LEFT JOIN local_video_records AS l ON l.code = e.code
+            FROM active_video_entities AS e
         '''
 
     def _backfill_web_movie_categories(self, cursor, table_name, filter_settings=None):
@@ -2182,8 +2329,6 @@ class VideoDatabase(
             cursor = conn.cursor()
             before_changes = conn.total_changes
             self._backfill_video_categories(cursor, filter_settings=filter_settings)
-            self._backfill_web_movie_categories(cursor, 'code_prefix_movies', filter_settings=filter_settings)
-            self._backfill_web_movie_categories(cursor, 'actor_movies', filter_settings=filter_settings)
             self._clear_staged_video_categories_for_categorized_codes(cursor)
             conn.commit()
             return int(conn.total_changes - before_changes)
@@ -2519,12 +2664,6 @@ class VideoDatabase(
         ]
         self._clear_processed_video_javtxt_state_without_detail_reference(cursor)
         self._clear_ineligible_processed_video_javtxt_state(cursor)
-        self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'code_prefix_movies')
-        self._clear_web_movie_javtxt_state_without_detail_reference(cursor, 'actor_movies')
-        self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'code_prefix_movies')
-        self._clear_legacy_web_movie_javtxt_state_without_release_date(cursor, 'actor_movies')
-        self._clear_ineligible_web_movie_javtxt_state(cursor, 'code_prefix_movies')
-        self._clear_ineligible_web_movie_javtxt_state(cursor, 'actor_movies')
         self._propagate_processed_video_javtxt_state_for_codes(cursor, shared_codes)
 
         return prefixes, actor_names
@@ -2884,7 +3023,7 @@ class VideoDatabase(
                 SELECT code, title, author, release_date, javtxt_enrichment_status,
                        javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date,
                        javtxt_actors_raw, video_category
-                FROM video_entities
+                FROM active_video_entities
                 WHERE code IN ({placeholders})
                 ''',
                 normalized_codes,
@@ -3069,12 +3208,12 @@ class VideoDatabase(
             '''
             SELECT relation.video_code
             FROM video_code_prefix_relations AS relation
-            JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
             WHERE COALESCE(entity.javtxt_movie_id, '') <> '' OR COALESCE(entity.javtxt_url, '') <> ''
             UNION
             SELECT relation.video_code
             FROM video_actor_relations AS relation
-            JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
             WHERE COALESCE(entity.javtxt_movie_id, '') <> '' OR COALESCE(entity.javtxt_url, '') <> ''
             '''
         )
@@ -3318,6 +3457,7 @@ class VideoDatabase(
                 success_count += 1
             conn.commit()
 
+        self.rebuild_video_entity_exclusions()
         return success_count
 
     def save_actors(self, actors):
@@ -3345,6 +3485,7 @@ class VideoDatabase(
                 success_count += 1
             conn.commit()
 
+        self.rebuild_video_entity_exclusions()
         return success_count
 
     @staticmethod
@@ -3621,7 +3762,7 @@ class VideoDatabase(
                         {self._code_prefix_expression_sql('entity.code')} AS prefix,
                         COUNT(DISTINCT entity.code) AS video_count
                     FROM video_code_prefix_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(entity.code, '')) <> ''
                       AND {self._code_prefix_expression_sql('entity.code')} GLOB '*[A-Z]*'
                     GROUP BY {self._code_prefix_expression_sql('entity.code')}
@@ -3643,7 +3784,7 @@ class VideoDatabase(
                         MIN(CASE WHEN TRIM(COALESCE(entity.release_date, '')) <> '' THEN entity.release_date END) AS earliest_release_date,
                         MAX(CASE WHEN TRIM(COALESCE(entity.release_date, '')) <> '' THEN entity.release_date END) AS latest_release_date
                     FROM video_code_prefix_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(relation.prefix, '')) <> ''
                     GROUP BY UPPER(relation.prefix)
                 ),
@@ -3707,7 +3848,7 @@ class VideoDatabase(
                 WITH local AS (
                     SELECT UPPER(relation.prefix) AS prefix
                     FROM video_code_prefix_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(entity.code, '')) <> ''
                       AND UPPER(relation.prefix) GLOB '*[A-Z]*'
                     GROUP BY UPPER(relation.prefix)
@@ -3771,7 +3912,9 @@ class VideoDatabase(
                 (normalized_name,),
             )
             conn.commit()
-            return int(cursor.rowcount or 0)
+            result = int(cursor.rowcount or 0)
+        self.rebuild_video_entity_exclusions()
+        return result
 
     def _refresh_code_prefix_combined_status(self, cursor, prefix):
         cursor.execute(
@@ -4379,7 +4522,7 @@ class VideoDatabase(
                        ?, CURRENT_TIMESTAMP
                 FROM actors a
                 LEFT JOIN video_actor_relations relation ON relation.actor_name = a.name
-                LEFT JOIN video_entities entity ON entity.code = relation.video_code
+                LEFT JOIN active_video_entities entity ON entity.code = relation.video_code
                 LEFT JOIN actor_enrichments e ON e.actor_name = a.name
                 GROUP BY a.name
                 ''',
@@ -4391,10 +4534,9 @@ class VideoDatabase(
                 f'''
                 WITH local AS (
                     SELECT {prefix_sql} AS prefix, COUNT(*) AS local_video_count
-                    FROM video_entities p
-                    JOIN local_video_records local_record ON local_record.code = p.code
+                    FROM active_video_entities p
                     WHERE TRIM(COALESCE(p.code, '')) <> ''
-                      AND TRIM(COALESCE(local_record.storage_location, '')) <> ''
+                      AND TRIM(COALESCE(p.storage_location, '')) <> ''
                       AND {prefix_sql} GLOB '*[A-Z]*'
                     GROUP BY {prefix_sql}
                 ), web AS (
@@ -4404,7 +4546,7 @@ class VideoDatabase(
                            MIN(NULLIF(COALESCE(NULLIF(entity.javtxt_release_date, ''), entity.release_date), '')) AS earliest_release_date,
                            MAX(NULLIF(COALESCE(NULLIF(entity.javtxt_release_date, ''), entity.release_date), '')) AS latest_release_date
                     FROM video_code_prefix_relations relation
-                    JOIN video_entities entity ON entity.code = relation.video_code
+                    JOIN active_video_entities entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(relation.prefix, '')) <> ''
                     GROUP BY UPPER(relation.prefix)
                 ), combined AS (
@@ -4914,10 +5056,15 @@ class VideoDatabase(
                        entity.javtxt_url, entity.javtxt_tags, entity.javtxt_release_date,
                        entity.javtxt_actors_raw, entity.video_category, entity.supplement_enrichment_status
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_prefix_relation_meta AS meta
                     ON meta.prefix = relation.prefix AND meta.video_code = entity.code
                 WHERE relation.prefix = ?
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = entity.code
+                          AND ex.scope IN ('all', 'code_prefix_library')
+                  )
                 ORDER BY entity.release_date DESC, entity.code DESC
             ''', (prefix,))
 
@@ -4949,6 +5096,12 @@ class VideoDatabase(
             rule_set=rule_set,
             table_alias='entity',
         )
+        where_sql, query_parameters = self._append_entity_exclusion_where(
+            where_sql,
+            query_parameters,
+            table_alias='entity',
+            scopes=('all', 'code_prefix_library'),
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -4958,7 +5111,7 @@ class VideoDatabase(
                        entity.javtxt_url, entity.javtxt_tags, entity.javtxt_release_date,
                        entity.javtxt_actors_raw, entity.video_category, entity.supplement_enrichment_status
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_prefix_relation_meta AS meta
                     ON meta.prefix = relation.prefix AND meta.video_code = entity.code
                 {where_sql}
@@ -5010,6 +5163,12 @@ class VideoDatabase(
             rule_set=rule_set,
             table_alias='entity',
         )
+        where_sql, query_parameters = self._append_entity_exclusion_where(
+            where_sql,
+            query_parameters,
+            table_alias='entity',
+            scopes=('all', 'code_prefix_library'),
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -5019,7 +5178,7 @@ class VideoDatabase(
                        entity.javtxt_url, entity.javtxt_tags, entity.javtxt_release_date,
                        entity.javtxt_actors_raw, entity.video_category, entity.supplement_enrichment_status
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_prefix_relation_meta AS meta
                     ON meta.prefix = relation.prefix AND meta.video_code = entity.code
                 {where_sql}
@@ -5564,7 +5723,7 @@ class VideoDatabase(
                        entity.javtxt_tags, entity.javtxt_actors_raw AS author_raw,
                        entity.video_category
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
             )'''
             owner_column = 'actor_name'
             ready_join = (
@@ -5584,7 +5743,7 @@ class VideoDatabase(
                        entity.javtxt_tags, entity.javtxt_actors_raw AS author_raw,
                        entity.video_category
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
             )'''
             owner_column = 'prefix'
             ready_join = (
@@ -5723,7 +5882,7 @@ class VideoDatabase(
             javtxt_release_date_column = 'source.javtxt_release_date'
             video_category_column = 'source.video_category'
         else:
-            cache_join = 'LEFT JOIN video_entities AS cache ON cache.code = source.code'
+            cache_join = 'LEFT JOIN active_video_entities AS cache ON cache.code = source.code'
             author_column = 'COALESCE(NULLIF(TRIM(cache.javtxt_actors), \'\'), source.author)'
             author_raw_column = 'COALESCE(NULLIF(TRIM(cache.javtxt_actors_raw), \'\'), source.author_raw)'
             avfan_url_column = 'source.avfan_url'
@@ -5790,6 +5949,11 @@ class VideoDatabase(
                 {cache_join}
                 WHERE COALESCE(NULLIF(TRIM(source.supplement_enrichment_status), ''), ?) = ?
                   AND source.code LIKE '%-%'
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = source.code
+                          AND ex.scope IN ('all', 'supplement')
+                      )
                   AND (
                         (
                             (TRIM(COALESCE({javtxt_movie_id_column}, '')) <> ''
@@ -5912,7 +6076,7 @@ class VideoDatabase(
                        source.javtxt_url, source.javtxt_tags, source.javtxt_release_date,
                        source.javtxt_actors_raw, source.video_category,
                        source.supplement_enrichment_status
-                FROM video_entities AS source
+                FROM active_video_entities AS source
                 JOIN {relation_table} AS relation ON relation.video_code = source.code
                 WHERE COALESCE(NULLIF(TRIM(source.supplement_enrichment_status), ''), ?) = ?
                   AND source.code LIKE '%-%'
@@ -5976,6 +6140,11 @@ class VideoDatabase(
               AND COALESCE(NULLIF(TRIM(p.javtxt_release_date), ''), NULLIF(TRIM(p.release_date), '')) >= '2020-01-01'
               AND p.code LIKE '%-%'
               AND NOT EXISTS (
+                    SELECT 1 FROM video_entity_exclusions AS ex
+                    WHERE ex.code = p.code
+                      AND ex.scope IN ('all', 'javtxt')
+                  )
+              AND NOT EXISTS (
                     SELECT 1 FROM pending_video_javtxt AS pending
                     WHERE pending.code = p.code
                       AND pending.status IN ('pending', 'failed')
@@ -6006,7 +6175,7 @@ class VideoDatabase(
                        p.javtxt_enrichment_status, p.release_date,
                        p.video_category, p.javtxt_release_date,
                        p.supplement_enrichment_status
-                FROM video_entities AS p
+                FROM active_video_entities AS p
                 {where_sql}
                 ORDER BY p.code ASC
                 LIMIT ?
@@ -6885,10 +7054,15 @@ class VideoDatabase(
                        entity.javtxt_url, entity.javtxt_tags, entity.javtxt_release_date,
                        entity.javtxt_actors_raw, entity.video_category, entity.supplement_enrichment_status
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_actor_relation_meta AS meta
                     ON meta.actor_name = relation.actor_name AND meta.video_code = entity.code
                 WHERE relation.actor_name = ?
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = entity.code
+                          AND ex.scope IN ('all', 'actor_library')
+                  )
                 ORDER BY entity.release_date DESC, entity.code DESC
             ''', (normalized_name,))
 
@@ -6920,6 +7094,12 @@ class VideoDatabase(
             rule_set=rule_set,
             table_alias='entity',
         )
+        where_sql, query_parameters = self._append_entity_exclusion_where(
+            where_sql,
+            query_parameters,
+            table_alias='entity',
+            scopes=('all', 'actor_library'),
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -6929,7 +7109,7 @@ class VideoDatabase(
                        entity.javtxt_url, entity.javtxt_tags, entity.javtxt_release_date,
                        entity.javtxt_actors_raw, entity.video_category, entity.supplement_enrichment_status
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_actor_relation_meta AS meta
                     ON meta.actor_name = relation.actor_name AND meta.video_code = entity.code
                 {where_sql}
@@ -6981,6 +7161,12 @@ class VideoDatabase(
             rule_set=rule_set,
             table_alias='entity',
         )
+        where_sql, query_parameters = self._append_entity_exclusion_where(
+            where_sql,
+            query_parameters,
+            table_alias='entity',
+            scopes=('all', 'actor_library'),
+        )
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -6990,7 +7176,7 @@ class VideoDatabase(
                        entity.javtxt_url, entity.javtxt_tags, entity.javtxt_release_date,
                        entity.javtxt_actors_raw, entity.video_category, entity.supplement_enrichment_status
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+                JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_actor_relation_meta AS meta
                     ON meta.actor_name = relation.actor_name AND meta.video_code = entity.code
                 {where_sql}
@@ -7050,7 +7236,7 @@ class VideoDatabase(
                 f'''
                 SELECT relation.actor_name, MAX({entity_release_date_sql}) AS latest_release_date
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 WHERE relation.actor_name IN ({placeholders})
                   AND entity.code LIKE '%-%'
                   AND entity.video_category IN (?, ?)
@@ -7099,7 +7285,7 @@ class VideoDatabase(
                            WHEN entity.video_category IN (?, ?) THEN {entity_release_date_sql}
                        END) AS latest_release_date
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 WHERE relation.actor_name IN ({placeholders})
                   {filter_sql}
                 GROUP BY relation.actor_name
@@ -7141,7 +7327,7 @@ class VideoDatabase(
                 f'''
                 SELECT relation.actor_name, COUNT(DISTINCT entity.code) AS video_count
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 WHERE relation.actor_name IN ({placeholders})
                   AND entity.video_category IN (?, ?)
                   {filter_sql}
@@ -7209,7 +7395,7 @@ class VideoDatabase(
                            COALESCE(NULLIF(entity.javtxt_release_date, ''), NULLIF(entity.release_date, ''), '') AS release_date,
                            entity.video_category, entity.title, entity.javtxt_tags
                     FROM video_code_prefix_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(relation.prefix, '')) <> ''
                     UNION
                     SELECT {self._code_prefix_expression_sql('entity.code')} AS prefix,
@@ -7217,7 +7403,7 @@ class VideoDatabase(
                            COALESCE(NULLIF(entity.javtxt_release_date, ''), NULLIF(entity.release_date, ''), '') AS release_date,
                            entity.video_category, entity.title, entity.javtxt_tags
                     FROM video_actor_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(entity.code, '')) <> ''
                 )
                 SELECT relation.prefix,
@@ -7254,13 +7440,13 @@ class VideoDatabase(
                 WITH combined AS (
                     SELECT UPPER(relation.prefix) AS prefix, entity.code, entity.title, entity.javtxt_tags
                     FROM video_code_prefix_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(relation.prefix, '')) <> ''
                       AND entity.video_category IN (?, ?)
                     UNION
                     SELECT {self._code_prefix_expression_sql('entity.code')} AS prefix, entity.code, entity.title, entity.javtxt_tags
                     FROM video_actor_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(entity.code, '')) <> ''
                       AND entity.video_category IN (?, ?)
                 )
@@ -7293,12 +7479,12 @@ class VideoDatabase(
                 WITH combined AS (
                     SELECT UPPER(relation.prefix) AS prefix, entity.code, entity.video_category, entity.title, entity.javtxt_tags
                     FROM video_code_prefix_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(relation.prefix, '')) <> ''
                     UNION
                     SELECT {self._code_prefix_expression_sql('entity.code')} AS prefix, entity.code, entity.video_category, entity.title, entity.javtxt_tags
                     FROM video_actor_relations AS relation
-                    JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(entity.code, '')) <> ''
                 )
                 SELECT prefix,
@@ -7377,6 +7563,26 @@ class VideoDatabase(
         return normalized_values
 
     @staticmethod
+    def _append_entity_exclusion_where(where_sql, parameters, table_alias='entity', scopes=('all',)):
+        alias = str(table_alias or 'entity').strip() or 'entity'
+        normalized_scopes = [str(scope or '').strip() for scope in scopes if str(scope or '').strip()]
+        if not normalized_scopes:
+            return where_sql, list(parameters or [])
+        placeholders = ','.join('?' for _ in normalized_scopes)
+        predicate = f'''
+            NOT EXISTS (
+                SELECT 1
+                FROM video_entity_exclusions AS ex
+                WHERE ex.code = {alias}.code
+                  AND ex.scope IN ({placeholders})
+            )
+        '''
+        normalized_where = str(where_sql or '').strip()
+        if normalized_where:
+            return f'{normalized_where} AND ({predicate})', [*(parameters or []), *normalized_scopes]
+        return f'WHERE {predicate}', list(normalized_scopes)
+
+    @staticmethod
     def _append_rule_set_where(
         where_sql,
         parameters,
@@ -7421,7 +7627,7 @@ class VideoDatabase(
         placeholders = ','.join('?' for _ in normalized_codes)
         with self._connect() as conn:
             cursor = conn.cursor()
-            processed_write_table = self._legacy_table_name(cursor, 'processed_videos') or 'video_entities'
+            processed_write_table = 'active_video_entities'
             cursor.execute(f'''
                 UPDATE {processed_write_table}
                 SET avfan_movie_id = '',
@@ -7631,7 +7837,7 @@ class VideoDatabase(
                        entity.supplement_enrichment_status, entity.supplement_enrichment_error,
                        entity.supplement_enriched_at
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_actor_relation_meta AS meta
                     ON meta.actor_name = relation.actor_name AND meta.video_code = relation.video_code
                 WHERE relation.actor_name = ?
@@ -7697,12 +7903,50 @@ class VideoDatabase(
             return 0
 
         source_key_text = str(source_key or '').strip()
-        normalized_source = normalize_video_enrichment_source(source_key_text) if source_key_text else ''
+        normalized_source = normalize_video_enrichment_source(source_key_text) if source_key_text else DEFAULT_VIDEO_ENRICHMENT_SOURCE
         placeholders = ','.join('?' for _ in normalized_prefixes)
         with self._connect() as conn:
             cursor = conn.cursor()
             legacy_code_prefix_movies = self._legacy_table_name(cursor, 'code_prefix_movies')
-            if normalized_source == JAVTXT_VIDEO_SOURCE:
+            if normalized_source == AVFAN_VIDEO_SOURCE:
+                status_column, error_column, at_column = self._library_source_columns(normalized_source)
+                cursor.execute(
+                    f'''
+                    UPDATE video_entities
+                    SET avfan_enrichment_status = ?,
+                        avfan_enrichment_error = '',
+                        avfan_enriched_at = '',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE code IN (
+                        SELECT video_code FROM video_code_prefix_relations
+                        WHERE prefix IN ({placeholders})
+                    )
+                    ''',
+                    [UNENRICHED_STATUS, *normalized_prefixes],
+                )
+                cursor.execute(
+                    f'''
+                    UPDATE video_prefix_relation_meta
+                    SET avfan_url = '', avfan_movie_id = ''
+                    WHERE prefix IN ({placeholders})
+                    ''',
+                    normalized_prefixes,
+                )
+                cursor.execute(
+                    f'''
+                    UPDATE code_prefix_enrichments
+                    SET {status_column} = ?,
+                        avfan_total_pages = 0,
+                        avfan_total_videos = 0,
+                        {error_column} = '',
+                        {at_column} = ''
+                    WHERE prefix IN ({placeholders})
+                    ''',
+                    [UNENRICHED_STATUS, *normalized_prefixes],
+                )
+                for prefix in normalized_prefixes:
+                    self._refresh_code_prefix_combined_status(cursor, prefix)
+            elif normalized_source == JAVTXT_VIDEO_SOURCE:
                 status_column, error_column, at_column = self._library_source_columns(normalized_source)
                 cursor.execute(
                     f'''
@@ -7744,18 +7988,7 @@ class VideoDatabase(
                     [UNENRICHED_STATUS, *normalized_prefixes],
                 )
             else:
-                cursor.execute(
-                    f'DELETE FROM video_prefix_relation_meta WHERE prefix IN ({placeholders})',
-                    normalized_prefixes,
-                )
-                cursor.execute(
-                    f'DELETE FROM video_code_prefix_relations WHERE prefix IN ({placeholders})',
-                    normalized_prefixes,
-                )
-                cursor.execute(f'''
-                    DELETE FROM code_prefix_enrichments
-                    WHERE prefix IN ({placeholders})
-                ''', normalized_prefixes)
+                raise ValueError(f'不支持的番号重置来源: {normalized_source}')
             conn.commit()
             return len(normalized_prefixes)
 
@@ -7936,7 +8169,7 @@ class VideoDatabase(
                        entity.supplement_enrichment_status, entity.supplement_enrichment_error,
                        entity.supplement_enriched_at
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_prefix_relation_meta AS meta
                     ON meta.prefix = relation.prefix AND meta.video_code = relation.video_code
                 WHERE relation.prefix IN ({placeholders})
@@ -7994,6 +8227,7 @@ class VideoDatabase(
                 normalized_prefixes,
             )
             conn.commit()
+        self.rebuild_video_entity_exclusions()
         return {
             'blacklisted_count': len(normalized_prefixes),
             'candidate_removed_count': candidate_removed_count,
@@ -8408,15 +8642,230 @@ class VideoDatabase(
             ),
         )
 
+    def rebuild_video_entity_exclusions(self):
+        """Materialize current video visibility and enrichment exclusions."""
+        filter_settings = self._load_video_category_filter_settings()
+        rules = RuleSet.normalize(filter_settings, scope='library').to_settings()['rules']
+        exclusions = []
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            entities = cursor.execute(
+                '''
+                SELECT code, title, javtxt_tags, release_date, javtxt_release_date,
+                       javtxt_enrichment_status, javtxt_movie_id, javtxt_url,
+                       javtxt_title, javtxt_actors
+                FROM video_entities
+                ORDER BY code
+                '''
+            ).fetchall()
+            hidden_prefixes = {
+                str(row[0] or '').strip().upper()
+                for row in cursor.execute('SELECT prefix FROM hidden_code_prefixes').fetchall()
+                if str(row[0] or '').strip()
+            }
+            hidden_actors = {
+                str(row[0] or '').strip()
+                for row in cursor.execute('SELECT name FROM hidden_actors').fetchall()
+                if str(row[0] or '').strip()
+            }
+            actor_codes = {
+                str(row[0] or '').strip().upper()
+                for row in cursor.execute(
+                    '''
+                    SELECT DISTINCT relation.video_code
+                    FROM video_actor_relations AS relation
+                    JOIN hidden_actors AS hidden
+                      ON hidden.name = relation.actor_name
+                    '''
+                ).fetchall()
+            }
+            prefix_codes = {
+                str(row[0] or '').strip().upper()
+                for row in cursor.execute(
+                    '''
+                    SELECT DISTINCT relation.video_code
+                    FROM video_code_prefix_relations AS relation
+                    JOIN hidden_code_prefixes AS hidden
+                      ON UPPER(hidden.prefix) = UPPER(relation.prefix)
+                    '''
+                ).fetchall()
+            }
+
+            for row in entities:
+                code = str(row[0] or '').strip().upper()
+                if not code:
+                    continue
+                title = str(row[1] or '')
+                tags = str(row[2] or '')
+                release_date = str(row[3] or '').strip()
+                javtxt_release_date = str(row[4] or '').strip()
+                movie = {
+                    'code': code,
+                    'title': title,
+                    'release_date': release_date,
+                    'javtxt_release_date': javtxt_release_date,
+                    'javtxt_enrichment_status': str(row[5] or '').strip(),
+                    'javtxt_movie_id': str(row[6] or '').strip(),
+                    'javtxt_url': str(row[7] or '').strip(),
+                    'javtxt_title': str(row[8] or '').strip(),
+                    'javtxt_actors': str(row[9] or '').strip(),
+                    'javtxt_tags': tags,
+                }
+
+                code_prefix = extract_code_prefix(code)
+                if code_prefix in hidden_prefixes or code in prefix_codes:
+                    exclusions.append((code, 'code_prefix_blacklist', 'all', code_prefix, 'hidden_code_prefixes'))
+                if code in actor_codes or hidden_actors.intersection(split_actor_names(str(row[9] or ''))):
+                    exclusions.append((code, 'actor_blacklist', 'all', str(row[9] or ''), 'hidden_actors'))
+                for field_name, exclusion_type in (
+                    ('code', 'filter_code'),
+                    ('title', 'filter_title'),
+                    ('javtxt_tags', 'filter_tags'),
+                ):
+                    if matches_filter_keywords(movie.get(field_name, ''), rules.get(field_name, []), field_name=field_name):
+                        exclusions.append((
+                            code,
+                            exclusion_type,
+                            'all',
+                            str(movie.get(field_name, '') or ''),
+                            'video_filter_settings',
+                        ))
+
+                effective_release_date = javtxt_release_date or release_date
+                if effective_release_date and not is_javtxt_eligible_movie(movie):
+                    exclusions.append((code, 'release_date', 'all', effective_release_date, 'javtxt_eligibility'))
+
+            cursor.execute('DELETE FROM video_entity_exclusions')
+            cursor.executemany(
+                '''
+                INSERT INTO video_entity_exclusions (
+                    code, exclusion_type, scope, reason, source
+                ) VALUES (?, ?, ?, ?, ?)
+                ''',
+                exclusions,
+            )
+            conn.commit()
+        self.rebuild_active_video_entities()
+        return len(exclusions)
+
+    def _ensure_video_entity_materialization(self):
+        """Avoid rebuilding the full active table on every process start."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if self._get_runtime_meta(cursor, VIDEO_ENTITY_MATERIALIZATION_META_KEY) == VIDEO_ENTITY_MATERIALIZATION_VERSION:
+                return
+            entity_count = cursor.execute('SELECT COUNT(*) FROM video_entities').fetchone()[0]
+            active_count = cursor.execute('SELECT COUNT(*) FROM active_video_entities').fetchone()[0]
+            if entity_count and not active_count:
+                should_rebuild = True
+            else:
+                self._set_runtime_meta(
+                    cursor,
+                    VIDEO_ENTITY_MATERIALIZATION_META_KEY,
+                    VIDEO_ENTITY_MATERIALIZATION_VERSION,
+                )
+                conn.commit()
+                should_rebuild = False
+        if should_rebuild:
+            self.rebuild_video_entity_exclusions()
+
+    def rebuild_active_video_entities(self):
+        """Materialize the non-excluded archive rows used by UI and enrichment."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM active_video_entities')
+            cursor.execute(
+                '''
+                INSERT INTO active_video_entities (
+                    code, title, author, release_date, maker, publisher, avfan_url, avfan_movie_id,
+                    javtxt_movie_id, javtxt_url, javtxt_title, javtxt_actors, javtxt_actors_raw,
+                    javtxt_tags, javtxt_release_date, javtxt_enrichment_status, video_category,
+                    supplement_enrichment_status, supplement_enrichment_error, supplement_enriched_at,
+                    enrichment_status, enrichment_error, enriched_at, avfan_enrichment_status,
+                    avfan_enrichment_error, avfan_enriched_at, description, javtxt_description,
+                    avfan_actors, avfan_tags, duration, size, storage_location, updated_at
+                )
+                SELECT entity.code, entity.title, entity.author, entity.release_date,
+                       entity.maker, entity.publisher, entity.avfan_url, entity.avfan_movie_id,
+                       entity.javtxt_movie_id, entity.javtxt_url, entity.javtxt_title,
+                       entity.javtxt_actors, entity.javtxt_actors_raw, entity.javtxt_tags,
+                       entity.javtxt_release_date, entity.javtxt_enrichment_status,
+                       entity.video_category, entity.supplement_enrichment_status,
+                       entity.supplement_enrichment_error, entity.supplement_enriched_at,
+                       entity.enrichment_status, entity.enrichment_error, entity.enriched_at,
+                       entity.avfan_enrichment_status, entity.avfan_enrichment_error,
+                       entity.avfan_enriched_at, entity.description, entity.javtxt_description,
+                       entity.avfan_actors, entity.avfan_tags, COALESCE(local.duration, ''),
+                       COALESCE(local.size, ''), COALESCE(local.storage_location, ''),
+                       CURRENT_TIMESTAMP
+                FROM video_entities AS entity
+                LEFT JOIN local_video_records AS local ON local.code = entity.code
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM video_entity_exclusions AS exclusion
+                    WHERE exclusion.code = entity.code
+                      AND exclusion.scope = 'all'
+                )
+                '''
+            )
+            self._set_runtime_meta(
+                cursor,
+                VIDEO_ENTITY_MATERIALIZATION_META_KEY,
+                VIDEO_ENTITY_MATERIALIZATION_VERSION,
+            )
+            conn.commit()
+        return int(cursor.rowcount or 0)
+
+    def list_video_entity_exclusions(self, code=None, scope=None):
+        clauses = []
+        parameters = []
+        if code:
+            clauses.append('code = ?')
+            parameters.append(standardize_video_code(code))
+        if scope:
+            clauses.append('scope = ?')
+            parameters.append(str(scope).strip())
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT code, exclusion_type, scope, reason, source, created_at, updated_at
+                FROM video_entity_exclusions
+                {where_sql}
+                ORDER BY code, exclusion_type, scope
+                ''',
+                parameters,
+            ).fetchall()
+        return [
+            {
+                'code': row[0] or '',
+                'exclusion_type': row[1] or '',
+                'scope': row[2] or '',
+                'reason': row[3] or '',
+                'source': row[4] or '',
+                'created_at': row[5] or '',
+                'updated_at': row[6] or '',
+            }
+            for row in rows
+        ]
+
     @staticmethod
     def _local_video_where_sql(where_sql=''):
         local_clause = "COALESCE(p.storage_location, '') <> ''"
+        exclusion_clause = '''
+            NOT EXISTS (
+                SELECT 1
+                FROM video_entity_exclusions AS ex
+                WHERE ex.code = p.code
+                  AND ex.scope IN ('all', 'video_library')
+            )
+        '''
         normalized_where = str(where_sql or '').strip()
         if not normalized_where:
-            return f'WHERE {local_clause}'
+            return f'WHERE {local_clause} AND {exclusion_clause}'
         if normalized_where[:5].upper() != 'WHERE':
             raise ValueError('Video filters must start with WHERE')
-        return f'WHERE {local_clause} AND ({normalized_where[5:].strip()})'
+        return f'WHERE {local_clause} AND {exclusion_clause} AND ({normalized_where[5:].strip()})'
 
     @staticmethod
     def _normalize_limit_offset(limit=None, offset=0):
@@ -9820,7 +10269,7 @@ class VideoDatabase(
                 f'''
                 SELECT relation.actor_name, entity.supplement_enrichment_status
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 WHERE relation.actor_name IN ({placeholders})
                   AND TRIM(COALESCE(entity.supplement_enrichment_status, '')) <> ''
                 ''',
@@ -9841,7 +10290,7 @@ class VideoDatabase(
                 f'''
                 SELECT UPPER(relation.prefix), entity.supplement_enrichment_status
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 WHERE UPPER(relation.prefix) IN ({placeholders})
                   AND TRIM(COALESCE(entity.supplement_enrichment_status, '')) <> ''
                 ''',
@@ -10705,7 +11154,7 @@ class VideoDatabase(
     def get_video_count(self):
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT COUNT(*) FROM video_entities')
+            cursor.execute('SELECT COUNT(*) FROM active_video_entities')
             return int(cursor.fetchone()[0] or 0)
 
     def get_actor_count(self):
@@ -10732,12 +11181,11 @@ class VideoDatabase(
             cursor = conn.cursor()
             cursor.execute(
                 f'''
-                SELECT e.code, e.title, e.author, COALESCE(l.duration, ''), COALESCE(l.size, ''),
-                       COALESCE(l.storage_location, ''), e.release_date, e.video_category,
+                SELECT e.code, e.title, e.author, e.duration, e.size, e.storage_location,
+                       e.release_date, e.video_category,
                        e.javtxt_tags, e.javtxt_release_date, e.javtxt_enrichment_status, e.javtxt_movie_id, e.javtxt_url,
                        e.avfan_movie_id, e.maker, e.publisher
-                FROM video_entities AS e
-                LEFT JOIN local_video_records AS l ON l.code = e.code
+                FROM active_video_entities AS e
                 WHERE e.code IN ({placeholders})
                 ''',
                 normalized_codes,
@@ -11686,7 +12134,7 @@ class VideoDatabase(
                        COALESCE(entity.javtxt_movie_id, ''),
                        COALESCE(entity.javtxt_url, '')
                 FROM video_code_prefix_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_prefix_relation_meta AS meta
                     ON meta.video_code = relation.video_code AND meta.prefix = relation.prefix
                 WHERE entity.code = ?
@@ -11720,7 +12168,7 @@ class VideoDatabase(
                        COALESCE(entity.javtxt_movie_id, ''),
                        COALESCE(entity.javtxt_url, '')
                 FROM video_actor_relations AS relation
-                JOIN video_entities AS entity ON entity.code = relation.video_code
+            JOIN active_video_entities AS entity ON entity.code = relation.video_code
                 LEFT JOIN video_actor_relation_meta AS meta
                     ON meta.video_code = relation.video_code AND meta.actor_name = relation.actor_name
                 WHERE entity.code = ?
@@ -12254,7 +12702,7 @@ class VideoDatabase(
                 detail_from_sql = f'FROM {legacy_table}'
                 detail_code_column = 'code'
             else:
-                detail_from_sql = 'FROM video_entities AS e LEFT JOIN local_video_records AS l ON l.code = e.code'
+                detail_from_sql = 'FROM active_video_entities AS e'
                 detail_code_column = 'e.code'
             cursor.execute(
                 f'''
@@ -12348,7 +12796,7 @@ class VideoDatabase(
 
         with self._connect() as conn:
             cursor = conn.cursor()
-            processed_write_table = self._legacy_table_name(cursor, 'processed_videos') or 'video_entities'
+            processed_write_table = 'active_video_entities'
             cursor.executemany(
                 f'''
                 UPDATE {processed_write_table}
@@ -12544,7 +12992,7 @@ class VideoDatabase(
             if entity_rows:
                 cursor.executemany(
                     '''
-                    UPDATE video_entities
+                    UPDATE active_video_entities
                     SET title = ?, author = ?, release_date = ?, avfan_url = ?,
                         javtxt_actors_raw = ?, video_category = ?,
                         supplement_enrichment_status = ?, supplement_enrichment_error = ?,
@@ -12561,7 +13009,7 @@ class VideoDatabase(
             if entity_status_rows:
                 cursor.executemany(
                     '''
-                    UPDATE video_entities
+                    UPDATE active_video_entities
                     SET supplement_enrichment_status = ?,
                         supplement_enrichment_error = ?,
                         supplement_enriched_at = CURRENT_TIMESTAMP,
@@ -12733,7 +13181,7 @@ class VideoDatabase(
             if entity_rows:
                 cursor.executemany(
                     '''
-                    UPDATE video_entities
+                    UPDATE active_video_entities
                     SET title = ?, author = ?, release_date = ?, avfan_url = ?,
                         javtxt_actors_raw = ?, video_category = ?,
                         supplement_enrichment_status = ?, supplement_enrichment_error = ?,
@@ -12750,7 +13198,7 @@ class VideoDatabase(
             if entity_status_rows:
                 cursor.executemany(
                     '''
-                    UPDATE video_entities
+                    UPDATE active_video_entities
                     SET supplement_enrichment_status = ?,
                         supplement_enrichment_error = ?,
                         supplement_enriched_at = CURRENT_TIMESTAMP,
@@ -12945,9 +13393,14 @@ class VideoDatabase(
                        release_date,
                        javtxt_tags,
                        video_category
-                FROM video_entities
+                FROM active_video_entities
                 WHERE COALESCE(javtxt_enrichment_status, ?) = ?
                   AND COALESCE(video_category, '') = ''
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = active_video_entities.code
+                          AND ex.scope IN ('all', 'video_library')
+                      )
                 ORDER BY code
                 ''',
                 (UNENRICHED_STATUS, ENRICHED_STATUS),
@@ -12992,8 +13445,13 @@ class VideoDatabase(
                        release_date,
                        javtxt_tags,
                        video_category
-                FROM video_entities
+                FROM active_video_entities
                 WHERE COALESCE(video_category, '') = ''
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = active_video_entities.code
+                          AND ex.scope IN ('all', 'video_library')
+                      )
                 ORDER BY code
                 '''
             )
@@ -13037,8 +13495,13 @@ class VideoDatabase(
                        release_date,
                        javtxt_tags,
                        video_category
-                FROM video_entities
+                FROM active_video_entities
                 WHERE COALESCE(video_category, '') = ''
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = active_video_entities.code
+                          AND ex.scope IN ('all', 'video_library')
+                      )
                 ORDER BY code
                 '''
             )
@@ -13755,4 +14218,5 @@ class VideoDatabase(
 
             conn.commit()
 
+        self.rebuild_video_entity_exclusions()
         return len(new_records)

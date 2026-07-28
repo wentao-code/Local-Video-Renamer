@@ -26,6 +26,31 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_generate_subtitles_uses_scanned_video_paths(self):
+        calls = []
+        stub = SimpleNamespace(
+            pending_renames=[
+                {'old_path': 'D:/videos/RCTD-688.mp4'},
+                {'old_path': 'D:/videos/RCTD-689.mkv'},
+                {'old_path': ''},
+            ],
+            backend_client=SimpleNamespace(
+                generate_subtitles=lambda paths: calls.append(('generate', paths)) or {'success_count': 2},
+            ),
+            _on_generate_subtitles_finished=lambda _result: None,
+            start_async_task=lambda task, *args, **kwargs: calls.append(('task', task())) ,
+        )
+
+        main_window.VidNormApp.generate_subtitles(stub)
+
+        self.assertEqual(
+            calls,
+            [
+                ('generate', ['D:/videos/RCTD-688.mp4', 'D:/videos/RCTD-689.mkv']),
+                ('task', {'success_count': 2}),
+            ],
+        )
+
     def test_cancelled_plan_task_is_deleted_after_backend_plan_cancel_succeeds(self):
         calls = []
         record = SimpleNamespace(

@@ -193,6 +193,9 @@ class VideoFilterDialog(QDialog):
             sync_blacklist = getattr(backend_client, 'sync_code_prefix_filter_blacklist', None)
             if callable(sync_blacklist):
                 sync_blacklist(get_filter_keywords(payload, FILTER_FIELD_CODE))
+            rebuild_exclusions = getattr(backend_client, 'rebuild_video_entity_exclusions', None)
+            if callable(rebuild_exclusions):
+                rebuild_exclusions()
         except Exception as exc:
             QMessageBox.critical(self, tr('common.save_failed'), tr('video.filter.save_failed', error=exc))
             return False

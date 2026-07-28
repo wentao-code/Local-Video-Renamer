@@ -92,6 +92,7 @@ from app.services.library import (
 )
 from app.services.library.unified_search_service import UnifiedSearchService
 from app.services.local_video import LocalVideoLibraryService
+from app.services.local_video.subtitle_generation_service import SubtitleGenerationService
 from app.queen_library.service import QueenLibraryService
 from app.services.video import (
     MANUAL_CATEGORY_TIER_FIRST,
@@ -101,6 +102,7 @@ from app.services.video import (
     VideoFilterService,
 )
 from app.core.project_paths import QUEEN_LIBRARY_DB_FILE
+from app.core.translation_config import TranslationConfig
 
 
 LOGGER = get_logger(__name__)
@@ -120,6 +122,7 @@ class BackendService:
         self.unified_search_service = UnifiedSearchService(self)
         self.video_ladder_tag_service = VideoLadderTagService(self.db)
         self.local_video_library = LocalVideoLibraryService(self.db)
+        self.subtitle_generation_service = SubtitleGenerationService(TranslationConfig.from_environment())
         self.actor_detail_library = ActorDetailLibrary(self.db, self.video_ladder_tag_service, self.video_filter_service)
         self.actor_library_sync_service = ActorLibrarySyncService(self.db)
         self.code_prefix_detail_library = CodePrefixDetailLibrary(
@@ -230,6 +233,9 @@ class BackendService:
     def scan(self, folder_path):
         self.ensure_database_loaded()
         return self.local_video_library.scan_folder(folder_path)
+
+    def generate_subtitles(self, video_paths):
+        return self.subtitle_generation_service.generate(video_paths)
 
     def rename(self, plans_data):
         return self.local_video_library.execute_renames(plans_data)
@@ -1419,6 +1425,12 @@ class BackendService:
         result = self.db.blacklist_code_prefixes(prefixes)
         self._invalidate_code_prefix_snapshots()
         return result
+
+    def rebuild_video_entity_exclusions(self):
+        self.ensure_database_loaded()
+        return {
+            'exclusion_count': self.db.rebuild_video_entity_exclusions(),
+        }
 
     def migrate_excluded_web_movies(self, batch_size=500):
         self.ensure_database_loaded()

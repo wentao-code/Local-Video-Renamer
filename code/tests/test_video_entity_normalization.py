@@ -3,11 +3,50 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from app.data.database_handler import VideoDatabase
 
 
 class VideoEntityNormalizationTest(unittest.TestCase):
+    def test_manual_category_listing_uses_canonical_tables_without_legacy_web_tables(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            db.upsert_video_entity({
+                'code': 'ABC-001',
+                'title': 'Canonical video',
+                'javtxt_enrichment_status': 'ENRICHED',
+                'javtxt_movie_id': 'abc-001',
+                'javtxt_url': 'https://javtxt.example/abc-001',
+                'javtxt_actors': '演员A 演员B',
+            })
+
+            with patch.object(
+                db,
+                '_load_video_category_filter_settings',
+                return_value={
+                    'rules': {
+                        'code': [],
+                        'title': [],
+                        'javtxt_tags': [],
+                        'co_star_code': ['ABC'],
+                    }
+                },
+            ):
+                result = db.list_videos_requiring_manual_category()
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result['videos'], [])
+            with closing(sqlite3.connect(db_path)) as conn:
+                self.assertEqual(
+                    conn.execute(
+                        'SELECT video_category FROM video_entities WHERE code = ?',
+                        ('ABC-001',),
+                    ).fetchone(),
+                    ('共演作品',),
+                )
+
     def test_actor_movies_compatibility_view_is_read_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

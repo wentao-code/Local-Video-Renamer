@@ -87,6 +87,8 @@ def make_handler(service):
                 if not folder_path:
                     raise ValueError('缺少 folder_path')
                 return service.scan(folder_path)
+            if method == 'POST' and path == '/translation/subtitles':
+                return service.generate_subtitles(body.get('video_paths', []))
             if method == 'POST' and path == '/rename':
                 return service.rename(body.get('plans', []))
             if method == 'POST' and path == '/database/videos/import':
@@ -277,6 +279,8 @@ def make_handler(service):
                 return service.delete_code_prefix(body.get('prefix'))
             if method == 'POST' and path == '/database/code-prefixes/filter-blacklist':
                 return service.sync_code_prefix_filter_blacklist(body.get('prefixes', []))
+            if method == 'POST' and path == '/database/video-entity-exclusions/rebuild':
+                return service.rebuild_video_entity_exclusions()
             if method == 'POST' and path == '/database/excluded-web-movies/migrate':
                 return service.migrate_excluded_web_movies(body.get('batch_size', 500))
             if method == 'GET' and path == '/ladder/board':
