@@ -123,7 +123,7 @@ class VideoEntityExclusionsTest(unittest.TestCase):
             self.assertEqual([row['code'] for row in db.list_actor_movies('演员A')], ['ABC-001'])
             self.assertEqual([row['code'] for row in db.list_code_prefix_movies('XYZ')], [])
 
-    def test_active_table_is_materialized_from_archive_and_writes_back(self):
+    def test_active_table_is_one_way_projection_of_canonical_sources(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
@@ -144,7 +144,7 @@ class VideoEntityExclusionsTest(unittest.TestCase):
                 conn.commit()
                 self.assertEqual(
                     conn.execute('SELECT title FROM video_entities WHERE code = ?', ('ABC-001',)).fetchone()[0],
-                    'Updated from active',
+                    'Original',
                 )
 
             with closing(sqlite3.connect(db_path)) as conn:
