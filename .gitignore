@@ -10,6 +10,8 @@ __pycache__/
 /.codex/
 /.idea/
 /.pytest_cache/
+.pytest_cache/
+.pytest-tmp*/
 /.vs/
 
 # Local files accidentally created inside the code directory
