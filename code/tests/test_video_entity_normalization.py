@@ -29,6 +29,10 @@ class VideoEntityNormalizationTest(unittest.TestCase):
             VideoEntityRepositoryMixin.list_video_supplement_candidates,
         )
         self.assertIs(
+            VideoDatabase.list_sql_video_supplement_candidates,
+            VideoEntityRepositoryMixin.list_sql_video_supplement_candidates,
+        )
+        self.assertIs(
             VideoDatabase.save_video_supplement_status,
             VideoEntityRepositoryMixin.save_video_supplement_status,
         )
@@ -40,7 +44,17 @@ class VideoEntityNormalizationTest(unittest.TestCase):
         self.assertIs(VideoDatabase.mark_video_enrichment_failed, VideoEntityRepositoryMixin.mark_video_enrichment_failed)
         self.assertIs(VideoDatabase.list_actor_dashboard_stats, VideoEntityRepositoryMixin.list_actor_dashboard_stats)
         self.assertIs(VideoDatabase.list_code_prefix_dashboard_stats, VideoEntityRepositoryMixin.list_code_prefix_dashboard_stats)
+        self.assertIs(VideoDatabase.list_videos_for_enrichment, VideoEntityRepositoryMixin.list_videos_for_enrichment)
+        self.assertIs(
+            VideoDatabase.count_videos_by_enrichment_status,
+            VideoEntityRepositoryMixin.count_videos_by_enrichment_status,
+        )
+        self.assertIs(
+            VideoDatabase.count_pending_video_enrichments,
+            VideoEntityRepositoryMixin.count_pending_video_enrichments,
+        )
         self.assertIs(VideoDatabase.save_javtxt_cache_for_video, VideoEntityRepositoryMixin.save_javtxt_cache_for_video)
+        self.assertIs(VideoDatabase.get_video_enrichment_summary, VideoEntityRepositoryMixin.get_video_enrichment_summary)
     def test_new_database_exposes_only_canonical_video_schema(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = VideoDatabase(Path(temp_dir) / 'video_database.db')

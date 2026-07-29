@@ -1,7 +1,15 @@
 from app.core.video_code import standardize_video_code
 from app.core.video_filter_settings import load_video_filter_settings
-from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH_RESULTS_STATUS, NO_VIDEO_DETAIL_STATUS, UNENRICHED_STATUS
 from app.core.enrichment_sources import DEFAULT_VIDEO_ENRICHMENT_SOURCE, JAVTXT_VIDEO_SOURCE, build_video_enrichment_status_text, normalize_video_enrichment_source
+from app.core.javtxt_entry_state import (
+    JAVTXT_SEARCH_STATE_FAILED,
+    JAVTXT_SEARCH_STATE_NO_RESULT,
+    classify_search_state,
+    is_resolved_search_state,
+    is_retryable_search_state,
+)
+from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.core.supplement_task_state import build_supplement_candidate
 from app.services.identity import split_actor_names
@@ -1288,6 +1296,258 @@ class VideoEntityRepositoryMixin:
             )
             conn.commit()
         return int(cursor.rowcount or 0)
+    def list_videos_for_enrichment(
+        self,
+        limit,
+        source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+        candidate_filter=None,
+        rule_set=None,
+    ):
+        normalized_source = normalize_video_enrichment_source(source_key)
+        status_column, _, _ = self._video_source_columns(normalized_source)
+        candidate_filter = candidate_filter if callable(candidate_filter) else None
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            processed_read_table = self._processed_video_storage_target(cursor)
+            if normalized_source == JAVTXT_VIDEO_SOURCE:
+                pending_rows = []
+                sql_rows = self.list_sql_javtxt_video_candidates(
+                    max(int(limit) * 20, int(limit)),
+                    rule_set=rule_set,
+                )
+                for record in sql_rows:
+                    if not is_javtxt_eligible_movie(record):
+                        continue
+                    candidate = {
+                        'code': record['code'],
+                        'title': record['title'],
+                        'author': record['local_author'] or record['author'],
+                    }
+                    if candidate_filter is not None and not candidate_filter(candidate):
+                        continue
+                    if candidate_filter is None:
+                        search_state = classify_search_state(record, cached_row=record)
+                        if not is_retryable_search_state(search_state):
+                            continue
+                    pending_rows.append(candidate)
+                    if len(pending_rows) >= int(limit):
+                        break
+                return pending_rows
+            else:
+                where_sql = f'WHERE COALESCE(p.{status_column}, ?) IN (?, ?)'
+                sql_params = [
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    FAILED_STATUS,
+                ]
+                where_sql, sql_params = self._append_rule_set_where(
+                    where_sql,
+                    sql_params,
+                    rule_set=rule_set,
+                    table_alias='p',
+                    scope='pre_enrichment',
+                )
+                if candidate_filter is None:
+                    sql_params.append(int(limit))
+                    sql_limit = 'LIMIT ?'
+                else:
+                    sql_limit = ''
+                cursor.execute(
+                    f'''
+                    SELECT code, title, author
+                    FROM {processed_read_table} AS p
+                    {where_sql}
+                    ORDER BY code
+                    {sql_limit}
+                    ''',
+                    tuple(sql_params),
+                )
+            rows = [
+                {
+                    'code': row[0] or '',
+                    'title': row[1] or '',
+                    'author': row[2] or '',
+                }
+                for row in cursor.fetchall()
+            ]
+            if candidate_filter is not None:
+                rows = [row for row in rows if candidate_filter(row)][: int(limit)]
+            return rows
+
+    def count_videos_by_enrichment_status(self, status, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
+        status_column, _, _ = self._video_source_columns(source_key)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            processed_read_table = self._processed_video_storage_target(cursor)
+            cursor.execute(
+                f'''
+                SELECT COUNT(*)
+                FROM {processed_read_table}
+                WHERE COALESCE({status_column}, ?) = ?
+                ''',
+                (UNENRICHED_STATUS, status),
+            )
+            return int(cursor.fetchone()[0] or 0)
+
+    def count_pending_video_enrichments(
+        self,
+        source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE,
+        candidate_filter=None,
+        rule_set=None,
+    ):
+        normalized_source = normalize_video_enrichment_source(source_key)
+        status_column, _, _ = self._video_source_columns(normalized_source)
+        candidate_filter = candidate_filter if callable(candidate_filter) else None
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            processed_read_table = self._processed_video_storage_target(cursor)
+            if normalized_source == JAVTXT_VIDEO_SOURCE:
+                pending_count = 0
+                for record in self._list_processed_video_javtxt_records(cursor):
+                    if not is_javtxt_eligible_movie(record):
+                        continue
+                    search_state = classify_search_state(record, cached_row=record)
+                    if is_retryable_search_state(search_state):
+                        candidate = {
+                            'code': record['code'],
+                            'title': record['title'],
+                            'author': record['local_author'] or record['author'],
+                        }
+                        if candidate_filter is not None and not candidate_filter(candidate):
+                            continue
+                        pending_count += 1
+                return pending_count
+            else:
+                where_sql = f'WHERE COALESCE(p.{status_column}, ?) IN (?, ?)'
+                query_parameters = [
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    FAILED_STATUS,
+                ]
+                where_sql, query_parameters = self._append_rule_set_where(
+                    where_sql,
+                    query_parameters,
+                    rule_set=rule_set,
+                    table_alias='p',
+                    scope='pre_enrichment',
+                )
+                cursor.execute(
+                    f'''
+                    SELECT COUNT(*)
+                    FROM {processed_read_table} AS p
+                    {where_sql}
+                    ''',
+                    query_parameters,
+                )
+            return int(cursor.fetchone()[0] or 0)
+
+    def get_video_enrichment_summary(self, source_key=DEFAULT_VIDEO_ENRICHMENT_SOURCE):
+        normalized_source = normalize_video_enrichment_source(source_key)
+        status_column, _, _ = self._video_source_columns(normalized_source)
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            if normalized_source == JAVTXT_VIDEO_SOURCE:
+                total_count = 0
+                enriched_count = 0
+                completed_count = 0
+                success_count = 0
+                pending_count = 0
+                failed_count = 0
+                no_search_count = 0
+                no_detail_count = 0
+
+                for record in self._list_processed_video_javtxt_records(cursor):
+                    if not is_javtxt_eligible_movie(record):
+                        continue
+                    total_count += 1
+                    search_state = classify_search_state(record, cached_row=record)
+                    if search_state == JAVTXT_SEARCH_STATE_NO_RESULT:
+                        enriched_count += 1
+                        completed_count += 1
+                        if str(record.get('javtxt_enrichment_status', '') or '').strip() == NO_VIDEO_DETAIL_STATUS:
+                            no_detail_count += 1
+                        else:
+                            no_search_count += 1
+                    elif is_resolved_search_state(search_state):
+                        enriched_count += 1
+                        completed_count += 1
+                        success_count += 1
+                    elif search_state == JAVTXT_SEARCH_STATE_FAILED:
+                        failed_count += 1
+                    else:
+                        pending_count += 1
+
+                return {
+                    'enriched_count': enriched_count,
+                    'completed_count': completed_count,
+                    'success_count': success_count,
+                    'unenriched_count': pending_count,
+                    'pending_count': pending_count,
+                    'failed_count': failed_count,
+                    'no_search_count': no_search_count,
+                    'no_detail_count': no_detail_count,
+                    'total_count': total_count,
+                }
+            else:
+                processed_read_sql = self._processed_video_read_sql(cursor)
+                cursor.execute(
+                    f'''
+                    SELECT
+                        COUNT(*) AS total_count,
+                        SUM(
+                            CASE
+                                WHEN COALESCE({status_column}, ?) = ? THEN 1
+                                ELSE 0
+                            END
+                        ) AS success_count,
+                        SUM(
+                            CASE
+                                WHEN COALESCE({status_column}, ?) = ? THEN 1
+                                ELSE 0
+                            END
+                        ) AS failed_count,
+                        SUM(
+                            CASE
+                                WHEN COALESCE({status_column}, ?) = ? THEN 1
+                                ELSE 0
+                            END
+                        ) AS no_search_count,
+                        SUM(
+                            CASE
+                                WHEN COALESCE({status_column}, ?) = ? THEN 1
+                                ELSE 0
+                            END
+                        ) AS no_detail_count
+                    FROM ({processed_read_sql}) AS p
+                    ''',
+                    (
+                        UNENRICHED_STATUS, ENRICHED_STATUS,
+                        UNENRICHED_STATUS, FAILED_STATUS,
+                        UNENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS,
+                        UNENRICHED_STATUS, NO_VIDEO_DETAIL_STATUS,
+                    ),
+                )
+            row = cursor.fetchone() or (0, 0, 0, 0, 0)
+
+        total_count = int(row[0] or 0)
+        success_count = int(row[1] or 0)
+        failed_count = int(row[2] or 0)
+        no_search_count = int(row[3] or 0)
+        no_detail_count = int(row[4] or 0)
+        enriched_count = success_count + no_search_count + no_detail_count
+        unenriched_count = max(total_count - enriched_count - failed_count, 0)
+        return {
+            'enriched_count': enriched_count,
+            'completed_count': enriched_count,
+            'success_count': success_count,
+            'unenriched_count': unenriched_count,
+            'pending_count': unenriched_count,
+            'failed_count': failed_count,
+            'no_search_count': no_search_count,
+            'no_detail_count': no_detail_count,
+            'total_count': total_count,
+        }
+
     def list_sql_javtxt_video_candidates(self, limit, rule_set=None):
         """Return a bounded, retryable JAVTXT video set from SQLite."""
         normalized_limit = max(0, int(limit or 0))
@@ -1358,6 +1618,115 @@ class VideoEntityRepositoryMixin:
             }
             for row in rows
         ]
+    def list_sql_video_supplement_candidates(self, limit, include_queued=False, running_plan_id=''):
+        """Return video supplement rows directly from the unified entity read model."""
+        normalized_limit = max(0, int(limit or 0))
+        if normalized_limit <= 0:
+            return []
+
+        pending_exclusion_sql = '' if include_queued else '''
+              AND NOT EXISTS (
+                    SELECT 1 FROM pending_video_avfan AS pending
+                    WHERE pending.code = source.code
+                      AND pending.status IN ('pending', 'failed')
+              )'''
+        normalized_running_plan_id = str(running_plan_id or '').strip()
+        if normalized_running_plan_id:
+            running_exclusion_sql = '''
+              AND NOT EXISTS (
+                    SELECT 1 FROM enrichment_running_items AS running
+                    WHERE running.task_kind = ?
+                      AND running.origin_table = ?
+                      AND running.code = source.code
+                      AND NOT (running.plan_id = ? AND running.task_kind = ?)
+              )'''
+            running_parameters = ['video', 'pending_video_avfan', normalized_running_plan_id, 'video']
+        else:
+            running_exclusion_sql = '''
+              AND NOT EXISTS (
+                    SELECT 1 FROM enrichment_running_items AS running
+                    WHERE running.task_kind = ?
+                      AND running.origin_table = ?
+                      AND running.code = source.code
+              )'''
+            running_parameters = ['video', 'pending_video_avfan']
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT source.code, source.title, source.javtxt_actors,
+                       source.release_date, '', 1,
+                       source.javtxt_enrichment_status,
+                       source.javtxt_movie_id, source.javtxt_url,
+                       source.javtxt_tags, source.javtxt_release_date,
+                       source.javtxt_actors_raw, source.video_category,
+                       source.supplement_enrichment_status
+                FROM active_video_entities AS source
+                WHERE COALESCE(NULLIF(TRIM(source.supplement_enrichment_status), ''), ?) = ?
+                  AND source.code LIKE '%-%'
+                  AND NOT EXISTS (
+                        SELECT 1 FROM video_entity_exclusions AS ex
+                        WHERE ex.code = source.code
+                          AND ex.scope IN ('all', 'supplement')
+                  )
+                  AND (
+                        (
+                            (TRIM(COALESCE(source.javtxt_movie_id, '')) <> ''
+                             OR TRIM(COALESCE(source.javtxt_url, '')) <> '')
+                            AND LOWER(TRIM(COALESCE(source.javtxt_actors, ''))) IN (
+                                '', '-', '--', 'na', 'n/a', 'none', 'null', 'unknown',
+                                '无', '無', '暂无', '暫無', '未知', '无记录', '無記錄',
+                                '未公开', '未公開'
+                            )
+                        )
+                        OR (
+                            COALESCE(NULLIF(TRIM(source.javtxt_enrichment_status), ''), ?) IN (?, ?)
+                            AND (
+                                LOWER(TRIM(COALESCE(source.javtxt_actors, ''))) IN (
+                                    '', '-', '--', 'na', 'n/a', 'none', 'null', 'unknown',
+                                    '无', '無', '暂无', '暫無', '未知', '无记录', '無記錄',
+                                    '未公开', '未公開'
+                                )
+                                OR TRIM(COALESCE(source.title, '')) = ''
+                                OR TRIM(COALESCE(source.release_date, '')) = ''
+                            )
+                        )
+                      )
+                  {pending_exclusion_sql}
+                  {running_exclusion_sql}
+                ORDER BY source.code ASC
+                LIMIT ?
+                ''',
+                (
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    UNENRICHED_STATUS,
+                    NO_SEARCH_RESULTS_STATUS,
+                    NO_VIDEO_DETAIL_STATUS,
+                    *running_parameters,
+                    normalized_limit,
+                ),
+            ).fetchall()
+
+        return [
+            {
+                'code': row[0] or '',
+                'title': row[1] or '',
+                'author': row[2] or '',
+                'release_date': row[3] or '',
+                'avfan_url': row[4] or '',
+                'page_number': int(row[5] or 1),
+                'javtxt_enrichment_status': row[6] or UNENRICHED_STATUS,
+                'javtxt_movie_id': row[7] or '',
+                'javtxt_url': row[8] or '',
+                'javtxt_tags': row[9] or '',
+                'javtxt_release_date': row[10] or '',
+                'author_raw': row[11] or '',
+                'video_category': row[12] or '',
+                'supplement_enrichment_status': row[13] or UNENRICHED_STATUS,
+            }
+            for row in rows
+        ]
     def list_video_supplement_candidates(self, limit, include_queued=False, running_plan_id=''):
         limit = max(int(limit or 0), 0)
         if limit <= 0:
@@ -1365,8 +1734,7 @@ class VideoEntityRepositoryMixin:
 
         candidates = []
         filter_settings = load_video_filter_settings()
-        sql_rows = self.list_sql_supplement_candidates(
-            'video',
+        sql_rows = self.list_sql_video_supplement_candidates(
             max(limit * 20, limit),
             include_queued=include_queued,
             running_plan_id=running_plan_id,
