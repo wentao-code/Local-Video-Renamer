@@ -25,6 +25,14 @@ class VideoEntityNormalizationTest(unittest.TestCase):
             VideoEntityRepositoryMixin.list_sql_javtxt_video_candidates,
         )
         self.assertIs(
+            VideoDatabase.list_video_supplement_candidates,
+            VideoEntityRepositoryMixin.list_video_supplement_candidates,
+        )
+        self.assertIs(
+            VideoDatabase.save_video_supplement_status,
+            VideoEntityRepositoryMixin.save_video_supplement_status,
+        )
+        self.assertIs(
             VideoDatabase.replace_code_prefix_movies,
             VideoEntityRepositoryMixin.replace_code_prefix_movies,
         )
@@ -87,6 +95,28 @@ class VideoEntityNormalizationTest(unittest.TestCase):
                     [('ABC-001', 'ABC', 'https://example.test/prefix', 'prefix-001', 3)],
                 )
 
+    def test_avfan_enrichment_writes_entity_and_local_record_separately(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+            db.upsert_video_entity(
+                {'code': 'ABC-001', 'title': 'Original'},
+                local_record={'duration': '0:01:00', 'storage_location': 'D:/videos/ABC-001.mp4'},
+            )
+
+            db.update_video_enrichment(
+                'ABC-001',
+                {
+                    'title': 'Enriched title',
+                    'actors': ['Actor A'],
+                    'duration': '1:23:45',
+                    'avfan_movie_id': 'avfan-001',
+                },
+                source_key='avfan',
+            )
+
+            row = db.list_videos()[0]
+            self.assertEqual(row['title'], 'Enriched title')
+            self.assertEqual(row['duration'], '1:23:45')
     def test_video_library_reads_only_local_canonical_entities(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = VideoDatabase(Path(temp_dir) / 'video_database.db')

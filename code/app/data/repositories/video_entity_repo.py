@@ -1,6 +1,8 @@
 from app.core.video_code import standardize_video_code
+from app.core.video_filter_settings import load_video_filter_settings
 from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
 from app.core.second_source_actor_text import normalize_second_source_actor_text
+from app.core.supplement_task_state import build_supplement_candidate
 from app.services.identity import split_actor_names
 from app.services.library.code_prefix_library import extract_code_prefix
 from app.services.video import normalize_video_category
@@ -1348,3 +1350,110 @@ class VideoEntityRepositoryMixin:
             }
             for row in rows
         ]
+    def list_video_supplement_candidates(self, limit, include_queued=False, running_plan_id=''):
+        limit = max(int(limit or 0), 0)
+        if limit <= 0:
+            return []
+
+        candidates = []
+        filter_settings = load_video_filter_settings()
+        sql_rows = self.list_sql_supplement_candidates(
+            'video',
+            max(limit * 20, limit),
+            include_queued=include_queued,
+            running_plan_id=running_plan_id,
+        )
+        for record in sql_rows:
+            candidate = build_supplement_candidate(record, filter_settings=filter_settings)
+            if not candidate:
+                continue
+            candidates.append({**record, **candidate})
+        candidates.sort(
+            key=lambda row: (
+                99 if row.get('supplement_priority') is None else int(row.get('supplement_priority')),
+                str(row.get('code', '') or ''),
+            )
+        )
+        return candidates[:limit]
+
+    def count_pending_video_supplements(self):
+        return len(self.list_video_supplement_candidates(999999))
+
+    def save_video_supplement_status(self, code, status, error=''):
+        normalized_code = standardize_video_code(code)
+        if not normalized_code:
+            return 0
+        normalized_status = str(status or '').strip() or UNENRICHED_STATUS
+        normalized_error = str(error or '').strip()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            processed_write_table = 'video_entities'
+            cursor.execute(
+                f'''
+                UPDATE {processed_write_table}
+                SET supplement_enrichment_status = ?,
+                    supplement_enrichment_error = ?,
+                    supplement_enriched_at = CURRENT_TIMESTAMP
+                WHERE code = ?
+                ''',
+                (normalized_status, normalized_error, normalized_code),
+            )
+            cursor.execute(
+                '''
+                UPDATE video_entities
+                SET supplement_enrichment_status = ?,
+                    supplement_enrichment_error = ?,
+                    supplement_enriched_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
+                ''',
+                (normalized_status, normalized_error, normalized_code),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def save_code_prefix_movie_supplement_status(self, prefix, code, status, error=''):
+        normalized_prefix = str(prefix or '').strip().upper()
+        normalized_code = standardize_video_code(code)
+        if not normalized_prefix or not normalized_code:
+            return 0
+        normalized_status = str(status or '').strip() or UNENRICHED_STATUS
+        normalized_error = str(error or '').strip()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE video_entities
+                SET supplement_enrichment_status = ?,
+                    supplement_enrichment_error = ?,
+                    supplement_enriched_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
+                ''',
+                (normalized_status, normalized_error, normalized_code),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def save_actor_movie_supplement_status(self, actor_name, code, status, error=''):
+        normalized_name = str(actor_name or '').strip()
+        normalized_code = standardize_video_code(code)
+        if not normalized_name or not normalized_code:
+            return 0
+        normalized_status = str(status or '').strip() or UNENRICHED_STATUS
+        normalized_error = str(error or '').strip()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                UPDATE video_entities
+                SET supplement_enrichment_status = ?,
+                    supplement_enrichment_error = ?,
+                    supplement_enriched_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE code = ?
+                ''',
+                (normalized_status, normalized_error, normalized_code),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)

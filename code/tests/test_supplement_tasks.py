@@ -384,7 +384,7 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
             )
 
             with patch(
-                'app.data.database_handler.load_video_filter_settings',
+                'app.data.repositories.video_entity_repo.load_video_filter_settings',
                 return_value={
                     'rules': {
                         'code': ['SKIP'],
