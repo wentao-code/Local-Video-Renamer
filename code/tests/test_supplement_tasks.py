@@ -499,7 +499,7 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
     def test_planned_video_supplement_uses_persisted_avfan_url_without_candidate_scan(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
-            db = VideoDatabase(db_path)
+            VideoDatabase(db_path)
             self._insert_processed_video(
                 db_path,
                 code='AAA-019',

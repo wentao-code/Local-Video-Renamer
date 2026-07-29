@@ -54,7 +54,6 @@ from app.core.javtxt_entry_state import (
     is_retryable_search_state,
     normalize_actor_raw_text,
 )
-from app.core.supplement_task_state import build_supplement_candidate
 from app.core.actor_profile_display import (
     normalize_actor_age_for_display,
     normalize_actor_birthday_for_display,
