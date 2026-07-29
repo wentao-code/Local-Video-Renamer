@@ -29,7 +29,7 @@ class SnapshotStore:
     def json_path(self, key):
         return self.json_dir.joinpath(*self._key_parts(key)).with_suffix('.json')
 
-    def read(self, key, legacy_paths=()):
+    def read(self, key):
         messagepack_path = self.messagepack_path(key)
         if self.messagepack_available and messagepack_path.exists():
             try:
@@ -52,12 +52,6 @@ class SnapshotStore:
                     self._write_messagepack(messagepack_path, payload)
                 return payload
 
-        for legacy_path in legacy_paths or ():
-            payload = self._read_legacy(Path(legacy_path))
-            if payload is None:
-                continue
-            self.write(key, payload)
-            return payload
         return None
 
     def write(self, key, payload):
@@ -141,16 +135,6 @@ class SnapshotStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path.write_bytes(content)
         temp_path.replace(path)
-
-    def _read_legacy(self, path):
-        try:
-            if not path.exists():
-                return None
-            if path.suffix.lower() in {'.msgpack', '.mpk'} and self.messagepack_available:
-                return self._msgpack.unpackb(path.read_bytes(), raw=False, strict_map_key=False)
-            return json.loads(path.read_text(encoding='utf-8'))
-        except Exception:
-            return None
 
     @staticmethod
     def _key_parts(key):

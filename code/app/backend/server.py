@@ -281,8 +281,6 @@ def make_handler(service):
                 return service.sync_code_prefix_filter_blacklist(body.get('prefixes', []))
             if method == 'POST' and path == '/database/video-entity-exclusions/rebuild':
                 return service.rebuild_video_entity_exclusions()
-            if method == 'POST' and path == '/database/excluded-web-movies/migrate':
-                return service.migrate_excluded_web_movies(body.get('batch_size', 500))
             if method == 'GET' and path == '/ladder/board':
                 return service.get_ladder_board(
                     query.get('board_key', [''])[0],

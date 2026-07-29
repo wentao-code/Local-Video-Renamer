@@ -45,18 +45,6 @@ class SnapshotStoreTest(unittest.TestCase):
             store.json_path('candidate_library/actors').unlink()
             self.assertEqual(store.read('candidate_library/actors'), payload)
 
-    def test_legacy_json_is_read_and_migrated_to_both_new_formats(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            legacy_path = root / 'legacy_snapshot.json'
-            payload = {'version': 1, 'value': 'legacy'}
-            legacy_path.write_text(json.dumps(payload), encoding='utf-8')
-            store = SnapshotStore(root / 'snapshots')
-
-            self.assertEqual(store.read('masterpiece/index', legacy_paths=[legacy_path]), payload)
-            self.assertTrue(store.messagepack_path('masterpiece/index').exists())
-            self.assertTrue(store.json_path('masterpiece/index').exists())
-
     def test_json_remains_operational_when_messagepack_is_unavailable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = SnapshotStore(Path(temp_dir), messagepack_available=False)

@@ -50,26 +50,16 @@ class CodePrefixLibrary:
         self.video_filter_service = video_filter_service
 
     def list_prefixes(self, search_text='', sort_field='prefix', sort_order='asc', limit=None, offset=0):
-        if hasattr(self.database, 'list_code_prefix_summaries'):
-            try:
-                return self._list_prefixes_from_summaries(
-                    search_text,
-                    sort_field=sort_field,
-                    sort_order=sort_order,
-                    limit=limit,
-                    offset=offset,
-                )
-            except TypeError:
-                pass
-        return self._list_prefixes_legacy(search_text)
+        return self._list_prefixes_from_summaries(
+            search_text,
+            sort_field=sort_field,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset,
+        )
 
     def count_prefixes(self, search_text=''):
-        if hasattr(self.database, 'count_code_prefixes'):
-            try:
-                return int(self.database.count_code_prefixes(search_text) or 0)
-            except TypeError:
-                pass
-        return len(self._list_prefixes_legacy(search_text))
+        return int(self.database.count_code_prefixes(search_text) or 0)
 
     def _list_prefixes_from_summaries(self, search_text='', sort_field='prefix', sort_order='asc', limit=None, offset=0):
         ladder_tier_map = self._load_ladder_tier_map()
@@ -88,11 +78,8 @@ class CodePrefixLibrary:
             if str((row or {}).get('prefix', '') or '').strip()
         ]
         local_rows_by_prefix = {prefix: [] for prefix in prefixes}
-        if prefixes and hasattr(self.database, 'list_local_videos_by_prefixes'):
-            try:
-                local_source_rows = self.database.list_local_videos_by_prefixes(prefixes, refresh_categories=False)
-            except TypeError:
-                local_source_rows = self.database.list_local_videos_by_prefixes(prefixes)
+        if prefixes:
+            local_source_rows = self.database.list_local_videos_by_prefixes(prefixes, refresh_categories=False)
             for row in local_source_rows:
                 prefix = extract_code_prefix((row or {}).get('code', ''))
                 if prefix in local_rows_by_prefix:
@@ -128,72 +115,6 @@ class CodePrefixLibrary:
                     'last_enriched_at': str((row or {}).get('last_enriched_at', '') or ''),
                 }
             )
-        return self._apply_refresh_expiry(results)
-
-    def _list_prefixes_legacy(self, search_text=''):
-        rows = self.database.list_videos()
-        enrichment_records = {}
-        hidden_prefixes = set()
-        if hasattr(self.database, 'list_code_prefix_enrichment_records'):
-            try:
-                enrichment_records = self.database.list_code_prefix_enrichment_records()
-            except Exception:
-                enrichment_records = {}
-        if hasattr(self.database, 'list_hidden_code_prefixes'):
-            try:
-                hidden_prefixes = self.database.list_hidden_code_prefixes()
-            except Exception:
-                hidden_prefixes = set()
-        ladder_tier_map = self._load_ladder_tier_map()
-        grouped = {}
-        local_rows_by_prefix = {}
-
-        for row in rows:
-            prefix = extract_code_prefix(row.get('code', ''))
-            if not prefix or prefix in hidden_prefixes:
-                continue
-            grouped[prefix] = grouped.get(prefix, 0) + 1
-            local_rows_by_prefix.setdefault(prefix, []).append(dict(row or {}))
-
-        search = str(search_text or '').strip().upper()
-        all_prefixes = set(grouped)
-        all_prefixes.update(
-            prefix
-            for prefix in enrichment_records
-            if str(prefix or '').strip().upper() and str(prefix or '').strip().upper() not in hidden_prefixes
-        )
-        prefixes = [prefix for prefix in sorted(all_prefixes) if not search or search in prefix]
-        movies_by_prefix = self.database.list_code_prefix_movies_by_prefixes(prefixes)
-
-        results = []
-        for prefix in prefixes:
-
-            enrichment = enrichment_records.get(prefix, {})
-            movies = movies_by_prefix.get(prefix, [])
-            earliest_release_date, latest_release_date = self._collect_date_range(movies)
-            enrichment_status = self._build_live_enrichment_status(enrichment)
-            visible_local_rows = self._filter_visible_rows(local_rows_by_prefix.get(prefix, []))
-            eligible_movies = [
-                dict(movie or {})
-                for movie in self._filter_visible_rows(movies)
-                if is_javtxt_eligible_movie(movie)
-            ]
-
-            results.append({
-                'prefix': prefix,
-                'ladder_tier': ladder_tier_map.get(prefix, ''),
-                'video_count': grouped.get(prefix, 0),
-                'enrichment_status': enrichment_status,
-                'avfan_enrichment_status': str((enrichment or {}).get('avfan_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-                'javtxt_enrichment_status': str((enrichment or {}).get('javtxt_enrichment_status', '') or '').strip() or UNENRICHED_STATUS,
-                'update_status': resolve_update_status(visible_local_rows + eligible_movies),
-                'avfan_total_pages': enrichment.get('avfan_total_pages', 0),
-                'avfan_total_videos': enrichment.get('avfan_total_videos', 0),
-                'earliest_release_date': earliest_release_date,
-                'latest_release_date': latest_release_date,
-                'last_enriched_at': enrichment.get('last_enriched_at', ''),
-            })
-
         return self._apply_refresh_expiry(results)
 
     def _apply_refresh_expiry(self, rows):

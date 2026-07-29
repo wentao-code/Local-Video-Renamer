@@ -12,14 +12,8 @@ class LibraryStatusSyncService:
         self.database = database
 
     def sync(self):
-        legacy_prefix_getter = getattr(self.database, 'list_legacy_code_prefix_movies', None)
-        legacy_actor_getter = getattr(self.database, 'list_legacy_actor_movies', None)
-        code_prefix_rows = (
-            legacy_prefix_getter() if callable(legacy_prefix_getter) else self.database.list_all_code_prefix_movies()
-        )
-        actor_rows = (
-            legacy_actor_getter() if callable(legacy_actor_getter) else self.database.list_all_actor_movies()
-        )
+        code_prefix_rows = self.database.list_all_code_prefix_movies()
+        actor_rows = self.database.list_all_actor_movies()
         prefix_rows_by_code = self._group_rows_by_code(code_prefix_rows)
         actor_rows_by_code = self._group_rows_by_code(actor_rows)
 

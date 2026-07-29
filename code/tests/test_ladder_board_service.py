@@ -143,7 +143,7 @@ class LadderBoardServiceTest(unittest.TestCase):
             with closing(sqlite3.connect(db_path)) as conn:
                 for index in range(1, 26):
                     conn.execute(
-                        'UPDATE processed_videos SET author = ? WHERE code = ?',
+                        'UPDATE video_entities SET author = ? WHERE code = ?',
                         (f'演员{index:02d}', f'ABP-{index:03d}'),
                     )
                 conn.commit()

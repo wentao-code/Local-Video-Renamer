@@ -477,7 +477,7 @@ class DataCenterService:
             if not snapshot_key or snapshot_key in loaded_keys:
                 continue
             if store is not None:
-                payload = store.read(self._view_snapshot_store_key(snapshot_key), legacy_paths=[path])
+                payload = store.read(self._view_snapshot_store_key(snapshot_key))
             else:
                 payload = legacy_payload
             self._load_persisted_view_payload(payload)
@@ -641,7 +641,7 @@ class DataCenterService:
             return
         store = getattr(self, 'snapshot_store', None)
         if store is not None:
-            payload = store.read('data_center/aggregate', legacy_paths=[self.snapshot_file])
+            payload = store.read('data_center/aggregate')
             if payload is None:
                 return
         else:
@@ -774,17 +774,6 @@ class DataCenterService:
     @staticmethod
     def _build_duration_ms(started_at):
         return max(0, int(round((perf_counter() - float(started_at or 0.0)) * 1000)))
-
-    @staticmethod
-    def _format_duration_text(duration_ms):
-        total_seconds = max(0, int(round((int(duration_ms or 0) / 1000.0))))
-        minutes, seconds = divmod(total_seconds, 60)
-        hours, minutes = divmod(minutes, 60)
-        if hours > 0:
-            return f'{hours}小时{minutes}分{seconds}秒'
-        if minutes > 0:
-            return f'{minutes}分{seconds}秒'
-        return f'{seconds}秒'
 
     @classmethod
     def _is_complete_summary_snapshot(cls, summary):
@@ -1446,50 +1435,6 @@ class DataCenterService:
     def _build_filter_settings_fingerprint(filter_settings):
         normalized_settings = filter_settings if isinstance(filter_settings, dict) else {}
         return json.dumps(normalized_settings, ensure_ascii=False, sort_keys=True)
-
-    def _build_actor_metric_analysis(self, config):
-        distribution_counts = {}
-        ranking_rows = []
-        unknown_count = 0
-        enrichment_records = self.database.list_actor_enrichment_records()
-
-        for actor_row in self._list_actor_rows():
-            actor_name = str((actor_row or {}).get('name', '') or '').strip()
-            if not actor_name:
-                continue
-            numeric_value, display_value = self._resolve_actor_metric_value(
-                config,
-                actor_row,
-                enrichment_records.get(actor_name, {}),
-            )
-            if numeric_value is None:
-                unknown_count += 1
-                continue
-            distribution_counts[display_value] = distribution_counts.get(display_value, 0) + 1
-            ranking_rows.append(
-                {
-                    'actor_name': actor_name,
-                    'display_value': display_value,
-                    'numeric_value': numeric_value,
-                }
-            )
-
-        distribution_rows = [
-            {'label': label, 'count': count}
-            for label, count in sorted(
-                distribution_counts.items(),
-                key=lambda item: (-self._parse_metric_number(item[0]), item[0]),
-            )
-        ]
-        if unknown_count > 0:
-            distribution_rows.append({'label': '无数据', 'count': unknown_count})
-
-        ranking_rows.sort(key=lambda item: (-item['numeric_value'], item['actor_name']))
-        return {
-            'metric_key': config['key'],
-            'distribution_rows': distribution_rows,
-            'ranking_rows': ranking_rows[:50],
-        }
 
     def _build_code_prefix_metric_analysis(self, config):
         if self._is_range_count_metric(config):

@@ -605,12 +605,6 @@ class BackendClient:
     def rebuild_video_entity_exclusions(self):
         return self._post('/database/video-entity-exclusions/rebuild')
 
-    def migrate_excluded_web_movies(self, batch_size=500):
-        return self._post(
-            '/database/excluded-web-movies/migrate',
-            {'batch_size': batch_size},
-        )
-
     def get_ladder_board(self, board_key):
         return self.get_ladder_board_snapshot(board_key).get('board', {})
 

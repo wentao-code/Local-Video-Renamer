@@ -233,56 +233,6 @@ class ExcludedWebMovieCacheTest(unittest.TestCase):
             del db
             gc.collect()
 
-    def test_migrate_excluded_web_movies_is_batched_and_idempotent(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
-            db.replace_code_prefix_movies(
-                'ABC',
-                [
-                    {'code': 'ABC-001', 'title': 'filtered movie', 'release_date': '2024-01-01'},
-                    {'code': 'ABC-002', 'title': 'kept movie'},
-                ],
-            )
-            with closing(sqlite3.connect(db.db_path)) as conn:
-                conn.execute(
-                    '''
-                    UPDATE code_prefix_movies
-                    SET javtxt_enrichment_status = '已完成',
-                        javtxt_movie_id = 'javtxt-1',
-                        javtxt_release_date = '2024-01-01'
-                    WHERE prefix = ? AND code = ?
-                    ''',
-                    ('ABC', 'ABC-001'),
-                )
-                conn.commit()
-            db._load_video_category_filter_settings = lambda: {
-                'rules': {
-                    'code': [],
-                    'title': ['filtered'],
-                    'javtxt_tags': [],
-                    'co_star_code': [],
-                }
-            }
-
-            first = db.migrate_excluded_web_movies(batch_size=1)
-            second = db.migrate_excluded_web_movies(batch_size=1)
-
-            self.assertEqual(first['code_prefix_movies'], 1)
-            self.assertEqual(first['actor_movies'], 0)
-            self.assertEqual(first['total'], 1)
-            self.assertEqual(second['total'], 0)
-            self.assertEqual([row['code'] for row in db.list_code_prefix_movies('ABC')], ['ABC-002'])
-            with closing(sqlite3.connect(db.db_path)) as conn:
-                self.assertEqual(
-                    conn.execute(
-                        'SELECT COUNT(*) FROM excluded_code_prefix_movies WHERE prefix = ?',
-                        ('ABC',),
-                    ).fetchone()[0],
-                    1,
-                )
-            del db
-            gc.collect()
-
 
 if __name__ == '__main__':
     unittest.main()

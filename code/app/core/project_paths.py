@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 
@@ -59,8 +58,6 @@ MASTERPIECE_SNAPSHOT_FILE = SNAPSHOT_DIR / 'masterpiece_snapshot.json'
 VIDEO_CATEGORY_SNAPSHOT_FILE = SNAPSHOT_DIR / 'video_category_snapshot.json'
 SNAPSHOT_REFRESH_LOG_FILE = LOG_DIR / 'snapshot_refresh.log'
 
-LEGACY_DATA_CENTER_SNAPSHOT_FILE = PROJECT_ROOT / '.data_center_snapshot.json'
-LEGACY_CODE_PREFIX_SNAPSHOT_FILE = PROJECT_ROOT / '.code_prefix_snapshot.json'
 DATABASE_FILE = DATA_DIR / 'video_database.db'
 QUEEN_LIBRARY_DB_FILE = DATA_DIR / 'queen_library.db'
 QUEEN_LIBRARY_CRAWL_LOG_FILE = LOG_DIR / 'queen_library_crawl.log'
@@ -68,75 +65,8 @@ AVFAN_PROFILE_DIR = BROWSER_PROFILES_DIR / 'avfan'
 COMBO_BROWSER_PROFILES_DIR = BROWSER_PROFILES_DIR / 'combo'
 
 
-def _legacy_conflict_target(target: Path) -> Path:
-    """Return an unused sibling path for a legacy runtime artifact."""
-    index = 1
-    while True:
-        suffix = '.legacy' if index == 1 else f'.legacy-{index}'
-        candidate = target.with_name(f'{target.stem}{suffix}{target.suffix}')
-        if not candidate.exists():
-            return candidate
-        index += 1
-
-
-def _move_entry_if_safe(source: Path, target: Path, *, relocate_conflicts: bool = False) -> None:
-    """Move legacy data without overwriting a newer destination entry."""
-    if not source.exists():
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        shutil.move(str(source), str(target))
-        return
-    if not source.is_dir() or not target.is_dir():
-        if relocate_conflicts:
-            shutil.move(str(source), str(_legacy_conflict_target(target)))
-        return
-    for child in source.iterdir():
-        _move_entry_if_safe(child, target / child.name, relocate_conflicts=relocate_conflicts)
-    try:
-        source.rmdir()
-    except OSError:
-        pass
-
-
-def migrate_legacy_storage_layout(project_root: Path = LAYOUT_ROOT) -> None:
-    """Move pre-layout local files to the new directories without data loss."""
-    root = Path(project_root)
-    user_data = root / 'user_data'
-    runtime = root / 'runtime'
-    user_config = user_data / 'config'
-
-    legacy_user_config = root / 'config' / 'user'
-    if legacy_user_config.is_dir():
-        for entry in legacy_user_config.iterdir():
-            target_dir = runtime / 'locks' if entry.suffix == '.lock' else user_config
-            _move_entry_if_safe(entry, target_dir / entry.name)
-        try:
-            legacy_user_config.rmdir()
-        except OSError:
-            pass
-
-    _move_entry_if_safe(root / '.env', user_config / '.env')
-    for source_name, target in (
-        ('data', user_data / 'databases'),
-        ('browser_profiles', user_data / 'browser_profiles'),
-        ('backups', user_data / 'backups'),
-        ('runtime_snapshots', user_data / 'snapshots'),
-    ):
-        _move_entry_if_safe(root / source_name, target)
-    _move_entry_if_safe(runtime / 'snapshots', user_data / 'snapshots')
-    for source_name, target in (
-        ('logs', runtime / 'logs'),
-        ('task_logs', runtime / 'task_logs'),
-        ('combo_task_logs', runtime / 'combo_task_logs'),
-        ('tmp', runtime / 'tmp'),
-    ):
-        _move_entry_if_safe(root / source_name, target, relocate_conflicts=True)
-
-
 def ensure_storage_layout() -> None:
-    """Migrate once when needed and create writable local storage directories."""
-    migrate_legacy_storage_layout()
+    """Create writable local storage directories."""
     for directory in (
         USER_CONFIG_DIR,
         TRANSLATION_INPUT_DIR,

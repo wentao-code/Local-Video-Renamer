@@ -33,7 +33,7 @@ from app.core.enrichment_sources import (
     SUPPLEMENT_TASK_SOURCE,
     build_library_enrichment_status_text,
 )
-from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, UNENRICHED_STATUS
+from app.core.enrichment_status import FAILED_STATUS, UNENRICHED_STATUS
 from app.core.enrichment_display_status import get_source_display_status
 from app.core.actor_profile_completion_status import build_actor_final_completion_status, build_actor_source_completion_status
 from app.core.library_refresh_expiry import effective_library_refresh_status
@@ -49,8 +49,6 @@ from app.core.project_paths import (
     CODE_PREFIX_DETAIL_SNAPSHOT_DIR,
     CODE_PREFIX_SNAPSHOT_FILE,
     DATA_CENTER_SNAPSHOT_FILE,
-    LEGACY_CODE_PREFIX_SNAPSHOT_FILE,
-    LEGACY_DATA_CENTER_SNAPSHOT_FILE,
     MASTERPIECE_SNAPSHOT_FILE,
     SNAPSHOT_DIR,
     SNAPSHOT_REFRESH_LOG_FILE,
@@ -114,8 +112,6 @@ class BackendService:
         self.instance_token = str(instance_token or '').strip()
         self.process_id = os.getpid()
         self._ensure_snapshot_runtime_dir()
-        self._migrate_legacy_snapshot_file(LEGACY_DATA_CENTER_SNAPSHOT_FILE, DATA_CENTER_SNAPSHOT_FILE)
-        self._migrate_legacy_snapshot_file(LEGACY_CODE_PREFIX_SNAPSHOT_FILE, CODE_PREFIX_SNAPSHOT_FILE)
         self.snapshot_store = SnapshotStore(SNAPSHOT_DIR)
         self.db = VideoDatabase(DATABASE_FILE)
         self.video_filter_service = VideoFilterService()
@@ -844,8 +840,6 @@ class BackendService:
             'offset': normalized_offset,
             'limit': normalized_limit,
         }
-        self._write_page_snapshot(page_snapshot_key, payload)
-        return payload
 
     def search_unified(self, search_text='', limit=20):
         self.ensure_database_loaded()
@@ -1431,13 +1425,6 @@ class BackendService:
         return {
             'exclusion_count': self.db.rebuild_video_entity_exclusions(),
         }
-
-    def migrate_excluded_web_movies(self, batch_size=500):
-        self.ensure_database_loaded()
-        result = self.db.migrate_excluded_web_movies(batch_size=batch_size)
-        self._invalidate_code_prefix_snapshots()
-        self._invalidate_actor_snapshots()
-        return result
 
     def _sync_persisted_code_filter_blacklist(self):
         """Reconcile saved left-side code filters if the GUI saved against an old backend."""
@@ -2309,7 +2296,7 @@ class BackendService:
         legacy_detail_snapshots = {}
         if snapshot_file is not None:
             if store is not None:
-                payload = store.read('actor_library/index', legacy_paths=[snapshot_file]) or {}
+                payload = store.read('actor_library/index') or {}
             else:
                 try:
                     if not Path(snapshot_file).exists():
@@ -2360,7 +2347,7 @@ class BackendService:
             if not actor_name or actor_name in snapshots:
                 continue
             if store is not None:
-                payload = store.read(self._actor_detail_store_key(actor_name), legacy_paths=[file_path])
+                payload = store.read(self._actor_detail_store_key(actor_name))
             else:
                 try:
                     payload = json.loads(file_path.read_text(encoding='utf-8'))
@@ -2381,7 +2368,7 @@ class BackendService:
         target_file = Path(detail_dir) / self._actor_detail_snapshot_filename(normalized_name)
         store = getattr(self, 'snapshot_store', None)
         if store is not None:
-            payload = store.read(self._actor_detail_store_key(normalized_name), legacy_paths=[target_file])
+            payload = store.read(self._actor_detail_store_key(normalized_name))
         else:
             try:
                 if not target_file.exists():
@@ -2606,7 +2593,7 @@ class BackendService:
         legacy_detail_snapshots = {}
         if snapshot_file is not None:
             if store is not None:
-                payload = store.read('code_prefix_library/index', legacy_paths=[snapshot_file]) or {}
+                payload = store.read('code_prefix_library/index') or {}
             else:
                 try:
                     payload = (
@@ -2644,7 +2631,7 @@ class BackendService:
         store = getattr(self, 'snapshot_store', None)
         if store is not None:
             snapshots = {}
-            payload = store.read('masterpiece/details', legacy_paths=[snapshot_file])
+            payload = store.read('masterpiece/details')
             if isinstance(payload, dict) and int(payload.get('version', 0) or 0) == 1:
                 snapshots.update(
                     self._normalize_masterpiece_detail_snapshots(payload.get('detail_snapshots', {}))
@@ -2684,7 +2671,7 @@ class BackendService:
                 if tier_snapshot is not None:
                     snapshots[tier] = tier_snapshot
             self._video_category_overview_snapshots = snapshots
-            payload = store.read('video_category/all', legacy_paths=[snapshot_file])
+            payload = store.read('video_category/all')
             if payload is None:
                 return
         else:
@@ -2849,7 +2836,7 @@ class BackendService:
             if not prefix or prefix in snapshots:
                 continue
             if store is not None:
-                payload = store.read(self._code_prefix_detail_store_key(prefix), legacy_paths=[file_path])
+                payload = store.read(self._code_prefix_detail_store_key(prefix))
             else:
                 try:
                     payload = json.loads(file_path.read_text(encoding='utf-8'))
@@ -2870,7 +2857,7 @@ class BackendService:
         target_file = Path(detail_dir) / self._code_prefix_detail_snapshot_filename(normalized_prefix)
         store = getattr(self, 'snapshot_store', None)
         if store is not None:
-            payload = store.read(self._code_prefix_detail_store_key(normalized_prefix), legacy_paths=[target_file])
+            payload = store.read(self._code_prefix_detail_store_key(normalized_prefix))
         else:
             try:
                 if not target_file.exists():
@@ -3643,18 +3630,6 @@ class BackendService:
             return
 
     @staticmethod
-    def _migrate_legacy_snapshot_file(legacy_file, target_file):
-        legacy_path = Path(legacy_file)
-        target_path = Path(target_file)
-        try:
-            if target_path.exists() or not legacy_path.exists():
-                return
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(legacy_path.read_text(encoding='utf-8'), encoding='utf-8')
-        except OSError:
-            return
-
-    @staticmethod
     def _build_refresh_duration_ms(started_at):
         return max(0, int(round((perf_counter() - float(started_at or 0.0)) * 1000)))
 
@@ -3677,11 +3652,6 @@ class BackendService:
             'candidates': [dict(row or {}) for row in board.get('candidates', []) or []],
             'selected': [dict(row or {}) for row in board.get('selected', []) or []],
         }
-
-    @staticmethod
-    def _format_refresh_duration(duration_ms):
-        total_seconds = max(0, int(round(int(duration_ms or 0) / 1000.0)))
-        return f'{total_seconds}\u79d2'
 
     def create_enrichment_batch_plan(self, payload):
         self.ensure_database_loaded()

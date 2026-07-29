@@ -31,7 +31,7 @@ class VideoLadderTagServiceTest(unittest.TestCase):
 
             with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
-                    'UPDATE processed_videos SET author = ? WHERE code = ?',
+                    'UPDATE video_entities SET author = ? WHERE code = ?',
                     ('演员A 演员B', 'IPX-001'),
                 )
                 conn.commit()

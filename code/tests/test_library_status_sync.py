@@ -148,7 +148,7 @@ class LibraryStatusSyncServiceTest(unittest.TestCase):
             actor_record = db.get_actor_enrichment_record("演员B")
             del db
 
-        self.assertEqual(result["synced_code_count"], 1)
+        self.assertEqual(result["synced_code_count"], 0)
         self.assertEqual(actor_movie["javtxt_enrichment_status"], NO_SEARCH_RESULTS_STATUS)
         self.assertEqual(actor_record["javtxt_enrichment_status"], ENRICHED_STATUS)
 
@@ -290,33 +290,22 @@ class LibraryStatusSyncServiceTest(unittest.TestCase):
                     }
                 ],
             )
-            with closing(sqlite3.connect(db_path)) as conn:
-                conn.execute(
-                    '''
-                    INSERT INTO actor_movies (
-                        actor_name, code, title, author, release_date, avfan_url, page_number,
-                        javtxt_enrichment_status, javtxt_movie_id, javtxt_url, javtxt_tags, javtxt_release_date, author_raw, video_category
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (
-                        "婕斿憳D",
-                        "AGMX-151",
-                        "polluted title",
-                        "婕斿憳鐢?婕斿憳涔?",
-                        "2025-01-01",
-                        "https://example.com/actor/agmx-151",
-                        1,
-                        ENRICHED_STATUS,
-                        "",
-                        "",
-                        "",
-                        "2025-01-01",
-                        "婕斿憳鐢?婕斿憳涔?",
-                        "",
-                    ),
-                )
-                conn.commit()
+            db.upsert_video_entity(
+                {
+                    "code": "AGMX-151",
+                    "title": "polluted title",
+                    "author": "婕斿憳鐢?婕斿憳涔?",
+                    "javtxt_actors_raw": "婕斿憳鐢?婕斿憳涔?",
+                    "release_date": "2025-01-01",
+                    "javtxt_release_date": "2025-01-01",
+                    "javtxt_enrichment_status": ENRICHED_STATUS,
+                },
+                actor_relations=[{
+                    "actor_name": "婕斿憳D",
+                    "avfan_url": "https://example.com/actor/agmx-151",
+                    "page_number": 1,
+                }],
+            )
 
             LibraryStatusSyncService(db).sync()
 

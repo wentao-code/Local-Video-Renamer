@@ -101,8 +101,6 @@ class LocalVideoMediaImportTest(unittest.TestCase):
                     'storage_location': 'Local folder',
                 },
             )
-            db.convert_legacy_tables_to_compatibility_views()
-
             rows = db.list_videos()
 
             self.assertEqual([row['code'] for row in rows], ['LOC-001'])

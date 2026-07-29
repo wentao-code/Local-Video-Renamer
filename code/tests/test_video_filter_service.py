@@ -130,38 +130,17 @@ class VideoFilterServiceTest(unittest.TestCase):
 
     @staticmethod
     def _seed_processed_video(db_path, code, title, release_date):
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute(
-                """
-                INSERT INTO processed_videos (
-                    code,
-                    title,
-                    author,
-                    release_date,
-                    javtxt_release_date,
-                    enrichment_status,
-                    avfan_enrichment_status,
-                    javtxt_enrichment_status,
-                    javtxt_movie_id,
-                    javtxt_url,
-                    javtxt_actors,
-                    javtxt_actors_raw,
-                    javtxt_tags,
-                    video_category
-                )
-                VALUES (?, ?, '', ?, ?, ?, ?, ?, '', '', '', '', '', '')
-                """,
-                (
-                    code,
-                    title,
-                    release_date,
-                    release_date,
-                    UNENRICHED_STATUS,
-                    UNENRICHED_STATUS,
-                    UNENRICHED_STATUS,
-                ),
-            )
-            conn.commit()
+        VideoDatabase(db_path).upsert_video_entity(
+            {
+                'code': code,
+                'title': title,
+                'release_date': release_date,
+                'javtxt_release_date': release_date,
+                'enrichment_status': UNENRICHED_STATUS,
+                'avfan_enrichment_status': UNENRICHED_STATUS,
+                'javtxt_enrichment_status': UNENRICHED_STATUS,
+            }
+        )
 
 
 if __name__ == '__main__':

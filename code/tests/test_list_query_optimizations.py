@@ -449,7 +449,6 @@ class LibraryListMetadataTest(unittest.TestCase):
         self.assertEqual(result['actors'][0]['update_status'], 'active')
 
     def test_list_actors_passes_active_filters_to_aggregated_web_dates(self):
-        recent_date = (date.today() - timedelta(days=90)).isoformat()
         old_date = (date.today() - timedelta(days=900)).isoformat()
 
         class FakeDatabase:
@@ -495,28 +494,25 @@ class LibraryListMetadataTest(unittest.TestCase):
         recent_date = (date.today() - timedelta(days=120)).isoformat()
 
         class FakeDatabase:
-            def list_videos(self):
+            def list_code_prefix_summaries(self, **_kwargs):
                 return [
                     {
-                        'code': 'NEM-001',
-                        'title': 'Local Video',
-                        'author': 'Actor A',
-                        'release_date': recent_date,
-                        'video_category': VIDEO_CATEGORY_SINGLE,
-                    }
-                ]
-
-            def list_code_prefix_enrichment_records(self):
-                return {
-                    'NEM': {
+                        'prefix': 'NEM',
+                        'video_count': 1,
                         'avfan_enrichment_status': ENRICHED_STATUS,
                         'javtxt_enrichment_status': FAILED_STATUS,
                         'avfan_total_videos': 12,
                     }
-                }
+                ]
 
-            def list_hidden_code_prefixes(self):
-                return set()
+            def list_local_videos_by_prefixes(self, prefixes, refresh_categories=False):
+                return [{
+                    'code': 'NEM-001',
+                    'title': 'Local Video',
+                    'author': 'Actor A',
+                    'release_date': recent_date,
+                    'video_category': VIDEO_CATEGORY_SINGLE,
+                }]
 
             def list_code_prefix_movies_by_prefixes(self, prefixes):
                 return {'NEM': []}
@@ -538,25 +534,22 @@ class LibraryListMetadataTest(unittest.TestCase):
         class FakeDatabase:
             synced_statuses = None
 
-            def list_videos(self):
+            def list_code_prefix_summaries(self, **_kwargs):
                 return [
                     {
-                        'code': 'NEM-001',
-                        'release_date': recent_date,
-                        'video_category': VIDEO_CATEGORY_SINGLE,
-                    }
-                ]
-
-            def list_code_prefix_enrichment_records(self):
-                return {
-                    'NEM': {
+                        'prefix': 'NEM',
+                        'video_count': 1,
                         'avfan_enrichment_status': ENRICHED_STATUS,
                         'javtxt_enrichment_status': ENRICHED_STATUS,
                     }
-                }
+                ]
 
-            def list_hidden_code_prefixes(self):
-                return set()
+            def list_local_videos_by_prefixes(self, prefixes, refresh_categories=False):
+                return [{
+                    'code': 'NEM-001',
+                    'release_date': recent_date,
+                    'video_category': VIDEO_CATEGORY_SINGLE,
+                }]
 
             def list_code_prefix_movies_by_prefixes(self, prefixes):
                 return {'NEM': []}
@@ -688,17 +681,27 @@ class DatabaseIndexCoverageTest(unittest.TestCase):
                 cursor = conn.cursor()
                 cursor.executemany(
                     '''
-                    INSERT OR REPLACE INTO actor_movies (
-                        actor_name, code, title, author, release_date, javtxt_release_date, video_category
+                    INSERT INTO video_entities (
+                        code, title, author, release_date, javtxt_release_date, video_category
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ''',
                     [
-                        ('ActorA', 'AAA-001', 'Old', 'ActorA', '2025-01-01', '', VIDEO_CATEGORY_SINGLE),
-                        ('ActorA', 'AAA-002', 'Visible New', 'ActorA', '2025-02-01', '2025-02-03', VIDEO_CATEGORY_SINGLE),
-                        ('ActorA', 'AAA-004', 'Hidden Newer', 'ActorA', '2025-05-01', '2025-05-01', VIDEO_CATEGORY_SINGLE),
-                        ('ActorA', 'AAA-003', 'Collection', 'ActorA', '2025-03-01', '2025-03-01', '合集'),
-                        ('ActorB', 'BBB-001', 'Other', 'ActorB', '2025-04-01', '2025-04-01', VIDEO_CATEGORY_SINGLE),
+                        ('AAA-001', 'Old', 'ActorA', '2025-01-01', '', VIDEO_CATEGORY_SINGLE),
+                        ('AAA-002', 'Visible New', 'ActorA', '2025-02-01', '2025-02-03', VIDEO_CATEGORY_SINGLE),
+                        ('AAA-004', 'Hidden Newer', 'ActorA', '2025-05-01', '2025-05-01', VIDEO_CATEGORY_SINGLE),
+                        ('AAA-003', 'Collection', 'ActorA', '2025-03-01', '2025-03-01', '合集'),
+                        ('BBB-001', 'Other', 'ActorB', '2025-04-01', '2025-04-01', VIDEO_CATEGORY_SINGLE),
+                    ],
+                )
+                cursor.executemany(
+                    'INSERT INTO video_actor_relations (video_code, actor_name) VALUES (?, ?)',
+                    [
+                        ('AAA-001', 'ActorA'),
+                        ('AAA-002', 'ActorA'),
+                        ('AAA-003', 'ActorA'),
+                        ('AAA-004', 'ActorA'),
+                        ('BBB-001', 'ActorB'),
                     ],
                 )
                 conn.commit()
@@ -722,18 +725,17 @@ class DatabaseIndexCoverageTest(unittest.TestCase):
 
             with sqlite3.connect(str(db_path)) as conn:
                 cursor = conn.cursor()
-                cursor.execute("PRAGMA index_list('processed_videos')")
-                processed_indexes = {row[1] for row in cursor.fetchall()}
-                cursor.execute("PRAGMA index_list('code_prefix_movies')")
-                prefix_indexes = {row[1] for row in cursor.fetchall()}
-                cursor.execute("PRAGMA index_list('actor_movies')")
-                actor_indexes = {row[1] for row in cursor.fetchall()}
+                cursor.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+                indexes = {row[0] for row in cursor.fetchall()}
 
-            self.assertIn('idx_processed_videos_supplement_status', processed_indexes)
-            self.assertIn('idx_processed_videos_avfan_release', processed_indexes)
-            self.assertIn('idx_processed_videos_javtxt_release', processed_indexes)
-            self.assertIn('idx_code_prefix_movies_supplement_status', prefix_indexes)
-            self.assertIn('idx_actor_movies_supplement_status', actor_indexes)
+            self.assertTrue({
+                'idx_active_video_entities_storage_code',
+                'idx_active_video_entities_release_code',
+                'idx_video_actor_relations_actor',
+                'idx_video_prefix_relations_prefix',
+                'idx_video_actor_relation_meta_actor',
+                'idx_video_prefix_relation_meta_prefix',
+            }.issubset(indexes))
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -751,16 +753,24 @@ class DatabaseQueryPushdownIntegrationTest(unittest.TestCase):
             with sqlite3.connect(str(db_path)) as conn:
                 conn.executemany(
                     '''
-                    INSERT INTO processed_videos (
-                        code, title, author, duration, size, storage_location,
-                        release_date, maker, publisher,
-                        avfan_enrichment_status, javtxt_enrichment_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO video_entities (code, title, author, release_date)
+                    VALUES (?, ?, ?, ?)
                     ''',
                     [
-                        ('AAA-001', 'A', 'Actor A', '1:00:00', '1.0', 'D:/A', '2024-01-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
-                        ('AAA-002', 'B', 'Actor B', '2:00:00', '2.0', 'D:/B', '2024-03-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
-                        ('AAA-003', 'C', 'Actor C', '3:00:00', '3.0', 'D:/C', '2024-02-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
+                        ('AAA-001', 'A', 'Actor A', '2024-01-01'),
+                        ('AAA-002', 'B', 'Actor B', '2024-03-01'),
+                        ('AAA-003', 'C', 'Actor C', '2024-02-01'),
+                    ],
+                )
+                conn.executemany(
+                    '''
+                    INSERT INTO local_video_records (code, duration, size, storage_location)
+                    VALUES (?, ?, ?, ?)
+                    ''',
+                    [
+                        ('AAA-001', '1:00:00', '1.0', 'D:/A'),
+                        ('AAA-002', '2:00:00', '2.0', 'D:/B'),
+                        ('AAA-003', '3:00:00', '3.0', 'D:/C'),
                     ],
                 )
                 conn.commit()
@@ -881,16 +891,13 @@ class DatabaseQueryPushdownIntegrationTest(unittest.TestCase):
             with sqlite3.connect(str(db_path)) as conn:
                 conn.executemany(
                     '''
-                    INSERT INTO processed_videos (
-                        code, title, author, duration, size, storage_location,
-                        release_date, maker, publisher,
-                        avfan_enrichment_status, javtxt_enrichment_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO video_entities (code, title, author, release_date)
+                    VALUES (?, ?, ?, ?)
                     ''',
                     [
-                        ('NEM-001', 'A', 'Actor A', '', '', '', '2024-01-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
-                        ('NEM-002', 'B', 'Actor B', '', '', '', '2024-01-02', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
-                        ('IPX-001', 'C', 'Actor C', '', '', '', '2024-02-01', '', '', ENRICHED_STATUS, ENRICHED_STATUS),
+                        ('NEM-001', 'A', 'Actor A', '2024-01-01'),
+                        ('NEM-002', 'B', 'Actor B', '2024-01-02'),
+                        ('IPX-001', 'C', 'Actor C', '2024-02-01'),
                     ],
                 )
                 conn.executemany(
@@ -907,13 +914,13 @@ class DatabaseQueryPushdownIntegrationTest(unittest.TestCase):
                 )
                 conn.executemany(
                     '''
-                    INSERT INTO code_prefix_movies (prefix, code, release_date)
-                    VALUES (?, ?, ?)
+                    INSERT INTO video_code_prefix_relations (prefix, video_code)
+                    VALUES (?, ?)
                     ''',
                     [
-                        ('NEM', 'NEM-001', '2024-01-01'),
-                        ('IPX', 'IPX-001', '2024-02-01'),
-                        ('ROE', 'ROE-001', '2024-03-01'),
+                        ('NEM', 'NEM-001'),
+                        ('IPX', 'IPX-001'),
+                        ('ROE', 'ROE-001'),
                     ],
                 )
                 conn.commit()

@@ -83,25 +83,14 @@ class CanglanggeCandidateService:
         }
 
     def _load_web_movies_by_prefix(self, prefixes):
-        if hasattr(self.database, 'list_code_prefix_movies_by_prefixes'):
-            raw_results = self.database.list_code_prefix_movies_by_prefixes(sorted(prefixes))
-            normalized_results = {}
-            for prefix, movies in (raw_results or {}).items():
-                normalized_prefix = str(prefix or '').strip().upper()
-                if not normalized_prefix:
-                    continue
-                normalized_results[normalized_prefix] = [dict(movie or {}) for movie in movies or []]
-            return normalized_results
-        if not hasattr(self.database, 'list_code_prefix_movies'):
-            return {}
-        return {
-            str(prefix or '').strip().upper(): [
-                dict(movie or {})
-                for movie in self.database.list_code_prefix_movies(prefix)
-            ]
-            for prefix in sorted(prefixes)
-            if str(prefix or '').strip()
-        }
+        raw_results = self.database.list_code_prefix_movies_by_prefixes(sorted(prefixes))
+        normalized_results = {}
+        for prefix, movies in (raw_results or {}).items():
+            normalized_prefix = str(prefix or '').strip().upper()
+            if not normalized_prefix:
+                continue
+            normalized_results[normalized_prefix] = [dict(movie or {}) for movie in movies or []]
+        return normalized_results
 
     def _load_actor_library_names(self):
         if not hasattr(self.database, 'list_actors'):
