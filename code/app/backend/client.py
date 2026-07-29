@@ -40,10 +40,10 @@ class BackendClient:
     def scan_folder(self, folder_path):
         return self._post('/scan', {'folder_path': folder_path})
 
-    def generate_subtitles(self, video_paths):
+    def generate_subtitles(self):
         return self._post(
             '/translation/subtitles',
-            {'video_paths': list(video_paths or [])},
+            {},
             timeout=max(self.timeout, 20 * 60),
         )
 

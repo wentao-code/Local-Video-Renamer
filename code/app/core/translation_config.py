@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.app_config import get_setting
+from app.core.project_paths import TRANSLATION_INPUT_DIR
 
 
 DEFAULT_TRANSLATION_MODEL_ROOT = Path(r'D:\software\software_for_chickenrice')
+DEFAULT_TRANSLATION_INPUT_DIR = TRANSLATION_INPUT_DIR
 DEFAULT_TRANSLATION_DEVICE = 'cuda'
 DEFAULT_TRANSLATION_SUB_FORMATS = ('srt', 'vtt', 'lrc')
 SUPPORTED_TRANSLATION_SUB_FORMATS = frozenset(('srt', 'vtt', 'lrc', 'txt'))
@@ -25,6 +27,7 @@ class TranslationConfig:
     device: str = DEFAULT_TRANSLATION_DEVICE
     sub_formats: tuple[str, ...] = DEFAULT_TRANSLATION_SUB_FORMATS
     overwrite: bool = False
+    input_dir: Path = DEFAULT_TRANSLATION_INPUT_DIR
 
     @classmethod
     def from_environment(cls, env_path=None):
@@ -64,6 +67,13 @@ class TranslationConfig:
             or DEFAULT_TRANSLATION_DEVICE,
             sub_formats=formats,
             overwrite=_parse_bool(get_setting('TRANSLATION_OVERWRITE', 'false', env_path=env_path)),
+            input_dir=Path(
+                get_setting(
+                    'TRANSLATION_INPUT_DIR',
+                    str(DEFAULT_TRANSLATION_INPUT_DIR),
+                    env_path=env_path,
+                )
+            ).expanduser(),
         )
 
     def validate(self):

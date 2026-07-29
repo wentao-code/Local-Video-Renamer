@@ -88,7 +88,7 @@ def make_handler(service):
                     raise ValueError('缺少 folder_path')
                 return service.scan(folder_path)
             if method == 'POST' and path == '/translation/subtitles':
-                return service.generate_subtitles(body.get('video_paths', []))
+                return service.generate_subtitles()
             if method == 'POST' and path == '/rename':
                 return service.rename(body.get('plans', []))
             if method == 'POST' and path == '/database/videos/import':

@@ -26,19 +26,15 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
-    def test_generate_subtitles_uses_scanned_video_paths(self):
+    def test_generate_subtitles_uses_fixed_directory_without_scan(self):
         calls = []
         stub = SimpleNamespace(
-            pending_renames=[
-                {'old_path': 'D:/videos/RCTD-688.mp4'},
-                {'old_path': 'D:/videos/RCTD-689.mkv'},
-                {'old_path': ''},
-            ],
+            pending_renames=[],
             backend_client=SimpleNamespace(
-                generate_subtitles=lambda paths: calls.append(('generate', paths)) or {'success_count': 2},
+                generate_subtitles=lambda: calls.append(('generate',)) or {'success_count': 2},
             ),
             _on_generate_subtitles_finished=lambda _result: None,
-            start_async_task=lambda task, *args, **kwargs: calls.append(('task', task())) ,
+            start_async_task=lambda task, *args, **kwargs: calls.append(('task', task(), kwargs)),
         )
 
         main_window.VidNormApp.generate_subtitles(stub)
@@ -46,8 +42,8 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ('generate', ['D:/videos/RCTD-688.mp4', 'D:/videos/RCTD-689.mkv']),
-                ('task', {'success_count': 2}),
+                ('generate',),
+                ('task', {'success_count': 2}, {'task_title': '主界面 生成字幕', 'task_kind': 'subtitle_generation', 'block_ui': False}),
             ],
         )
 

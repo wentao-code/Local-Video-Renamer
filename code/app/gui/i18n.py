@@ -267,7 +267,7 @@ BASE_GUI_TEXTS = {
     'main.no_subtitle_videos': '当前没有已扫描的视频文件。',
     'main.subtitle_generation_failed_title': '字幕生成失败',
     'main.subtitle_generation_completed_title': '字幕生成完成',
-    'main.subtitle_generation_completed_message': '成功生成 {success_count} 个视频的字幕，失败 {failed_count} 个。',
+      'main.subtitle_generation_completed_message': '字幕目录：{input_dir}\n成功生成 {success_count} 个视频的字幕，失败 {failed_count} 个。',
     'main.auto_login': '自动登录',
     'main.enrich_info': '补全信息',
     'main.stop_enrich': '停止补全',

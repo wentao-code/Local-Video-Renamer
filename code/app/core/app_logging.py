@@ -27,6 +27,7 @@ _MODULE_LOGGERS = {
     'app.backend': 'backend',
     'app.gui': 'gui',
     'app.services.enrichment': 'enrichment',
+    'app.services.translation': 'translation',
     'app.task': 'enrichment',
     'app.queen_library': 'queen_library',
     'app.scraper': 'scraper',

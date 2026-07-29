@@ -17,6 +17,7 @@ USER_DATA_DIR = LAYOUT_ROOT / 'user_data'
 RUNTIME_DIR = LAYOUT_ROOT / 'runtime'
 
 USER_CONFIG_DIR = USER_DATA_DIR / 'config'
+TRANSLATION_INPUT_DIR = USER_DATA_DIR / 'translation_videos'
 DATA_DIR = USER_DATA_DIR / 'databases'
 BROWSER_PROFILES_DIR = USER_DATA_DIR / 'browser_profiles'
 BACKUP_DIR = USER_DATA_DIR / 'backups'
@@ -138,6 +139,7 @@ def ensure_storage_layout() -> None:
     migrate_legacy_storage_layout()
     for directory in (
         USER_CONFIG_DIR,
+        TRANSLATION_INPUT_DIR,
         DATA_DIR,
         BROWSER_PROFILES_DIR,
         BACKUP_DIR,

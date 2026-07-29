@@ -697,7 +697,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
         self.btn_generate_subtitles = QPushButton(tr('main.generate_subtitles'))
         self.btn_generate_subtitles.clicked.connect(self.generate_subtitles)
-        self.btn_generate_subtitles.setEnabled(False)
+        self.btn_generate_subtitles.setEnabled(True)
 
         self.btn_auto_login = QPushButton(tr('main.auto_login'))
         self.btn_auto_login.clicked.connect(self.auto_login)
@@ -770,13 +770,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_task_queue)
         bottom_button_row.addWidget(self.btn_timeout_settings)
         bottom_button_row.addWidget(self.btn_status_rules)
-        bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
-        bottom_button_row.addWidget(self.btn_disguise)
-        bottom_button_row.addWidget(self.btn_force_exit)
 
         third_button_row.addWidget(self.btn_login_quark)
         third_button_row.addWidget(self.btn_upload_quark_backup)
+        third_button_row.addWidget(self.btn_execute)
+        third_button_row.addWidget(self.btn_disguise)
+        third_button_row.addWidget(self.btn_force_exit)
         third_button_row.addStretch()
 
         button_layout.addLayout(top_button_row)
@@ -826,7 +826,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.pending_renames.clear()
         self.btn_execute.setEnabled(False)
         self.btn_import_db.setEnabled(False)
-        self.btn_generate_subtitles.setEnabled(False)
+        self.btn_generate_subtitles.setEnabled(True)
 
     def scan_files(self):
         self.refresh_scan_results(show_message=True)
@@ -889,21 +889,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.start_async_task(task, self._on_execute_rename_finished, tr('common.prompt'), task_title='主界面 执行重命名')
 
     def generate_subtitles(self):
-        video_paths = [
-            str(plan.get('old_path', '') or '').strip()
-            for plan in self.pending_renames
-            if str(plan.get('old_path', '') or '').strip()
-        ]
-        if not video_paths:
-            QMessageBox.information(self, tr('common.prompt'), tr('main.no_subtitle_videos'))
-            return
-
         self.start_async_task(
-            lambda: self.backend_client.generate_subtitles(video_paths),
+            lambda: self.backend_client.generate_subtitles(),
             self._on_generate_subtitles_finished,
             tr('main.subtitle_generation_failed_title'),
             task_title='主界面 生成字幕',
             task_kind='subtitle_generation',
+            block_ui=False,
         )
 
     def auto_login(self):
@@ -2343,7 +2335,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_execute.setEnabled(
             not busy and any(bool(plan.get('can_rename') and plan.get('needs_rename')) for plan in self.pending_renames)
         )
-        self.btn_generate_subtitles.setEnabled(not busy and bool(self.pending_renames))
+        self.btn_generate_subtitles.setEnabled(not busy)
         self.btn_reset_browser_profile.setEnabled(not busy)
         self.btn_status_sync.setEnabled(not busy)
         self.btn_refresh_detail_snapshots.setEnabled(not busy)
@@ -2375,7 +2367,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
         self.btn_execute.setEnabled(has_files_to_rename)
         self.btn_import_db.setEnabled(has_files_to_import)
-        self.btn_generate_subtitles.setEnabled(bool(self.pending_renames))
+        self.btn_generate_subtitles.setEnabled(True)
 
     def _on_scan_finished(self, payload):
         scan_result = dict((payload or {}).get('scan_result', {}) or {})
@@ -2417,6 +2409,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             tr('main.subtitle_generation_completed_title'),
             tr(
                 'main.subtitle_generation_completed_message',
+                input_dir=str(result.get('input_dir', '') or ''),
                 success_count=int(result.get('success_count', 0) or 0),
                 failed_count=int(result.get('failed_count', 0) or 0),
             ),

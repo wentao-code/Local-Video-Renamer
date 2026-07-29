@@ -92,7 +92,7 @@ from app.services.library import (
 )
 from app.services.library.unified_search_service import UnifiedSearchService
 from app.services.local_video import LocalVideoLibraryService
-from app.services.local_video.subtitle_generation_service import SubtitleGenerationService
+from app.services.translation.subtitle_generation_service import SubtitleGenerationService
 from app.queen_library.service import QueenLibraryService
 from app.services.video import (
     MANUAL_CATEGORY_TIER_FIRST,
@@ -234,8 +234,8 @@ class BackendService:
         self.ensure_database_loaded()
         return self.local_video_library.scan_folder(folder_path)
 
-    def generate_subtitles(self, video_paths):
-        return self.subtitle_generation_service.generate(video_paths)
+    def generate_subtitles(self):
+        return self.subtitle_generation_service.generate_from_directory()
 
     def rename(self, plans_data):
         return self.local_video_library.execute_renames(plans_data)
