@@ -36,6 +36,11 @@ class VideoEntityNormalizationTest(unittest.TestCase):
             VideoDatabase.replace_code_prefix_movies,
             VideoEntityRepositoryMixin.replace_code_prefix_movies,
         )
+        self.assertIs(VideoDatabase.update_video_enrichment, VideoEntityRepositoryMixin.update_video_enrichment)
+        self.assertIs(VideoDatabase.mark_video_enrichment_failed, VideoEntityRepositoryMixin.mark_video_enrichment_failed)
+        self.assertIs(VideoDatabase.list_actor_dashboard_stats, VideoEntityRepositoryMixin.list_actor_dashboard_stats)
+        self.assertIs(VideoDatabase.list_code_prefix_dashboard_stats, VideoEntityRepositoryMixin.list_code_prefix_dashboard_stats)
+        self.assertIs(VideoDatabase.save_javtxt_cache_for_video, VideoEntityRepositoryMixin.save_javtxt_cache_for_video)
     def test_new_database_exposes_only_canonical_video_schema(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = VideoDatabase(Path(temp_dir) / 'video_database.db')
