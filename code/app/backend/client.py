@@ -37,6 +37,19 @@ class BackendClient:
     def health(self):
         return self._get('/health')
 
+    def list_startup_refresh_history(self):
+        return self._get('/startup-refresh-history').get('history', {})
+
+    def record_startup_refresh_completion(self, task_key, task_title, completed_at=None):
+        return self._post(
+            '/startup-refresh-history',
+            {
+                'task_key': str(task_key or '').strip(),
+                'task_title': str(task_title or '').strip(),
+                'completed_at': str(completed_at or '').strip(),
+            },
+        ).get('history', {})
+
     def scan_folder(self, folder_path):
         return self._post('/scan', {'folder_path': folder_path})
 

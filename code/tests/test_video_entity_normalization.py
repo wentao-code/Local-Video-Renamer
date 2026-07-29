@@ -5,9 +5,20 @@ from contextlib import closing
 from pathlib import Path
 
 from app.data.database_handler import VideoDatabase
+from app.data.repositories.video_entity_repo import VideoEntityRepositoryMixin
 
 
 class VideoEntityNormalizationTest(unittest.TestCase):
+    def test_video_entity_writes_are_provided_by_repository(self):
+        self.assertIs(VideoDatabase.upsert_video_entity, VideoEntityRepositoryMixin.upsert_video_entity)
+        self.assertIs(VideoDatabase.list_actor_movies, VideoEntityRepositoryMixin.list_actor_movies)
+        self.assertIs(VideoDatabase.list_actor_movies_by_names, VideoEntityRepositoryMixin.list_actor_movies_by_names)
+        self.assertIs(VideoDatabase.list_code_prefix_movies, VideoEntityRepositoryMixin.list_code_prefix_movies)
+        self.assertIs(
+            VideoDatabase.list_code_prefix_movies_by_prefixes,
+            VideoEntityRepositoryMixin.list_code_prefix_movies_by_prefixes,
+        )
+
     def test_new_database_exposes_only_canonical_video_schema(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = VideoDatabase(Path(temp_dir) / 'video_database.db')

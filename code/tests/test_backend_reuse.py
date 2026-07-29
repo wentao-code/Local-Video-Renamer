@@ -189,16 +189,15 @@ class BackendReuseDecisionTest(unittest.TestCase):
         self.assertEqual(stub.backend_instance_token, 'fresh-token')
         self.assertTrue(stub.owns_backend_process)
 
-    def test_backend_start_failure_prefers_database_locked_message(self):
+    def test_backend_start_failure_uses_generic_message_without_local_database_probe(self):
         stub = SimpleNamespace(
-            _is_database_locked=lambda: True,
             _is_backend_process_alive=lambda process: False,
             backend_process=None,
         )
 
         message = VidNormApp._build_backend_start_failure_message(stub, stale_backend_cleaned=False)
 
-        self.assertEqual(message, tr('main.backend_db_locked'))
+        self.assertEqual(message, tr('main.backend_start_timeout'))
 
     def test_backend_start_failure_mentions_stale_backend_after_cleanup_attempt(self):
         stub = SimpleNamespace(

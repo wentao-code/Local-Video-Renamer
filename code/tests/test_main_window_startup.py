@@ -1,11 +1,7 @@
 import os
-import shutil
-import sqlite3
-import tempfile
 import unittest
 from datetime import datetime
 from functools import partial
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,6 +12,7 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from app.gui import main_window
+from app.gui.query_context import EntityReference
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -230,7 +227,7 @@ class MainWindowStartupTest(unittest.TestCase):
                 created['parent'] = parent
                 created['coordinator'] = coordinator
 
-        reference = main_window.EntityReference(main_window.EntityType.ACTOR, 'Actor A')
+        reference = EntityReference(main_window.EntityType.ACTOR, 'Actor A')
         with patch(
             'app.gui.actor_detail_viewer.ActorDetailViewerWindow',
             FakeActorDetailViewerWindow,
@@ -604,34 +601,27 @@ class MainWindowStartupTest(unittest.TestCase):
             main_window.VidNormApp._should_run_startup_refresh_task(stub, 'broken', history, now=now)
         )
 
-    def test_record_startup_refresh_completion_persists_row_in_database(self):
-        temp_dir = tempfile.mkdtemp()
-        try:
-            db_path = Path(temp_dir) / 'startup_refresh_test.db'
-            stub = SimpleNamespace(
-                _get_startup_refresh_history_db_path=lambda: db_path,
-            )
+    def test_startup_refresh_history_uses_backend_client(self):
+        calls = []
+        stub = SimpleNamespace(
+            backend_client=SimpleNamespace(
+                list_startup_refresh_history=lambda: {'actor_library': {'last_completed_at': '2026-07-12 10:00:00'}},
+                record_startup_refresh_completion=lambda *args, **kwargs: calls.append((args, kwargs)),
+            ),
+        )
 
-            main_window.VidNormApp._record_startup_refresh_completion(
-                stub,
-                'actor_library',
-                '启动刷新 演员库',
-                completed_at='2026-07-12 12:34:56',
-            )
+        history = main_window.VidNormApp._load_startup_refresh_history(stub)
+        main_window.VidNormApp._record_startup_refresh_completion(
+            stub,
+            'actor_library',
+            '启动刷新 演员库',
+            completed_at='2026-07-12 12:34:56',
+        )
 
-            with sqlite3.connect(str(db_path)) as conn:
-                row = conn.execute(
-                    '''
-                    SELECT task_key, task_title, last_completed_at
-                    FROM startup_refresh_history
-                    WHERE task_key = ?
-                    ''',
-                    ('actor_library',),
-                ).fetchone()
-
-            self.assertEqual(row, ('actor_library', '启动刷新 演员库', '2026-07-12 12:34:56'))
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        self.assertEqual(history['actor_library']['last_completed_at'], '2026-07-12 10:00:00')
+        self.assertEqual(calls, [
+            (('actor_library', '启动刷新 演员库'), {'completed_at': '2026-07-12 12:34:56'}),
+        ])
 
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []
@@ -1330,7 +1320,6 @@ class MainWindowStartupTest(unittest.TestCase):
             # 用闭包重建 start_runner 和 handle_cleanup 的数据流
             runners_holder = {}
             cleanup_calls = []
-            finished_handler_called = []
             failed_handler_called = []
 
             attempt_state = {'failed': False, 'message': ''}

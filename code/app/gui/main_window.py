@@ -1,7 +1,6 @@
 ﻿import ctypes
 import inspect
 import os
-import sqlite3
 import subprocess
 import sys
 import time
@@ -44,7 +43,7 @@ from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX
 from app.core.enrichment_sources import get_video_enrichment_source_label
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
-from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
+from app.core.project_paths import GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
@@ -86,7 +85,7 @@ from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
 from app.gui.runtime_settings import load_runtime_mode, save_runtime_mode
-from app.gui.query_context import EntityReference, EntityType, QueryContext
+from app.gui.query_context import EntityType, QueryContext
 from app.gui.query_history import QueryHistoryStore
 from app.gui.quark_login_dialog import QuarkLoginDialog
 from app.gui.single_instance import SingleInstanceGuard
@@ -506,20 +505,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         pid = str((health or {}).get('backend_process_id') or '').strip()
         return pid if pid.isdigit() else ''
 
-    def _is_database_locked(self):
-        try:
-            conn = sqlite3.connect(
-                DATABASE_FILE,
-                timeout=get_operation_timeout_seconds('database_wait', DATABASE_FILE),
-            )
-            try:
-                conn.execute('SELECT 1')
-            finally:
-                conn.close()
-        except sqlite3.OperationalError as exc:
-            return 'locked' in str(exc).lower()
-        return False
-
     @staticmethod
     def _get_backend_start_timeout_seconds():
         return max(30.0, float(get_backend_timeout_seconds() or 0))
@@ -529,8 +514,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             if stale_backend_cleaned:
                 return tr('main.backend_start_timeout_after_cleanup')
             return tr('main.backend_start_initializing_too_long')
-        if self._is_database_locked():
-            return tr('main.backend_db_locked')
         if stale_backend_cleaned:
             return tr('main.backend_start_timeout_after_cleanup')
         return tr('main.backend_start_timeout')
@@ -1831,58 +1814,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             ),
         ]
 
-    def _get_startup_refresh_history_db_path(self):
-        health = self.get_backend_health() if hasattr(self, 'get_backend_health') else None
-        db_path = str((health or {}).get('db_path') or '').strip()
-        return Path(db_path) if db_path else DATABASE_FILE
-
-    def _ensure_startup_refresh_history_table(self, db_path=None):
-        target_path = Path(db_path or self._get_startup_refresh_history_db_path())
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(
-            str(target_path),
-            timeout=get_operation_timeout_seconds('database_wait', target_path),
-        ) as conn:
-            conn.execute(
-                '''
-                CREATE TABLE IF NOT EXISTS startup_refresh_history (
-                    task_key TEXT PRIMARY KEY,
-                    task_title TEXT NOT NULL DEFAULT '',
-                    last_completed_at TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                '''
-            )
-
     def _load_startup_refresh_history(self):
         try:
-            db_path = self._get_startup_refresh_history_db_path()
-            VidNormApp._ensure_startup_refresh_history_table(self, db_path)
-            with sqlite3.connect(
-                str(db_path),
-                timeout=get_operation_timeout_seconds('database_wait', db_path),
-            ) as conn:
-                rows = conn.execute(
-                    '''
-                    SELECT task_key, task_title, last_completed_at, updated_at
-                    FROM startup_refresh_history
-                    '''
-                ).fetchall()
-        except sqlite3.Error:
+            return dict(self.backend_client.list_startup_refresh_history() or {})
+        except Exception:
             return {}
-
-        history = {}
-        for task_key, task_title, last_completed_at, updated_at in rows:
-            normalized_key = str(task_key or '').strip()
-            if not normalized_key:
-                continue
-            history[normalized_key] = {
-                'task_key': normalized_key,
-                'task_title': str(task_title or '').strip(),
-                'last_completed_at': str(last_completed_at or '').strip(),
-                'updated_at': str(updated_at or '').strip(),
-            }
-        return history
 
     def _should_run_startup_refresh_task(self, task_key, history, now=None):
         row = dict((history or {}).get(str(task_key or '').strip()) or {})
@@ -1902,30 +1838,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             return
         completed_text = str(completed_at or time.strftime(STARTUP_REFRESH_TIMESTAMP_FORMAT)).strip()
         try:
-            db_path = self._get_startup_refresh_history_db_path()
-            VidNormApp._ensure_startup_refresh_history_table(self, db_path)
-            with sqlite3.connect(
-                str(db_path),
-                timeout=get_operation_timeout_seconds('database_wait', db_path),
-            ) as conn:
-                conn.execute(
-                    '''
-                    INSERT INTO startup_refresh_history (task_key, task_title, last_completed_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(task_key) DO UPDATE SET
-                        task_title = excluded.task_title,
-                        last_completed_at = excluded.last_completed_at,
-                        updated_at = excluded.updated_at
-                    ''',
-                    (
-                        normalized_key,
-                        str(task_title or '').strip(),
-                        completed_text,
-                        completed_text,
-                    ),
-                )
-                conn.commit()
-        except sqlite3.Error:
+            self.backend_client.record_startup_refresh_completion(
+                normalized_key,
+                str(task_title or '').strip(),
+                completed_at=completed_text,
+            )
+        except Exception:
             return
 
     def _refresh_queen_library_startup_payload(self):
@@ -2151,7 +2069,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def on_enrichment_finished(self, result, mode=None):
         mode = self.enrichment_mode if mode is None else mode
         is_batch_mode = mode in ('batch', 'combo_batch')
-        entity_label = result.get('entity_label', tr('main.entity_default'))
         summary = self.build_enrichment_summary(result)
         if hasattr(self, 'window_coordinator'):
             self.window_coordinator.refresh_open_windows()

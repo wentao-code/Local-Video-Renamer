@@ -1,7 +1,6 @@
 import os
 import json
 import hashlib
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -41,6 +40,7 @@ from app.core.javtxt_video_state import is_javtxt_eligible_movie
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX, LADDER_ENTITY_ACTOR
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT
 from app.core.snapshot_store import SnapshotStore
+from app.backend.snapshot_coordinator import SnapshotCoordinator
 from app.core.supplement_task_state import build_supplement_candidate
 from app.core.video_filter_rules import FILTER_FIELD_CODE, FILTER_FIELD_CO_STAR_CODE, get_filter_keywords
 from app.core.project_paths import (
@@ -112,7 +112,8 @@ class BackendService:
         self.instance_token = str(instance_token or '').strip()
         self.process_id = os.getpid()
         self._ensure_snapshot_runtime_dir()
-        self.snapshot_store = SnapshotStore(SNAPSHOT_DIR)
+        self.snapshot_coordinator = SnapshotCoordinator(SnapshotStore(SNAPSHOT_DIR))
+        self.snapshot_store = self.snapshot_coordinator.store
         self.db = VideoDatabase(DATABASE_FILE)
         self.video_filter_service = VideoFilterService()
         self.unified_search_service = UnifiedSearchService(self)
@@ -135,7 +136,7 @@ class BackendService:
             self.video_filter_service,
             snapshot_file=DATA_CENTER_SNAPSHOT_FILE,
             refresh_logger=self._append_snapshot_refresh_log,
-            snapshot_store=self.snapshot_store,
+            snapshot_store=self.snapshot_coordinator.store,
         )
         self.library_admin_service = LibraryAdminService(self.db)
         self.library_status_sync_service = LibraryStatusSyncService(self.db)
@@ -148,18 +149,14 @@ class BackendService:
         self.enrichment_task_state = EnrichmentTaskState()
         self._enrichment_selection_jobs = {}
         self._enrichment_selection_jobs_lock = threading.Lock()
-        self._snapshot_lock = threading.Lock()
-        self._canglangge_snapshot_lock = threading.Lock()
         self._ladder_board_snapshots = {}
         self._ladder_refresh_lock = threading.Lock()
         self._ladder_refresh_threads = {}
         self._path_library_snapshot = None
         self._canglangge_snapshot = None
         self._snapshot_refresh_log_file = SNAPSHOT_REFRESH_LOG_FILE
-        self._snapshot_refresh_log_lock = threading.Lock()
         self._actor_snapshot_file = ACTOR_SNAPSHOT_FILE
         self._actor_detail_snapshot_dir = ACTOR_DETAIL_SNAPSHOT_DIR
-        self._actor_snapshot_file_lock = threading.Lock()
         self._actor_snapshot_filter_fingerprint = self._build_actor_snapshot_filter_fingerprint(
             self._load_actor_snapshot_filter_settings()
         )
@@ -167,17 +164,14 @@ class BackendService:
         self._actor_detail_snapshots = {}
         self._code_prefix_snapshot_file = CODE_PREFIX_SNAPSHOT_FILE
         self._code_prefix_detail_snapshot_dir = CODE_PREFIX_DETAIL_SNAPSHOT_DIR
-        self._code_prefix_snapshot_file_lock = threading.Lock()
         self._code_prefix_snapshot_filter_fingerprint = self._build_code_prefix_snapshot_filter_fingerprint(
             self._load_code_prefix_snapshot_filter_settings()
         )
         self._code_prefix_library_snapshots = {}
         self._code_prefix_detail_snapshots = {}
         self._masterpiece_snapshot_file = MASTERPIECE_SNAPSHOT_FILE
-        self._masterpiece_snapshot_file_lock = threading.Lock()
         self._masterpiece_detail_snapshots = {}
         self._video_category_snapshot_file = VIDEO_CATEGORY_SNAPSHOT_FILE
-        self._video_category_snapshot_file_lock = threading.Lock()
         video_category_filter_settings = self._load_video_category_snapshot_filter_settings()
         self._video_category_snapshot_filter_fingerprint = self._build_video_category_snapshot_filter_fingerprint(
             video_category_filter_settings
@@ -229,6 +223,19 @@ class BackendService:
     def scan(self, folder_path):
         self.ensure_database_loaded()
         return self.local_video_library.scan_folder(folder_path)
+
+    def list_startup_refresh_history(self):
+        self.ensure_database_loaded()
+        return {'history': self.db.list_startup_refresh_history()}
+
+    def record_startup_refresh_completion(self, task_key, task_title, completed_at=None):
+        self.ensure_database_loaded()
+        self.db.record_startup_refresh_completion(
+            task_key,
+            task_title,
+            completed_at=completed_at,
+        )
+        return {'history': self.db.list_startup_refresh_history()}
 
     def generate_subtitles(self):
         return self.subtitle_generation_service.generate_from_directory()
@@ -3562,61 +3569,54 @@ class BackendService:
         }
 
     def _actor_snapshot_file_guard(self):
-        return getattr(self, '_actor_snapshot_file_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('actor_snapshot_file')
 
     def _code_prefix_snapshot_file_guard(self):
-        return getattr(self, '_code_prefix_snapshot_file_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('code_prefix_snapshot_file')
 
     def _masterpiece_snapshot_file_guard(self):
-        return getattr(self, '_masterpiece_snapshot_file_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('masterpiece_snapshot_file')
 
     def _video_category_snapshot_file_guard(self):
-        return getattr(self, '_video_category_snapshot_file_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('video_category_snapshot_file')
 
     def _snapshot_refresh_log_guard(self):
-        return getattr(self, '_snapshot_refresh_log_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('snapshot_refresh_log')
 
     def _snapshot_guard(self):
-        return getattr(self, '_snapshot_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('page_snapshot')
 
     def _canglangge_snapshot_guard(self):
-        return getattr(self, '_canglangge_snapshot_lock', None) or nullcontext()
+        return self._snapshot_coordinator().guard('canglangge_snapshot')
+
+    def _snapshot_coordinator(self):
+        coordinator = getattr(self, 'snapshot_coordinator', None)
+        if coordinator is None:
+            coordinator = SnapshotCoordinator(getattr(self, 'snapshot_store', None))
+            self.snapshot_coordinator = coordinator
+        return coordinator
 
     def _read_page_snapshot(self, key):
-        store = getattr(self, 'snapshot_store', None)
-        if store is None:
-            return None
-        payload = store.read(key)
-        return payload if isinstance(payload, dict) else None
+        return self._snapshot_coordinator().read(key)
 
     def _write_page_snapshot(self, key, payload):
-        store = getattr(self, 'snapshot_store', None)
-        if store is not None and isinstance(payload, dict):
-            store.write(key, payload)
+        self._snapshot_coordinator().write(key, payload)
 
     def _delete_page_snapshot(self, key):
-        store = getattr(self, 'snapshot_store', None)
-        if store is not None:
-            store.delete(key)
+        self._snapshot_coordinator().delete(key)
 
     def _delete_page_snapshot_prefix(self, prefix):
-        store = getattr(self, 'snapshot_store', None)
-        if store is not None:
-            store.delete_prefix(prefix)
+        self._snapshot_coordinator().delete_prefix(prefix)
 
     def _build_snapshot_payload(self, **fields):
-        refresh_duration_ms = int(fields.pop('refresh_duration_ms', 0) or 0)
-        refresh_duration_text = str(fields.pop('refresh_duration_text', '') or '').strip()
-        return {
+        return self._snapshot_coordinator().build_payload(
+            refreshed_at=self._current_snapshot_timestamp(),
             **fields,
-            'refreshed_at': self._current_snapshot_timestamp(),
-            'refresh_duration_ms': refresh_duration_ms,
-            'refresh_duration_text': refresh_duration_text or self._format_refresh_duration(refresh_duration_ms),
-        }
+        )
 
     @staticmethod
     def _snapshot_refreshed_at(snapshot):
-        return str((snapshot or {}).get('refreshed_at', '') or '').strip()
+        return SnapshotCoordinator.refreshed_at(snapshot)
 
     @staticmethod
     def _current_snapshot_timestamp():

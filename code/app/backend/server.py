@@ -80,6 +80,14 @@ def make_handler(service):
 
             if method == 'GET' and path == '/health':
                 return service.health()
+            if method == 'GET' and path == '/startup-refresh-history':
+                return service.list_startup_refresh_history()
+            if method == 'POST' and path == '/startup-refresh-history':
+                return service.record_startup_refresh_completion(
+                    body.get('task_key', ''),
+                    body.get('task_title', ''),
+                    body.get('completed_at') or None,
+                )
             if method == 'POST' and path == '/database/reload':
                 return service.load_database()
             if method == 'POST' and path == '/scan':
