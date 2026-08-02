@@ -29,7 +29,6 @@ TASK_TRACE_LOG_DIR = RUNTIME_DIR / 'task_logs'
 COMBO_TASK_LOG_DIR = RUNTIME_DIR / 'combo_task_logs'
 LOCK_DIR = RUNTIME_DIR / 'locks'
 TEMP_DIR = RUNTIME_DIR / 'tmp'
-QUARK_BACKUP_ARCHIVE_DIR = RUNTIME_DIR / 'backup_archives'
 
 ENV_FILE = USER_CONFIG_DIR / '.env'
 ENV_EXAMPLE_FILE = PROJECT_ROOT / '.env.example'
@@ -40,10 +39,6 @@ VIDEO_FILTER_SETTINGS_FILE = USER_CONFIG_DIR / 'video_filter_settings.json'
 ACTOR_LIBRARY_SETTINGS_FILE = USER_CONFIG_DIR / 'actor_library_settings.json'
 CODE_PREFIX_LIBRARY_SETTINGS_FILE = USER_CONFIG_DIR / 'code_prefix_library_settings.json'
 QUERY_HISTORY_FILE = USER_CONFIG_DIR / 'query_history.json'
-QUARK_BACKUP_CONFIG_FILE = USER_CONFIG_DIR / 'quark_backup.json'
-QUARK_BACKUP_STATE_FILE = USER_CONFIG_DIR / 'quark_backup_state.json'
-QUARK_CREDENTIAL_FILE = USER_CONFIG_DIR / 'quark_credentials.dat'
-QUARK_BACKUP_LOCK_FILE = LOCK_DIR / 'quark_backup.lock'
 GUI_INSTANCE_LOCK_FILE = LOCK_DIR / 'vidnorm.gui.lock'
 
 APP_LOG_FILE = LOG_DIR / 'app.log'
@@ -81,6 +76,5 @@ def ensure_storage_layout() -> None:
         COMBO_TASK_LOG_DIR,
         LOCK_DIR,
         TEMP_DIR,
-        QUARK_BACKUP_ARCHIVE_DIR,
     ):
         directory.mkdir(parents=True, exist_ok=True)

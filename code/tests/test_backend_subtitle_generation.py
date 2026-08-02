@@ -46,5 +46,24 @@ class BackendSubtitleGenerationTest(unittest.TestCase):
         )
 
 
+    def test_server_routes_soft_subtitle_generation(self):
+        service = Mock()
+        service.generate_soft_subtitles.return_value = {'success_count': 1}
+        handler = make_handler(service)
+        result = handler._route(object(), 'POST', SimpleNamespace(path='/translation/soft-subtitles', query=''), {})
+        self.assertEqual(result['success_count'], 1)
+        service.generate_soft_subtitles.assert_called_once_with()
+
+    def test_backend_service_delegates_to_soft_subtitle_generator(self):
+        service = BackendService.__new__(BackendService)
+        service.soft_subtitle_generation_service = Mock()
+        service.soft_subtitle_generation_service.generate_from_directory.return_value = {'success_count': 1}
+        self.assertEqual(service.generate_soft_subtitles(), {'success_count': 1})
+
+    def test_client_uses_long_timeout_for_soft_subtitle_generation(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        with patch.object(client, '_post', return_value={'success_count': 1}) as post:
+            self.assertEqual(client.generate_soft_subtitles(), {'success_count': 1})
+        post.assert_called_once_with('/translation/soft-subtitles', {}, timeout=20 * 60)
 if __name__ == '__main__':
     unittest.main()

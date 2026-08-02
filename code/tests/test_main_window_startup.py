@@ -1,4 +1,7 @@
+import ast
+import inspect
 import os
+import textwrap
 import unittest
 from datetime import datetime
 from functools import partial
@@ -23,6 +26,36 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_soft_subtitle_button_is_created_once_before_use(self):
+        init_source = inspect.getsource(main_window.VidNormApp.init_ui)
+        init_tree = ast.parse(textwrap.dedent(init_source))
+        init_body = init_tree.body[0].body
+
+        assignment_index = next(
+            index
+            for index, statement in enumerate(init_body)
+            if isinstance(statement, ast.Assign)
+            and any(
+                isinstance(target, ast.Attribute)
+                and target.attr == 'btn_generate_soft_subtitles'
+                for target in statement.targets
+            )
+        )
+        used_before_assignment = []
+        for statement in init_body[:assignment_index]:
+            for node in ast.walk(statement):
+                if isinstance(node, ast.Attribute) and node.attr == 'btn_generate_soft_subtitles':
+                    used_before_assignment.append(node)
+
+        self.assertEqual(used_before_assignment, [])
+        self.assertNotIn(
+            "QPushButton('软字幕生成')",
+            inspect.getsource(main_window.VidNormApp.set_current_folder),
+        )
+        self.assertNotIn(
+            "QPushButton('软字幕生成')",
+            inspect.getsource(main_window.VidNormApp._apply_scan_result),
+        )
     def test_generate_subtitles_uses_fixed_directory_without_scan(self):
         calls = []
         stub = SimpleNamespace(
@@ -44,6 +77,15 @@ class MainWindowStartupTest(unittest.TestCase):
             ],
         )
 
+    def test_generate_soft_subtitles_uses_nonblocking_task(self):
+        calls = []
+        stub = SimpleNamespace(
+            backend_client=SimpleNamespace(generate_soft_subtitles=lambda: calls.append(('generate',)) or {'success_count': 1}),
+            _on_generate_soft_subtitles_finished=lambda _result: None,
+            start_async_task=lambda task, *args, **kwargs: calls.append(('task', task(), kwargs)),
+        )
+        main_window.VidNormApp.generate_soft_subtitles(stub)
+        self.assertEqual(calls, [('generate',), ('task', {'success_count': 1}, {'task_title': '主界面 软字幕生成', 'task_kind': 'soft_subtitle_generation', 'block_ui': False})])
     def test_cancelled_plan_task_is_deleted_after_backend_plan_cancel_succeeds(self):
         calls = []
         record = SimpleNamespace(
@@ -143,77 +185,6 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(calls[1][1]['plan_id'], 'plan-1')
         self.assertEqual(state['plan_id'], 'plan-1')
         self.assertEqual(finished[0]['plan_id'], 'plan-1')
-    def test_manual_quark_backup_preserves_login_required_result(self):
-        with patch.object(main_window, 'QuarkBackupService') as service_class:
-            service_class.return_value.run_now.return_value = {
-                'status': 'login_required',
-                'error': '需要先登录夸克网盘',
-            }
-
-            result = main_window.VidNormApp._run_manual_quark_backup()
-
-        self.assertEqual(result['status'], 'login_required')
-
-    def test_login_required_backup_result_opens_login_and_resumes_upload(self):
-        calls = []
-        stub = SimpleNamespace(
-            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
-            show_quark_login_dialog=lambda resume_backup=False: calls.append(('login', resume_backup)),
-        )
-
-        main_window.VidNormApp._on_manual_quark_backup_finished(
-            stub,
-            {'status': 'login_required', 'error': 'expired'},
-        )
-
-        self.assertIn(('login', True), calls)
-
-    def test_successful_login_can_schedule_one_backup_resume(self):
-        calls = []
-        dialog = SimpleNamespace(exec_=lambda: main_window.QDialog.Accepted)
-        stub = SimpleNamespace(
-            status_label=SimpleNamespace(setText=lambda value: calls.append(('status', value))),
-            upload_quark_backup=lambda: calls.append(('upload', True)),
-        )
-
-        with patch.object(main_window, 'QuarkLoginDialog', return_value=dialog), patch.object(
-            main_window.QTimer,
-            'singleShot',
-            side_effect=lambda _delay, callback: callback(),
-        ):
-            connected = main_window.VidNormApp.show_quark_login_dialog(stub, resume_backup=True)
-
-        self.assertTrue(connected)
-        self.assertEqual(calls.count(('upload', True)), 1)
-
-    def test_upload_quark_backup_enqueues_a_single_attempt_maintenance_task(self):
-        queued = []
-
-        class FakeButton:
-            def __init__(self):
-                self.enabled_values = []
-
-            def setEnabled(self, enabled):
-                self.enabled_values.append(enabled)
-
-        button = FakeButton()
-        stub = SimpleNamespace(
-            btn_upload_quark_backup=button,
-            quark_backup_queued=False,
-            _on_manual_quark_backup_finished=lambda _result: None,
-            _on_manual_quark_backup_failed=lambda _message: None,
-            _cleanup_manual_quark_backup=lambda: None,
-            _start_queued_gui_runner=lambda *args, **kwargs: queued.append((args, kwargs)),
-        )
-
-        self.assertTrue(main_window.VidNormApp.upload_quark_backup(stub))
-
-        self.assertEqual(button.enabled_values, [False])
-        self.assertTrue(stub.quark_backup_queued)
-        self.assertEqual(queued[0][0][0], '上传夸克备份')
-        self.assertEqual(queued[0][1]['task_category'], main_window.TASK_CATEGORY_MAINTENANCE)
-        self.assertEqual(queued[0][1]['max_attempts'], 1)
-
     def test_actor_detail_window_factory_resolves_detail_viewer(self):
         app = main_window.VidNormApp.__new__(main_window.VidNormApp)
         app.backend_client = object()

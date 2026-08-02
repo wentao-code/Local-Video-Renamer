@@ -60,6 +60,13 @@ class BackendClient:
             timeout=max(self.timeout, 20 * 60),
         )
 
+    def generate_soft_subtitles(self):
+        return self._post(
+            '/translation/soft-subtitles',
+            {},
+            timeout=max(self.timeout, 20 * 60),
+        )
+
     def import_videos(self, plans):
         return self._post('/database/videos/import', {'plans': plans})
 

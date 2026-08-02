@@ -97,6 +97,8 @@ def make_handler(service):
                 return service.scan(folder_path)
             if method == 'POST' and path == '/translation/subtitles':
                 return service.generate_subtitles()
+            if method == 'POST' and path == '/translation/soft-subtitles':
+                return service.generate_soft_subtitles()
             if method == 'POST' and path == '/rename':
                 return service.rename(body.get('plans', []))
             if method == 'POST' and path == '/database/videos/import':

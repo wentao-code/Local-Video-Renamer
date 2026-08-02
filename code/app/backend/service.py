@@ -90,6 +90,7 @@ from app.services.library import (
 )
 from app.services.library.unified_search_service import UnifiedSearchService
 from app.services.local_video import LocalVideoLibraryService
+from app.services.translation.soft_subtitle_generation_service import SoftSubtitleGenerationService
 from app.services.translation.subtitle_generation_service import SubtitleGenerationService
 from app.queen_library.service import QueenLibraryService
 from app.services.video import (
@@ -120,6 +121,7 @@ class BackendService:
         self.video_ladder_tag_service = VideoLadderTagService(self.db)
         self.local_video_library = LocalVideoLibraryService(self.db)
         self.subtitle_generation_service = SubtitleGenerationService(TranslationConfig.from_environment())
+        self.soft_subtitle_generation_service = SoftSubtitleGenerationService(TranslationConfig.from_environment().input_dir)
         self.actor_detail_library = ActorDetailLibrary(self.db, self.video_ladder_tag_service, self.video_filter_service)
         self.actor_library_sync_service = ActorLibrarySyncService(self.db)
         self.code_prefix_detail_library = CodePrefixDetailLibrary(
@@ -239,6 +241,9 @@ class BackendService:
 
     def generate_subtitles(self):
         return self.subtitle_generation_service.generate_from_directory()
+
+    def generate_soft_subtitles(self):
+        return self.soft_subtitle_generation_service.generate_from_directory()
 
     def rename(self, plans_data):
         return self.local_video_library.execute_renames(plans_data)
