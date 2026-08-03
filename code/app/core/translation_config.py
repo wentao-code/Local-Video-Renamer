@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.app_config import get_setting
-from app.core.project_paths import TRANSLATION_INPUT_DIR
+from app.core.project_paths import TRANSLATION_INPUT_DIR, TRANSLATION_INPUT_PATH_FILE
 
 
 DEFAULT_TRANSLATION_MODEL_ROOT = Path(r'D:\software\software_for_chickenrice')
@@ -20,6 +21,19 @@ def _parse_bool(value, default=False):
     return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _load_dedicated_input_dir():
+    if not TRANSLATION_INPUT_PATH_FILE.is_file():
+        return None
+    try:
+        payload = json.loads(TRANSLATION_INPUT_PATH_FILE.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f'字幕输入路径配置无效: {TRANSLATION_INPUT_PATH_FILE}') from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f'字幕输入路径配置必须是 JSON 对象: {TRANSLATION_INPUT_PATH_FILE}')
+    value = str(payload.get('input_dir', '') or '').strip()
+    return Path(value).expanduser() if value else None
+
+
 @dataclass(frozen=True)
 class TranslationConfig:
     model_root: Path
@@ -31,6 +45,7 @@ class TranslationConfig:
 
     @classmethod
     def from_environment(cls, env_path=None):
+        dedicated_input_dir = _load_dedicated_input_dir()
         model_root = Path(
             get_setting(
                 'TRANSLATION_MODEL_ROOT',
@@ -67,7 +82,8 @@ class TranslationConfig:
             or DEFAULT_TRANSLATION_DEVICE,
             sub_formats=formats,
             overwrite=_parse_bool(get_setting('TRANSLATION_OVERWRITE', 'false', env_path=env_path)),
-            input_dir=Path(
+            input_dir=dedicated_input_dir
+            or Path(
                 get_setting(
                     'TRANSLATION_INPUT_DIR',
                     str(DEFAULT_TRANSLATION_INPUT_DIR),

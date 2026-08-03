@@ -39,6 +39,7 @@ VIDEO_FILTER_SETTINGS_FILE = USER_CONFIG_DIR / 'video_filter_settings.json'
 ACTOR_LIBRARY_SETTINGS_FILE = USER_CONFIG_DIR / 'actor_library_settings.json'
 CODE_PREFIX_LIBRARY_SETTINGS_FILE = USER_CONFIG_DIR / 'code_prefix_library_settings.json'
 QUERY_HISTORY_FILE = USER_CONFIG_DIR / 'query_history.json'
+TRANSLATION_INPUT_PATH_FILE = USER_CONFIG_DIR / 'translation_input_path.json'
 GUI_INSTANCE_LOCK_FILE = LOCK_DIR / 'vidnorm.gui.lock'
 
 APP_LOG_FILE = LOG_DIR / 'app.log'
