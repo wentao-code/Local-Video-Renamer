@@ -674,10 +674,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_generate_subtitles.clicked.connect(self.generate_subtitles)
         self.btn_generate_subtitles.setEnabled(True)
 
-        self.btn_generate_soft_subtitles = QPushButton('软字幕生成')
-        self.btn_generate_soft_subtitles.clicked.connect(self.generate_soft_subtitles)
-        self.btn_generate_soft_subtitles.setEnabled(True)
-
         self.btn_auto_login = QPushButton(tr('main.auto_login'))
         self.btn_auto_login.clicked.connect(self.auto_login)
 
@@ -734,7 +730,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_scan)
         bottom_button_row.addWidget(self.btn_import_db)
         bottom_button_row.addWidget(self.btn_generate_subtitles)
-        bottom_button_row.addWidget(self.btn_generate_soft_subtitles)
         bottom_button_row.addWidget(self.btn_auto_login)
         bottom_button_row.addWidget(self.btn_enrich)
         bottom_button_row.addWidget(self.btn_stop_enrich)
@@ -799,7 +794,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_execute.setEnabled(False)
         self.btn_import_db.setEnabled(False)
         self.btn_generate_subtitles.setEnabled(True)
-        self.btn_generate_soft_subtitles.setEnabled(True)
 
 
     def scan_files(self):
@@ -864,23 +858,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def generate_subtitles(self):
         self.start_async_task(
-            lambda: self.backend_client.generate_subtitles(),
+            lambda: self.backend_client.generate_subtitles_pipeline(),
             self._on_generate_subtitles_finished,
             tr('main.subtitle_generation_failed_title'),
             task_title='主界面 生成字幕',
-            task_kind='subtitle_generation',
+            task_kind='subtitle_pipeline',
             block_ui=False,
         )
 
-    def generate_soft_subtitles(self):
-        self.start_async_task(
-            lambda: self.backend_client.generate_soft_subtitles(),
-            self._on_generate_soft_subtitles_finished,
-            '软字幕生成失败',
-            task_title='主界面 软字幕生成',
-            task_kind='soft_subtitle_generation',
-            block_ui=False,
-        )
     def auto_login(self):
         if self.login_thread is not None or self.login_task_queued:
             QMessageBox.information(self, tr('main.login_in_progress_title'), tr('main.login_in_progress_message'))
@@ -2253,7 +2238,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             not busy and any(bool(plan.get('can_rename') and plan.get('needs_rename')) for plan in self.pending_renames)
         )
         self.btn_generate_subtitles.setEnabled(not busy)
-        self.btn_generate_soft_subtitles.setEnabled(not busy)
         self.btn_reset_browser_profile.setEnabled(not busy)
         self.btn_status_sync.setEnabled(not busy)
         self.btn_refresh_detail_snapshots.setEnabled(not busy)
@@ -2286,7 +2270,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_execute.setEnabled(has_files_to_rename)
         self.btn_import_db.setEnabled(has_files_to_import)
         self.btn_generate_subtitles.setEnabled(True)
-        self.btn_generate_soft_subtitles.setEnabled(True)
 
 
     def _on_scan_finished(self, payload):
@@ -2324,23 +2307,22 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def _on_generate_subtitles_finished(self, result):
         result = dict(result or {})
+        generation = dict(result.get('generation') or {})
+        mux = dict(result.get('mux') or {})
         QMessageBox.information(
             self,
             tr('main.subtitle_generation_completed_title'),
             tr(
-                'main.subtitle_generation_completed_message',
+                'main.subtitle_pipeline_completed_message',
                 input_dir=str(result.get('input_dir', '') or ''),
-                success_count=int(result.get('success_count', 0) or 0),
-                failed_count=int(result.get('failed_count', 0) or 0),
+                embedded_count=int(result.get('embedded_count', 0) or 0),
+                external_count=int(result.get('external_count', 0) or 0),
+                external_failed_count=int(result.get('external_failed_count', 0) or 0),
+                generation_success=int(generation.get('success_count', 0) or 0),
+                generation_failed=int(generation.get('failed_count', 0) or 0),
+                mux_success=int(mux.get('success_count', 0) or 0),
+                mux_failed=int(mux.get('failed_count', 0) or 0),
             ),
-        )
-
-    def _on_generate_soft_subtitles_finished(self, result):
-        result = dict(result or {})
-        QMessageBox.information(
-            self,
-            '软字幕生成完成',
-            f"字幕目录：{result.get('input_dir', '')}\n成功封装 {int(result.get('success_count', 0) or 0)} 个视频，失败 {int(result.get('failed_count', 0) or 0)} 个。",
         )
     def _on_reset_browser_profile_finished(self, result):
         result = dict(result or {})

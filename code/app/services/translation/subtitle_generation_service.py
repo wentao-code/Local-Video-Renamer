@@ -100,48 +100,66 @@ class SubtitleGenerationService:
         ]
         if self.config.overwrite:
             command.append('--overwrite')
-        command.append(str(directory))
         process_env = os.environ.copy()
         process_env.update({
             'PYTHONIOENCODING': 'utf-8',
             'PYTHONUTF8': '1',
         })
         creation_flags = getattr(subprocess, 'CREATE_NEW_CONSOLE', 0x10)
-        LOGGER.info('字幕模型进程启动 cwd=%s command=%s video_count=%d console=new', self.config.model_root, command, len(video_paths))
-        started_at = perf_counter()
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self.config.model_root),
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                env=process_env,
-                creationflags=creation_flags,
-                check=False,
-            )
-        except OSError as exc:
-            LOGGER.exception('字幕模型进程启动失败 cwd=%s command=%s', self.config.model_root, command)
-            return [self._failed_result(path, str(exc)) for path in video_paths]
-
-        LOGGER.info(
-            '模型进程结束 returncode=%s duration_ms=%.3f stdout=%s stderr=%s',
-            completed.returncode,
-            (perf_counter() - started_at) * 1000,
-            self._output_summary(completed.stdout),
-            self._output_summary(completed.stderr),
-        )
-
-        process_warning = ''
-        if completed.returncode != 0:
-            process_warning = (
-                f'模型进程非正常退出，退出码={completed.returncode}; '
-                f'stderr={self._output_summary(completed.stderr)}'
-            )
-            LOGGER.warning('%s，继续检查字幕文件', process_warning)
-
         results = []
         for path in video_paths:
+            video_command = [*command, str(path)]
+            LOGGER.info(
+                '字幕模型进程启动 cwd=%s command=%s video_count=1 timeout_seconds=%s',
+                self.config.model_root,
+                video_command,
+                self.config.video_timeout_seconds,
+            )
+            started_at = perf_counter()
+            try:
+                completed = subprocess.run(
+                    video_command,
+                    cwd=str(self.config.model_root),
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    env=process_env,
+                    creationflags=creation_flags,
+                    check=False,
+                    timeout=self.config.video_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                duration_ms = (perf_counter() - started_at) * 1000
+                LOGGER.exception(
+                    '单视频字幕生成超时 video_path=%s timeout_seconds=%s duration_ms=%.3f',
+                    path,
+                    self.config.video_timeout_seconds,
+                    duration_ms,
+                )
+                results.append(self._failed_result(path, f'单视频字幕生成超时: {self.config.video_timeout_seconds} 秒'))
+                continue
+            except OSError as exc:
+                LOGGER.exception('字幕模型进程启动失败 cwd=%s command=%s', self.config.model_root, video_command)
+                results.append(self._failed_result(path, str(exc)))
+                continue
+
+            LOGGER.info(
+                '模型进程结束 video_path=%s returncode=%s duration_ms=%.3f stdout=%s stderr=%s',
+                path,
+                completed.returncode,
+                (perf_counter() - started_at) * 1000,
+                self._output_summary(completed.stdout),
+                self._output_summary(completed.stderr),
+            )
+
+            process_warning = ''
+            if completed.returncode != 0:
+                process_warning = (
+                    f'模型进程非正常退出，退出码={completed.returncode}; '
+                    f'stderr={self._output_summary(completed.stderr)}'
+                )
+                LOGGER.warning('%s，继续检查字幕文件 video_path=%s', process_warning, path)
+
             subtitle_paths = [path.with_suffix(f'.{suffix}') for suffix in self.config.sub_formats]
             missing = [str(target) for target in subtitle_paths if not target.is_file()]
             if missing:

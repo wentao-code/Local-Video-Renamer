@@ -1,7 +1,5 @@
-import ast
 import inspect
 import os
-import textwrap
 import unittest
 from datetime import datetime
 from functools import partial
@@ -26,42 +24,17 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
-    def test_soft_subtitle_button_is_created_once_before_use(self):
+    def test_soft_subtitle_button_is_removed_from_main_window(self):
         init_source = inspect.getsource(main_window.VidNormApp.init_ui)
-        init_tree = ast.parse(textwrap.dedent(init_source))
-        init_body = init_tree.body[0].body
+        self.assertNotIn('btn_generate_soft_subtitles', init_source)
+        self.assertNotIn('软字幕生成', init_source)
 
-        assignment_index = next(
-            index
-            for index, statement in enumerate(init_body)
-            if isinstance(statement, ast.Assign)
-            and any(
-                isinstance(target, ast.Attribute)
-                and target.attr == 'btn_generate_soft_subtitles'
-                for target in statement.targets
-            )
-        )
-        used_before_assignment = []
-        for statement in init_body[:assignment_index]:
-            for node in ast.walk(statement):
-                if isinstance(node, ast.Attribute) and node.attr == 'btn_generate_soft_subtitles':
-                    used_before_assignment.append(node)
-
-        self.assertEqual(used_before_assignment, [])
-        self.assertNotIn(
-            "QPushButton('软字幕生成')",
-            inspect.getsource(main_window.VidNormApp.set_current_folder),
-        )
-        self.assertNotIn(
-            "QPushButton('软字幕生成')",
-            inspect.getsource(main_window.VidNormApp._apply_scan_result),
-        )
-    def test_generate_subtitles_uses_fixed_directory_without_scan(self):
+    def test_generate_subtitles_runs_full_pipeline_without_scan(self):
         calls = []
         stub = SimpleNamespace(
             pending_renames=[],
             backend_client=SimpleNamespace(
-                generate_subtitles=lambda: calls.append(('generate',)) or {'success_count': 2},
+                generate_subtitles_pipeline=lambda: calls.append(('generate',)) or {'success_count': 2},
             ),
             _on_generate_subtitles_finished=lambda _result: None,
             start_async_task=lambda task, *args, **kwargs: calls.append(('task', task(), kwargs)),
@@ -73,19 +46,10 @@ class MainWindowStartupTest(unittest.TestCase):
             calls,
             [
                 ('generate',),
-                ('task', {'success_count': 2}, {'task_title': '主界面 生成字幕', 'task_kind': 'subtitle_generation', 'block_ui': False}),
+                ('task', {'success_count': 2}, {'task_title': '主界面 生成字幕', 'task_kind': 'subtitle_pipeline', 'block_ui': False}),
             ],
         )
 
-    def test_generate_soft_subtitles_uses_nonblocking_task(self):
-        calls = []
-        stub = SimpleNamespace(
-            backend_client=SimpleNamespace(generate_soft_subtitles=lambda: calls.append(('generate',)) or {'success_count': 1}),
-            _on_generate_soft_subtitles_finished=lambda _result: None,
-            start_async_task=lambda task, *args, **kwargs: calls.append(('task', task(), kwargs)),
-        )
-        main_window.VidNormApp.generate_soft_subtitles(stub)
-        self.assertEqual(calls, [('generate',), ('task', {'success_count': 1}, {'task_title': '主界面 软字幕生成', 'task_kind': 'soft_subtitle_generation', 'block_ui': False})])
     def test_cancelled_plan_task_is_deleted_after_backend_plan_cancel_succeeds(self):
         calls = []
         record = SimpleNamespace(

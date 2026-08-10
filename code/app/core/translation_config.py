@@ -12,6 +12,7 @@ DEFAULT_TRANSLATION_MODEL_ROOT = Path(r'D:\software\software_for_chickenrice')
 DEFAULT_TRANSLATION_INPUT_DIR = TRANSLATION_INPUT_DIR
 DEFAULT_TRANSLATION_DEVICE = 'cuda'
 DEFAULT_TRANSLATION_SUB_FORMATS = ('srt', 'vtt', 'lrc')
+DEFAULT_TRANSLATION_VIDEO_TIMEOUT_SECONDS = 2 * 3600
 SUPPORTED_TRANSLATION_SUB_FORMATS = frozenset(('srt', 'vtt', 'lrc', 'txt'))
 
 
@@ -42,6 +43,7 @@ class TranslationConfig:
     sub_formats: tuple[str, ...] = DEFAULT_TRANSLATION_SUB_FORMATS
     overwrite: bool = False
     input_dir: Path = DEFAULT_TRANSLATION_INPUT_DIR
+    video_timeout_seconds: float = DEFAULT_TRANSLATION_VIDEO_TIMEOUT_SECONDS
 
     @classmethod
     def from_environment(cls, env_path=None):
@@ -90,6 +92,13 @@ class TranslationConfig:
                     env_path=env_path,
                 )
             ).expanduser(),
+            video_timeout_seconds=float(
+                get_setting(
+                    'TRANSLATION_VIDEO_TIMEOUT_SECONDS',
+                    str(DEFAULT_TRANSLATION_VIDEO_TIMEOUT_SECONDS),
+                    env_path=env_path,
+                )
+            ),
         )
 
     def validate(self):
@@ -101,4 +110,6 @@ class TranslationConfig:
             raise ValueError('翻译模型设备不能为空')
         if not self.sub_formats:
             raise ValueError('至少需要配置一种字幕格式')
+        if self.video_timeout_seconds <= 0:
+            raise ValueError('单视频字幕生成超时时间必须大于 0')
         return self

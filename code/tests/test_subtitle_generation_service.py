@@ -9,6 +9,63 @@ from app.services.translation.subtitle_generation_service import SubtitleGenerat
 
 
 class SubtitleGenerationServiceTest(unittest.TestCase):
+    def test_processes_each_video_serially_with_a_file_argument(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / 'model'
+            root.mkdir()
+            infer = root / 'infer.exe'
+            infer.write_bytes(b'placeholder')
+            input_dir = Path(temp_dir) / 'translation_videos'
+            input_dir.mkdir()
+            videos = [input_dir / 'RCTD-688.mp4', input_dir / 'RCTD-689.mp4']
+            for video in videos:
+                video.write_bytes(b'video')
+            config = TranslationConfig(root, infer, 'cuda', ('srt',), False, input_dir=input_dir)
+            commands = []
+
+            def run_process(command, **kwargs):
+                commands.append(command)
+                Path(command[-1]).with_suffix('.srt').write_text('字幕', encoding='utf-8')
+                return subprocess.CompletedProcess(command, 0, stdout='ok', stderr='')
+
+            with patch('app.services.translation.subtitle_generation_service.subprocess.run', side_effect=run_process):
+                result = SubtitleGenerationService(config).generate_from_directory()
+
+            self.assertEqual(result['success_count'], 2)
+            self.assertEqual(result['failed_count'], 0)
+            self.assertEqual([command[-1] for command in commands], [str(video) for video in videos])
+
+    def test_video_timeout_is_recorded_and_next_video_continues(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / 'model'
+            root.mkdir()
+            infer = root / 'infer.exe'
+            infer.write_bytes(b'placeholder')
+            input_dir = Path(temp_dir) / 'translation_videos'
+            input_dir.mkdir()
+            videos = [input_dir / 'RCTD-688.mp4', input_dir / 'RCTD-689.mp4']
+            for video in videos:
+                video.write_bytes(b'video')
+            config = TranslationConfig(root, infer, 'cuda', ('srt',), False, input_dir=input_dir)
+            calls = []
+
+            def run_process(command, **kwargs):
+                calls.append(command)
+                if len(calls) == 1:
+                    raise subprocess.TimeoutExpired(command, 120)
+                Path(command[-1]).with_suffix('.srt').write_text('字幕', encoding='utf-8')
+                return subprocess.CompletedProcess(command, 0, stdout='ok', stderr='')
+
+            with patch('app.services.translation.subtitle_generation_service.subprocess.run', side_effect=run_process):
+                result = SubtitleGenerationService(config).generate_from_directory()
+
+            self.assertEqual(result['success_count'], 1)
+            self.assertEqual(result['failed_count'], 1)
+            self.assertEqual(result['results'][0]['status'], 'failed')
+            self.assertIn('超时', result['results'][0]['error'])
+            self.assertEqual(result['results'][1]['status'], 'completed')
+            self.assertEqual(len(calls), 2)
+
     def test_generates_expected_subtitles_from_fixed_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / 'model'
@@ -34,12 +91,13 @@ class SubtitleGenerationServiceTest(unittest.TestCase):
                 self.assertEqual(kwargs['env']['PYTHONIOENCODING'], 'utf-8')
                 self.assertEqual(kwargs['env']['PYTHONUTF8'], '1')
                 self.assertEqual(kwargs['creationflags'], getattr(subprocess, 'CREATE_NEW_CONSOLE', 0x10))
+                self.assertEqual(kwargs['timeout'], config.video_timeout_seconds)
                 self.assertNotIn('capture_output', kwargs)
                 self.assertEqual(command[0], str(infer))
                 self.assertIn('--audio_suffixes=mp4,mkv,avi,mov,webm,flv,wmv', command)
                 self.assertIn('--sub_formats=srt,vtt,lrc', command)
                 self.assertIn('--device=cuda', command)
-                self.assertEqual(command[-1], str(input_dir))
+                self.assertEqual(command[-1], str(video))
                 for suffix in config.sub_formats:
                     video.with_suffix(f'.{suffix}').write_text('字幕', encoding='utf-8')
                 return subprocess.CompletedProcess(command, 0, stdout='ok', stderr='')

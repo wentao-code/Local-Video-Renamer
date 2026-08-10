@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -84,67 +86,70 @@ class SoftSubtitleGenerationService:
             return self._failed_result(directory, '缺少编号对应的 VTT 字幕文件')
         if len(videos) != 1:
             return self._failed_result(directory, f'匹配到 {len(videos)} 个编号对应的 MP4 视频文件')
+        if not self._vtt_has_cues(subtitle):
+            return self._failed_result(directory, 'VTT 字幕文件没有字幕内容，无法封装')
 
         video = videos[0]
         output = video.with_name(f'{video.stem}.softsub.mp4')
         temporary_output = video.with_name(f'{video.stem}.softsub.tmp.mp4')
+        final_video = directory.parent / f'{video.stem}.mp4'
         if output.exists():
             return self._failed_result(directory, f'软字幕文件已存在: {output.name}')
         if temporary_output.exists():
             return self._failed_result(directory, f'软字幕临时文件已存在: {temporary_output.name}')
+        if final_video.exists():
+            return self._failed_result(directory, f'目标视频文件已存在: {final_video.name}')
 
-        command = [
-            self.ffmpeg_exe,
-            '-nostdin',
-            '-y',
-            '-i', str(video),
-            '-i', str(subtitle),
-            '-map', '0',
-            '-map', '1:0',
-            '-c', 'copy',
-            '-c:s', 'mov_text',
-            '-metadata:s:s:0', 'language=jpn',
-            '-metadata:s:s:0', 'title=Japanese',
-            str(temporary_output),
-        ]
-        LOGGER.info('软字幕封装开始 directory=%s video=%s subtitle=%s output=%s', directory, video, subtitle, output)
+        subtitle_input, cleanup_subtitle = self._normalized_vtt_path(subtitle)
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(directory),
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                check=False,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-                timeout=self.timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            self._discard_temporary_output(temporary_output)
-            detail = str(getattr(exc, 'stderr', None) or '').strip()
-            message = f'FFmpeg 封装超时（{self.timeout_seconds:g} 秒）'
-            if detail:
-                message += f': {detail}'
-            return self._failed_result(directory, message)
-        except OSError as exc:
-            return self._failed_result(directory, f'FFmpeg 启动失败: {exc}')
+            command = [
+                self.ffmpeg_exe,
+                '-nostdin',
+                '-y',
+                '-i', str(video),
+                '-i', str(subtitle_input),
+                '-map', '0',
+                '-map', '1:0',
+                '-c', 'copy',
+                '-c:s', 'mov_text',
+                '-metadata:s:s:0', 'language=jpn',
+                '-metadata:s:s:0', 'title=Japanese',
+                str(temporary_output),
+            ]
+            LOGGER.info('软字幕封装开始 directory=%s video=%s subtitle=%s output=%s', directory, video, subtitle, output)
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=str(directory),
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    check=False,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    timeout=self.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                self._discard_temporary_output(temporary_output)
+                detail = str(getattr(exc, 'stderr', None) or '').strip()
+                message = f'FFmpeg 封装超时（{self.timeout_seconds:g} 秒）'
+                if detail:
+                    message += f': {detail}'
+                return self._failed_result(directory, message)
+            except OSError as exc:
+                return self._failed_result(directory, f'FFmpeg 启动失败: {exc}')
 
-        if completed.returncode != 0 or not temporary_output.is_file():
-            self._discard_temporary_output(temporary_output)
-            detail = str(completed.stderr or completed.stdout or '').strip()
-            return self._failed_result(directory, f'FFmpeg 封装失败，退出码={completed.returncode}: {detail}')
+            if completed.returncode != 0 or not temporary_output.is_file():
+                self._discard_temporary_output(temporary_output)
+                detail = str(completed.stderr or completed.stdout or '').strip()
+                return self._failed_result(directory, f'FFmpeg 封装失败，退出码={completed.returncode}: {detail}')
 
-        temporary_output.replace(output)
-        LOGGER.info('软字幕封装完成 directory=%s output=%s', directory, output)
-        return {
-            'directory': str(directory),
-            'video_path': str(video),
-            'subtitle_path': str(subtitle),
-            'output_path': str(output),
-            'status': 'completed',
-            'error': '',
-        }
+            temporary_output.replace(output)
+            LOGGER.info('软字幕封装完成 directory=%s output=%s', directory, output)
+            return self._finalize_muxed_video(directory, video, subtitle, output)
+        finally:
+            if cleanup_subtitle:
+                subtitle_input.unlink(missing_ok=True)
 
     @staticmethod
     def _occupied_result(directory, run_id):
@@ -188,6 +193,93 @@ class SoftSubtitleGenerationService:
             temporary_output.unlink(missing_ok=True)
         except OSError:
             LOGGER.warning('软字幕临时文件清理失败 path=%s', temporary_output)
+
+    def _finalize_muxed_video(self, directory, video, subtitle, output):
+        """Keep only the muxed video: delete sources, move it to the parent, drop .softsub."""
+        code = standardize_video_code(extract_code(directory.name) or directory.name)
+        final_video = directory.parent / f'{video.stem}.mp4'
+        cleanup_error = self._remove_generated_sources(directory, video, code)
+        if cleanup_error is not None:
+            self._discard_temporary_output(output)
+            return self._failed_result(directory, cleanup_error)
+        try:
+            output.replace(final_video)
+        except OSError as exc:
+            self._discard_temporary_output(output)
+            return self._failed_result(directory, f'软字幕视频移动失败: {exc}')
+        folder_removed = True
+        try:
+            directory.rmdir()
+        except OSError:
+            folder_removed = False
+            LOGGER.warning('软字幕视频目录清理失败 directory=%s', directory)
+        LOGGER.info(
+            '软字幕视频整理完成 directory=%s final_video=%s folder_removed=%s',
+            directory,
+            final_video,
+            folder_removed,
+        )
+        return {
+            'directory': str(directory),
+            'video_path': str(video),
+            'subtitle_path': str(subtitle),
+            'output_path': str(final_video),
+            'final_video_path': str(final_video),
+            'folder_removed': folder_removed,
+            'status': 'completed',
+            'error': '',
+        }
+
+    @staticmethod
+    def _remove_generated_sources(directory, video, code):
+        targets = [video]
+        for path in directory.iterdir():
+            if not path.is_file() or path == video:
+                continue
+            if (
+                path.stem.casefold() == code.casefold()
+                and path.suffix.casefold() in {'.srt', '.vtt', '.lrc', '.txt'}
+            ):
+                targets.append(path)
+        for path in targets:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                return f'原文件清理失败: {path.name} ({exc})'
+        return None
+
+    @staticmethod
+    def _vtt_has_cues(subtitle):
+        try:
+            text = subtitle.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return False
+        return ' --> ' in text
+
+    @staticmethod
+    def _normalized_vtt_path(subtitle):
+        """Return (path, needs_cleanup) for a VTT with a spec-compliant WEBVTT header."""
+        try:
+            with subtitle.open('r', encoding='utf-8', errors='replace') as handle:
+                first_line = handle.readline()
+        except OSError:
+            return subtitle, False
+        stripped = first_line.strip()
+        if stripped == 'WEBVTT' or stripped.startswith('WEBVTT '):
+            return subtitle, False
+        if stripped[:6].casefold() != 'webvtt':
+            return subtitle, False
+        fd, tmp_name = tempfile.mkstemp(prefix='subtitle_', suffix='.vtt')
+        tmp_path = Path(tmp_name)
+        with (
+            os.fdopen(fd, 'w', encoding='utf-8', newline='') as out,
+            subtitle.open('r', encoding='utf-8', errors='replace') as source,
+        ):
+            source.readline()
+            out.write('WEBVTT' + stripped[6:] + '\n')
+            for line in source:
+                out.write(line)
+        return tmp_path, True
 
     @staticmethod
     def _failed_result(directory, error):

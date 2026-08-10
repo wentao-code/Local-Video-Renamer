@@ -67,6 +67,13 @@ class BackendClient:
             timeout=max(self.timeout, 20 * 60),
         )
 
+    def generate_subtitles_pipeline(self):
+        return self._post(
+            '/translation/subtitles/pipeline',
+            {},
+            timeout=max(self.timeout, 7 * 24 * 3600),
+        )
+
     def import_videos(self, plans):
         return self._post('/database/videos/import', {'plans': plans})
 

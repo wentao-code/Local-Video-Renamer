@@ -99,6 +99,8 @@ def make_handler(service):
                 return service.generate_subtitles()
             if method == 'POST' and path == '/translation/soft-subtitles':
                 return service.generate_soft_subtitles()
+            if method == 'POST' and path == '/translation/subtitles/pipeline':
+                return service.generate_subtitles_pipeline()
             if method == 'POST' and path == '/rename':
                 return service.rename(body.get('plans', []))
             if method == 'POST' and path == '/database/videos/import':
