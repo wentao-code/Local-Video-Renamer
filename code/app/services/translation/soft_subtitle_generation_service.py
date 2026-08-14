@@ -6,7 +6,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from app.core.app_logging import get_logger, log_context, new_run_id
+from app.core.app_logging import get_logger, get_task_id, log_context, new_run_id, new_task_id
 from app.core.video_code import standardize_video_code
 from app.services.parsers.code_prefix_entry_parser import extract_code
 
@@ -27,19 +27,31 @@ class SoftSubtitleGenerationService:
         )
         self._run_lock = threading.Lock()
 
-    def generate_from_directory(self, input_dir=None):
+    def generate_from_directory(self, input_dir=None, candidate_codes=None):
         directory = Path(input_dir or self.input_dir).expanduser()
+        selected_codes = {
+            standardize_video_code(str(code or '').strip())
+            for code in candidate_codes or []
+            if str(code or '').strip()
+        } if candidate_codes is not None else None
         run_id = new_run_id('soft_subtitle_generation', directory.name)
+        task_id = get_task_id() or new_task_id()
         if not self._run_lock.acquire(blocking=False):
             LOGGER.warning('软字幕生成任务已在运行，跳过本次请求 directory=%s', directory)
-            return self._occupied_result(directory, run_id)
+            return self._occupied_result(directory, run_id, task_id)
         try:
-            with log_context(run_id=run_id):
+            with log_context(run_id=run_id, task_id=task_id):
                 directory.mkdir(parents=True, exist_ok=True)
                 results = []
-                for item in sorted(directory.iterdir()):
-                    if not item.is_dir():
-                        continue
+                # 视频库可能按番号前缀分组，真正的番号目录不一定是输入目录的直接子目录。
+                for item in sorted(
+                    (candidate for candidate in directory.rglob('*') if candidate.is_dir()),
+                    key=lambda candidate: str(candidate).casefold(),
+                ):
+                    if selected_codes is not None:
+                        item_code = standardize_video_code(extract_code(item.name) or item.name)
+                        if item_code not in selected_codes:
+                            continue
                     result = self._mux_numbered_directory(item)
                     if result is not None:
                         results.append(result)
@@ -48,6 +60,7 @@ class SoftSubtitleGenerationService:
                 failed_count = sum(result['status'] == 'failed' for result in results)
                 return {
                     'run_id': run_id,
+                    'task_id': task_id,
                     'input_dir': str(directory),
                     'directory_count': len(results),
                     'success_count': success_count,
@@ -152,10 +165,11 @@ class SoftSubtitleGenerationService:
                 subtitle_input.unlink(missing_ok=True)
 
     @staticmethod
-    def _occupied_result(directory, run_id):
+    def _occupied_result(directory, run_id, task_id):
         error = '已有软字幕生成任务正在运行，请等待其完成'
         return {
             'run_id': run_id,
+            'task_id': task_id,
             'input_dir': str(directory),
             'directory_count': 1,
             'success_count': 0,

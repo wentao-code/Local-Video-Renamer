@@ -18,7 +18,9 @@ class LocalVideoScanService:
             raise FileNotFoundError(f'文件夹不存在: {folder}')
 
         scanned_files = self._collect_video_files(folder)
-        existing_records = self.database.get_videos_by_codes([entry['code'] for entry in scanned_files])
+        existing_records = self.database.get_persisted_videos_by_codes(
+            [entry['code'] for entry in scanned_files]
+        )
         storage_location = get_storage_location_name(folder)
 
         plans = []
@@ -36,6 +38,10 @@ class LocalVideoScanService:
                 rename_count += 1
 
         inventory_sync = self._sync_usb_video_inventory(folder, scanned_files)
+        inventory_sync['offline_count'] = self.database.mark_missing_local_videos_offline(
+            storage_location,
+            [entry['code'] for entry in scanned_files],
+        )
         return {
             'plans': plans,
             'count': len(plans),

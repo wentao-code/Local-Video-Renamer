@@ -10,7 +10,7 @@ from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE
 
 
 class VideoEntityExclusionsTest(unittest.TestCase):
-    def test_rebuild_materializes_all_exclusion_sources_and_hides_video_rows(self):
+    def test_rebuild_materializes_all_exclusion_sources_without_hiding_local_video_rows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
@@ -50,7 +50,10 @@ class VideoEntityExclusionsTest(unittest.TestCase):
                 rows = db.list_videos()
 
             self.assertGreater(changed, 0)
-            self.assertEqual([row['code'] for row in rows], ['ABC-001'])
+            self.assertEqual(
+                [row['code'] for row in rows],
+                ['ABC-001', 'OLD-001', 'QWE-001', 'RTY-001', 'XYZ-001'],
+            )
             with closing(sqlite3.connect(db_path)) as conn:
                 exclusions = conn.execute(
                     '''
@@ -71,7 +74,7 @@ class VideoEntityExclusionsTest(unittest.TestCase):
                 ],
             )
 
-    def test_rebuild_removes_stale_exclusions_after_rules_change(self):
+    def test_filter_rules_do_not_hide_local_video_rows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
@@ -98,7 +101,7 @@ class VideoEntityExclusionsTest(unittest.TestCase):
             }
             with patch.object(db, '_load_video_category_filter_settings', return_value=blocked_settings):
                 db.rebuild_video_entity_exclusions()
-                self.assertEqual(db.list_videos(), [])
+                self.assertEqual([row['code'] for row in db.list_videos()], ['ABC-001'])
             with patch.object(db, '_load_video_category_filter_settings', return_value=clear_settings):
                 db.rebuild_video_entity_exclusions()
                 self.assertEqual([row['code'] for row in db.list_videos()], ['ABC-001'])

@@ -11,7 +11,7 @@ from urllib.request import urlopen
 
 from app.backend.server import make_handler
 from app.backend.service import BackendService
-from app.core.app_logging import cleanup_old_logs, configure_logging, log_context
+from app.core.app_logging import append_jsonl_log, cleanup_old_logs, configure_logging, log_context
 from app.core.project_paths import LOG_DIR
 from app.queen_library.service import QueenLibraryService
 from app.services.enrichment.enrichment_progress_service import EnrichmentProgressService
@@ -110,6 +110,15 @@ class AppLoggingTest(unittest.TestCase):
             self.assertEqual(progress.snapshot()['run_id'], trace.run_id)
             self.assertEqual(progress.snapshot()['correlation_id'], trace.correlation_id)
 
+    def test_task_trace_keeps_current_global_task_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with log_context(task_id='task-enrichment-001'):
+                trace = TaskTraceLogger('single', 'abc-003', '测试任务', log_dir=Path(temp_dir))
+
+            contents = trace.log_path.read_text(encoding='utf-8')
+            self.assertEqual(trace.task_id, 'task-enrichment-001')
+            self.assertIn('task_id=task-enrichment-001', contents)
+
     def test_task_trace_reconfigures_handlers_after_a_temporary_log_directory_is_removed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             configure_logging(log_dir=Path(temp_dir), force=True)
@@ -152,6 +161,31 @@ class AppLoggingTest(unittest.TestCase):
             self.assertIn('duration_ms', entry)
             self.assertTrue(entry['request_id'])
 
+    def test_backend_access_log_preserves_supplied_task_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_dir = Path(temp_dir)
+            configure_logging(log_dir=log_dir, force=True)
+            server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(_HealthService()))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                from urllib.request import Request
+
+                request = Request(
+                    f'http://127.0.0.1:{server.server_port}/health',
+                    headers={'X-Task-ID': 'task-frontend-001'},
+                )
+                with urlopen(request, timeout=3) as response:
+                    self.assertEqual(response.headers['X-Task-ID'], 'task-frontend-001')
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=3)
+
+            logging.shutdown()
+            entry = json.loads((log_dir / 'http_access.log').read_text(encoding='utf-8').splitlines()[-1])
+            self.assertEqual(entry['task_id'], 'task-frontend-001')
+
     def test_snapshot_and_crawl_logs_keep_the_current_correlation_context(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -160,7 +194,7 @@ class AppLoggingTest(unittest.TestCase):
             queen_service = QueenLibraryService.__new__(QueenLibraryService)
             queen_service.crawl_log_path = temp_path / 'queen_crawl.log'
 
-            with log_context(run_id='run-123', correlation_id='corr-456'):
+            with log_context(run_id='run-123', correlation_id='corr-456', task_id='task-789'):
                 snapshot_service._append_snapshot_refresh_log(
                     snapshot_key='actors',
                     refreshed_at='2026-07-14 17:00:00',
@@ -174,6 +208,8 @@ class AppLoggingTest(unittest.TestCase):
             self.assertEqual(snapshot_entry['correlation_id'], 'corr-456')
             self.assertEqual(crawl_entry['run_id'], 'run-123')
             self.assertEqual(crawl_entry['correlation_id'], 'corr-456')
+            self.assertEqual(snapshot_entry['task_id'], 'task-789')
+            self.assertEqual(crawl_entry['task_id'], 'task-789')
 
 
 if __name__ == '__main__':

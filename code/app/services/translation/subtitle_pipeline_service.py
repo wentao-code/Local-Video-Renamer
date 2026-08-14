@@ -6,7 +6,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from app.core.app_logging import get_logger, log_context, new_run_id
+from app.core.app_logging import get_logger, get_task_id, log_context, new_run_id, new_task_id
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.video_code import standardize_video_code
 from app.services.parsers.code_prefix_entry_parser import extract_code
@@ -22,13 +22,34 @@ class SubtitlePipelineService:
         self.subtitle_generation_service = subtitle_generation_service
         self.soft_subtitle_generation_service = soft_subtitle_generation_service
 
-    def run(self, input_dir=None):
+    def run(
+        self,
+        input_dir=None,
+        candidate_codes=None,
+        candidate_run_id=None,
+        manage_candidate_task=True,
+    ):
         directory = self._resolve_input_dir(input_dir)
+        selected_codes = self._normalize_candidate_codes(candidate_codes)
         directory_name = directory.name
         run_id = new_run_id('subtitle_pipeline', directory_name)
-        with log_context(run_id=run_id):
+        task_id = get_task_id() or new_task_id()
+        with log_context(run_id=run_id, task_id=task_id):
             LOGGER.info('字幕流水线任务开始 input_dir=%s', directory)
             preflight = classify_videos(directory)
+            if selected_codes is not None:
+                preflight['embedded'] = [
+                    video for video in preflight['embedded']
+                    if self._video_code(video) in selected_codes
+                ]
+                preflight['external'] = [
+                    item for item in preflight['external']
+                    if self._video_code(item['video']) in selected_codes
+                ]
+                preflight['none'] = [
+                    video for video in preflight['none']
+                    if self._video_code(video) in selected_codes
+                ]
             embedded_count = len(preflight['embedded'])
             external_count = len(preflight['external'])
             missing_count = len(preflight['none'])
@@ -38,64 +59,113 @@ class SubtitlePipelineService:
                 external_count,
                 missing_count,
             )
-            embedded_entries = []
-            external_entries = []
+            if manage_candidate_task:
+                self.subtitle_generation_service.update_candidate_task(
+                    candidate_run_id,
+                    status='running',
+                    selected_codes=selected_codes,
+                )
             external_organized = set()
             external_failures = []
-            generation = None
-            mux = None
+            generation_results = []
+            generation_success_count = 0
+            generation_failed_count = 0
+            generation_run_id = ''
+            mux_results = []
+            mux_success_count = 0
+            mux_failed_count = 0
+            mux_run_id = ''
+            generation_statuses = {}
             hold = self._create_hold_dir(directory)
             try:
-                for video in preflight['embedded']:
-                    embedded_entries.append(self._move_to_hold(video, hold))
-                for item in preflight['external']:
-                    entry = self._move_to_hold(item['video'], hold)
-                    external_entries.append({
-                        'original': entry['original'],
-                        'held': entry['held'],
-                        'subtitle': item['subtitle'],
-                    })
-                try:
-                    generation = self.subtitle_generation_service.generate_from_directory(input_dir=input_dir)
-                    LOGGER.info(
-                        '字幕流水线生成阶段完成 generation_run_id=%s success=%s failed=%s',
-                        generation.get('run_id'),
-                        generation.get('success_count'),
-                        generation.get('failed_count'),
+                jobs = [
+                    ('external', item['video'], item) for item in preflight['external']
+                ] + [
+                    ('missing', video, None) for video in preflight['none']
+                ]
+                jobs.sort(key=lambda item: str(item[1]).casefold())
+                for job_type, video, external_item in jobs:
+                    code = self._video_code(video)
+                    if job_type == 'external':
+                        held_entry = self._move_to_hold(video, hold)
+                        external_entry = {
+                            'original': held_entry['original'],
+                            'held': held_entry['held'],
+                            'subtitle': external_item['subtitle'],
+                        }
+                        organized, failures = self._organize_external_videos(
+                            directory,
+                            [external_entry],
+                        )
+                        if organized:
+                            external_organized.update(organized)
+                            generation_statuses[code] = 'completed'
+                        else:
+                            external_failures.extend(failures)
+                            generation_statuses[code] = 'failed'
+                            self._restore_held([external_entry])
+                        mux_target_ready = bool(organized)
+                    else:
+                        generation_item = self.subtitle_generation_service.generate_from_directory(
+                            input_dir=input_dir,
+                            candidate_codes={code},
+                        )
+                        generation_run_id = generation_item.get('run_id', '')
+                        generation_results.extend(generation_item.get('results', []) or [])
+                        generation_success_count += int(generation_item.get('success_count') or 0)
+                        generation_failed_count += int(generation_item.get('failed_count') or 0)
+                        generation_statuses.update({
+                            self._video_code(item.get('video_path', '')): item.get('status', 'failed')
+                            for item in generation_item.get('results', []) or []
+                        })
+                        mux_target_ready = generation_statuses.get(code) == 'completed'
+
+                    if mux_target_ready:
+                        mux_item = self.soft_subtitle_generation_service.generate_from_directory(
+                            input_dir=str(directory),
+                            candidate_codes={code},
+                        )
+                        mux_run_id = mux_item.get('run_id', '')
+                        mux_results.extend(mux_item.get('results', []) or [])
+                        mux_success_count += int(mux_item.get('success_count') or 0)
+                        mux_failed_count += int(mux_item.get('failed_count') or 0)
+                        if int(mux_item.get('failed_count') or 0) > 0:
+                            generation_statuses[code] = 'failed'
+                    self.subtitle_generation_service.update_candidate_task(
+                        candidate_run_id,
+                        result_statuses={code: generation_statuses.get(code, 'failed')},
                     )
-                except Exception:
-                    LOGGER.exception('字幕流水线生成阶段失败，恢复暂存视频')
-                    self._restore_held(embedded_entries + external_entries)
-                    raise
-                self._restore_held(embedded_entries)
-                external_organized, external_failures = self._organize_external_videos(
-                    directory,
-                    external_entries,
-                )
-                self._restore_held(
-                    [
-                        entry
-                        for entry in external_entries
-                        if entry['original'] not in external_organized
-                    ]
-                )
-                should_mux = int(generation.get('video_count') or 0) > 0 or bool(external_organized)
-                if should_mux:
-                    mux = self.soft_subtitle_generation_service.generate_from_directory(
-                        input_dir=generation.get('input_dir') or str(directory),
+
+                generation = {
+                    'run_id': generation_run_id,
+                    'input_dir': str(directory),
+                    'video_count': generation_success_count + generation_failed_count,
+                    'success_count': generation_success_count,
+                    'failed_count': generation_failed_count,
+                    'results': generation_results,
+                } if generation_results or generation_success_count or generation_failed_count else None
+                mux = {
+                    'run_id': mux_run_id,
+                    'input_dir': str(directory),
+                    'directory_count': mux_success_count + mux_failed_count,
+                    'success_count': mux_success_count,
+                    'failed_count': mux_failed_count,
+                    'results': mux_results,
+                } if mux_results or mux_success_count or mux_failed_count else None
+                task_status = 'completed' if not any(
+                    value == 'failed' for value in generation_statuses.values()
+                ) else 'completed_with_errors'
+                if manage_candidate_task:
+                    self.subtitle_generation_service.update_candidate_task(
+                        candidate_run_id,
+                        status=task_status,
+                        result_statuses=generation_statuses,
                     )
-                    LOGGER.info(
-                        '字幕流水线封装阶段完成 mux_run_id=%s success=%s failed=%s',
-                        mux.get('run_id'),
-                        mux.get('success_count'),
-                        mux.get('failed_count'),
-                    )
-                else:
-                    LOGGER.info('字幕流水线跳过封装阶段')
             finally:
                 shutil.rmtree(hold, ignore_errors=True)
             return self._build_result(
                 run_id,
+                task_id,
                 generation,
                 mux,
                 {
@@ -106,6 +176,21 @@ class SubtitlePipelineService:
                 external_organized,
                 external_failures,
             )
+
+    @staticmethod
+    def _video_code(video_path):
+        path = Path(video_path)
+        return standardize_video_code(extract_code(path.stem) or path.stem)
+
+    @staticmethod
+    def _normalize_candidate_codes(candidate_codes):
+        if candidate_codes is None:
+            return None
+        return {
+            standardize_video_code(str(code or '').strip())
+            for code in candidate_codes
+            if str(code or '').strip()
+        }
 
     def _resolve_input_dir(self, input_dir):
         if input_dir:
@@ -219,7 +304,7 @@ class SubtitlePipelineService:
         return target_vtt
 
     @staticmethod
-    def _build_result(run_id, generation, mux, preflight, external_organized, external_failures):
+    def _build_result(run_id, task_id, generation, mux, preflight, external_organized, external_failures):
         embedded_count = int(preflight.get('embedded_count') or 0)
         external_count = int(preflight.get('external_count') or 0)
         missing_count = int(preflight.get('missing_count') or 0)
@@ -245,7 +330,8 @@ class SubtitlePipelineService:
             )
         return {
             'run_id': run_id,
-            'input_dir': str((generation or {}).get('input_dir') or ''),
+            'task_id': task_id,
+            'input_dir': str((generation or mux or {}).get('input_dir') or ''),
             'generation_run_id': str((generation or {}).get('run_id') or ''),
             'mux_run_id': str((mux or {}).get('run_id') or ''),
             'generation': generation,

@@ -3,6 +3,7 @@ import time
 
 import requests
 
+from app.core.app_logging import get_task_id
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.runtime_config import get_backend_base_url, get_backend_timeout_seconds
 from app.core.timeout_policy import normalize_http_timeout_seconds, validate_timeout_seconds
@@ -60,6 +61,18 @@ class BackendClient:
             timeout=max(self.timeout, 20 * 60),
         )
 
+    def prepare_subtitle_candidates(self):
+        return self._post('/translation/subtitles/candidates', {})
+
+    def confirm_subtitle_candidates(self, candidate_run_id, candidate_codes):
+        return self._post(
+            '/translation/subtitles/candidates/confirm',
+            {
+                'candidate_run_id': candidate_run_id,
+                'candidate_codes': list(candidate_codes or []),
+            },
+        )
+
     def generate_soft_subtitles(self):
         return self._post(
             '/translation/soft-subtitles',
@@ -67,10 +80,22 @@ class BackendClient:
             timeout=max(self.timeout, 20 * 60),
         )
 
-    def generate_subtitles_pipeline(self):
+    def generate_subtitles_pipeline(
+        self,
+        candidate_codes=None,
+        candidate_run_id=None,
+        manage_candidate_task=True,
+    ):
+        payload = {}
+        if candidate_codes is not None:
+            payload['candidate_codes'] = list(candidate_codes)
+        if candidate_run_id is not None:
+            payload['candidate_run_id'] = candidate_run_id
+        if not manage_candidate_task:
+            payload['manage_candidate_task'] = False
         return self._post(
             '/translation/subtitles/pipeline',
-            {},
+            payload,
             timeout=max(self.timeout, 7 * 24 * 3600),
         )
 
@@ -372,6 +397,14 @@ class BackendClient:
     def list_enrichment_plans(self, resumable_only=False):
         query = '?resumable=1' if resumable_only else ''
         return self._get('/database/enrich/plans' + query).get('plans', [])
+
+    def list_enrichment_plan_run_history(self, plan_id='', task_id='', limit=100):
+        query = '?' + urlencode({
+            'plan_id': str(plan_id or '').strip(),
+            'task_id': str(task_id or '').strip(),
+            'limit': max(1, int(limit or 100)),
+        })
+        return self._get('/database/enrich/batch-plan/history' + query).get('history', [])
 
     def recover_enrichment_plans(self, reason='程序启动恢复'):
         return self._post('/database/enrich/recover', {'reason': reason})
@@ -757,14 +790,24 @@ class BackendClient:
     def _get(self, path, timeout=_DEFAULT_TIMEOUT):
         request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout
         request_timeout = normalize_http_timeout_seconds(request_timeout)
-        response = requests.get(self.base_url + path, timeout=request_timeout)
+        response = requests.get(self.base_url + path, timeout=request_timeout, headers=self._task_headers())
         return self._parse_response(response)
 
     def _post(self, path, payload=None, timeout=_DEFAULT_TIMEOUT):
         request_timeout = self.timeout if timeout is _DEFAULT_TIMEOUT else timeout
         request_timeout = normalize_http_timeout_seconds(request_timeout)
-        response = requests.post(self.base_url + path, json=payload or {}, timeout=request_timeout)
+        response = requests.post(
+            self.base_url + path,
+            json=payload or {},
+            timeout=request_timeout,
+            headers=self._task_headers(),
+        )
         return self._parse_response(response)
+
+    @staticmethod
+    def _task_headers():
+        task_id = get_task_id()
+        return {'X-Task-ID': task_id} if task_id else {}
 
     def _parse_response(self, response):
         try:

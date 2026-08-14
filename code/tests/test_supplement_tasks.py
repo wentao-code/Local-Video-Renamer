@@ -8,6 +8,7 @@ from unittest.mock import patch
 from app.core.enrichment_sources import SUPPLEMENT_TASK_SOURCE
 from app.core.enrichment_status import ENRICHED_STATUS, NO_SEARCH_RESULTS_STATUS
 from app.data.database_handler import VideoDatabase
+from app.core.app_logging import log_context
 from app.services.enrichment.supplement_enrichment import (
     ActorSupplementEnrichmentService,
     CodePrefixSupplementEnrichmentService,
@@ -79,6 +80,42 @@ class _FakeProgressTracker:
 
 
 class SupplementTaskDatabaseTest(unittest.TestCase):
+    def test_plan_task_id_and_run_history_survive_database_reopen(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            with log_context(task_id='task-plan-create-001'):
+                db = VideoDatabase(db_path)
+                plan = db.create_enrichment_batch_plan(
+                    'video',
+                    'video_library',
+                    'avfan',
+                    batch_limit=1,
+                    batch_count_limit=1,
+                    candidates=[{'code': 'AAA-001'}],
+                )
+                db.save_enrichment_plan_run_result(
+                    plan['plan_id'],
+                    'video',
+                    {
+                        'run_id': 'run-video-001',
+                        'status': 'failed',
+                        'started_at': '2026-08-10T10:00:00',
+                        'error': 'network timeout',
+                    },
+                )
+
+            reopened = VideoDatabase(db_path)
+            progress = reopened.get_enrichment_batch_plan_progress(plan['plan_id'], 'video')
+            history = reopened.list_enrichment_plan_run_history(plan['plan_id'])
+
+            self.assertEqual(plan['task_id'], 'task-plan-create-001')
+            self.assertEqual(progress['task_id'], 'task-plan-create-001')
+            self.assertEqual(progress['last_task_id'], 'task-plan-create-001')
+            self.assertEqual(history[0]['task_id'], 'task-plan-create-001')
+            self.assertEqual(history[0]['run_id'], 'run-video-001')
+            self.assertEqual(history[0]['status'], 'failed')
+            self.assertEqual(history[0]['result']['error'], 'network timeout')
+
     def test_enrichment_batch_plan_tables_are_created_at_execution_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

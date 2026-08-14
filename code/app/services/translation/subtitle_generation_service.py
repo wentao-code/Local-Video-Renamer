@@ -5,12 +5,16 @@ import json
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from time import perf_counter
 from pathlib import Path
 
-from app.core.app_logging import get_logger, log_context, new_run_id
+from app.core.app_logging import get_logger, get_task_id, log_context, new_run_id, new_task_id
+from app.core.project_paths import SUBTITLE_GENERATION_RECORD_FILE, SUBTITLE_GENERATION_TASK_DIR
 from app.core.translation_config import TranslationConfig
+from app.core.video_code import standardize_video_code
 from app.services.parsers.code_prefix_entry_parser import extract_code
+from app.services.translation.subtitle_preflight import probe_subtitle_stream_count
 
 
 VIDEO_SUFFIXES = frozenset(('.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv'))
@@ -21,14 +25,18 @@ LOGGER = get_logger(__name__)
 class SubtitleGenerationService:
     """Generate subtitles for every supported video under one fixed directory."""
 
-    def __init__(self, config: TranslationConfig):
+    def __init__(self, config: TranslationConfig, record_file=None, task_dir=None):
         self.config = config
+        self.record_file = Path(record_file or SUBTITLE_GENERATION_RECORD_FILE).expanduser()
+        self.task_dir = Path(task_dir or SUBTITLE_GENERATION_TASK_DIR).expanduser()
 
-    def generate_from_directory(self, input_dir=None):
+    def generate_from_directory(self, input_dir=None, candidate_codes=None):
         directory = Path(input_dir or self.config.input_dir).expanduser()
+        selected_codes = self._normalize_candidate_codes(candidate_codes)
         run_id = new_run_id('subtitle_generation', directory.name)
+        task_id = get_task_id() or new_task_id()
         started_at = perf_counter()
-        with log_context(run_id=run_id):
+        with log_context(run_id=run_id, task_id=task_id):
             LOGGER.info(
                 '字幕生成任务开始 input_dir=%s model_root=%s infer_exe=%s device=%s sub_formats=%s overwrite=%s',
                 directory,
@@ -45,14 +53,42 @@ class SubtitleGenerationService:
                 LOGGER.exception('字幕生成任务初始化失败 input_dir=%s', directory)
                 raise
 
-            video_paths = self._find_videos(directory)
-            LOGGER.info('字幕生成发现视频 video_count=%d videos=%s', len(video_paths), [str(path) for path in video_paths])
+            all_video_paths = self._find_videos(directory)
+            if selected_codes is not None:
+                all_video_paths = [
+                    path for path in all_video_paths
+                    if standardize_video_code(extract_code(path.stem) or path.stem) in selected_codes
+                ]
+            records = self._load_records()
+            directory_record = records.get('directories', {}).get(str(directory.resolve()), {})
+            video_records = directory_record.get('videos', {}) if isinstance(directory_record, dict) else {}
+            recorded_count = 0
+            video_paths = []
+            for path in all_video_paths:
+                video_code = extract_code(path.stem) or path.stem
+                record_entry = video_records.get(video_code)
+                if isinstance(record_entry, dict) and self._record_entry_completed(record_entry):
+                    recorded_count += 1
+                if not self._has_complete_subtitles(path, record_entry=record_entry):
+                    video_paths.append(path)
+            skipped_count = len(all_video_paths) - len(video_paths)
+            LOGGER.info(
+                '字幕生成发现视频 discovered_count=%d candidate_count=%d skipped_complete_count=%d recorded_count=%d',
+                len(all_video_paths),
+                len(video_paths),
+                skipped_count,
+                recorded_count,
+            )
             if not video_paths:
                 LOGGER.warning('字幕生成任务结束：固定目录中没有支持的视频文件 input_dir=%s duration_ms=%.3f', directory, (perf_counter() - started_at) * 1000)
                 return {
                     'run_id': run_id,
+                    'task_id': task_id,
                     'input_dir': str(directory),
                     'video_count': 0,
+                    'discovered_video_count': len(all_video_paths),
+                    'skipped_count': skipped_count,
+                    'recorded_count': recorded_count,
                     'results': [],
                     'success_count': 0,
                     'failed_count': 0,
@@ -71,7 +107,10 @@ class SubtitleGenerationService:
             finally:
                 self._restore_video_names(rename_entries, manifest_path)
             results = self._restore_result_paths(results, rename_entries)
-            results = self._organize_completed_results(results)
+            results = self._organize_completed_results(
+                results,
+                on_completed=lambda result: self._record_completed_video(directory, result),
+            )
             success_count = sum(result['status'] == 'completed' for result in results)
             failed_count = len(results) - success_count
             LOGGER.info(
@@ -84,12 +123,121 @@ class SubtitleGenerationService:
             )
             return {
                 'run_id': run_id,
+                'task_id': task_id,
                 'input_dir': str(directory),
                 'video_count': len(video_paths),
+                'discovered_video_count': len(all_video_paths),
+                'skipped_count': skipped_count,
+                'recorded_count': recorded_count,
                 'results': results,
                 'success_count': success_count,
                 'failed_count': failed_count,
             }
+
+    def prepare_candidates(self, input_dir=None):
+        directory = Path(input_dir or self.config.input_dir).expanduser()
+        run_id = new_run_id('subtitle_candidates', directory.name)
+        task_id = get_task_id() or new_task_id()
+        with log_context(run_id=run_id, task_id=task_id):
+            self.config.validate()
+            directory.mkdir(parents=True, exist_ok=True)
+            all_video_paths = self._find_videos(directory)
+            records = self._load_records()
+            directory_record = records.get('directories', {}).get(str(directory.resolve()), {})
+            video_records = directory_record.get('videos', {}) if isinstance(directory_record, dict) else {}
+            candidates = []
+            for path in all_video_paths:
+                video_code = extract_code(path.stem) or path.stem
+                record_entry = video_records.get(video_code)
+                if probe_subtitle_stream_count(path) > 0:
+                    continue
+                external_subtitle = self._find_external_subtitle(path)
+                candidates.append({
+                    'video_code': video_code,
+                    'video_path': str(path),
+                    'status': 'pending',
+                    'reason': '已有外挂字幕，等待软字幕封装' if external_subtitle else '无内嵌字幕和完整外挂字幕，需要生成字幕',
+                    'has_embedded_subtitle': False,
+                    'has_external_subtitle': bool(external_subtitle),
+                })
+            payload = {
+                'version': 1,
+                'run_id': run_id,
+                'task_id': task_id,
+                'status': 'pending_confirmation',
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'input_dir': str(directory),
+                'candidates': candidates,
+                'candidate_count': len(candidates),
+            }
+            task_file = self.task_dir / f'{run_id}.json'
+            self._save_json_atomic(task_file, payload)
+            LOGGER.info('字幕候选任务文件已生成 task_file=%s candidate_count=%d', task_file, len(candidates))
+            return {
+                'run_id': run_id,
+                'task_id': task_id,
+                'task_file': str(task_file),
+                'input_dir': str(directory),
+                'candidate_count': len(candidates),
+                'candidates': candidates,
+            }
+
+    @staticmethod
+    def _normalize_candidate_codes(candidate_codes):
+        if candidate_codes is None:
+            return None
+        return {
+            standardize_video_code(str(code or '').strip())
+            for code in candidate_codes
+            if str(code or '').strip()
+        }
+
+    def update_candidate_task(self, run_id, *, status=None, selected_codes=None, result_statuses=None):
+        if not run_id:
+            return None
+        task_file = self.task_dir / f'{str(run_id).strip()}.json'
+        if not task_file.is_file():
+            LOGGER.warning('字幕候选任务文件不存在 run_id=%s task_file=%s', run_id, task_file)
+            return None
+        try:
+            payload = json.loads(task_file.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            LOGGER.exception('字幕候选任务文件读取失败 task_file=%s', task_file)
+            return None
+        selected = self._normalize_candidate_codes(selected_codes)
+        result_map = {
+            standardize_video_code(str(code or '').strip()): str(value or '').strip()
+            for code, value in dict(result_statuses or {}).items()
+            if str(code or '').strip()
+        }
+        for candidate in payload.get('candidates', []):
+            code = str(candidate.get('video_code', '') or '').strip()
+            normalized_code = standardize_video_code(code)
+            if selected is not None and normalized_code not in selected and candidate.get('status') == 'pending':
+                candidate['status'] = 'cancelled'
+            if normalized_code in result_map:
+                candidate['status'] = result_map[normalized_code]
+        if status:
+            payload['status'] = str(status)
+        elif result_map:
+            candidate_statuses = {
+                str(candidate.get('status', '') or '').strip().lower()
+                for candidate in payload.get('candidates', [])
+            }
+            terminal_statuses = {'completed', 'failed', 'cancelled'}
+            if candidate_statuses and candidate_statuses.issubset(terminal_statuses):
+                payload['status'] = (
+                    'completed_with_errors' if 'failed' in candidate_statuses else 'completed'
+                )
+        payload['updated_at'] = datetime.now(timezone.utc).isoformat()
+        self._save_json_atomic(task_file, payload)
+        return payload
+
+    @staticmethod
+    def _find_external_subtitle(video_path):
+        from app.services.translation.subtitle_preflight import find_external_subtitle
+
+        return find_external_subtitle(video_path)
 
     def _run_infer(self, directory, video_paths, organize=True):
         command = [
@@ -250,7 +398,7 @@ class SubtitleGenerationService:
             restored.append(item)
         return restored
 
-    def _organize_completed_results(self, results):
+    def _organize_completed_results(self, results, on_completed=None):
         organized = []
         for result in results:
             if result.get('status') != 'completed':
@@ -269,7 +417,89 @@ class SubtitleGenerationService:
             item['video_path'] = str(organized_video)
             item['subtitle_paths'] = [str(target) for target in organized_subtitles]
             organized.append(item)
+            if on_completed:
+                on_completed(item)
         return organized
+
+    def _load_records(self):
+        if not self.record_file.is_file():
+            return {'version': 1, 'directories': {}}
+        try:
+            payload = json.loads(self.record_file.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            LOGGER.exception('字幕生成记录读取失败，使用空记录 record_file=%s', self.record_file)
+            return {'version': 1, 'directories': {}}
+        if not isinstance(payload, dict) or not isinstance(payload.get('directories'), dict):
+            LOGGER.warning('字幕生成记录格式无效，使用空记录 record_file=%s', self.record_file)
+            return {'version': 1, 'directories': {}}
+        return payload
+
+    def _record_completed_video(self, directory, result):
+        path = Path(result['video_path'])
+        video_code = extract_code(path.stem) or path.stem
+        records = self._load_records()
+        directory_key = str(directory.resolve())
+        directory_record = records.setdefault('directories', {}).setdefault(directory_key, {'videos': {}})
+        video_records = directory_record.setdefault('videos', {})
+        video_records[video_code] = {
+            'status': 'completed',
+            'subtitle_generation_status': 'completed',
+            'video_path': str(path),
+            'subtitle_paths': list(result.get('subtitle_paths', [])),
+            'completed_at': datetime.now(timezone.utc).isoformat(),
+        }
+        self._save_records(records)
+        LOGGER.info('字幕生成完成记录已写入 video_code=%s video_path=%s record_file=%s', video_code, path, self.record_file)
+
+    def _save_records(self, payload):
+        self._save_json_atomic(self.record_file, payload)
+
+    @staticmethod
+    def _save_json_atomic(target_path, payload):
+        target_path = Path(target_path)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            handle, raw_path = tempfile.mkstemp(
+                prefix=f'{target_path.stem}_',
+                suffix='.tmp',
+                dir=str(target_path.parent),
+            )
+            temporary_path = Path(raw_path)
+            with os.fdopen(handle, 'w', encoding='utf-8', newline='\n') as stream:
+                json.dump(payload, stream, ensure_ascii=False, indent=2)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, target_path)
+        except OSError:
+            LOGGER.exception('字幕 JSON 记录写入失败 record_file=%s', target_path)
+            if temporary_path:
+                temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _record_entry_completed(record_entry):
+        return str(
+            record_entry.get('subtitle_generation_status', record_entry.get('status', ''))
+            or ''
+        ).strip().lower() == 'completed'
+
+    def _has_complete_subtitles(self, video_path, record_entry=None):
+        if probe_subtitle_stream_count(video_path) > 0:
+            LOGGER.info('视频已包含内嵌字幕流，跳过字幕生成 video_path=%s', video_path)
+            return True
+        has_external_subtitles = all(
+            video_path.with_suffix(f'.{suffix}').is_file()
+            for suffix in self.config.sub_formats
+        )
+        if has_external_subtitles:
+            LOGGER.info('视频外挂字幕文件完整，跳过字幕生成 video_path=%s', video_path)
+        elif isinstance(record_entry, dict) and self._record_entry_completed(record_entry):
+            LOGGER.info(
+                '字幕完成记录已过期，实际字幕不完整，重新加入候选 video_path=%s',
+                video_path,
+            )
+        return has_external_subtitles
 
     @staticmethod
     def _organize_files(video_path, subtitle_paths):

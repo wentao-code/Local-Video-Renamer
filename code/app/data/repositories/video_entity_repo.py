@@ -393,7 +393,7 @@ class VideoEntityRepositoryMixin:
         rule_set=None,
     ):
         where_sql, parameters = self._video_search_where_sql(search_text)
-        return self._fetch_processed_video_rows(
+        return self._fetch_local_video_rows(
             where_sql,
             parameters,
             order_by_sql=self._video_order_by_sql(sort_field, sort_order),
@@ -405,20 +405,13 @@ class VideoEntityRepositoryMixin:
 
     def count_videos(self, search_text='', rule_set=None):
         where_sql, parameters = self._video_search_where_sql(search_text)
-        where_sql, parameters = self._append_rule_set_where(
-            where_sql,
-            parameters,
-            rule_set=rule_set,
-            table_alias='p',
-        )
         where_sql = self._local_video_where_sql(where_sql)
         with self._connect() as conn:
             cursor = conn.cursor()
-            processed_read_sql = self._processed_video_read_sql(cursor)
             cursor.execute(
                 f'''
                 SELECT COUNT(*)
-                FROM ({processed_read_sql}) AS p
+                FROM ({self._local_video_read_sql(cursor)}) AS p
                 {where_sql}
                 ''',
                 tuple(parameters),
@@ -454,7 +447,7 @@ class VideoEntityRepositoryMixin:
         for start_index in range(0, len(normalized_names), chunk_size):
             chunk = normalized_names[start_index:start_index + chunk_size]
             rows.extend(
-                self._fetch_processed_video_rows(
+                self._fetch_local_video_rows(
                     'WHERE ' + ' OR '.join('author LIKE ?' for _ in chunk),
                     [f'%{actor_name}%' for actor_name in chunk],
                     refresh_categories=refresh_categories and start_index == 0,
@@ -494,7 +487,7 @@ class VideoEntityRepositoryMixin:
         if not normalized_prefixes:
             return []
 
-        rows = self._fetch_processed_video_rows(
+        rows = self._fetch_local_video_rows(
             'WHERE ' + ' OR '.join('code LIKE ?' for _ in normalized_prefixes),
             [f'{prefix}%' for prefix in normalized_prefixes],
             refresh_categories=refresh_categories,

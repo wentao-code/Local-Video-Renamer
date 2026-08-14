@@ -46,6 +46,35 @@ class LocalVideoMediaImportTest(unittest.TestCase):
         self.assertEqual(row['duration'], '1:02:03')
         self.assertEqual(row['size'], '0.456')
 
+    def test_scan_treats_hidden_persisted_video_as_already_imported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = Path(temp_dir)
+            video_path = folder / 'HID-001.mp4'
+            video_path.write_bytes(b'not a real video')
+
+            db = VideoDatabase(folder / 'video_database.db')
+            db.upsert_video_entity(
+                {'code': 'HID-001', 'title': 'Hidden video'},
+                local_record={
+                    'duration': '1:00:00',
+                    'size': '1.0',
+                    'storage_location': 'Local folder',
+                },
+            )
+            with db._connect() as conn:
+                conn.execute('DELETE FROM active_video_entities WHERE code = ?', ('HID-001',))
+                conn.commit()
+
+            with patch(
+                'app.services.local_video.local_video_scan_service.read_local_video_media_info',
+                return_value=LocalVideoMediaInfo(duration='1:00:00', size_gb='1.0'),
+            ):
+                scan_result = LocalVideoScanService(db).scan_folder(folder)
+
+        plan = scan_result['plans'][0]
+        self.assertTrue(plan['exists_in_db'])
+        self.assertFalse(plan['import_required'])
+
     def test_scan_updates_usb_inventory_and_records_deleted_video_capacity_change(self):
         mb = 1024 * 1024
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -57,6 +86,7 @@ class LocalVideoMediaImportTest(unittest.TestCase):
 
             db = VideoDatabase(folder / 'video_database.db')
             scan_service = LocalVideoScanService(db)
+            import_service = LocalVideoImportService(db)
             storage_snapshots = [
                 {'total_bytes': 64000 * mb, 'used_bytes': 54000 * mb, 'free_bytes': 10000 * mb},
                 {'total_bytes': 64000 * mb, 'used_bytes': 45200 * mb, 'free_bytes': 18800 * mb},
@@ -70,6 +100,7 @@ class LocalVideoMediaImportTest(unittest.TestCase):
                 side_effect=storage_snapshots,
             ):
                 first_scan = scan_service.scan_folder(folder)
+                import_service.import_videos(first_scan['plans'])
                 deleted_video.unlink()
                 second_scan = scan_service.scan_folder(folder)
 
@@ -77,9 +108,14 @@ class LocalVideoMediaImportTest(unittest.TestCase):
             self.assertEqual(first_scan['inventory_sync']['change_count'], 0)
             self.assertEqual(second_scan['inventory_sync']['inventory_count'], 1)
             self.assertEqual(second_scan['inventory_sync']['change_count'], 1)
+            self.assertEqual(second_scan['inventory_sync']['offline_count'], 1)
 
             inventory_codes = {row['video_code'] for row in db.get_usb_video_inventory(folder)}
             self.assertEqual(inventory_codes, {'ABP-123'})
+
+            self.assertEqual([row['code'] for row in db.list_videos()], ['ABP-123'])
+            deleted_record = db.get_persisted_videos_by_codes(['RCTD-311'])['RCTD-311']
+            self.assertEqual(deleted_record['storage_location'], '')
 
             logs = db.list_usb_video_change_logs(folder)
             self.assertEqual(len(logs), 1)

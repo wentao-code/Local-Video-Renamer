@@ -6,7 +6,15 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-from app.core.app_logging import configure_logging, get_correlation_id, get_logger, new_correlation_id, new_run_id
+from app.core.app_logging import (
+    configure_logging,
+    get_correlation_id,
+    get_logger,
+    get_task_id,
+    new_correlation_id,
+    new_run_id,
+    new_task_id,
+)
 from app.core.project_paths import TASK_TRACE_LOG_DIR
 
 
@@ -22,6 +30,7 @@ class TaskTraceLogger:
         self.run_started_at = datetime.now()
         self.run_id = new_run_id(self.task_kind, self.task_key)
         self.correlation_id = get_correlation_id() or new_correlation_id(self.task_kind)
+        self.task_id = get_task_id() or new_task_id()
         self.log_path = self.log_dir / f'{self.run_id}.log'
         self._lock = Lock()
         self._cleanup_old_logs()
@@ -32,6 +41,7 @@ class TaskTraceLogger:
             task_key=self.task_key,
             run_id=self.run_id,
             correlation_id=self.correlation_id,
+            task_id=self.task_id,
             log_path=str(self.log_path),
         )
 
@@ -41,6 +51,7 @@ class TaskTraceLogger:
         detail_text = ''
         fields.setdefault('run_id', self.run_id)
         fields.setdefault('correlation_id', self.correlation_id)
+        fields.setdefault('task_id', self.task_id)
         if fields:
             parts = [f'{key}={fields[key]}' for key in sorted(fields)]
             detail_text = ' | ' + ' | '.join(parts)
@@ -52,6 +63,7 @@ class TaskTraceLogger:
         get_logger('app.task').log(log_level, '%s%s', message, detail_text, extra={
             'run_id': self.run_id,
             'correlation_id': self.correlation_id,
+            'task_id': self.task_id,
         })
 
     def log_exception(self, level, message, exception, **fields):

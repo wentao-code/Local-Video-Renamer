@@ -1,4 +1,5 @@
 from app.data.database_handler import VideoDatabase
+from app.core.app_logging import log_context
 from app.backend.service import BackendService
 from app.backend.client import BackendClient
 from app.backend.server import make_handler
@@ -9,22 +10,25 @@ from unittest.mock import Mock
 def test_startup_refresh_history_records_and_replaces_completion(tmp_path):
     database = VideoDatabase(tmp_path / 'video_database.db')
 
-    database.record_startup_refresh_completion(
-        'actor_library',
-        '启动刷新 演员库',
-        completed_at='2026-07-29 10:00:00',
-    )
-    database.record_startup_refresh_completion(
-        'actor_library',
-        '启动刷新 演员库（重试）',
-        completed_at='2026-07-29 11:00:00',
-    )
+    with log_context(task_id='task-startup-001'):
+        database.record_startup_refresh_completion(
+            'actor_library',
+            '启动刷新 演员库',
+            completed_at='2026-07-29 10:00:00',
+        )
+    with log_context(task_id='task-startup-002'):
+        database.record_startup_refresh_completion(
+            'actor_library',
+            '启动刷新 演员库（重试）',
+            completed_at='2026-07-29 11:00:00',
+        )
 
     assert database.list_startup_refresh_history() == {
         'actor_library': {
             'task_key': 'actor_library',
             'task_title': '启动刷新 演员库（重试）',
             'last_completed_at': '2026-07-29 11:00:00',
+            'task_id': 'task-startup-002',
         }
     }
 

@@ -133,6 +133,29 @@ class BackendVideoListOptimizationTest(unittest.TestCase):
         self.assertEqual(result['offset'], 100)
         self.assertEqual(result['limit'], 50)
 
+    def test_list_videos_does_not_apply_content_filters_to_local_library(self):
+        class FakeDatabase:
+            def list_videos(self, *args, **kwargs):
+                return [{'code': 'HID-001', 'title': 'Filtered title', 'author': 'Actor A'}]
+
+            def count_videos(self, *args, **kwargs):
+                return 1
+
+        class FilteringService:
+            @staticmethod
+            def load_ruleset(scope='library'):
+                return None
+
+            @staticmethod
+            def filter_video_rows(rows, settings=None):
+                return []
+
+        service = self._build_service(FakeDatabase(), filter_service=FilteringService())
+
+        result = BackendService.list_videos(service)
+
+        self.assertEqual([row['code'] for row in result['videos']], ['HID-001'])
+
 
 class TargetedDetailQueryTest(unittest.TestCase):
     def test_actor_detail_prefers_targeted_local_query(self):

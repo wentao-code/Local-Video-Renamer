@@ -29,26 +29,56 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertNotIn('btn_generate_soft_subtitles', init_source)
         self.assertNotIn('软字幕生成', init_source)
 
-    def test_generate_subtitles_runs_full_pipeline_without_scan(self):
+    def test_generate_subtitles_creates_one_pipeline_task_per_confirmed_video(self):
         calls = []
+
+        def start_async_task(task, success_handler, *args, **kwargs):
+            result = task()
+            calls.append(('task', result, kwargs))
+            success_handler(result)
+
         stub = SimpleNamespace(
             pending_renames=[],
             backend_client=SimpleNamespace(
-                generate_subtitles_pipeline=lambda: calls.append(('generate',)) or {'success_count': 2},
+                prepare_subtitle_candidates=lambda: calls.append(('prepare',)) or {
+                    'run_id': 'subtitle_candidates-1',
+                    'candidates': [
+                        {'video_code': 'RCTD-688', 'video_path': 'video-1.mp4'},
+                        {'video_code': 'RCTD-689', 'video_path': 'video-2.mp4'},
+                    ],
+                },
+                confirm_subtitle_candidates=lambda run_id, codes: calls.append(('confirm', run_id, codes)),
+                generate_subtitles_pipeline=lambda codes, run_id, manage_candidate_task=True: calls.append(
+                    ('generate', codes, run_id, manage_candidate_task)
+                ) or {'success_count': 1},
             ),
-            _on_generate_subtitles_finished=lambda _result: None,
-            start_async_task=lambda task, *args, **kwargs: calls.append(('task', task(), kwargs)),
+            _on_generate_subtitle_task_finished=lambda _code, _result: None,
+            _build_subtitle_task_result=main_window.VidNormApp._build_subtitle_task_result,
+            _on_subtitle_candidates_prepared=lambda payload: main_window.VidNormApp._on_subtitle_candidates_prepared(stub, payload),
+            start_async_task=start_async_task,
         )
 
-        main_window.VidNormApp.generate_subtitles(stub)
-
-        self.assertEqual(
-            calls,
-            [
-                ('generate',),
-                ('task', {'success_count': 2}, {'task_title': '主界面 生成字幕', 'task_kind': 'subtitle_pipeline', 'block_ui': False}),
-            ],
+        dialog = SimpleNamespace(
+            Accepted=1,
+            exec_=lambda: 1,
+            selected_codes=lambda: ['RCTD-688', 'RCTD-689'],
         )
+        with patch('app.gui.main_window.SubtitleCandidateDialog', return_value=dialog):
+            main_window.VidNormApp.generate_subtitles(stub)
+
+        self.assertEqual(calls[0], ('prepare',))
+        self.assertEqual(calls[1][0], 'task')
+        self.assertEqual(calls[2], ('confirm', 'subtitle_candidates-1', ['RCTD-688', 'RCTD-689']))
+        self.assertEqual(calls[3], ('generate', ['RCTD-688'], 'subtitle_candidates-1', False))
+        self.assertEqual(calls[4][0], 'task')
+        self.assertEqual(calls[4][2]['task_title'], '字幕生成与封装 RCTD-688')
+        self.assertEqual(calls[4][2]['resume_kind'], 'subtitle_pipeline_video')
+        self.assertEqual(calls[4][2]['resume_payload']['video_code'], 'RCTD-688')
+        self.assertTrue(calls[4][2]['resumable'])
+        self.assertEqual(calls[5], ('generate', ['RCTD-689'], 'subtitle_candidates-1', False))
+        self.assertEqual(calls[6][0], 'task')
+        self.assertEqual(calls[6][2]['task_title'], '字幕生成与封装 RCTD-689')
+        self.assertEqual(calls[6][2]['resume_payload']['video_code'], 'RCTD-689')
 
     def test_cancelled_plan_task_is_deleted_after_backend_plan_cancel_succeeds(self):
         calls = []
@@ -73,18 +103,56 @@ class MainWindowStartupTest(unittest.TestCase):
         stub = SimpleNamespace(
             task_queue=FakeQueue(),
             backend_client=SimpleNamespace(
-                cancel_enrichment_plan=lambda *args: calls.append(('cancel_plan', args)),
+                cancel_enrichment_plan=lambda *args: calls.append(('cancel_plan', args)) or {
+                    'status': 'cancelled',
+                },
                 cancel_enrichment=lambda: calls.append(('cancel_enrichment',)) or {
                     'cancel_requested': False,
                 },
             ),
         )
 
-        cancelled = main_window.VidNormApp.cancel_task_records(stub, [record])
+        with patch('app.gui.main_window.QMessageBox.critical'):
+            cancelled = main_window.VidNormApp.cancel_task_records(stub, [record])
 
         self.assertEqual(cancelled, 1)
         self.assertIn(('cancel_plan', ('plan-1', 'actor', '用户删除任务')), calls)
         self.assertIn(('mark_deleted', 7, '用户删除任务'), calls)
+
+    def test_cancel_task_records_keeps_task_when_backend_plan_was_not_found(self):
+        calls = []
+        record = SimpleNamespace(
+            task_id=7,
+            status=main_window.TASK_STATUS_RUNNING,
+            plan_id='plan-1',
+            plan_task_kind='actor',
+        )
+
+        class FakeQueue:
+            def cancel_task(self, task_id, reason):
+                calls.append(('cancel_task', task_id, reason))
+                return True
+
+            def mark_deleted(self, task_id, reason):
+                calls.append(('mark_deleted', task_id, reason))
+
+            def restore_cancel_failure(self, task_id, message):
+                calls.append(('restore_cancel_failure', task_id, message))
+
+        stub = SimpleNamespace(
+            task_queue=FakeQueue(),
+            backend_client=SimpleNamespace(
+                cancel_enrichment_plan=lambda *args: {'status': 'not_found'},
+                cancel_enrichment=lambda: calls.append(('cancel_enrichment',)),
+            ),
+        )
+
+        with patch('app.gui.main_window.QMessageBox.critical'):
+            cancelled = main_window.VidNormApp.cancel_task_records(stub, [record])
+
+        self.assertEqual(cancelled, 0)
+        self.assertIn(('restore_cancel_failure', 7, '补全计划不存在，未执行取消。'), calls)
+        self.assertNotIn(('mark_deleted', 7, '用户删除任务'), calls)
 
     def test_refresh_snapshot_pages_collects_all_pages_without_record_callback(self):
         payloads = iter(
@@ -317,6 +385,8 @@ class MainWindowStartupTest(unittest.TestCase):
     def test_start_snapshot_refresh_scheduler_delays_startup_refresh(self):
         started = []
         stub = SimpleNamespace(
+            background_refresh_enabled=True,
+            background_refresh_startup_sequence_queued=False,
             snapshot_refresh_timer=SimpleNamespace(start=lambda: started.append('timer')),
             schedule_snapshot_refresh_cycle=lambda: None,
             enqueue_startup_refresh_tasks=lambda: started.append('startup-refresh'),
@@ -330,6 +400,67 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertGreaterEqual(delay_ms, 15000)
         callback()
         self.assertEqual(started, ['timer', 'startup-refresh'])
+
+    def test_background_refresh_toggle_persists_and_updates_button_state(self):
+        class FakeButton:
+            def __init__(self):
+                self.tooltip = ''
+                self.style = ''
+
+            def setToolTip(self, value):
+                self.tooltip = value
+
+            def setStyleSheet(self, value):
+                self.style = value
+
+        class FakeTimer:
+            def __init__(self):
+                self.started = 0
+                self.stopped = 0
+
+            def start(self):
+                self.started += 1
+
+            def stop(self):
+                self.stopped += 1
+
+        button = FakeButton()
+        timer = FakeTimer()
+        stub = SimpleNamespace(
+            background_refresh_enabled=True,
+            btn_background_refresh=button,
+            snapshot_refresh_timer=timer,
+            snapshot_refresh_running=False,
+            snapshot_refresh_queued=True,
+            background_refresh_startup_sequence_queued=False,
+        )
+
+        with patch('app.gui.main_window.save_background_refresh_enabled') as save:
+            main_window.VidNormApp.set_background_refresh_enabled(stub, False)
+
+        self.assertFalse(stub.background_refresh_enabled)
+        self.assertIn('#dc2626', button.style)
+        self.assertEqual(button.tooltip, '后台刷新：已关闭')
+        self.assertEqual(timer.stopped, 1)
+        self.assertTrue(stub.snapshot_refresh_queued)
+        save.assert_called_once_with(False)
+
+    def test_disabled_background_refresh_does_not_start_scheduler(self):
+        started = []
+        stub = SimpleNamespace(
+            background_refresh_enabled=False,
+            snapshot_refresh_timer=SimpleNamespace(
+                start=lambda: started.append('start'),
+                stop=lambda: started.append('stop'),
+            ),
+        )
+
+        with patch('app.gui.main_window.QTimer.singleShot') as single_shot:
+            result = main_window.VidNormApp.start_snapshot_refresh_scheduler(stub)
+
+        self.assertFalse(result)
+        self.assertEqual(started, ['stop'])
+        single_shot.assert_not_called()
 
     def test_enqueue_startup_refresh_tasks_adds_interface_refreshes_after_snapshot_refresh(self):
         task_titles = []
@@ -773,6 +904,52 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertFalse(captured['block_ui'])
         self.assertTrue(captured['kwargs']['allow_deferred_close'])
         self.assertEqual(captured['kwargs']['task_title'], '主界面 全量刷新快照')
+
+    def test_subtitle_confirmation_queues_one_task_for_each_selected_code(self):
+        captured = {'tasks': []}
+
+        class _Client:
+            def confirm_subtitle_candidates(self, run_id, codes):
+                captured['confirm_args'] = (run_id, codes)
+
+            def generate_subtitles_pipeline(self, codes, run_id, manage_candidate_task=True):
+                captured['pipeline_args'] = (*codes, run_id, manage_candidate_task)
+                return {'success_count': 1}
+
+        class _Dialog:
+            Accepted = 1
+
+            def __init__(self, _candidates, _parent):
+                pass
+
+            def exec_(self):
+                return self.Accepted
+
+            def selected_codes(self):
+                return ['RCTD-688']
+
+        stub = SimpleNamespace(
+            backend_client=_Client(),
+            start_async_task=lambda task, success_handler, *args, **kwargs: captured['tasks'].append(
+                (task(), success_handler, kwargs)
+            ),
+            _on_generate_subtitle_task_finished=lambda code, result: (code, result),
+            _build_subtitle_task_result=main_window.VidNormApp._build_subtitle_task_result,
+        )
+        payload = {
+            'run_id': 'subtitle-candidates-001',
+            'task_id': 'task-subtitle-001',
+            'candidates': [{'video_code': 'RCTD-688'}, {'video_code': 'RCTD-689'}],
+        }
+
+        with patch.object(main_window, 'SubtitleCandidateDialog', _Dialog):
+            main_window.VidNormApp._on_subtitle_candidates_prepared(stub, payload)
+
+        self.assertEqual(captured['confirm_args'], ('subtitle-candidates-001', ['RCTD-688']))
+        self.assertEqual(captured['pipeline_args'], ('RCTD-688', 'subtitle-candidates-001', False))
+        self.assertEqual(len(captured['tasks']), 1)
+        self.assertEqual(captured['tasks'][0][2]['task_title'], '字幕生成与封装 RCTD-688')
+        self.assertNotIn('trace_task_id', captured['tasks'][0][2])
 
     def test_task_queue_button_turns_green_when_queue_is_done(self):
         button = SimpleNamespace(style='')

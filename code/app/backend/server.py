@@ -14,6 +14,8 @@ from app.core.app_logging import (
     log_context,
     log_http_access,
     new_correlation_id,
+    new_task_id,
+    get_task_id,
 )
 
 
@@ -44,10 +46,11 @@ def make_handler(service):
 
         def _handle_request(self, method):
             request_id = new_correlation_id('req')
+            task_id = str(self.headers.get('X-Task-ID', '') or '').strip() or new_task_id()
             started_at = perf_counter()
             parsed_url = urlparse(self.path)
             status = HTTPStatus.OK
-            with log_context(correlation_id=request_id):
+            with log_context(correlation_id=request_id, task_id=task_id):
                 try:
                     body = self._read_json_body()
                     response = self._route(method, parsed_url, body)
@@ -55,15 +58,15 @@ def make_handler(service):
                 except FileNotFoundError as exc:
                     status = HTTPStatus.NOT_FOUND
                     get_logger(__name__).warning('后端请求资源不存在: %s', exc)
-                    self._send_json({'error': str(exc), 'request_id': request_id}, status)
+                    self._send_json({'error': str(exc), 'request_id': request_id, 'task_id': task_id}, status)
                 except ValueError as exc:
                     status = HTTPStatus.BAD_REQUEST
                     get_logger(__name__).warning('后端请求参数无效: %s', exc)
-                    self._send_json({'error': str(exc), 'request_id': request_id}, status)
+                    self._send_json({'error': str(exc), 'request_id': request_id, 'task_id': task_id}, status)
                 except Exception as exc:
                     status = HTTPStatus.INTERNAL_SERVER_ERROR
                     get_logger(__name__).exception('后端请求异常')
-                    self._send_json({'error': str(exc), 'request_id': request_id}, status)
+                    self._send_json({'error': str(exc), 'request_id': request_id, 'task_id': task_id}, status)
                 finally:
                     log_http_access(
                         method,
@@ -72,6 +75,7 @@ def make_handler(service):
                         (perf_counter() - started_at) * 1000,
                         request_id,
                         client_address=self.client_address[0] if self.client_address else '',
+                        task_id=task_id,
                     )
 
         def _route(self, method, parsed_url, body):
@@ -97,10 +101,26 @@ def make_handler(service):
                 return service.scan(folder_path)
             if method == 'POST' and path == '/translation/subtitles':
                 return service.generate_subtitles()
+            if method == 'POST' and path == '/translation/subtitles/candidates':
+                return service.prepare_subtitle_candidates()
+            if method == 'POST' and path == '/translation/subtitles/candidates/confirm':
+                return service.confirm_subtitle_candidates(
+                    body.get('candidate_run_id'),
+                    body.get('candidate_codes') or [],
+                )
             if method == 'POST' and path == '/translation/soft-subtitles':
                 return service.generate_soft_subtitles()
             if method == 'POST' and path == '/translation/subtitles/pipeline':
-                return service.generate_subtitles_pipeline()
+                candidate_codes = body.get('candidate_codes')
+                candidate_run_id = body.get('candidate_run_id')
+                manage_candidate_task = body.get('manage_candidate_task', True)
+                if candidate_codes is None and candidate_run_id is None:
+                    return service.generate_subtitles_pipeline()
+                return service.generate_subtitles_pipeline(
+                    candidate_codes=candidate_codes,
+                    candidate_run_id=candidate_run_id,
+                    manage_candidate_task=bool(manage_candidate_task),
+                )
             if method == 'POST' and path == '/rename':
                 return service.rename(body.get('plans', []))
             if method == 'POST' and path == '/database/videos/import':
@@ -387,6 +407,12 @@ def make_handler(service):
                 return service.list_enrichment_plans(
                     resumable_only=_is_truthy_query_value(query, 'resumable'),
                 )
+            if method == 'GET' and path == '/database/enrich/batch-plan/history':
+                return service.list_enrichment_plan_run_history(
+                    query.get('plan_id', [''])[0],
+                    query.get('task_id', [''])[0],
+                    _int_query_value(query, 'limit', default=100),
+                )
             if method == 'GET' and path == '/database/enrich/plan-progress':
                 return service.get_enrichment_plan_progress(
                     query.get('plan_id', [''])[0],
@@ -434,6 +460,8 @@ def make_handler(service):
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.send_header('Content-Length', str(len(payload)))
+                if get_task_id():
+                    self.send_header('X-Task-ID', get_task_id())
                 self.end_headers()
                 self.wfile.write(payload)
             except OSError:

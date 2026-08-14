@@ -10,6 +10,42 @@ from app.services.translation.soft_subtitle_generation_service import (
 
 
 class SoftSubtitleGenerationServiceTest(unittest.TestCase):
+    def test_candidate_codes_limit_mux_to_one_video_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dir = Path(temp_dir) / 'translation_videos'
+            first = input_dir / 'AAA-001'
+            second = input_dir / 'AAA-002'
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            service = SoftSubtitleGenerationService(input_dir)
+            visited = []
+
+            with patch.object(
+                service,
+                '_mux_numbered_directory',
+                side_effect=lambda directory: visited.append(directory.name) or None,
+            ):
+                service.generate_from_directory(candidate_codes={'AAA-002'})
+
+            self.assertEqual(visited, ['AAA-002'])
+
+    def test_candidate_codes_find_nested_numbered_video_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dir = Path(temp_dir) / 'translation_videos'
+            numbered = input_dir / 'BBSS' / 'BBSS-085'
+            numbered.mkdir(parents=True)
+            service = SoftSubtitleGenerationService(input_dir)
+            visited = []
+
+            with patch.object(
+                service,
+                '_mux_numbered_directory',
+                side_effect=lambda directory: visited.append(directory.relative_to(input_dir).as_posix()) or None,
+            ):
+                service.generate_from_directory(candidate_codes={'BBSS-085'})
+
+            self.assertEqual(visited, ['BBSS/BBSS-085'])
+
     def test_muxes_numbered_vtt_with_titled_video_in_number_folder(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             input_dir = Path(temp_dir) / 'translation_videos'

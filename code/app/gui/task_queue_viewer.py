@@ -17,6 +17,9 @@ from app.gui.task_queue import (
     TASK_STATUS_COMPLETED,
     TASK_STATUS_DELETED,
     TASK_STATUS_PARTIAL,
+    TASK_STATUS_PAUSED,
+    TASK_STATUS_RUNNING,
+    TASK_STATUS_WAITING,
     get_gui_task_queue,
 )
 
@@ -32,19 +35,23 @@ class TaskQueueViewerWindow(QDialog):
         self.task_queue_owner = parent
         enable_minimize_button(self)
         self.setWindowTitle('任务列表')
-        self.resize(980, 520)
+        self.resize(1120, 520)
         self.task_queue = get_gui_task_queue()
         self._selected_task_ids = set()
 
         layout = QVBoxLayout()
         self.summary_label = QLabel('')
+        self.btn_pause_resume = QPushButton('暂停')
+        self.btn_pause_resume.setEnabled(False)
+        self.btn_pause_resume.clicked.connect(self.pause_resume_selected_tasks)
         self.btn_delete_selected = QPushButton('删除选中任务')
         self.btn_delete_selected.setEnabled(False)
         self.btn_delete_selected.clicked.connect(self.delete_selected_tasks)
         self.table = QTableWidget()
-        self.table.setColumnCount(15)
+        self.table.setColumnCount(16)
         self.table.setHorizontalHeaderLabels([
             '编号',
+            '追踪ID',
             '任务',
             '分类',
             '来源',
@@ -65,17 +72,18 @@ class TaskQueueViewerWindow(QDialog):
         self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.itemSelectionChanged.connect(self._update_delete_button)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        for column in range(6, 13):
+        for column in range(6, 14):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(13, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(14, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(15, QHeaderView.Stretch)
 
         action_layout = QHBoxLayout()
+        action_layout.addWidget(self.btn_pause_resume)
         action_layout.addWidget(self.btn_delete_selected)
         action_layout.addStretch(1)
         layout.addWidget(self.summary_label)
@@ -108,6 +116,7 @@ class TaskQueueViewerWindow(QDialog):
                 error_text = f'{error_text} | {record.last_error}' if error_text else record.last_error
             values = [
                 record.task_id,
+                getattr(record, 'trace_task_id', ''),
                 record.title,
                 getattr(record, 'task_category', ''),
                 record.source,
@@ -133,6 +142,25 @@ class TaskQueueViewerWindow(QDialog):
                 self.table.selectRow(row)
         self._update_delete_button()
 
+    def pause_resume_selected_tasks(self):
+        records = self._selected_records()
+        if not records:
+            return 0
+        if all(record.status == TASK_STATUS_PAUSED for record in records):
+            count = self.task_queue.resume_tasks([record.task_id for record in records])
+        else:
+            pausable = [
+                record for record in records
+                if record.status in {TASK_STATUS_RUNNING, TASK_STATUS_WAITING}
+                and not record.pause_requested
+            ]
+            count = 0
+            for record in pausable:
+                self.task_queue.request_pause(record.task_id, '用户暂停')
+                count += 1
+        self.refresh_rows()
+        return count
+
     def _selected_records(self):
         records = self.task_queue.records()
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -151,6 +179,25 @@ class TaskQueueViewerWindow(QDialog):
             if record.status not in {TASK_STATUS_COMPLETED, TASK_STATUS_PARTIAL, TASK_STATUS_DELETED}
         ]
         self.btn_delete_selected.setEnabled(bool(eligible))
+        selected = self._selected_records()
+        if not selected:
+            self.btn_pause_resume.setText('暂停')
+            self.btn_pause_resume.setEnabled(False)
+            return
+        if all(record.status == TASK_STATUS_PAUSED for record in selected):
+            can_resume = all(bool(getattr(record, 'resumable', False)) for record in selected)
+            self.btn_pause_resume.setText('继续')
+            self.btn_pause_resume.setEnabled(can_resume)
+            if not can_resume:
+                self.btn_pause_resume.setToolTip('选中的任务没有可恢复描述')
+            return
+        pausable = [
+            record for record in selected
+            if record.status in {TASK_STATUS_RUNNING, TASK_STATUS_WAITING}
+        ]
+        pause_requested = any(bool(getattr(record, 'pause_requested', False)) for record in pausable)
+        self.btn_pause_resume.setText('暂停中' if pause_requested else '暂停')
+        self.btn_pause_resume.setEnabled(bool(pausable) and not pause_requested)
 
     def confirm_delete(self, records):
         names = '\n'.join(

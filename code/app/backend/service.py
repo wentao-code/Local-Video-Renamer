@@ -9,7 +9,15 @@ from urllib.parse import quote, unquote
 from uuid import uuid4
 
 from app.core.backend_protocol import BACKEND_API_REVISION, BACKEND_PROCESS_CODE_FINGERPRINT
-from app.core.app_logging import append_jsonl_log, bind_log_context, get_logger, reset_log_context
+from app.core.app_logging import (
+    append_jsonl_log,
+    bind_log_context,
+    get_logger,
+    get_task_id,
+    log_context,
+    new_task_id,
+    reset_log_context,
+)
 from app.core.operation_timeout_settings import (
     get_effective_timeout_snapshot,
     list_operation_timeout_settings,
@@ -247,11 +255,36 @@ class BackendService:
     def generate_subtitles(self):
         return self.subtitle_generation_service.generate_from_directory()
 
+    def prepare_subtitle_candidates(self):
+        return self.subtitle_generation_service.prepare_candidates()
+
+    def confirm_subtitle_candidates(self, candidate_run_id, candidate_codes):
+        result = self.subtitle_generation_service.update_candidate_task(
+            candidate_run_id,
+            status='running',
+            selected_codes=candidate_codes,
+        )
+        if result is None:
+            raise ValueError('字幕候选任务不存在或无法更新')
+        return result
+
     def generate_soft_subtitles(self):
         return self.soft_subtitle_generation_service.generate_from_directory()
 
-    def generate_subtitles_pipeline(self):
-        return self.subtitle_pipeline_service.run()
+    def generate_subtitles_pipeline(
+        self,
+        candidate_codes=None,
+        candidate_run_id=None,
+        manage_candidate_task=True,
+    ):
+        kwargs = {}
+        if candidate_codes is not None:
+            kwargs['candidate_codes'] = candidate_codes
+        if candidate_run_id is not None:
+            kwargs['candidate_run_id'] = candidate_run_id
+        if not manage_candidate_task:
+            kwargs['manage_candidate_task'] = False
+        return self.subtitle_pipeline_service.run(**kwargs)
 
     def rename(self, plans_data):
         return self.local_video_library.execute_renames(plans_data)
@@ -278,24 +311,13 @@ class BackendService:
         normalized_offset = self._normalize_list_offset(offset)
         normalized_sort_field = self._normalize_video_sort_field(sort_field)
         normalized_sort_order = self._normalize_sort_order(sort_order)
-        ruleset_loader = getattr(self.video_filter_service, 'load_ruleset', None)
-        library_ruleset = (
-            ruleset_loader(scope='library')
-            if callable(ruleset_loader)
-            else None
-        )
-        ruleset_fingerprint = (
-            library_ruleset.fingerprint()
-            if library_ruleset is not None and hasattr(library_ruleset, 'fingerprint')
-            else ''
-        )
         page_snapshot_key = self._video_library_page_snapshot_key(
             normalized_search,
             normalized_sort_field,
             normalized_sort_order,
             normalized_limit,
             normalized_offset,
-            ruleset_fingerprint,
+            '',
         )
         if not force_refresh:
             cached = self._read_page_snapshot(page_snapshot_key)
@@ -315,7 +337,7 @@ class BackendService:
                     normalized_search,
                     sort_field=normalized_sort_field,
                     sort_order=normalized_sort_order,
-                    rule_set=library_ruleset,
+                    rule_set=None,
                 )
                 if str((row or {}).get('code', '') or '').strip()
             }
@@ -324,8 +346,7 @@ class BackendService:
                 if code:
                     rows_by_code[code] = dict(row or {})
 
-            visible_rows = self.video_filter_service.filter_video_rows(list(rows_by_code.values()))
-            enriched_rows = self.video_ladder_tag_service.enrich_video_rows(visible_rows, medal_maps=medal_maps)
+            enriched_rows = self.video_ladder_tag_service.enrich_video_rows(list(rows_by_code.values()), medal_maps=medal_maps)
             filtered_rows = self.video_ladder_tag_service.filter_video_rows(enriched_rows, normalized_search)
             sorted_rows = self._sort_video_rows_for_listing(filtered_rows, normalized_sort_field, normalized_sort_order)
             paged_rows = self._slice_rows(sorted_rows, normalized_limit, normalized_offset)
@@ -344,14 +365,14 @@ class BackendService:
             sort_order=normalized_sort_order,
             limit=normalized_limit,
             offset=normalized_offset,
-            rule_set=library_ruleset,
+            rule_set=None,
         )
         payload = {
-            'videos': self.video_filter_service.filter_video_rows(rows),
+            'videos': rows,
             'total_count': self._count_videos_for_listing(
                 normalized_search,
                 fallback_rows=rows,
-                rule_set=library_ruleset,
+                rule_set=None,
             ),
             'offset': normalized_offset,
             'limit': normalized_limit,
@@ -3720,6 +3741,7 @@ class BackendService:
 
     def select_enrichment_candidates(self, payload):
         request = dict(payload or {})
+        request['task_id'] = str(request.get('task_id') or get_task_id() or new_task_id()).strip()
         job_id = str(request.get('selection_job_id') or '').strip() or f'select-{uuid4().hex}'
         with self._enrichment_selection_jobs_lock:
             existing = self._enrichment_selection_jobs.get(job_id)
@@ -3731,6 +3753,7 @@ class BackendService:
                 'task_kind': str(request.get('task_kind') or '').strip(),
                 'target_type': str(request.get('target_type') or '').strip(),
                 'source_key': str(request.get('source_key') or '').strip(),
+                'task_id': request['task_id'],
                 'candidate_count': 0,
                 'page_count': 0,
                 'plan': {},
@@ -3738,13 +3761,18 @@ class BackendService:
             }
             self._enrichment_selection_jobs[job_id] = state
         worker = threading.Thread(
-            target=self._run_enrichment_selection_job,
+            target=self._run_enrichment_selection_job_with_context,
             args=(job_id, request),
             name=f'enrichment-selection-{job_id[-12:]}',
             daemon=True,
         )
         worker.start()
         return {'job': dict(state)}
+
+    def _run_enrichment_selection_job_with_context(self, job_id, request):
+        task_id = str(dict(request or {}).get('task_id') or new_task_id()).strip()
+        with log_context(task_id=task_id):
+            self._run_enrichment_selection_job(job_id, request)
 
     def get_enrichment_selection_job(self, job_id):
         normalized_job_id = str(job_id or '').strip()
@@ -3879,6 +3907,16 @@ class BackendService:
         else:
             plans = self.db.list_enrichment_batch_plans()
         return {'plans': plans}
+
+    def list_enrichment_plan_run_history(self, plan_id='', task_id='', limit=100):
+        self.ensure_database_loaded()
+        return {
+            'history': self.db.list_enrichment_plan_run_history(
+                plan_id=plan_id,
+                task_id=task_id,
+                limit=limit,
+            )
+        }
 
     def recover_enrichment_plans(self, reason='程序启动恢复'):
         self.ensure_database_loaded()
@@ -4390,7 +4428,7 @@ class BackendService:
             self._build_single_task_label(target_type, source_key),
         )
         active_filter_settings = self.video_filter_service.load_settings()
-        context_tokens = bind_log_context(logger.run_id, logger.correlation_id)
+        context_tokens = bind_log_context(logger.run_id, logger.correlation_id, logger.task_id)
         run_started_at = datetime.now().isoformat(timespec='seconds')
         phase_counts = {'claim': 0, 'resolve': 0, 'execute': 0, 'release': 0}
 
@@ -4536,7 +4574,7 @@ class BackendService:
         combo_label = get_combo_label(normalized_combo_key)
         self._begin_enrichment_task('combo')
         logger = ComboTaskLogger(normalized_combo_key, combo_label)
-        context_tokens = bind_log_context(logger.run_id, logger.correlation_id)
+        context_tokens = bind_log_context(logger.run_id, logger.correlation_id, logger.task_id)
         try:
             combo_service = ComboEnrichmentService(
                 self.db,

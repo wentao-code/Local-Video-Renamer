@@ -47,6 +47,81 @@ class GuiTaskQueueTest(unittest.TestCase):
     def tearDown(self):
         self.queue.reset_for_tests()
 
+    def test_pause_request_persists_after_work_unit(self):
+        persisted = []
+
+        class Persistence:
+            def save_gui_task(self, record):
+                persisted.append(('save', record))
+
+            def update_gui_task(self, task_id, **changes):
+                persisted.append(('update', task_id, changes))
+
+        self.queue.configure_persistence(Persistence())
+        record = self.queue.enqueue(
+            '可暂停任务',
+            'test',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            resume_kind='test',
+            resume_payload={'value': 1},
+            resumable=True,
+        )
+        _process_events()
+
+        self.queue.request_pause(record.task_id, '用户暂停')
+        self.queue.mark_completed(record.task_id)
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.status, TASK_STATUS_PAUSED)
+        self.assertTrue(any(
+            item[0] == 'update'
+            and item[1] == record.task_id
+            and item[2].get('status') == TASK_STATUS_PAUSED
+            for item in persisted
+        ))
+
+    def test_resume_paused_task_returns_it_to_fifo(self):
+        started = []
+        first = self.queue.enqueue(
+            'first', 'test', lambda record: started.append(record.task_id),
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            resume_kind='test',
+            resumable=True,
+        )
+        second = self.queue.enqueue(
+            'second', 'test', lambda record: started.append(record.task_id),
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            resume_kind='test',
+            resumable=True,
+        )
+        _process_events()
+        self.queue.request_pause(first.task_id, '用户暂停')
+        self.queue.mark_completed(first.task_id)
+        self.assertEqual(self.queue.records()[0].status, TASK_STATUS_PAUSED)
+
+        self.assertTrue(self.queue.resume_task(first.task_id))
+        _process_events()
+
+        self.assertEqual(started, [first.task_id, first.task_id])
+        self.assertEqual(self.queue.records()[0].status, TASK_STATUS_RUNNING)
+        self.assertEqual(self.queue.records()[1].status, TASK_STATUS_WAITING)
+
+    def test_pause_request_wins_over_partial_result(self):
+        record = self.queue.enqueue(
+            'partial pause', 'test', lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            resume_kind='test',
+            resumable=True,
+        )
+        _process_events()
+        self.queue.request_pause(record.task_id, '用户暂停')
+        self.queue.mark_partial(record.task_id, '阶段失败')
+
+        current = self.queue.records()[0]
+        self.assertEqual(current.status, TASK_STATUS_PAUSED)
+        self.assertEqual(current.last_error, '阶段失败')
+
     def test_runs_one_task_at_a_time_and_keeps_fifo_order(self):
         started = []
         first = self.queue.enqueue('first', 'test', lambda record: started.append(record.task_id))
@@ -80,6 +155,20 @@ class GuiTaskQueueTest(unittest.TestCase):
         records = self.queue.records()
         self.assertEqual(started, [first.task_id])
         self.assertEqual(records[1].status, TASK_STATUS_DELETED)
+
+    def test_plan_task_kind_is_kept_separately_from_queue_task_kind(self):
+        record = self.queue.enqueue(
+            '补全',
+            'test',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            task_kind='single',
+            plan_id='plan-1',
+            plan_task_kind='actor',
+        )
+
+        self.assertEqual(record.task_kind, 'single')
+        self.assertEqual(record.plan_task_kind, 'actor')
 
     def test_deleting_running_task_waits_for_cleanup_and_ignores_late_result(self):
         cancellation = []
@@ -329,6 +418,37 @@ class GuiTaskQueueTest(unittest.TestCase):
 
             records = self.queue.records()
             self.assertEqual(records[0].max_attempts, 1)
+        finally:
+            host.deleteLater()
+
+    def test_start_async_task_forwards_resume_descriptor_to_queue_record(self):
+        host = _AsyncTaskHost()
+        try:
+            host.start_async_task(
+                lambda: {'ok': True},
+                host.results.append,
+                block_ui=False,
+                resume_kind='test',
+                resume_payload={'video_code': 'AAA-001'},
+                resumable=True,
+            )
+            _process_events()
+
+            record = self.queue.records()[0]
+            self.assertEqual(record.resume_kind, 'test')
+            self.assertEqual(record.resume_payload, {'video_code': 'AAA-001'})
+            self.assertTrue(record.resumable)
+        finally:
+            host.deleteLater()
+
+    def test_start_async_task_assigns_global_trace_task_id(self):
+        host = _AsyncTaskHost()
+        try:
+            host.start_async_task(lambda: {'ok': True}, host.results.append, block_ui=False)
+            _process_events()
+
+            record = self.queue.records()[0]
+            self.assertTrue(record.trace_task_id.startswith('task-'))
         finally:
             host.deleteLater()
 

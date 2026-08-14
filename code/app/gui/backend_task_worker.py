@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import QMessageBox
 
 from app.gui.i18n import tr
 from app.gui.task_queue import TASK_CATEGORY_VIEW, get_gui_task_queue
-from app.core.app_logging import get_logger
+from app.core.app_logging import get_logger, log_context, new_task_id
 
 
 def enable_minimize_button(widget, detach_parent=True):
@@ -80,12 +80,17 @@ class AsyncTaskHostMixin:
         task_category=TASK_CATEGORY_VIEW,
         task_kind='',
         max_attempts=5,
+        trace_task_id='',
+        resume_kind='',
+        resume_payload=None,
+        resumable=False,
     ):
         queue_task_title = self._build_async_task_title(
             error_title=error_title,
             success_handler=success_handler,
             task_title=task_title,
         )
+        resolved_trace_task_id = str(trace_task_id or new_task_id()).strip()
 
         def start_task(record=None):
             if record is not None:
@@ -108,7 +113,15 @@ class AsyncTaskHostMixin:
             self._async_task_success_handler = success_handler
             self._async_task_error_title = str(error_title or tr('common.operation_failed'))
             self._async_task_thread = QThread(self)
-            self._async_task_worker = BackendTaskWorker(task)
+            active_trace_task_id = str(
+                getattr(record, 'trace_task_id', '') or resolved_trace_task_id
+            ).strip()
+
+            def traced_task():
+                with log_context(task_id=active_trace_task_id):
+                    return task()
+
+            self._async_task_worker = BackendTaskWorker(traced_task)
             self._async_task_worker.moveToThread(self._async_task_thread)
             self._async_task_thread.started.connect(self._async_task_worker.run)
             self._async_task_worker.finished.connect(self._handle_async_task_finished)
@@ -130,6 +143,10 @@ class AsyncTaskHostMixin:
             task_category=task_category,
             task_kind=task_kind,
             max_attempts=max_attempts,
+            trace_task_id=resolved_trace_task_id,
+            resume_kind=resume_kind,
+            resume_payload=resume_payload,
+            resumable=resumable,
         )
         return True
 

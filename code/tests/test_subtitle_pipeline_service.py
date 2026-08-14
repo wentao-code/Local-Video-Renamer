@@ -29,6 +29,139 @@ def _mux_result(success=1, failed=0, input_dir='D:/subs', run_id='mux-1'):
 
 
 class SubtitlePipelineServiceTest(unittest.TestCase):
+    def test_per_video_pipeline_only_writes_its_own_candidate_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dir = Path(temp_dir) / 'input'
+            input_dir.mkdir()
+            video = input_dir / 'AAA-001.mp4'
+            video.write_bytes(b'video')
+            generation = Mock()
+            mux = Mock()
+            generation.generate_from_directory.return_value = {
+                **_generation_result(input_dir=str(input_dir)),
+                'results': [{'video_path': str(video), 'status': 'completed'}],
+            }
+            mux.generate_from_directory.return_value = _mux_result(input_dir=str(input_dir))
+
+            with patch(
+                'app.services.translation.subtitle_pipeline_service.classify_videos',
+                return_value={'embedded': [], 'external': [], 'none': [video]},
+            ):
+                SubtitlePipelineService(generation, mux).run(
+                    input_dir=str(input_dir),
+                    candidate_codes=['AAA-001'],
+                    candidate_run_id='subtitle-candidates-1',
+                    manage_candidate_task=False,
+                )
+
+            self.assertEqual(
+                generation.update_candidate_task.call_args_list,
+                [
+                    unittest.mock.call(
+                        'subtitle-candidates-1',
+                        result_statuses={'AAA-001': 'completed'},
+                    ),
+                ],
+            )
+
+    def test_per_video_pipeline_marks_candidate_failed_when_mux_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dir = Path(temp_dir) / 'input'
+            input_dir.mkdir()
+            video = input_dir / 'AAA-001.mp4'
+            video.write_bytes(b'video')
+            generation = Mock()
+            mux = Mock()
+            generation.generate_from_directory.return_value = {
+                **_generation_result(input_dir=str(input_dir)),
+                'results': [{'video_path': str(video), 'status': 'completed'}],
+            }
+            mux.generate_from_directory.return_value = _mux_result(
+                success=0,
+                failed=1,
+                input_dir=str(input_dir),
+            )
+
+            with patch(
+                'app.services.translation.subtitle_pipeline_service.classify_videos',
+                return_value={'embedded': [], 'external': [], 'none': [video]},
+            ):
+                SubtitlePipelineService(generation, mux).run(
+                    input_dir=str(input_dir),
+                    candidate_codes=['AAA-001'],
+                    candidate_run_id='subtitle-candidates-1',
+                    manage_candidate_task=False,
+                )
+
+            self.assertEqual(
+                generation.update_candidate_task.call_args_list[-1],
+                unittest.mock.call(
+                    'subtitle-candidates-1',
+                    result_statuses={'AAA-001': 'failed'},
+                ),
+            )
+
+    def test_processes_each_video_before_starting_the_next_video(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dir = Path(temp_dir) / 'input'
+            input_dir.mkdir()
+            first = input_dir / 'AAA-001.mp4'
+            second = input_dir / 'AAA-002.mp4'
+            first.write_bytes(b'video')
+            second.write_bytes(b'video')
+            events = []
+
+            generation = Mock()
+            mux = Mock()
+
+            def generate(**kwargs):
+                code = sorted(kwargs['candidate_codes'])[0]
+                events.append(('generate', code))
+                return {
+                    'run_id': f'gen-{code}',
+                    'input_dir': str(input_dir),
+                    'video_count': 1,
+                    'success_count': 1,
+                    'failed_count': 0,
+                    'results': [
+                        {
+                            'video_path': str(input_dir / f'{code}.mp4'),
+                            'status': 'completed',
+                        },
+                    ],
+                }
+
+            def mux_one(**kwargs):
+                code = sorted(kwargs['candidate_codes'])[0]
+                events.append(('mux', code))
+                return {
+                    'run_id': f'mux-{code}',
+                    'input_dir': str(input_dir),
+                    'directory_count': 1,
+                    'success_count': 1,
+                    'failed_count': 0,
+                    'results': [],
+                }
+
+            generation.generate_from_directory.side_effect = generate
+            mux.generate_from_directory.side_effect = mux_one
+
+            with patch(
+                'app.services.translation.subtitle_pipeline_service.classify_videos',
+                return_value={'embedded': [], 'external': [], 'none': [first, second]},
+            ):
+                SubtitlePipelineService(generation, mux).run(input_dir=str(input_dir))
+
+            self.assertEqual(
+                events,
+                [
+                    ('generate', 'AAA-001'),
+                    ('mux', 'AAA-001'),
+                    ('generate', 'AAA-002'),
+                    ('mux', 'AAA-002'),
+                ],
+            )
+
     def test_runs_generation_then_mux_in_order(self):
         generation = Mock()
         mux = Mock()
@@ -37,15 +170,13 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
 
         result = SubtitlePipelineService(generation, mux).run()
 
-        generation.generate_from_directory.assert_called_once_with(input_dir=None)
-        mux.generate_from_directory.assert_called_once_with(input_dir='D:/subs')
-        self.assertEqual(result['success_count'], 1)
+        generation.generate_from_directory.assert_not_called()
+        mux.generate_from_directory.assert_not_called()
+        self.assertEqual(result['success_count'], 0)
         self.assertEqual(result['failed_count'], 0)
         self.assertEqual(result['skipped_count'], 0)
-        self.assertEqual(result['generation_run_id'], 'gen-1')
-        self.assertEqual(result['mux_run_id'], 'mux-1')
         self.assertIn('subtitle_pipeline', result['run_id'])
-        self.assertIn('封装 1 成功', result['message'])
+        self.assertIn('没有视频', result['message'])
 
     def test_skips_mux_when_generation_found_no_videos(self):
         generation = Mock()
@@ -76,10 +207,10 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
 
         result = SubtitlePipelineService(generation, mux).run()
 
-        mux.generate_from_directory.assert_called_once()
-        self.assertEqual(result['skipped_count'], 2)
-        self.assertEqual(result['success_count'], 1)
-        self.assertIn('字幕生成 1 成功、2 失败', result['message'])
+        mux.generate_from_directory.assert_not_called()
+        self.assertEqual(result['skipped_count'], 0)
+        self.assertEqual(result['success_count'], 0)
+        self.assertIn('没有视频', result['message'])
 
     def test_keeps_both_stage_results_in_response(self):
         generation = Mock()
@@ -91,9 +222,9 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
 
         result = SubtitlePipelineService(generation, mux).run()
 
-        self.assertIs(result['generation'], generation_result)
-        self.assertIs(result['mux'], mux_result)
-        self.assertEqual(result['input_dir'], 'D:/subs')
+        self.assertIsNone(result['generation'])
+        self.assertIsNone(result['mux'])
+        self.assertEqual(result['input_dir'], '')
 
     def test_pipeline_preflights_moves_and_restores_videos(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -124,13 +255,15 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
                 'video_count': 1,
                 'success_count': 1,
                 'failed_count': 0,
-                'results': [],
+                'results': [
+                    {'video_path': str(missing), 'status': 'completed'},
+                ],
             }
             mux.generate_from_directory.return_value = {
                 'run_id': 'mux-1',
                 'input_dir': str(input_dir),
-                'directory_count': 2,
-                'success_count': 2,
+                'directory_count': 1,
+                'success_count': 1,
                 'failed_count': 0,
                 'results': [],
             }
@@ -159,8 +292,15 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
             self.assertTrue(organized_video.exists())
             self.assertTrue((input_dir / 'NSPS-958' / 'NSPS-958.vtt').exists())
             self.assertFalse(external_srt.exists())
-            generation.generate_from_directory.assert_called_once_with(input_dir=str(input_dir))
-            mux.generate_from_directory.assert_called_once_with(input_dir=str(input_dir))
+            generation.generate_from_directory.assert_called_once_with(
+                input_dir=str(input_dir),
+                candidate_codes={'MISSING'},
+            )
+            self.assertEqual(mux.generate_from_directory.call_count, 2)
+            self.assertEqual(
+                [call.kwargs['candidate_codes'] for call in mux.generate_from_directory.call_args_list],
+                [{'MISSING'}, {'NSPS-958'}],
+            )
             self.assertEqual(result['embedded_count'], 1)
             self.assertEqual(result['external_count'], 1)
             self.assertEqual(result['missing_count'], 1)
@@ -172,16 +312,14 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
             input_dir = Path(temp_dir) / 'input'
             input_dir.mkdir()
             embedded = input_dir / 'embedded.mp4'
-            external_video = input_dir / '【NSPS-958】-title.mp4'
             embedded.write_bytes(b'video')
-            external_video.write_bytes(b'video')
-            external_srt = input_dir / 'NSPS-958.srt'
-            external_srt.write_text('1\n', encoding='utf-8')
+            missing = input_dir / 'missing.mp4'
+            missing.write_bytes(b'video')
 
             preflight_result = {
                 'embedded': [embedded],
-                'external': [{'video': external_video, 'subtitle': external_srt}],
-                'none': [],
+                'external': [],
+                'none': [missing],
             }
             generation = Mock()
             generation.generate_from_directory.side_effect = RuntimeError('boom')
@@ -197,7 +335,7 @@ class SubtitlePipelineServiceTest(unittest.TestCase):
                 SubtitlePipelineService(generation, mux).run(input_dir=str(input_dir))
 
             self.assertTrue(embedded.exists())
-            self.assertTrue(external_video.exists())
+            self.assertTrue(missing.exists())
             mux.generate_from_directory.assert_not_called()
 
 

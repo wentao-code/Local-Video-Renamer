@@ -42,7 +42,7 @@ from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX
 from app.core.enrichment_sources import get_video_enrichment_source_label
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
-from app.core.project_paths import GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
+from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
@@ -56,6 +56,7 @@ from app.gui.data_center_analysis_viewer import _build_refresh_client
 from app.gui.comparison_viewer import ComparisonWindow
 from app.gui.db_viewer import DatabaseViewerWindow
 from app.gui.enrichment_dialog import EnrichmentDialog
+from app.gui.subtitle_candidate_dialog import SubtitleCandidateDialog
 from app.gui.gui_task_runner import GuiTaskRunner
 from app.gui.i18n import tr
 from app.gui.ladder_board_viewer import LadderBoardWindow
@@ -77,12 +78,18 @@ from app.gui.task_queue import (
     TASK_STATUS_WAITING,
     get_gui_task_queue,
 )
+from app.gui.task_resume_registry import TaskResumeRegistry
 from app.gui.snapshot_refresh_orchestrator import SnapshotRefreshOrchestrator
 from app.gui.status_rule_viewer import StatusRuleViewerWindow
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 from app.gui.task_progress_widget import TaskProgressWidget
 from app.gui.timeout_settings_viewer import TimeoutSettingsViewerWindow
-from app.gui.runtime_settings import load_runtime_mode, save_runtime_mode
+from app.gui.runtime_settings import (
+    load_background_refresh_enabled,
+    load_runtime_mode,
+    save_background_refresh_enabled,
+    save_runtime_mode,
+)
 from app.gui.query_context import EntityType, QueryContext
 from app.gui.query_history import QueryHistoryStore
 from app.gui.single_instance import SingleInstanceGuard
@@ -318,6 +325,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self._active_enrichment_batch_plan_state = None
         self._queued_gui_task_runners = {}
         self.runtime_mode = load_runtime_mode()
+        self.background_refresh_enabled = load_background_refresh_enabled()
+        self.background_refresh_startup_sequence_queued = False
         self.window_coordinator = WindowCoordinator(parent=self)
         self.query_history = QueryHistoryStore()
         self._configure_window_coordinator()
@@ -325,6 +334,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.ensure_backend_running()
         self.init_ui()
         self.task_queue = get_gui_task_queue()
+        self.task_database = self._create_task_database()
+        self.task_queue.configure_persistence(self.task_database)
+        self.task_resume_registry = self._build_task_resume_registry()
+        self.task_resume_registry.recover_persisted_tasks(
+            self.task_queue,
+            self.task_database,
+            self,
+        )
         self.task_queue.changed.connect(self.refresh_task_queue_indicator)
         self.task_queue.set_run_mode(self.runtime_mode)
         self.recover_unfinished_enrichment_plans()
@@ -334,6 +351,62 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.start_network_guard()
         self.check_network_guard()
         self.start_snapshot_refresh_scheduler()
+
+    @staticmethod
+    def _create_task_database():
+        from app.data.database_handler import VideoDatabase
+
+        return VideoDatabase(DATABASE_FILE)
+
+    @staticmethod
+    def _build_task_resume_registry():
+        registry = TaskResumeRegistry()
+        registry.register(
+            'subtitle_pipeline_video',
+            lambda payload, host: lambda record: host._start_resumed_subtitle_task(record, payload),
+        )
+        return registry
+
+    def _start_resumed_subtitle_task(self, record, payload):
+        video_code = str(payload.get('video_code') or '').strip()
+        candidate_run_id = str(payload.get('candidate_run_id') or '').strip()
+        if not video_code:
+            get_gui_task_queue().mark_failed(record.task_id, '恢复字幕任务缺少视频编号', retryable=False)
+            return
+
+        def operation():
+            return self.backend_client.generate_subtitles_pipeline(
+                [video_code],
+                candidate_run_id or None,
+                manage_candidate_task=False,
+            )
+
+        def handle_finished(result):
+            normalized = self._build_subtitle_task_result(video_code, result)
+            if str(normalized.get('status') or '').strip().lower() == 'partial':
+                get_gui_task_queue().mark_partial(record.task_id, normalized.get('message', '字幕任务部分失败'))
+            else:
+                get_gui_task_queue().mark_completed(record.task_id)
+
+        def handle_failed(message):
+            get_gui_task_queue().mark_failed(record.task_id, message)
+
+        runner_holder = {}
+
+        def cleanup():
+            self._queued_gui_task_runners.pop(record.task_id, None)
+            runner_holder.pop('runner', None)
+
+        runner = GuiTaskRunner(
+            self,
+            BackendTaskWorker(operation),
+            handle_finished,
+            handle_failed,
+            cleanup,
+        )
+        runner_holder['runner'] = runner
+        self._queued_gui_task_runners[record.task_id] = runner
+        runner.start()
 
     def ensure_backend_running(self):
         stale_backend_cleaned = False
@@ -696,6 +769,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_task_queue = QPushButton('任务列表')
         self.btn_task_queue.clicked.connect(self.show_task_queue_viewer)
 
+        self.btn_background_refresh = QPushButton('后台刷新')
+        self.btn_background_refresh.clicked.connect(self.toggle_background_refresh)
+        self._update_background_refresh_button()
+
         self.btn_timeout_settings = QPushButton('超时器')
         self.btn_timeout_settings.clicked.connect(self.show_timeout_settings_viewer)
 
@@ -737,6 +814,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_status_sync)
         bottom_button_row.addWidget(self.btn_refresh_detail_snapshots)
         bottom_button_row.addWidget(self.btn_task_queue)
+        bottom_button_row.addWidget(self.btn_background_refresh)
         bottom_button_row.addWidget(self.btn_timeout_settings)
         bottom_button_row.addWidget(self.btn_status_rules)
         bottom_button_row.addStretch()
@@ -858,13 +936,69 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def generate_subtitles(self):
         self.start_async_task(
-            lambda: self.backend_client.generate_subtitles_pipeline(),
-            self._on_generate_subtitles_finished,
+            lambda: self.backend_client.prepare_subtitle_candidates(),
+            self._on_subtitle_candidates_prepared,
             tr('main.subtitle_generation_failed_title'),
-            task_title='主界面 生成字幕',
+            task_title='主界面 准备字幕候选',
             task_kind='subtitle_pipeline',
             block_ui=False,
         )
+
+    def _on_subtitle_candidates_prepared(self, payload):
+        payload = dict(payload or {})
+        candidates = list(payload.get('candidates') or [])
+        if not candidates:
+            QMessageBox.information(
+                self,
+                tr('main.subtitle_generation_completed_title'),
+                tr('main.subtitle_no_candidates_message'),
+            )
+            return
+        dialog = SubtitleCandidateDialog(candidates, self)
+        if dialog.exec_() != dialog.Accepted:
+            return
+        selected_codes = dialog.selected_codes()
+        if not selected_codes:
+            QMessageBox.information(self, tr('common.prompt'), tr('main.subtitle_no_selected_candidates'))
+            return
+        try:
+            self.backend_client.confirm_subtitle_candidates(payload.get('run_id'), selected_codes)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                tr('main.subtitle_generation_failed_title'),
+                f'确认字幕候选失败: {exc}',
+            )
+            return
+        for code in selected_codes:
+            normalized_code = str(code or '').strip()
+            if not normalized_code:
+                continue
+            self.start_async_task(
+                lambda video_code=normalized_code: self._build_subtitle_task_result(
+                    video_code,
+                    self.backend_client.generate_subtitles_pipeline(
+                        [video_code],
+                        payload.get('run_id'),
+                        manage_candidate_task=False,
+                    ),
+                ),
+                lambda result, video_code=normalized_code: self._on_generate_subtitle_task_finished(
+                    video_code,
+                    result,
+                ),
+                tr('main.subtitle_generation_failed_title'),
+                task_title=f'字幕生成与封装 {normalized_code}',
+                task_kind='subtitle_pipeline',
+                block_ui=False,
+                resume_kind='subtitle_pipeline_video',
+                resume_payload={
+                    'input_dir': str(payload.get('input_dir') or ''),
+                    'video_code': normalized_code,
+                    'candidate_run_id': str(payload.get('run_id') or ''),
+                },
+                resumable=True,
+            )
 
     def auto_login(self):
         if self.login_thread is not None or self.login_task_queued:
@@ -1104,6 +1238,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if 'plan_id' in supported_parameters or accepts_kwargs:
             runner_kwargs['plan_id'] = batch_plan_state.get('plan_id', '')
             runner_kwargs['plan_progress'] = batch_plan_state
+        if 'plan_task_kind' in supported_parameters or accepts_kwargs:
+            runner_kwargs['plan_task_kind'] = batch_plan_state.get('task_kind', '') if batch_plan_state else ''
         if 'max_attempts' in supported_parameters or accepts_kwargs:
             runner_kwargs['max_attempts'] = 5
         self._start_queued_gui_runner(
@@ -1603,6 +1739,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         plan_progress=None,
         max_attempts=5,
         cancel_callback=None,
+        plan_task_kind='',
     ):
         def start_runner(record):
             if callable(before_start):
@@ -1699,6 +1836,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if plan_id:
             enqueue_kwargs['plan_id'] = plan_id
             enqueue_kwargs['plan_progress'] = plan_progress
+            enqueue_kwargs['plan_task_kind'] = str(plan_task_kind or task_kind or '').strip()
         if cancel_callback is not None:
             enqueue_kwargs['cancel_callback'] = cancel_callback
         get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
@@ -1712,6 +1850,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         return normalized.startswith('创建补全计划失败:') or '当前已有补全任务正在运行' in normalized
 
     def enqueue_startup_refresh_tasks(self):
+        if not getattr(self, 'background_refresh_enabled', True):
+            return False
         history = self._load_startup_refresh_history()
         startup_refresh_client = _build_refresh_client(
             self.backend_client,
@@ -1735,6 +1875,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 self._on_startup_refresh_task_failed,
                 source='启动刷新',
             )
+        return True
 
     def _startup_refresh_task_specs(self, refresh_client=None):
         startup_refresh_client = refresh_client or self.backend_client
@@ -2324,6 +2465,31 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 mux_failed=int(mux.get('failed_count', 0) or 0),
             ),
         )
+
+    @staticmethod
+    def _build_subtitle_task_result(video_code, result):
+        result = dict(result or {})
+        generation = dict(result.get('generation') or {})
+        mux = dict(result.get('mux') or {})
+        failure_count = (
+            int(generation.get('failed_count', 0) or 0)
+            + int(mux.get('failed_count', 0) or 0)
+            + int(result.get('external_failed_count', 0) or 0)
+        )
+        if failure_count:
+            result['status'] = 'partial'
+            result['failed'] = [{
+                'key': str(video_code or ''),
+                'error': str(result.get('message') or '字幕生成或封装失败'),
+            }]
+        return result
+
+    def _on_generate_subtitle_task_finished(self, video_code, result):
+        result = dict(result or {})
+        message = str(result.get('message') or '已完成')
+        if hasattr(self, 'status_label') and self.status_label is not None:
+            self.status_label.setText(f'字幕任务 {video_code}：{message}')
+
     def _on_reset_browser_profile_finished(self, result):
         result = dict(result or {})
         QMessageBox.information(
@@ -2739,11 +2905,16 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             plan_cancelled = False
             try:
                 if record.plan_id and record.plan_task_kind:
-                    self.backend_client.cancel_enrichment_plan(
+                    cancel_result = self.backend_client.cancel_enrichment_plan(
                         record.plan_id,
                         record.plan_task_kind,
                         '用户删除任务',
                     )
+                    if (
+                        not isinstance(cancel_result, dict)
+                        or cancel_result.get('status') != 'cancelled'
+                    ):
+                        raise RuntimeError('补全计划不存在，未执行取消。')
                     plan_cancelled = True
                 if was_running:
                     self.backend_client.cancel_enrichment()
@@ -2780,6 +2951,39 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             return
         self.btn_task_queue.setStyleSheet('')
 
+    def _update_background_refresh_button(self):
+        if not hasattr(self, 'btn_background_refresh'):
+            return
+        if getattr(self, 'background_refresh_enabled', True):
+            self.btn_background_refresh.setToolTip('后台刷新：已开启')
+            self.btn_background_refresh.setStyleSheet(
+                'QPushButton { background-color: #16a34a; color: white; font-weight: 700; }'
+            )
+            return
+        self.btn_background_refresh.setToolTip('后台刷新：已关闭')
+        self.btn_background_refresh.setStyleSheet(
+            'QPushButton { background-color: #dc2626; color: white; font-weight: 700; }'
+        )
+
+    def toggle_background_refresh(self):
+        self.set_background_refresh_enabled(
+            not getattr(self, 'background_refresh_enabled', True),
+        )
+
+    def set_background_refresh_enabled(self, enabled):
+        self.background_refresh_enabled = bool(enabled)
+        save_background_refresh_enabled(self.background_refresh_enabled)
+        VidNormApp._update_background_refresh_button(self)
+        if self.background_refresh_enabled:
+            self.start_snapshot_refresh_scheduler()
+            return
+        self.snapshot_refresh_timer.stop()
+        VidNormApp._set_snapshot_refresh_indicator_state(
+            self,
+            state='idle',
+            status_text='后台刷新: 已关闭',
+        )
+
     def show_video_filter_dialog(self):
         dialog = VideoFilterDialog(self)
         dialog.exec_()
@@ -2790,14 +2994,34 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.set_current_folder(viewer.selected_path)
 
     def start_snapshot_refresh_scheduler(self):
+        if not getattr(self, 'background_refresh_enabled', True):
+            self.snapshot_refresh_timer.stop()
+            return False
         self.snapshot_refresh_timer.start()
-        QTimer.singleShot(SNAPSHOT_REFRESH_STARTUP_DELAY_MS, lambda: VidNormApp.run_startup_refresh_sequence(self))
+        if not getattr(self, 'background_refresh_startup_sequence_queued', False):
+            self.background_refresh_startup_sequence_queued = True
+            QTimer.singleShot(
+                SNAPSHOT_REFRESH_STARTUP_DELAY_MS,
+                lambda: VidNormApp._run_queued_startup_refresh_sequence(self),
+            )
+        return True
+
+    def _run_queued_startup_refresh_sequence(self):
+        self.background_refresh_startup_sequence_queued = False
+        if not getattr(self, 'background_refresh_enabled', True):
+            return False
+        return VidNormApp.run_startup_refresh_sequence(self)
 
     def run_startup_refresh_sequence(self):
+        if not getattr(self, 'background_refresh_enabled', True):
+            return False
         self.schedule_snapshot_refresh_cycle()
         self.enqueue_startup_refresh_tasks()
+        return True
 
     def schedule_snapshot_refresh_cycle(self):
+        if not getattr(self, 'background_refresh_enabled', True):
+            return False
         if self.snapshot_refresh_running or getattr(self, 'snapshot_refresh_queued', False):
             return False
         if not self._should_run_snapshot_refresh_cycle():

@@ -21,6 +21,7 @@ DEFAULT_MAX_AGE_DAYS = 30
 DEFAULT_MAX_TOTAL_BYTES = 100 * 1024 * 1024
 _RUN_ID = ContextVar('app_log_run_id', default='')
 _CORRELATION_ID = ContextVar('app_log_correlation_id', default='')
+_TASK_ID = ContextVar('app_log_task_id', default='')
 _CONFIG_LOCK = threading.Lock()
 _HANDLER_FLAG = '_local_video_renamer_logging_handler'
 _MODULE_LOGGERS = {
@@ -41,6 +42,7 @@ _MODULE_LOGGERS = {
 
 class _ContextFilter(logging.Filter):
     def filter(self, record):
+        record.task_id = str(getattr(record, 'task_id', '') or get_task_id() or '-')
         record.run_id = str(getattr(record, 'run_id', '') or get_run_id() or '-')
         record.correlation_id = str(
             getattr(record, 'correlation_id', '') or get_correlation_id() or '-'
@@ -51,6 +53,12 @@ class _ContextFilter(logging.Filter):
 def new_correlation_id(prefix='corr'):
     normalized_prefix = str(prefix or 'corr').strip() or 'corr'
     return f'{normalized_prefix}-{uuid.uuid4().hex[:12]}'
+
+
+def new_task_id(prefix='task'):
+    normalized_prefix = str(prefix or 'task').strip() or 'task'
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return f'{normalized_prefix}-{timestamp}-{uuid.uuid4().hex[:8]}'
 
 
 def new_run_id(kind='run', key=''):
@@ -69,22 +77,28 @@ def get_correlation_id():
     return str(_CORRELATION_ID.get() or '')
 
 
-def bind_log_context(run_id='', correlation_id=''):
+def get_task_id():
+    return str(_TASK_ID.get() or '')
+
+
+def bind_log_context(run_id='', correlation_id='', task_id=''):
     return (
         _RUN_ID.set(str(run_id or get_run_id() or '')),
         _CORRELATION_ID.set(str(correlation_id or get_correlation_id() or '')),
+        _TASK_ID.set(str(task_id or get_task_id() or '')),
     )
 
 
 def reset_log_context(tokens):
-    run_token, correlation_token = tokens
+    run_token, correlation_token, task_token = tokens
     _RUN_ID.reset(run_token)
     _CORRELATION_ID.reset(correlation_token)
+    _TASK_ID.reset(task_token)
 
 
 @contextmanager
-def log_context(run_id='', correlation_id=''):
-    tokens = bind_log_context(run_id, correlation_id)
+def log_context(run_id='', correlation_id='', task_id=''):
+    tokens = bind_log_context(run_id, correlation_id, task_id)
     try:
         yield
     finally:
@@ -137,7 +151,7 @@ def configure_logging(
                     handler.close()
 
         formatter = logging.Formatter(
-            '%(asctime)s %(levelname)s %(name)s [run_id=%(run_id)s correlation_id=%(correlation_id)s] %(message)s'
+            '%(asctime)s %(levelname)s %(name)s [task_id=%(task_id)s run_id=%(run_id)s correlation_id=%(correlation_id)s] %(message)s'
         )
         context_filter = _ContextFilter()
         error_handler = _build_rotating_handler(
@@ -244,6 +258,7 @@ def append_jsonl_log(
     *,
     run_id='',
     correlation_id='',
+    task_id='',
     max_bytes=DEFAULT_MAX_BYTES,
     backup_count=3,
 ):
@@ -252,6 +267,7 @@ def append_jsonl_log(
         **dict(payload or {}),
         'run_id': str(run_id or get_run_id() or new_run_id('runtime')),
         'correlation_id': str(correlation_id or get_correlation_id() or new_correlation_id()),
+        'task_id': str(task_id or get_task_id() or new_task_id()),
     }
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

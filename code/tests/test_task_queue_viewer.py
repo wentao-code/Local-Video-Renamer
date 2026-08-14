@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QApplication
 
 from app.gui.task_queue import get_gui_task_queue
 from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
+from app.gui.task_queue import TASK_STATUS_PAUSED
 from app.gui.task_queue_viewer import TaskQueueViewerWindow
 
 
@@ -20,6 +21,47 @@ class TaskQueueViewerWindowTest(unittest.TestCase):
 
     def tearDown(self):
         self.queue.reset_for_tests()
+
+    def test_pause_button_pauses_selected_running_task(self):
+        self.queue.enqueue(
+            'pause me', 'test', lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            resume_kind='test',
+            resume_payload={'value': 1},
+            resumable=True,
+        )
+        _APP.processEvents()
+        viewer = TaskQueueViewerWindow()
+        try:
+            viewer.table.selectRow(0)
+            viewer.refresh_rows()
+            self.assertEqual(viewer.btn_pause_resume.text(), '暂停')
+            viewer.pause_resume_selected_tasks()
+            self.assertTrue(viewer.task_queue.records()[0].pause_requested)
+        finally:
+            viewer.deleteLater()
+
+    def test_resume_button_resumes_selected_paused_task(self):
+        record = self.queue.enqueue(
+            'resume me', 'test', lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            resume_kind='test',
+            resume_payload={'value': 1},
+            resumable=True,
+        )
+        _APP.processEvents()
+        self.queue.request_pause(record.task_id, '用户暂停')
+        self.queue.mark_completed(record.task_id)
+        viewer = TaskQueueViewerWindow()
+        try:
+            viewer.table.selectRow(0)
+            viewer.refresh_rows()
+            self.assertEqual(viewer.task_queue.records()[0].status, TASK_STATUS_PAUSED)
+            self.assertEqual(viewer.btn_pause_resume.text(), '继续')
+            viewer.pause_resume_selected_tasks()
+            self.assertEqual(viewer.task_queue.records()[0].status, '等待中')
+        finally:
+            viewer.deleteLater()
 
     def test_summary_turns_green_when_all_tasks_are_done(self):
         viewer = TaskQueueViewerWindow()
@@ -71,8 +113,21 @@ class TaskQueueViewerWindowTest(unittest.TestCase):
             _APP.processEvents()
             viewer.refresh_rows()
 
-            self.assertEqual(viewer.table.horizontalHeaderItem(2).text(), '分类')
-            self.assertEqual(viewer.table.item(0, 2).text(), TASK_CATEGORY_ENRICHMENT)
+            self.assertEqual(viewer.table.horizontalHeaderItem(3).text(), '分类')
+            self.assertEqual(viewer.table.item(0, 3).text(), TASK_CATEGORY_ENRICHMENT)
+        finally:
+            viewer.close()
+            viewer.deleteLater()
+
+    def test_rows_show_global_trace_task_id(self):
+        viewer = TaskQueueViewerWindow()
+        try:
+            self.queue.enqueue('字幕任务', 'test', lambda _record: None, trace_task_id='task-subtitle-001')
+            _APP.processEvents()
+            viewer.refresh_rows()
+
+            self.assertEqual(viewer.table.horizontalHeaderItem(1).text(), '追踪ID')
+            self.assertEqual(viewer.table.item(0, 1).text(), 'task-subtitle-001')
         finally:
             viewer.close()
             viewer.deleteLater()

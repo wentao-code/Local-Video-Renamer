@@ -17,6 +17,7 @@ from app.core.enrichment_status import (
     UNENRICHED_STATUS,
     is_no_result_status,
 )
+from app.core.app_logging import get_task_id, new_task_id
 from app.core.library_refresh_expiry import is_library_refresh_expired
 from app.core.operation_timeout_settings import (
     ensure_operation_timeout_settings_table,
@@ -78,6 +79,7 @@ from app.data.repositories import (
     ActorRepositoryMixin,
     CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
+    GuiTaskRepositoryMixin,
     LadderRepositoryMixin,
     MigrationMixin,
     PathRepositoryMixin,
@@ -130,6 +132,7 @@ class VideoDatabase(
     ActorRepositoryMixin,
     CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
+    GuiTaskRepositoryMixin,
     LadderRepositoryMixin,
     StartupRefreshHistoryRepositoryMixin,
     VideoEntityRepositoryMixin,
@@ -166,6 +169,7 @@ class VideoDatabase(
         with self._connect() as conn:
             cursor = conn.cursor()
             self._ensure_enrichment_batch_plan_tables(cursor)
+            self._ensure_gui_task_tables(cursor)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS actors (
                     name TEXT PRIMARY KEY,
@@ -1275,6 +1279,19 @@ class VideoDatabase(
                    e.release_date, e.maker, e.publisher,
                    e.avfan_enrichment_status, e.javtxt_enrichment_status
             FROM active_video_entities AS e
+        '''
+
+    @staticmethod
+    def _local_video_read_sql(cursor=None):
+        return '''
+            SELECT e.code, e.title, e.author,
+                   local.duration, local.size, local.storage_location,
+                   e.avfan_movie_id, e.javtxt_movie_id, e.javtxt_url, e.javtxt_title,
+                   e.javtxt_actors, e.javtxt_tags, e.video_category,
+                   e.release_date, e.maker, e.publisher,
+                   e.avfan_enrichment_status, e.javtxt_enrichment_status
+            FROM video_entities AS e
+            JOIN local_video_records AS local ON local.code = e.code
         '''
 
     def _backfill_web_movie_categories(self, cursor, table_name, filter_settings=None):
@@ -5803,6 +5820,38 @@ class VideoDatabase(
             'current_capacity_mb': current_capacity_mb,
         }
 
+    def mark_missing_local_videos_offline(self, storage_location, present_codes):
+        normalized_location = str(storage_location or '').strip()
+        if not normalized_location:
+            return 0
+
+        normalized_codes = []
+        seen = set()
+        for code in present_codes or []:
+            normalized_code = standardize_video_code(code)
+            if normalized_code and normalized_code not in seen:
+                seen.add(normalized_code)
+                normalized_codes.append(normalized_code)
+
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            parameters = [normalized_location]
+            where_sql = 'storage_location = ?'
+            if normalized_codes:
+                placeholders = ','.join('?' for _ in normalized_codes)
+                where_sql += f' AND code NOT IN ({placeholders})'
+                parameters.extend(normalized_codes)
+            cursor.execute(
+                f'''
+                UPDATE local_video_records
+                SET storage_location = '', updated_at = CURRENT_TIMESTAMP
+                WHERE {where_sql}
+                ''',
+                parameters,
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
     def get_usb_video_inventory(self, folder_path):
         normalized_path = str(Path(folder_path).expanduser())
         with self._connect() as conn:
@@ -6242,20 +6291,12 @@ class VideoDatabase(
     @staticmethod
     def _local_video_where_sql(where_sql=''):
         local_clause = "COALESCE(p.storage_location, '') <> ''"
-        exclusion_clause = '''
-            NOT EXISTS (
-                SELECT 1
-                FROM video_entity_exclusions AS ex
-                WHERE ex.code = p.code
-                  AND ex.scope IN ('all', 'video_library')
-            )
-        '''
         normalized_where = str(where_sql or '').strip()
         if not normalized_where:
-            return f'WHERE {local_clause} AND {exclusion_clause}'
+            return f'WHERE {local_clause}'
         if normalized_where[:5].upper() != 'WHERE':
             raise ValueError('Video filters must start with WHERE')
-        return f'WHERE {local_clause} AND {exclusion_clause} AND ({normalized_where[5:].strip()})'
+        return f'WHERE {local_clause} AND ({normalized_where[5:].strip()})'
 
     @staticmethod
     def _normalize_limit_offset(limit=None, offset=0):
@@ -6301,6 +6342,42 @@ class VideoDatabase(
                        video_category, release_date, maker, publisher,
                        avfan_enrichment_status, javtxt_enrichment_status
                 FROM ({processed_read_sql}) AS p
+                {where_sql}
+                ORDER BY {order_by_sql}
+                {limit_sql}
+                ''',
+                tuple(query_parameters),
+            )
+            rows = cursor.fetchall()
+        return [self._build_processed_video_row(row) for row in rows]
+
+    def _fetch_local_video_rows(
+        self,
+        where_sql='',
+        parameters=None,
+        order_by_sql='UPPER(code)',
+        limit=None,
+        offset=0,
+        refresh_categories=False,
+        rule_set=None,
+    ):
+        where_sql = self._local_video_where_sql(where_sql)
+        parameters = tuple(parameters or ())
+        normalized_limit, normalized_offset = self._normalize_limit_offset(limit, offset)
+        limit_sql = ''
+        query_parameters = list(parameters)
+        if normalized_limit is not None:
+            limit_sql = ' LIMIT ? OFFSET ?'
+            query_parameters.extend([normalized_limit, normalized_offset])
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f'''
+                SELECT code, title, author, duration, size, storage_location,
+                       avfan_movie_id, javtxt_movie_id, javtxt_url, javtxt_title, javtxt_actors, javtxt_tags,
+                       video_category, release_date, maker, publisher,
+                       avfan_enrichment_status, javtxt_enrichment_status
+                FROM ({self._local_video_read_sql(cursor)}) AS p
                 {where_sql}
                 ORDER BY {order_by_sql}
                 {limit_sql}
@@ -6356,7 +6433,9 @@ class VideoDatabase(
                 last_run_id TEXT NOT NULL DEFAULT '',
                 last_run_started_at TEXT,
                 last_run_completed_at TEXT,
-                last_run_result TEXT NOT NULL DEFAULT '{}'
+                last_run_result TEXT NOT NULL DEFAULT '{}',
+                task_id TEXT NOT NULL DEFAULT '',
+                last_task_id TEXT NOT NULL DEFAULT ''
             )
             '''
         )
@@ -6375,6 +6454,38 @@ class VideoDatabase(
         self._ensure_column(cursor, 'enrichment_batch_plans', 'last_run_started_at', 'TEXT')
         self._ensure_column(cursor, 'enrichment_batch_plans', 'last_run_completed_at', 'TEXT')
         self._ensure_column(cursor, 'enrichment_batch_plans', 'last_run_result', "TEXT NOT NULL DEFAULT '{}'")
+        self._ensure_column(cursor, 'enrichment_batch_plans', 'task_id', "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column(cursor, 'enrichment_batch_plans', 'last_task_id', "TEXT NOT NULL DEFAULT ''")
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_enrichment_batch_plans_task_id '
+            'ON enrichment_batch_plans (task_id, updated_at DESC)'
+        )
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS enrichment_plan_run_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id TEXT NOT NULL,
+                task_kind TEXT NOT NULL,
+                task_id TEXT NOT NULL DEFAULT '',
+                run_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '',
+                started_at TEXT,
+                completed_at TEXT,
+                result TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(plan_id, run_id)
+            )
+            '''
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_enrichment_plan_history_task_id '
+            'ON enrichment_plan_run_history (task_id, completed_at DESC)'
+        )
+        cursor.execute(
+            'CREATE INDEX IF NOT EXISTS idx_enrichment_plan_history_plan '
+            'ON enrichment_plan_run_history (plan_id, completed_at DESC)'
+        )
         item_tables = set(self._ENRICHMENT_BATCH_ITEM_TABLES.values()) | set(
             self._ENRICHMENT_PENDING_SOURCE_TABLES.values()
         )
@@ -6541,6 +6652,7 @@ class VideoDatabase(
         candidates=None,
         initial_status='running',
         show_browser=False,
+        task_id='',
     ):
         table_name = self._enrichment_pending_source_table(task_kind, source_key)
         normalized_batch_limit = max(1, int(batch_limit or 1))
@@ -6550,6 +6662,7 @@ class VideoDatabase(
         if normalized_initial_status not in {'running', 'selected'}:
             raise ValueError(f'非法补全计划初始状态: {initial_status}')
         plan_id = uuid.uuid4().hex
+        normalized_task_id = str(task_id or get_task_id() or new_task_id()).strip()
         item_rows = [
             self._build_enrichment_batch_item(candidate, source_key)
             for candidate in list(candidates or [])[:max_items]
@@ -6561,9 +6674,9 @@ class VideoDatabase(
                 '''
                 INSERT INTO enrichment_batch_plans (
                     plan_id, task_kind, target_type, source_key, combo_key, item_table,
-                    status, batch_limit, batch_count_limit, started_at, show_browser
+                    status, batch_limit, batch_count_limit, started_at, show_browser, task_id, last_task_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
                 ''',
                 (
                     plan_id,
@@ -6576,6 +6689,8 @@ class VideoDatabase(
                     normalized_batch_limit,
                     normalized_batch_count,
                     1 if show_browser else 0,
+                    normalized_task_id,
+                    normalized_task_id,
                 ),
             )
             cursor.executemany(
@@ -6624,6 +6739,8 @@ class VideoDatabase(
             'item_count': len(item_rows),
             'item_table': table_name,
             'show_browser': bool(show_browser),
+            'task_id': normalized_task_id,
+            'last_task_id': normalized_task_id,
         }
 
     def append_enrichment_batch_plan_candidates(self, plan_id, task_kind, candidates):
@@ -7083,7 +7200,7 @@ class VideoDatabase(
                 conn.commit()
                 return {
                     'plan_id': normalized_plan_id,
-                    'status': 'cancelled',
+                    'status': 'not_found',
                     'released_count': 0,
                     'deleted_item_count': 0,
                 }
@@ -7128,7 +7245,8 @@ class VideoDatabase(
                        batch_limit, batch_count_limit, completed_batch_count,
                        created_at, started_at, completed_at, last_error,
                        paused_reason, updated_at, last_started_at, completed_item_count, show_browser,
-                       last_run_id, last_run_started_at, last_run_completed_at, last_run_result
+                       last_run_id, last_run_started_at, last_run_completed_at, last_run_result,
+                       task_id, last_task_id
                 FROM enrichment_batch_plans
                 WHERE plan_id = ?
                 ''',
@@ -7194,6 +7312,8 @@ class VideoDatabase(
             'last_run_started_at': plan_row[19] or '',
             'last_run_completed_at': plan_row[20] or '',
             'last_run_result': last_run_result,
+            'task_id': plan_row[22] or '',
+            'last_task_id': plan_row[23] or '',
             'total_count': total_count,
             'pending_count': pending_count,
             'running_count': running_count,
@@ -7260,8 +7380,40 @@ class VideoDatabase(
             return {}
         payload = dict(result or {})
         run_id = str(payload.get('run_id', '') or '').strip()
+        if not run_id:
+            run_id = new_task_id('run')
+            payload['run_id'] = run_id
+        task_id = str(payload.get('task_id', '') or get_task_id() or new_task_id()).strip()
+        payload['task_id'] = task_id
+        status = str(payload.get('status', '') or '').strip()
+        if not status:
+            status = 'failed' if payload.get('error') else 'completed'
         serialized = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), default=str)
         with self._connect() as conn:
+            conn.execute(
+                '''
+                INSERT INTO enrichment_plan_run_history (
+                    plan_id, task_kind, task_id, run_id, status, started_at, completed_at, result
+                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(plan_id, run_id) DO UPDATE SET
+                    task_kind = excluded.task_kind,
+                    task_id = excluded.task_id,
+                    status = excluded.status,
+                    started_at = COALESCE(excluded.started_at, enrichment_plan_run_history.started_at),
+                    completed_at = CURRENT_TIMESTAMP,
+                    result = excluded.result,
+                    updated_at = CURRENT_TIMESTAMP
+                ''',
+                (
+                    normalized_plan_id,
+                    str(task_kind or '').strip(),
+                    task_id,
+                    run_id,
+                    status,
+                    str(payload.get('started_at', '') or '').strip() or None,
+                    serialized,
+                ),
+            )
             conn.execute(
                 '''
                 UPDATE enrichment_batch_plans
@@ -7269,6 +7421,7 @@ class VideoDatabase(
                     last_run_started_at = COALESCE(?, last_run_started_at),
                     last_run_completed_at = CURRENT_TIMESTAMP,
                     last_run_result = ?,
+                    last_task_id = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE plan_id = ?
                 ''',
@@ -7276,11 +7429,54 @@ class VideoDatabase(
                     run_id,
                     str(payload.get('started_at', '') or '').strip() or None,
                     serialized,
+                    task_id,
                     normalized_plan_id,
                 ),
             )
             conn.commit()
         return self.get_enrichment_batch_plan_progress(normalized_plan_id, task_kind)
+
+    def list_enrichment_plan_run_history(self, plan_id='', task_id='', limit=100):
+        normalized_plan_id = str(plan_id or '').strip()
+        normalized_task_id = str(task_id or '').strip()
+        normalized_limit = max(1, int(limit or 100))
+        clauses = []
+        params = []
+        if normalized_plan_id:
+            clauses.append('plan_id = ?')
+            params.append(normalized_plan_id)
+        if normalized_task_id:
+            clauses.append('task_id = ?')
+            params.append(normalized_task_id)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+        with self._connect() as conn:
+            rows = conn.execute(
+                f'''
+                SELECT plan_id, task_kind, task_id, run_id, status, started_at, completed_at, result
+                FROM enrichment_plan_run_history
+                {where_sql}
+                ORDER BY completed_at DESC, id DESC
+                LIMIT ?
+                ''',
+                (*params, normalized_limit),
+            ).fetchall()
+        history = []
+        for row in rows:
+            try:
+                result = json.loads(row[7] or '{}')
+            except (TypeError, ValueError):
+                result = {}
+            history.append({
+                'plan_id': row[0] or '',
+                'task_kind': row[1] or '',
+                'task_id': row[2] or '',
+                'run_id': row[3] or '',
+                'status': row[4] or '',
+                'started_at': row[5] or '',
+                'completed_at': row[6] or '',
+                'result': result,
+            })
+        return history
 
     def update_enrichment_batch_plan_options(self, plan_id, show_browser=False):
         normalized_plan_id = str(plan_id or '').strip()
@@ -7838,6 +8034,14 @@ class VideoDatabase(
             return int(cursor.fetchone()[0] or 0)
 
     def get_videos_by_codes(self, codes):
+        return self._get_videos_by_codes(codes)
+
+    def get_persisted_videos_by_codes(self, codes):
+        """Return records from the primary table, regardless of display filters."""
+        return self._get_videos_by_codes(codes, include_hidden=True)
+
+    def _get_videos_by_codes(self, codes, include_hidden=False):
+        table_name = 'video_entities' if include_hidden else 'active_video_entities'
         normalized_codes = []
         seen = set()
         for code in codes or []:
@@ -7855,11 +8059,13 @@ class VideoDatabase(
             cursor = conn.cursor()
             cursor.execute(
                 f'''
-                SELECT e.code, e.title, e.author, e.duration, e.size, e.storage_location,
+                SELECT e.code, e.title, e.author,
+                       COALESCE(local.duration, ''), COALESCE(local.size, ''), COALESCE(local.storage_location, ''),
                        e.release_date, e.video_category,
                        e.javtxt_tags, e.javtxt_release_date, e.javtxt_enrichment_status, e.javtxt_movie_id, e.javtxt_url,
                        e.avfan_movie_id, e.maker, e.publisher
-                FROM active_video_entities AS e
+                FROM {table_name} AS e
+                LEFT JOIN local_video_records AS local ON local.code = e.code
                 WHERE e.code IN ({placeholders})
                 ''',
                 normalized_codes,
@@ -10512,7 +10718,7 @@ class VideoDatabase(
             return 0
 
         codes = list(normalized_records.keys())
-        existing_records = self.get_videos_by_codes(codes)
+        existing_records = self.get_persisted_videos_by_codes(codes)
         new_records = [normalized_records[code] for code in codes if code not in existing_records]
         existing_updates = [normalized_records[code] for code in codes if code in existing_records]
 
