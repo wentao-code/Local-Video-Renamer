@@ -38,6 +38,9 @@ class TaskResumeRegistry:
 
     def recover_persisted_tasks(self, queue, persistence, host):
         persistence.mark_running_gui_tasks_paused('应用重启时中断')
+        mark_timing_paused = getattr(persistence, 'mark_running_gui_task_timings_paused', None)
+        if callable(mark_timing_paused):
+            mark_timing_paused('应用重启时中断')
         restored = []
         rows = persistence.list_gui_tasks(statuses=['已暂停', '等待中'])
         for record in rows:

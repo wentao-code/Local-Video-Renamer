@@ -1,9 +1,13 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+import time
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
-from app.core.app_logging import new_task_id
+from app.core.app_logging import get_logger, new_task_id
+
+
+LOGGER = get_logger(__name__)
 
 
 TASK_STATUS_WAITING = '等待中'
@@ -64,6 +68,8 @@ class TaskRecord:
     resumable: bool = False
     paused_at: str = ''
     non_resumable_reason: str = ''
+    active_seconds: float = 0.0
+    paused_seconds: float = 0.0
 
 
 class GuiTaskQueue(QObject):
@@ -79,11 +85,31 @@ class GuiTaskQueue(QObject):
         self._next_task_id = 1
         self._run_mode = RUN_MODE_TASK
         self._persistence = None
+        self._timing_persistence = None
+        self._timing_clock = time.monotonic
+        self._timing_runtime = {}
 
     def configure_persistence(self, persistence):
         self._persistence = persistence
         for record in self._records:
             self._persist_record(record)
+
+    def configure_timing_persistence(self, persistence, clock=None):
+        self._timing_persistence = persistence
+        if clock is not None:
+            self._timing_clock = clock
+        for record in self._records:
+            self._timing_ensure(record)
+
+    def effective_active_seconds(self, task_id):
+        record = self._find_record(task_id)
+        if record is None:
+            return 0.0
+        seconds = float(getattr(record, 'active_seconds', 0.0) or 0.0)
+        runtime = self._timing_runtime.get(int(task_id))
+        if record.status == TASK_STATUS_RUNNING and runtime and runtime.get('last_active_at') is not None:
+            seconds += max(0.0, self._timing_clock() - runtime['last_active_at'])
+        return seconds
 
     def enqueue(
         self,
@@ -127,6 +153,7 @@ class GuiTaskQueue(QObject):
                 self._cancel_callbacks = {}
             self._cancel_callbacks[record.task_id] = cancel_callback
         self._persist_record(record, create=True)
+        self._timing_ensure(record)
         self.changed.emit()
         self._schedule_start_next()
         return record
@@ -152,6 +179,7 @@ class GuiTaskQueue(QObject):
                 if self._should_pause_record(record):
                     record.status = TASK_STATUS_PAUSED
                     record.pause_reason = '查看模式'
+                    self._timing_pause(record, TASK_STATUS_PAUSED, '查看模式')
                     self._persist_record(record)
         self.changed.emit()
 
@@ -169,6 +197,7 @@ class GuiTaskQueue(QObject):
                 self._waiting_records.insert(0, record)
             if self._running_task_id == task_id:
                 self._running_task_id = None
+            self._timing_pause(record, TASK_STATUS_PAUSED, record.pause_reason)
             self.changed.emit()
             self._persist_record(record)
             self._schedule_start_next()
@@ -176,6 +205,7 @@ class GuiTaskQueue(QObject):
         record.status = TASK_STATUS_COMPLETED
         record.completed_at = _now_text()
         record.paused_at = ''
+        self._timing_finish(record, TASK_STATUS_COMPLETED, '完成')
         if self._running_task_id == task_id:
             self._running_task_id = None
         self._start_callbacks.pop(task_id, None)
@@ -198,11 +228,13 @@ class GuiTaskQueue(QObject):
                 self._running_task_id = None
             if not any(item.task_id == task_id for item in self._waiting_records):
                 self._waiting_records.insert(0, record)
+            self._timing_pause(record, TASK_STATUS_PAUSED, record.pause_reason)
             self._persist_record(record)
             self.changed.emit()
             self._schedule_start_next()
             return
         record.completed_at = _now_text()
+        self._timing_finish(record, TASK_STATUS_PARTIAL, record.last_error)
         if self._running_task_id == task_id:
             self._running_task_id = None
         self._start_callbacks.pop(task_id, None)
@@ -225,6 +257,7 @@ class GuiTaskQueue(QObject):
             record.paused_at = _now_text()
             if not any(item.task_id == task_id for item in self._waiting_records):
                 self._waiting_records.insert(0, record)
+            self._timing_pause(record, TASK_STATUS_PAUSED, record.pause_reason)
             self._persist_record(record)
             self.changed.emit()
             self._schedule_start_next()
@@ -232,6 +265,7 @@ class GuiTaskQueue(QObject):
         if retryable and record.attempts < record.max_attempts:
             record.status = TASK_STATUS_WAITING
             self._waiting_records.append(record)
+            self._timing_pause(record, TASK_STATUS_WAITING, record.last_error)
             self.changed.emit()
             self._persist_record(record)
             self._schedule_start_next()
@@ -239,6 +273,7 @@ class GuiTaskQueue(QObject):
         record.status = TASK_STATUS_COMPLETED
         record.completed_at = _now_text()
         record.exhausted = True
+        self._timing_finish(record, TASK_STATUS_COMPLETED, record.last_error)
         self._start_callbacks.pop(task_id, None)
         getattr(self, '_cancel_callbacks', {}).pop(task_id, None)
         self.changed.emit()
@@ -261,6 +296,7 @@ class GuiTaskQueue(QObject):
             self._running_task_id = None
         if not any(item.task_id == task_id for item in self._waiting_records):
             self._waiting_records.append(record)
+        self._timing_pause(record, TASK_STATUS_WAITING, record.pause_reason)
         self.changed.emit()
         self._persist_record(record)
         QTimer.singleShot(max(0, int(delay_ms or 0)), self._schedule_start_next)
@@ -279,6 +315,7 @@ class GuiTaskQueue(QObject):
         getattr(self, '_cancel_callbacks', {}).pop(task_id, None)
         if self._running_task_id == task_id:
             self._running_task_id = None
+        self._timing_finish(record, TASK_STATUS_DELETED, record.last_error)
         self.changed.emit()
         self._persist_record(record)
         self._schedule_start_next()
@@ -291,6 +328,7 @@ class GuiTaskQueue(QObject):
         record.status = TASK_STATUS_RUNNING
         record.last_error = str(error_message or '').strip()
         record.pause_reason = ''
+        self._timing_start(record)
         self.changed.emit()
         self._persist_record(record)
         return True
@@ -367,12 +405,15 @@ class GuiTaskQueue(QObject):
             resumable=bool(payload.get('resumable')),
             paused_at=str(payload.get('paused_at') or ''),
             non_resumable_reason=str(payload.get('non_resumable_reason') or ''),
+            active_seconds=float(payload.get('active_seconds') or 0),
+            paused_seconds=float(payload.get('paused_seconds') or 0),
         )
         self._records.append(record)
         self._start_callbacks[task_id] = start_callback
         self._next_task_id = max(self._next_task_id, task_id + 1)
         if record.status == TASK_STATUS_WAITING:
             self._waiting_records.append(record)
+        self._timing_ensure(record)
         self._persist_record(record, create=True)
         self.changed.emit()
         self._schedule_start_next()
@@ -388,6 +429,7 @@ class GuiTaskQueue(QObject):
         elif record.status in {TASK_STATUS_WAITING, TASK_STATUS_PAUSED}:
             record.status = TASK_STATUS_PAUSED
             record.paused_at = _now_text()
+            self._timing_pause(record, TASK_STATUS_PAUSED, record.pause_reason)
         self._persist_record(record)
         self.changed.emit()
 
@@ -468,6 +510,9 @@ class GuiTaskQueue(QObject):
         self._next_task_id = 1
         self._run_mode = RUN_MODE_TASK
         self._persistence = None
+        self._timing_persistence = None
+        self._timing_clock = time.monotonic
+        self._timing_runtime.clear()
         self.changed.emit()
 
     def _schedule_start_next(self):
@@ -496,6 +541,7 @@ class GuiTaskQueue(QObject):
         record.started_at = _now_text()
         record.pause_requested = False
         self._running_task_id = record.task_id
+        self._timing_start(record)
         self._persist_record(record)
         self.changed.emit()
         try:
@@ -544,6 +590,138 @@ class GuiTaskQueue(QObject):
             if record.task_id == task_id:
                 return record
         return None
+
+    def _timing_ensure(self, record):
+        if self._timing_persistence is None:
+            return
+        try:
+            existing = self._timing_persistence.get_gui_task_timing(record.task_id)
+            if existing is None:
+                self._timing_persistence.save_gui_task_timing(self._timing_payload(record))
+            else:
+                record.active_seconds = float(existing.get('active_seconds') or 0)
+                record.paused_seconds = float(existing.get('paused_seconds') or 0)
+        except Exception:
+            LOGGER.exception('任务计时初始化失败 task_id=%s', record.task_id)
+
+    def _timing_start(self, record):
+        if self._timing_persistence is None:
+            return
+        try:
+            existing = self._timing_persistence.get_gui_task_timing(record.task_id) or {}
+            now = self._timing_clock()
+            paused_seconds = float(existing.get('paused_seconds') or record.paused_seconds or 0)
+            pause_started_at = existing.get('paused_at') or ''
+            runtime = self._timing_runtime.get(record.task_id)
+            if runtime and runtime.get('paused_at') is not None:
+                paused_seconds += max(0.0, now - runtime['paused_at'])
+            elif pause_started_at:
+                paused_seconds += self._wall_seconds_since(pause_started_at)
+            first_start = not bool(existing.get('started_at'))
+            resume_count = int(existing.get('resume_count') or 0) + (0 if first_start else 1)
+            record.paused_seconds = paused_seconds
+            record.active_seconds = float(existing.get('active_seconds') or record.active_seconds or 0)
+            self._timing_runtime[record.task_id] = {'last_active_at': now, 'paused_at': None}
+            self._timing_write(
+                record,
+                status=TASK_STATUS_RUNNING,
+                started_at=existing.get('started_at') or record.started_at,
+                ended_at='',
+                last_resumed_at=_now_text(),
+                paused_at='',
+                paused_seconds=paused_seconds,
+                active_seconds=record.active_seconds,
+                resume_count=resume_count,
+                close_reason='',
+            )
+        except Exception:
+            LOGGER.exception('任务计时启动失败 task_id=%s', record.task_id)
+
+    def _timing_pause(self, record, status, reason=''):
+        if self._timing_persistence is None:
+            return
+        try:
+            self._timing_add_active_interval(record)
+            runtime = self._timing_runtime.setdefault(record.task_id, {'last_active_at': None, 'paused_at': None})
+            runtime['paused_at'] = self._timing_clock()
+            existing = self._timing_persistence.get_gui_task_timing(record.task_id) or {}
+            pause_count = int(existing.get('pause_count') or 0) + 1
+            self._timing_write(
+                record,
+                status=status,
+                paused_at=_now_text(),
+                paused_seconds=record.paused_seconds,
+                active_seconds=record.active_seconds,
+                pause_count=pause_count,
+                close_reason=reason if status != TASK_STATUS_WAITING else '',
+            )
+        except Exception:
+            LOGGER.exception('任务计时暂停失败 task_id=%s', record.task_id)
+
+    def _timing_finish(self, record, status, reason=''):
+        if self._timing_persistence is None:
+            return
+        try:
+            self._timing_add_active_interval(record)
+            runtime = self._timing_runtime.get(record.task_id)
+            if runtime and runtime.get('paused_at') is not None:
+                record.paused_seconds += max(0.0, self._timing_clock() - runtime['paused_at'])
+            existing = self._timing_persistence.get_gui_task_timing(record.task_id) or {}
+            self._timing_write(
+                record,
+                status=status,
+                ended_at=_now_text(),
+                paused_at='',
+                paused_seconds=record.paused_seconds,
+                active_seconds=record.active_seconds,
+                pause_count=int(existing.get('pause_count') or 0),
+                close_reason=reason,
+            )
+            self._timing_runtime.pop(record.task_id, None)
+        except Exception:
+            LOGGER.exception('任务计时结束失败 task_id=%s', record.task_id)
+
+    def _timing_add_active_interval(self, record):
+        runtime = self._timing_runtime.get(record.task_id)
+        if not runtime or runtime.get('last_active_at') is None:
+            return
+        now = self._timing_clock()
+        record.active_seconds += max(0.0, now - runtime['last_active_at'])
+        runtime['last_active_at'] = None
+
+    def _timing_write(self, record, **changes):
+        payload = self._timing_payload(record)
+        existing = self._timing_persistence.get_gui_task_timing(record.task_id) or {}
+        for key in (
+            'started_at', 'ended_at', 'last_resumed_at', 'paused_at',
+            'paused_seconds', 'active_seconds', 'pause_count', 'resume_count',
+            'close_reason',
+        ):
+            if key in existing:
+                payload[key] = existing[key]
+        payload.update(changes)
+        self._timing_persistence.save_gui_task_timing(payload)
+
+    @staticmethod
+    def _wall_seconds_since(value):
+        try:
+            started = datetime.strptime(str(value), '%Y-%m-%d %H:%M:%S')
+            return max(0.0, (datetime.now() - started).total_seconds())
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _timing_payload(record):
+        return {
+            'task_id': record.task_id,
+            'trace_task_id': record.trace_task_id,
+            'task_category': record.task_category,
+            'title': record.title,
+            'status': record.status,
+            'started_at': record.started_at,
+            'active_seconds': record.active_seconds,
+            'paused_seconds': record.paused_seconds,
+        }
 
     def _persist_record(self, record, create=False):
         if self._persistence is None:

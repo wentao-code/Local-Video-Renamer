@@ -80,6 +80,7 @@ from app.data.repositories import (
     CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
     GuiTaskRepositoryMixin,
+    GuiTaskTimingRepositoryMixin,
     LadderRepositoryMixin,
     MigrationMixin,
     PathRepositoryMixin,
@@ -133,6 +134,7 @@ class VideoDatabase(
     CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
     GuiTaskRepositoryMixin,
+    GuiTaskTimingRepositoryMixin,
     LadderRepositoryMixin,
     StartupRefreshHistoryRepositoryMixin,
     VideoEntityRepositoryMixin,
@@ -170,6 +172,7 @@ class VideoDatabase(
             cursor = conn.cursor()
             self._ensure_enrichment_batch_plan_tables(cursor)
             self._ensure_gui_task_tables(cursor)
+            self._ensure_gui_task_timing_tables(cursor)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS actors (
                     name TEXT PRIMARY KEY,

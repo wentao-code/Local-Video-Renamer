@@ -68,6 +68,7 @@ from app.gui.task_queue import (
     RUN_MODE_TASK,
     RUN_MODE_VIEW,
     TASK_CATEGORY_ENRICHMENT,
+    TASK_CATEGORY_MAINTENANCE,
     TASK_CATEGORY_VIEW,
     TASK_STATUS_CANCELLING,
     TASK_STATUS_COMPLETED,
@@ -310,6 +311,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.snapshot_refresh_started_at = 0.0
         self.snapshot_refresh_current_target = ''
         self.snapshot_refresh_last_completed_at = ''
+        self.snapshot_refresh_batch = None
+        self.snapshot_refresh_auto_batch = None
         self.snapshot_refresh_timer = QTimer(self)
         self.snapshot_refresh_timer.setInterval(3 * 60 * 60 * 1000)
         self.snapshot_refresh_timer.timeout.connect(self.schedule_snapshot_refresh_cycle)
@@ -336,6 +339,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.task_queue = get_gui_task_queue()
         self.task_database = self._create_task_database()
         self.task_queue.configure_persistence(self.task_database)
+        self.task_queue.configure_timing_persistence(self.task_database)
         self.task_resume_registry = self._build_task_resume_registry()
         self.task_resume_registry.recover_persisted_tasks(
             self.task_queue,
@@ -1740,6 +1744,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         max_attempts=5,
         cancel_callback=None,
         plan_task_kind='',
+        trace_task_id='',
     ):
         def start_runner(record):
             if callable(before_start):
@@ -1837,10 +1842,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             enqueue_kwargs['plan_id'] = plan_id
             enqueue_kwargs['plan_progress'] = plan_progress
             enqueue_kwargs['plan_task_kind'] = str(plan_task_kind or task_kind or '').strip()
+        if trace_task_id:
+            enqueue_kwargs['trace_task_id'] = str(trace_task_id).strip()
         if cancel_callback is not None:
             enqueue_kwargs['cancel_callback'] = cancel_callback
-        get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
-        return True
+        return get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
 
     @staticmethod
     def _is_non_retryable_enrichment_error(message, task_category=''):
@@ -2537,14 +2543,275 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
 
     def refresh_detail_snapshots(self):
+        if getattr(self, 'snapshot_refresh_batch', None):
+            return False
         self.start_async_task(
-            lambda: VidNormApp._refresh_all_snapshots(self),
-            self._on_refresh_detail_snapshots_finished,
+            self._discover_snapshot_refresh_metric_keys,
+            self._on_snapshot_refresh_specs_discovered,
             tr('common.operation_failed'),
             block_ui=False,
             allow_deferred_close=True,
-            task_title='主界面 全量刷新快照',
+            task_title='主界面 准备快照刷新任务',
+            show_in_task_queue=False,
         )
+        return True
+
+    def _discover_snapshot_refresh_metric_keys(self):
+        refresh_client = _build_refresh_client(
+            self.backend_client,
+            minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
+        )
+        dashboard = refresh_client.get_data_dashboard(force_refresh=False)
+        return {
+            'dashboard_metric_keys': sorted({
+                str(metric.get('key') or '').strip()
+                for section in (dashboard.get('sections', []) if isinstance(dashboard, dict) else []) or []
+                for metric in (section.get('metrics', []) if isinstance(section, dict) else []) or []
+                if isinstance(metric, dict) and str(metric.get('key') or '').strip()
+            }),
+        }
+
+    def _on_snapshot_refresh_specs_discovered(self, result):
+        payload = dict(result or {})
+        self._enqueue_snapshot_refresh_tasks(payload.get('dashboard_metric_keys', []))
+
+    def _enqueue_snapshot_refresh_tasks(self, dashboard_metric_keys=None):
+        refresh_client = _build_refresh_client(
+            self.backend_client,
+            minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
+        )
+        specs = VidNormApp._build_snapshot_refresh_task_specs(
+            refresh_client,
+            dashboard_metric_keys=dashboard_metric_keys,
+        )
+        batch_id = f'snapshot-refresh-{uuid.uuid4().hex}'
+        self.snapshot_refresh_batch = {
+            'batch_id': batch_id,
+            'total': len(specs),
+            'pending': len(specs),
+            'completed': [],
+            'failed': [],
+            'task_ids': {},
+        }
+        self.snapshot_refresh_running = bool(specs)
+        if not specs:
+            self._finish_snapshot_refresh_batch()
+            return False
+        for spec in specs:
+            key = str(spec['key']).strip()
+            task_record_holder = {}
+            task_record = self._start_queued_gui_runner(
+                spec['title'],
+                lambda spec=spec: BackendTaskWorker(spec['runner']),
+                lambda result, batch_id=batch_id, key=key: self._on_snapshot_refresh_child_finished(
+                    batch_id, key, result,
+                ),
+                lambda error, batch_id=batch_id, key=key: self._on_snapshot_refresh_child_failed(
+                    batch_id, key, error,
+                ),
+                cleanup_handler=lambda batch_id=batch_id, key=key, holder=task_record_holder: self._on_snapshot_refresh_child_cleanup(
+                    batch_id, key, holder.get('task_id'),
+                ),
+                source='数据中心快照刷新',
+                task_category=TASK_CATEGORY_MAINTENANCE,
+                task_kind='snapshot_refresh',
+                plan_id=batch_id,
+                plan_task_kind='snapshot_refresh',
+                max_attempts=3,
+                trace_task_id=f'{batch_id}:{key}',
+            )
+            task_id = getattr(task_record, 'task_id', None)
+            if task_id is not None:
+                task_record_holder['task_id'] = task_id
+                self.snapshot_refresh_batch['task_ids'][task_id] = key
+        return True
+
+    def _on_snapshot_refresh_child_finished(self, batch_id, key, result):
+        batch = getattr(self, 'snapshot_refresh_batch', None)
+        if not batch or batch.get('batch_id') != batch_id:
+            return
+        batch['completed'].append({'key': key, 'result': dict(result or {})})
+        batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
+        self._finish_snapshot_refresh_batch_if_ready()
+
+    def _on_snapshot_refresh_child_failed(self, batch_id, key, error):
+        batch = getattr(self, 'snapshot_refresh_batch', None)
+        if not batch or batch.get('batch_id') != batch_id:
+            return
+        batch['failed'].append({'key': key, 'error': str(error or '快照刷新失败')})
+        batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
+        self._finish_snapshot_refresh_batch_if_ready()
+
+    def _on_snapshot_refresh_child_cleanup(self, batch_id, key, task_id):
+        batch = getattr(self, 'snapshot_refresh_batch', None)
+        if not batch or batch.get('batch_id') != batch_id or not task_id:
+            return
+        record = next(
+            (item for item in get_gui_task_queue().records() if item.task_id == task_id),
+            None,
+        )
+        if record is None or record.status != TASK_STATUS_CANCELLING:
+            return
+        batch['failed'].append({'key': key, 'error': record.pause_reason or '用户取消'})
+        batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
+        self._finish_snapshot_refresh_batch_if_ready()
+
+    def _finish_snapshot_refresh_batch_if_ready(self):
+        batch = getattr(self, 'snapshot_refresh_batch', None)
+        if not batch or int(batch.get('pending', 0) or 0) > 0:
+            return False
+        self._finish_snapshot_refresh_batch()
+        return True
+
+    def _finish_snapshot_refresh_batch(self):
+        batch = dict(getattr(self, 'snapshot_refresh_batch', None) or {})
+        if not batch:
+            return
+        result = {
+            'status': 'partial' if batch.get('failed') else 'completed',
+            'batch_id': batch.get('batch_id', ''),
+            'completed': list(batch.get('completed', []) or []),
+            'failed': list(batch.get('failed', []) or []),
+            'skipped': [],
+            'total': int(batch.get('total', 0) or 0),
+        }
+        self.snapshot_refresh_batch = None
+        self.snapshot_refresh_running = False
+        self._on_refresh_detail_snapshots_finished(result)
+
+    @staticmethod
+    def _build_snapshot_refresh_task_specs(refresh_client, dashboard_metric_keys=None):
+        def spec(key, title, runner):
+            return {'key': key, 'title': title, 'runner': runner}
+
+        def refresh_video_library():
+            rows = VidNormApp._refresh_snapshot_pages(
+                lambda offset: refresh_client.list_videos_page(force_refresh=True, offset=offset),
+                'videos',
+            )
+            return {'count': len(rows)}
+
+        def refresh_actor_library():
+            rows = VidNormApp._refresh_snapshot_pages(
+                lambda offset: refresh_client.list_actors_snapshot(
+                    force_refresh=True,
+                    include_update_status=False,
+                    offset=offset,
+                ),
+                'actors',
+            )
+            return {'count': len(rows)}
+
+        def refresh_code_prefix_library():
+            rows = VidNormApp._refresh_snapshot_pages(
+                lambda offset: refresh_client.list_code_prefixes_snapshot(force_refresh=True, offset=offset),
+                'prefixes',
+            )
+            return {'count': len(rows)}
+
+        def refresh_data_center_summary():
+            return refresh_client.get_data_center_summary(force_refresh=True)
+
+        def refresh_dashboard():
+            return refresh_client.get_data_dashboard(force_refresh=True)
+
+        def refresh_actor_analysis():
+            count = 0
+            for metric in ACTOR_ANALYSIS_METRICS:
+                analysis = refresh_client.get_metric_analysis('actor', metric['key'], force_refresh=True)
+                count += 1
+                for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
+                    bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
+                    if bucket_value not in (None, ''):
+                        refresh_client.get_actor_metric_bucket(metric['key'], bucket_value, force_refresh=True)
+                        count += 1
+            return {'count': count}
+
+        def refresh_code_prefix_analysis():
+            count = 0
+            for metric in CODE_PREFIX_ANALYSIS_METRICS:
+                analysis = refresh_client.get_metric_analysis('code_prefix', metric['key'], force_refresh=True)
+                count += 1
+                for row in (analysis.get('analysis', {}).get('distribution_rows', []) if isinstance(analysis, dict) else []) or []:
+                    bucket_value = row.get('bucket_value') if isinstance(row, dict) else None
+                    if bucket_value not in (None, ''):
+                        refresh_client.get_code_prefix_metric_bucket(metric['key'], bucket_value, force_refresh=True)
+                        count += 1
+            return {'count': count}
+
+        def refresh_video_category():
+            for tier in (MANUAL_CATEGORY_TIER_FIRST, MANUAL_CATEGORY_TIER_SECOND, MANUAL_CATEGORY_TIER_THIRD):
+                refresh_client.list_videos_requiring_manual_category_snapshot(force_refresh=True, tier=tier)
+            return {'tiers': 3}
+
+        def refresh_candidate_and_canglangge():
+            refresh_client.refresh_candidate_library()
+            refresh_client.list_canglangge_candidates_snapshot(force_refresh=True)
+            return {'count': 2}
+
+        def refresh_ladder_boards():
+            for board_key in (LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX):
+                refresh_client.get_ladder_board_snapshot(board_key, force_refresh=True)
+            return {'count': 2}
+
+        def refresh_masterpiece():
+            entries = refresh_client.list_masterpiece_entries(force_refresh=True)
+            detail_count = 0
+            for entry in entries or []:
+                code = str((entry or {}).get('code') or '').strip()
+                if code:
+                    refresh_client.get_masterpiece_detail_snapshot(code, force_refresh=True)
+                    detail_count += 1
+            return {'detail_count': detail_count}
+
+        def refresh_global_medals():
+            return refresh_client.list_global_medals(force_refresh=True) or {}
+
+        def refresh_path_library():
+            return refresh_client.get_path_library_snapshot(force_refresh=True) or {}
+
+        def refresh_queen_library():
+            payload = refresh_client.list_queen_library_snapshot(force_refresh=True)
+            refresh_client.list_queen_keywords_snapshot(force_refresh=True)
+            refresh_client.get_queen_library_stats()
+            rows = payload.get('queens', []) if isinstance(payload, dict) else payload
+            detail_count = 0
+            for row in rows or []:
+                name = str((row or {}).get('queen_name') or '').strip()
+                if name:
+                    refresh_client.get_queen_detail_snapshot(name, force_refresh=True)
+                    detail_count += 1
+            return {'detail_count': detail_count}
+
+        specs = [
+            spec('detail_rebuild', '快照刷新 - 详情重建', refresh_client.rebuild_detail_snapshots),
+            spec('video_library', '快照刷新 - 视频库', refresh_video_library),
+            spec('actor_library', '快照刷新 - 演员库', refresh_actor_library),
+            spec('code_prefix_library', '快照刷新 - 番号库', refresh_code_prefix_library),
+            spec('data_center_summary', '快照刷新 - 数据中心摘要', refresh_data_center_summary),
+            spec('data_center_dashboard', '快照刷新 - 仪表盘', refresh_dashboard),
+            spec('actor_analysis', '快照刷新 - 演员分析', refresh_actor_analysis),
+            spec('code_prefix_analysis', '快照刷新 - 番号分析', refresh_code_prefix_analysis),
+            spec('video_category', '快照刷新 - 视频分类', refresh_video_category),
+            spec('candidate_canglangge', '快照刷新 - 候选库与苍狼阁', refresh_candidate_and_canglangge),
+            spec('ladder_boards', '快照刷新 - 梯队榜', refresh_ladder_boards),
+            spec('masterpiece', '快照刷新 - 名作堂', refresh_masterpiece),
+            spec('global_medals', '快照刷新 - 全局勋章', refresh_global_medals),
+            spec('path_library', '快照刷新 - 路径库', refresh_path_library),
+            spec('queen_library', '快照刷新 - 女王库', refresh_queen_library),
+        ]
+        for metric_key in sorted({str(key or '').strip() for key in dashboard_metric_keys or [] if str(key or '').strip()}):
+            specs.append(
+                spec(
+                    f'data_center_dashboard_metric_{metric_key}',
+                    f'快照刷新 - 仪表盘指标 {metric_key}',
+                    lambda metric_key=metric_key: refresh_client.get_data_dashboard_items(
+                        metric_key,
+                        force_refresh=True,
+                    ),
+                )
+            )
+        return specs
 
     @staticmethod
     def _refresh_snapshot_pages(loader, row_key):
@@ -2722,7 +2989,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def _on_refresh_detail_snapshots_finished(self, result):
         result = dict(result or {})
-        detail_result = dict(result.get('detail') or result)
         failed_items = list(result.get('failed', []) or [])
         status = str(result.get('status', '') or '').strip().lower()
         title = '快照刷新部分失败' if status == 'partial' else '快照刷新完成'
@@ -2737,11 +3003,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self,
             title,
             (
-                f"演员详情快照: {int(detail_result.get('actor_refreshed', 0) or 0)}/"
-                f"{int(detail_result.get('actor_total', 0) or 0)}\n"
-                f"番号详情快照: {int(detail_result.get('code_prefix_refreshed', 0) or 0)}/"
-                f"{int(detail_result.get('code_prefix_total', 0) or 0)}\n"
-                f"其他快照类别: {len(result.get('refreshed', []) or [])}"
+                f"快照任务完成: {len(result.get('completed', []) or [])}/"
+                f"{int(result.get('total', 0) or 0)}\n"
+                f"失败任务: {len(failed_items)}\n"
+                f"批次编号: {str(result.get('batch_id', '') or '')}"
                 f"{failure_text}"
             ),
         )
@@ -2941,6 +3206,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     def refresh_task_queue_indicator(self):
         queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
+        reconcile = getattr(self, '_reconcile_snapshot_refresh_auto_batch', None)
+        if callable(reconcile):
+            reconcile()
         self._update_task_queue_indicator(queue.is_all_done())
 
     def _update_task_queue_indicator(self, is_done=False):
@@ -3027,32 +3295,139 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if not self._should_run_snapshot_refresh_cycle():
             return False
         self.snapshot_refresh_queued = True
+        batch_id = f'background-snapshot-refresh-{uuid.uuid4().hex}'
+        self.snapshot_refresh_auto_batch = {
+            'batch_id': batch_id,
+            'total': 2,
+            'pending': 2,
+            'completed': [],
+            'failed': [],
+            'task_ids': {},
+        }
+        task_specs = [
+            (
+                'actor_library',
+                '后台刷新 - 演员库',
+                lambda client: client.list_actors_snapshot(
+                    force_refresh=True,
+                    include_update_status=False,
+                ),
+            ),
+            (
+                'code_prefix_library',
+                '后台刷新 - 番号库',
+                lambda client: client.list_code_prefixes_snapshot(force_refresh=True),
+            ),
+        ]
+        for task_key, title, operation in task_specs:
+            def worker_factory(operation=operation):
+                refresh_client = _build_refresh_client(
+                    self.backend_client,
+                    minimum_timeout=get_operation_timeout_seconds('snapshot_refresh_rebuild'),
+                )
+                return BackendTaskWorker(lambda: operation(refresh_client))
 
-        def worker_factory():
-            worker = self._create_snapshot_refresh_worker()
-            progress_signal = getattr(worker, 'progress', None)
-            if progress_signal is not None and hasattr(progress_signal, 'connect'):
-                progress_signal.connect(self._on_snapshot_refresh_progress)
-            return worker
+            def before_start(task_key=task_key, title=title):
+                self.snapshot_refresh_queued = False
+                self.snapshot_refresh_running = True
+                self.snapshot_refresh_current_target = title
+                self.snapshot_refresh_started_at = time.time()
+                self.snapshot_refresh_elapsed_timer.start()
+                VidNormApp._set_snapshot_refresh_indicator_state(
+                    self,
+                    state='refreshing',
+                    status_text=VidNormApp._build_snapshot_refresh_status_text(title, 0),
+                )
 
-        def before_start():
-            self.snapshot_refresh_queued = False
-            self.snapshot_refresh_running = True
+            def assign_snapshot_runner(worker, runner):
+                self.snapshot_refresh_worker = worker
+                self.snapshot_refresh_task_runner = runner
 
-        def assign_snapshot_runner(worker, runner):
-            self.snapshot_refresh_worker = worker
-            self.snapshot_refresh_task_runner = runner
-
-        self._start_queued_gui_runner(
-            SNAPSHOT_REFRESH_HISTORY_TASK_TITLE,
-            worker_factory,
-            self._on_snapshot_refresh_finished,
-            self._on_snapshot_refresh_failed,
-            cleanup_handler=self._cleanup_snapshot_refresh_attempt,
-            before_start=before_start,
-            assign_runner=assign_snapshot_runner,
-        )
+            task_record = self._start_queued_gui_runner(
+                title,
+                worker_factory,
+                lambda result, batch_id=batch_id, task_key=task_key, title=title: self._on_snapshot_refresh_auto_child_finished(
+                    batch_id, task_key, title, result,
+                ),
+                lambda error, batch_id=batch_id, task_key=task_key: self._on_snapshot_refresh_auto_child_failed(
+                    batch_id, task_key, error,
+                ),
+                before_start=before_start,
+                assign_runner=assign_snapshot_runner,
+                source='后台自动刷新',
+                task_category=TASK_CATEGORY_MAINTENANCE,
+                task_kind='snapshot_refresh',
+                plan_id=batch_id,
+                plan_task_kind='snapshot_refresh',
+                max_attempts=3,
+                trace_task_id=f'{batch_id}:{task_key}',
+            )
+            task_id = getattr(task_record, 'task_id', None)
+            if task_id is not None:
+                self.snapshot_refresh_auto_batch['task_ids'][task_id] = task_key
         return True
+
+    def _on_snapshot_refresh_auto_child_finished(self, batch_id, task_key, title, result):
+        batch = getattr(self, 'snapshot_refresh_auto_batch', None)
+        if not batch or batch.get('batch_id') != batch_id:
+            return
+        batch['completed'].append({'key': task_key, 'result': dict(result or {})})
+        batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
+        self._record_startup_refresh_completion(task_key, title)
+        self._finish_snapshot_refresh_auto_batch_if_ready()
+
+    def _on_snapshot_refresh_auto_child_failed(self, batch_id, task_key, error):
+        batch = getattr(self, 'snapshot_refresh_auto_batch', None)
+        if not batch or batch.get('batch_id') != batch_id:
+            return
+        batch['failed'].append({'key': task_key, 'error': str(error or '后台刷新失败')})
+        batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
+        self._finish_snapshot_refresh_auto_batch_if_ready()
+
+    def _finish_snapshot_refresh_auto_batch_if_ready(self):
+        batch = getattr(self, 'snapshot_refresh_auto_batch', None)
+        if not batch or int(batch.get('pending', 0) or 0) > 0:
+            return False
+        failed = list(batch.get('failed', []) or [])
+        if not failed:
+            self._record_startup_refresh_completion(
+                SNAPSHOT_REFRESH_HISTORY_TASK_KEY,
+                SNAPSHOT_REFRESH_HISTORY_TASK_TITLE,
+            )
+        self.snapshot_refresh_auto_batch = None
+        self.snapshot_refresh_running = False
+        self.snapshot_refresh_elapsed_timer.stop()
+        self.snapshot_refresh_started_at = 0.0
+        self.snapshot_refresh_current_target = ''
+        self.snapshot_refresh_worker = None
+        self.snapshot_refresh_task_runner = None
+        state = 'failed' if failed else 'idle'
+        text = '后台刷新: 部分任务失败' if failed else VidNormApp._build_snapshot_refresh_idle_status_text(
+            time.strftime('%H:%M:%S')
+        )
+        VidNormApp._set_snapshot_refresh_indicator_state(self, state=state, status_text=text)
+        return True
+
+    def _reconcile_snapshot_refresh_auto_batch(self):
+        batch = getattr(self, 'snapshot_refresh_auto_batch', None)
+        if not batch:
+            return False
+        records = {
+            record.task_id: record
+            for record in get_gui_task_queue().records()
+        }
+        changed = False
+        for task_id, task_key in list((batch.get('task_ids') or {}).items()):
+            record = records.get(task_id)
+            if record is None or record.status != TASK_STATUS_DELETED:
+                continue
+            batch['failed'].append({'key': task_key, 'error': record.last_error or '用户取消'})
+            batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
+            batch['task_ids'].pop(task_id, None)
+            changed = True
+        if changed:
+            self._finish_snapshot_refresh_auto_batch_if_ready()
+        return changed
 
     def _should_run_snapshot_refresh_cycle(self):
         try:

@@ -48,7 +48,7 @@ class TaskQueueViewerWindow(QDialog):
         self.btn_delete_selected.setEnabled(False)
         self.btn_delete_selected.clicked.connect(self.delete_selected_tasks)
         self.table = QTableWidget()
-        self.table.setColumnCount(16)
+        self.table.setColumnCount(17)
         self.table.setHorizontalHeaderLabels([
             '编号',
             '追踪ID',
@@ -64,6 +64,7 @@ class TaskQueueViewerWindow(QDialog):
             '失败',
             '创建时间',
             '开始时间',
+            '耗时',
             '完成时间/错误',
             '暂停原因',
         ])
@@ -79,8 +80,9 @@ class TaskQueueViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         for column in range(6, 14):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(14, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(14, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(15, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(16, QHeaderView.Stretch)
 
         action_layout = QHBoxLayout()
         action_layout.addWidget(self.btn_pause_resume)
@@ -129,6 +131,7 @@ class TaskQueueViewerWindow(QDialog):
                 record.plan_failed_count if record.plan_id else '',
                 record.created_at,
                 record.started_at,
+                self._format_duration(self.task_queue.effective_active_seconds(record.task_id)),
                 error_text,
                 record.pause_reason or getattr(record, "non_resumable_reason", ""),
             ]
@@ -233,6 +236,13 @@ class TaskQueueViewerWindow(QDialog):
             )
         self.refresh_rows()
         return count
+
+    @staticmethod
+    def _format_duration(seconds):
+        total_seconds = max(0, int(float(seconds or 0)))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
     @staticmethod
     def _row_foreground(record):

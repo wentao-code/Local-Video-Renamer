@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from app.gui import main_window
 from app.gui.query_context import EntityReference
+from app.gui.task_queue import TASK_CATEGORY_MAINTENANCE
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -691,15 +692,15 @@ class MainWindowStartupTest(unittest.TestCase):
 
     def test_schedule_snapshot_refresh_cycle_starts_runner_when_idle(self):
         started = []
-        created_worker = object()
+        elapsed_timer = SimpleNamespace(start=lambda: None, stop=lambda: None)
         stub = SimpleNamespace(
             snapshot_refresh_running=False,
             snapshot_refresh_queued=False,
             snapshot_refresh_task_runner=None,
             snapshot_refresh_worker=None,
+            snapshot_refresh_elapsed_timer=elapsed_timer,
             backend_client=SimpleNamespace(),
             _has_active_enrichment_plan=lambda: False,
-            _create_snapshot_refresh_worker=lambda: created_worker,
             _on_snapshot_refresh_finished=lambda _result=None: None,
             _on_snapshot_refresh_failed=lambda _error=None: None,
             _cleanup_snapshot_refresh_attempt=lambda: None,
@@ -718,9 +719,10 @@ class MainWindowStartupTest(unittest.TestCase):
         main_window.VidNormApp.schedule_snapshot_refresh_cycle(stub)
 
         self.assertTrue(stub.snapshot_refresh_running)
-        self.assertIs(stub.snapshot_refresh_worker, created_worker)
-        self.assertEqual(started[0][0], '后台刷新快照')
-        self.assertIs(started[0][1], created_worker)
+        self.assertEqual(len(started), 2)
+        self.assertEqual([item[0] for item in started], ['后台刷新 - 演员库', '后台刷新 - 番号库'])
+        self.assertEqual(started[0][4]['task_category'], TASK_CATEGORY_MAINTENANCE)
+        self.assertEqual(started[0][4]['task_kind'], 'snapshot_refresh')
 
     def test_schedule_snapshot_refresh_cycle_skips_recent_completed_snapshot_refresh(self):
         stub = SimpleNamespace(
@@ -764,7 +766,46 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertTrue(stub.snapshot_refresh_queued)
-        self.assertEqual(len(queued), 1)
+        self.assertEqual(len(queued), 2)
+
+    def test_background_snapshot_children_finish_as_one_batch(self):
+        recorded = []
+        stopped = []
+        stub = SimpleNamespace(
+            snapshot_refresh_auto_batch={
+                'batch_id': 'batch-1',
+                'total': 2,
+                'pending': 2,
+                'completed': [],
+                'failed': [],
+            },
+            snapshot_refresh_running=True,
+            snapshot_refresh_elapsed_timer=SimpleNamespace(stop=lambda: stopped.append(True)),
+            snapshot_refresh_started_at=100.0,
+            snapshot_refresh_current_target='后台刷新 - 演员库',
+            snapshot_refresh_worker=object(),
+            snapshot_refresh_task_runner=object(),
+            _record_startup_refresh_completion=lambda key, title: recorded.append((key, title)),
+        )
+        stub._finish_snapshot_refresh_auto_batch_if_ready = lambda: main_window.VidNormApp._finish_snapshot_refresh_auto_batch_if_ready(stub)
+
+        with patch('app.gui.main_window.VidNormApp._set_snapshot_refresh_indicator_state'):
+            main_window.VidNormApp._on_snapshot_refresh_auto_child_finished(
+                stub, 'batch-1', 'actor_library', '后台刷新 - 演员库', {'success': True},
+            )
+            self.assertIsNotNone(stub.snapshot_refresh_auto_batch)
+            main_window.VidNormApp._on_snapshot_refresh_auto_child_finished(
+                stub, 'batch-1', 'code_prefix_library', '后台刷新 - 番号库', {'success': True},
+            )
+
+        self.assertIsNone(stub.snapshot_refresh_auto_batch)
+        self.assertFalse(stub.snapshot_refresh_running)
+        self.assertEqual(recorded, [
+            ('actor_library', '后台刷新 - 演员库'),
+            ('code_prefix_library', '后台刷新 - 番号库'),
+            ('snapshot_refresh', '后台刷新快照'),
+        ])
+        self.assertTrue(stopped)
 
     def test_snapshot_refresh_finished_records_88_hour_history(self):
         recorded = []
@@ -864,46 +905,38 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertIsNone(stub.snapshot_refresh_worker)
         self.assertIsNone(stub.snapshot_refresh_task_runner)
 
-    def test_refresh_detail_snapshots_dispatches_explicit_full_refresh_task(self):
+    def test_refresh_detail_snapshots_dispatches_snapshot_task_discovery(self):
         captured = {}
 
         class _RefreshClient:
             base_url = ''
             timeout = 30
 
-            def rebuild_detail_snapshots(self):
-                return {
-                    'actor_total': 2,
-                    'actor_refreshed': 2,
-                    'code_prefix_total': 1,
-                    'code_prefix_refreshed': 1,
-                }
-
             def __getattr__(self, _name):
                 return lambda *args, **kwargs: {}
 
         stub = SimpleNamespace(
             backend_client=_RefreshClient(),
+            _discover_snapshot_refresh_metric_keys=lambda: {'dashboard_metric_keys': []},
+            _on_snapshot_refresh_specs_discovered=lambda result: result,
             start_async_task=lambda task, success_handler, error_title=None, block_ui=True, **kwargs: captured.update(
                 {
-                    'task_result': task(),
+                    'task': task,
                     'success_handler': success_handler,
                     'error_title': error_title,
                     'block_ui': block_ui,
                     'kwargs': dict(kwargs),
                 }
             ),
-            _on_refresh_detail_snapshots_finished=lambda result: result,
         )
 
         main_window.VidNormApp.refresh_detail_snapshots(stub)
 
-        self.assertEqual(captured['task_result']['actor_refreshed'], 2)
-        self.assertEqual(captured['task_result']['code_prefix_refreshed'], 1)
-        self.assertEqual(captured['success_handler'], stub._on_refresh_detail_snapshots_finished)
+        self.assertEqual(captured['success_handler'], stub._on_snapshot_refresh_specs_discovered)
         self.assertFalse(captured['block_ui'])
         self.assertTrue(captured['kwargs']['allow_deferred_close'])
-        self.assertEqual(captured['kwargs']['task_title'], '主界面 全量刷新快照')
+        self.assertFalse(captured['kwargs']['show_in_task_queue'])
+        self.assertEqual(captured['kwargs']['task_title'], '主界面 准备快照刷新任务')
 
     def test_subtitle_confirmation_queues_one_task_for_each_selected_code(self):
         captured = {'tasks': []}

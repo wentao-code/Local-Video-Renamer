@@ -132,6 +132,21 @@ class TaskQueueViewerWindowTest(unittest.TestCase):
             viewer.close()
             viewer.deleteLater()
 
+    def test_rows_show_formatted_effective_duration(self):
+        viewer = TaskQueueViewerWindow()
+        try:
+            self.queue.enqueue('计时任务', 'test', lambda _record: None)
+            _APP.processEvents()
+            record = self.queue._records[0]
+            record.active_seconds = 3723.5
+            viewer.refresh_rows()
+
+            self.assertEqual(viewer.table.horizontalHeaderItem(14).text(), '耗时')
+            self.assertEqual(viewer.table.item(0, 14).text(), '01:02:03')
+        finally:
+            viewer.close()
+            viewer.deleteLater()
+
     def test_delete_selected_button_cancels_selected_waiting_task(self):
         viewer = TaskQueueViewerWindow()
         try:
