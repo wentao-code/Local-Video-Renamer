@@ -130,7 +130,7 @@ class TaskQueueViewerWindow(QDialog):
                 record.created_at,
                 record.started_at,
                 error_text,
-                record.pause_reason,
+                record.pause_reason or getattr(record, "non_resumable_reason", ""),
             ]
             row_brush = self._row_foreground(record)
             for column, value in enumerate(values):
