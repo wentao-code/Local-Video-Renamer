@@ -223,6 +223,8 @@ def make_handler(service):
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                     tier=query.get('tier', [''])[0],
                 )
+            if method == 'POST' and path == '/database/videos/manual-category/refresh-filter':
+                return service.refresh_video_category_snapshot_filter()
             if method == 'POST' and path == '/database/videos/manual-category/stage':
                 return service.stage_video_category(body.get('code'), body.get('category'))
             if method == 'POST' and path == '/database/videos/manual-category/stage/batch':
@@ -485,10 +487,6 @@ def run_server(host=None, port=None, instance_token=''):
     service = BackendService(instance_token=instance_token)
     server = ThreadingHTTPServer((host, port), make_handler(service))
     try:
-        try:
-            service.start_background_video_category_snapshot_filter()
-        except Exception:
-            get_logger(__name__).exception('视频分类快照后台过滤调度失败，后端继续运行')
         print(f'Local Video Renamer backend listening on http://{host}:{port}')
         server.serve_forever()
     finally:

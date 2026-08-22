@@ -12,7 +12,13 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from app.core.project_paths import ERROR_LOG_FILE, HTTP_ACCESS_LOG_FILE, LOG_DIR
+from app.core.project_paths import (
+    COMBO_TASK_LOG_DIR,
+    ERROR_LOG_FILE,
+    HTTP_ACCESS_LOG_FILE,
+    LOG_DIR,
+    TASK_TRACE_LOG_DIR,
+)
 
 
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024
@@ -123,7 +129,11 @@ def configure_logging(
     logging.raiseExceptions = False
     target_dir = Path(log_dir) if log_dir else LOG_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
-    cleanup_old_logs(target_dir, max_age_days=max_age_days, max_total_bytes=max_total_bytes)
+    cleanup_runtime_logs(
+        log_dirs=(target_dir,) if log_dir else None,
+        max_age_days=max_age_days,
+        max_total_bytes=max_total_bytes,
+    )
 
     with _CONFIG_LOCK:
         root_logger = logging.getLogger()
@@ -219,7 +229,6 @@ def cleanup_old_logs(log_dir=None, *, max_age_days=DEFAULT_MAX_AGE_DAYS, max_tot
                 path.unlink()
         except OSError:
             continue
-
     remaining = []
     for path in target_dir.glob('*.log*'):
         try:
@@ -238,6 +247,78 @@ def cleanup_old_logs(log_dir=None, *, max_age_days=DEFAULT_MAX_AGE_DAYS, max_tot
         except OSError:
             continue
 
+
+def cleanup_runtime_logs(
+    log_dirs=None,
+    *,
+    max_age_days=DEFAULT_MAX_AGE_DAYS,
+    max_total_bytes=DEFAULT_MAX_TOTAL_BYTES,
+):
+    """Apply one retention policy across all runtime log directories.
+
+    The cleanup is intentionally best-effort: an active log file may be locked
+    by another process on Windows, so one failed deletion must not block startup.
+    """
+    directories = tuple(log_dirs or (
+        LOG_DIR,
+        TASK_TRACE_LOG_DIR,
+        COMBO_TASK_LOG_DIR,
+    ))
+    now = time.time()
+    max_age_seconds = max(0, int(max_age_days or 0)) * 24 * 60 * 60
+    max_bytes = max(0, int(max_total_bytes or 0))
+    candidates = []
+    seen = set()
+    report = {
+        'scanned_files': 0,
+        'deleted_files': 0,
+        'deleted_bytes': 0,
+        'remaining_bytes': 0,
+        'errors': [],
+    }
+
+    for directory in directories:
+        target_dir = Path(directory)
+        try:
+            files = [path for path in target_dir.glob('*.log*') if path.is_file()]
+        except OSError as exc:
+            report['errors'].append(f'扫描日志目录失败 {target_dir}: {exc}')
+            continue
+        for path in files:
+            try:
+                normalized = path.resolve()
+                key = str(normalized).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                stat = normalized.stat()
+            except OSError as exc:
+                report['errors'].append(f'读取日志属性失败 {path}: {exc}')
+                continue
+            report['scanned_files'] += 1
+            if max_age_seconds and now - stat.st_mtime > max_age_seconds:
+                try:
+                    normalized.unlink()
+                    report['deleted_files'] += 1
+                    report['deleted_bytes'] += stat.st_size
+                except OSError as exc:
+                    report['errors'].append(f'删除过期日志失败 {normalized}: {exc}')
+                continue
+            candidates.append((normalized, stat.st_mtime, stat.st_size))
+
+    total_size = sum(item[2] for item in candidates)
+    for path, _, size in sorted(candidates, key=lambda item: item[1]):
+        if total_size <= max_bytes:
+            break
+        try:
+            path.unlink()
+            total_size -= size
+            report['deleted_files'] += 1
+            report['deleted_bytes'] += size
+        except OSError as exc:
+            report['errors'].append(f'删除超限日志失败 {path}: {exc}')
+    report['remaining_bytes'] = total_size
+    return report
 
 def log_http_access(method, path, status, duration_ms, request_id, **fields):
     payload = {

@@ -11,7 +11,13 @@ from urllib.request import urlopen
 
 from app.backend.server import make_handler
 from app.backend.service import BackendService
-from app.core.app_logging import append_jsonl_log, cleanup_old_logs, configure_logging, log_context
+from app.core.app_logging import (
+    append_jsonl_log,
+    cleanup_old_logs,
+    cleanup_runtime_logs,
+    configure_logging,
+    log_context,
+)
 from app.core.project_paths import LOG_DIR
 from app.queen_library.service import QueenLibraryService
 from app.services.enrichment.enrichment_progress_service import EnrichmentProgressService
@@ -88,6 +94,39 @@ class AppLoggingTest(unittest.TestCase):
             self.assertFalse(expired_log.exists())
             self.assertFalse(first_log.exists())
             self.assertTrue(second_log.exists())
+
+    def test_cleanup_runtime_logs_applies_one_age_and_total_size_policy_to_all_log_dirs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first_dir = root / 'logs'
+            second_dir = root / 'task_logs'
+            third_dir = root / 'combo_task_logs'
+            for directory in (first_dir, second_dir, third_dir):
+                directory.mkdir()
+
+            old_log = first_dir / 'old.log'
+            old_log.write_text('old', encoding='utf-8')
+            old_time = (datetime.now() - timedelta(days=31)).timestamp()
+            import os
+            os.utime(old_log, (old_time, old_time))
+
+            oldest = second_dir / 'oldest.log'
+            oldest.write_text('a' * 30, encoding='utf-8')
+            time.sleep(0.02)
+            newest = third_dir / 'newest.log'
+            newest.write_text('b' * 30, encoding='utf-8')
+
+            report = cleanup_runtime_logs(
+                log_dirs=(first_dir, second_dir, third_dir),
+                max_age_days=30,
+                max_total_bytes=40,
+            )
+
+            self.assertFalse(old_log.exists())
+            self.assertFalse(oldest.exists())
+            self.assertTrue(newest.exists())
+            self.assertEqual(report['deleted_files'], 2)
+            self.assertLessEqual(report['remaining_bytes'], 40)
 
     def test_task_trace_and_progress_snapshot_share_run_and_correlation_ids(self):
         with tempfile.TemporaryDirectory() as temp_dir:

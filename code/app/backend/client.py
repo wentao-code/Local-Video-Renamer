@@ -445,6 +445,10 @@ class BackendClient:
     def stage_video_category(self, code, category):
         return self._post('/database/videos/manual-category/stage', {'code': code, 'category': category})
 
+    def refresh_video_category_snapshot_filter(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._post('/database/videos/manual-category/refresh-filter', timeout=timeout)
+
     def stage_video_categories(self, entries):
         return self._post('/database/videos/manual-category/stage/batch', {'entries': entries})
 
@@ -729,13 +733,21 @@ class BackendClient:
             timeout=timeout,
         )
 
-    def refresh_queen_library(self, show_browser=True):
+    def refresh_queen_library(self, show_browser=True, poll_interval=1.0):
         timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
-        return self._post(
+        result = self._post(
             '/queen-library/refresh',
             {'show_browser': bool(show_browser)},
             timeout=timeout,
         )
+        while bool((result or {}).get('progress', {}).get('is_running')):
+            if float(poll_interval or 0) > 0:
+                time.sleep(float(poll_interval))
+            result = self._get('/queen-library/refresh/progress', timeout=timeout)
+        progress = dict((result or {}).get('progress', {}) or {})
+        if progress.get('failed'):
+            raise RuntimeError(str(progress.get('error') or '女王库批量抓取失败'))
+        return result
 
     def get_queen_refresh_progress(self):
         timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))

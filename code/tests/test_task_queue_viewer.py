@@ -132,6 +132,27 @@ class TaskQueueViewerWindowTest(unittest.TestCase):
             viewer.close()
             viewer.deleteLater()
 
+    def test_view_logs_button_requires_one_selected_task(self):
+        viewer = TaskQueueViewerWindow()
+        try:
+            first = self.queue.enqueue(
+                '带日志任务', 'test', lambda _record: None,
+                trace_task_id='task-log-001',
+            )
+            first.log_path = 'runtime/task_logs/task-log-001.log'
+            self.queue.enqueue('另一个任务', 'test', lambda _record: None)
+            _APP.processEvents()
+            viewer.refresh_rows()
+
+            self.assertFalse(viewer.btn_view_logs.isEnabled())
+            viewer.table.selectRow(0)
+            self.assertTrue(viewer.btn_view_logs.isEnabled())
+            viewer.table.selectRow(1)
+            self.assertTrue(viewer.btn_view_logs.isEnabled())
+        finally:
+            viewer.close()
+            viewer.deleteLater()
+
     def test_rows_show_formatted_effective_duration(self):
         viewer = TaskQueueViewerWindow()
         try:

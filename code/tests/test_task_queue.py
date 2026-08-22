@@ -480,6 +480,18 @@ class GuiTaskQueueTest(unittest.TestCase):
         self.assertEqual(current.plan_failed_count, 1)
         self.assertEqual(current.pause_reason, '网络异常')
 
+    def test_completed_result_persists_explicit_log_path(self):
+        record = self.queue.enqueue(
+            '带日志任务',
+            'test',
+            lambda _record: None,
+        )
+        _process_events()
+
+        self.queue.mark_completed(record.task_id, {'log_path': 'runtime/task_logs/task-1.log'})
+
+        self.assertEqual(record.log_path, 'runtime/task_logs/task-1.log')
+
     def test_pause_request_keeps_runner_for_later_resume(self):
         started = []
         self.queue.enqueue(

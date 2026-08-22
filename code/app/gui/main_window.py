@@ -388,9 +388,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         def handle_finished(result):
             normalized = self._build_subtitle_task_result(video_code, result)
             if str(normalized.get('status') or '').strip().lower() == 'partial':
-                get_gui_task_queue().mark_partial(record.task_id, normalized.get('message', '字幕任务部分失败'))
+                get_gui_task_queue().mark_partial(
+                    record.task_id,
+                    normalized.get('message', '字幕任务部分失败'),
+                    normalized,
+                )
             else:
-                get_gui_task_queue().mark_completed(record.task_id)
+                get_gui_task_queue().mark_completed(record.task_id, normalized)
 
         def handle_failed(message):
             get_gui_task_queue().mark_failed(record.task_id, message)
@@ -1755,11 +1759,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             attempt_state = {
                 'failed': False,
                 'message': '',
+                'result': None,
             }
             runner_holder = {}
             worker = worker_factory()
 
             def handle_finished(result):
+                attempt_state['result'] = result
                 if record.status == TASK_STATUS_CANCELLING:
                     return
                 plan_progress = dict((result or {}).get('plan_progress', {}) or {}) if isinstance(result, dict) else {}
@@ -1815,7 +1821,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                         if final_failure:
                             failed_handler(attempt_state['message'])
                         return
-                    get_gui_task_queue().mark_completed(record.task_id)
+                    get_gui_task_queue().mark_completed(record.task_id, attempt_state.get('result'))
                 finally:
                     self._queued_gui_task_runners.pop(record.task_id, None)
                     runner_holder.pop('runner', None)
@@ -1919,6 +1925,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                     (MANUAL_CATEGORY_TIER_THIRD, '三档'),
                 )
             ],
+            (
+                'video_category_filter',
+                '启动刷新 视频分类缓存过滤',
+                lambda: startup_refresh_client.refresh_video_category_snapshot_filter(),
+            ),
             (
                 'path_library',
                 '启动刷新 路径库',
@@ -2552,7 +2563,10 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             block_ui=False,
             allow_deferred_close=True,
             task_title='主界面 准备快照刷新任务',
-            show_in_task_queue=False,
+            show_in_task_queue=True,
+            task_category=TASK_CATEGORY_MAINTENANCE,
+            task_kind='snapshot_refresh_prepare',
+            max_attempts=3,
         )
         return True
 

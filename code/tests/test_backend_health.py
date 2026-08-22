@@ -9,7 +9,7 @@ from app.core.backend_protocol import BACKEND_PROCESS_CODE_FINGERPRINT
 
 
 class BackendHealthTest(unittest.TestCase):
-    def test_server_starts_background_snapshot_filter_after_binding(self):
+    def test_server_does_not_start_untracked_background_snapshot_filter(self):
         events = []
 
         class StopServer(Exception):
@@ -46,13 +46,12 @@ class BackendHealthTest(unittest.TestCase):
             [
                 ('service', 'token-123'),
                 ('server_bound', ('127.0.0.1', 18080)),
-                ('background_filter', None),
                 ('serve', None),
                 ('close', None),
             ],
         )
 
-    def test_server_keeps_serving_when_background_filter_scheduling_fails(self):
+    def test_server_keeps_serving_without_backend_snapshot_filter_scheduler(self):
         events = []
 
         class StopServer(Exception):
@@ -87,7 +86,7 @@ class BackendHealthTest(unittest.TestCase):
 
         self.assertEqual(
             events,
-            ['service', 'server_bound', 'background_filter_failed', 'serve', 'close'],
+            ['service', 'server_bound', 'serve', 'close'],
         )
 
     def test_health_reports_instance_identity(self):

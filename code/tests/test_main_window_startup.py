@@ -472,6 +472,7 @@ class MainWindowStartupTest(unittest.TestCase):
             list_code_prefixes_snapshot=lambda **kwargs: calls.append(('prefixes', kwargs)),
             get_data_center_summary=lambda **kwargs: calls.append(('data_center', kwargs)),
             list_videos_requiring_manual_category_snapshot=lambda **kwargs: calls.append(('video_category', kwargs)),
+            refresh_video_category_snapshot_filter=lambda: calls.append(('video_category_filter', {})),
             get_path_library_snapshot=lambda **kwargs: calls.append(('path_library', kwargs)),
             list_queen_library_snapshot=lambda **kwargs: calls.append(('queen_library', kwargs)),
             list_queen_keywords_snapshot=lambda **kwargs: calls.append(('queen_keywords', kwargs)),
@@ -507,6 +508,7 @@ class MainWindowStartupTest(unittest.TestCase):
                 '启动刷新 视频分类 一档',
                 '启动刷新 视频分类 二档',
                 '启动刷新 视频分类 三档',
+                '启动刷新 视频分类缓存过滤',
                 '启动刷新 路径库',
                 '启动刷新 女王库',
                 '启动刷新 名作堂',
@@ -520,6 +522,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_1'}), calls)
         self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_2'}), calls)
         self.assertIn(('video_category', {'force_refresh': True, 'tier': 'tier_3'}), calls)
+        self.assertIn(('video_category_filter', {}), calls)
         self.assertIn(('path_library', {'force_refresh': True}), calls)
         self.assertIn(('queen_library', {'force_refresh': True}), calls)
         self.assertIn(('queen_keywords', {'force_refresh': True}), calls)
@@ -536,6 +539,7 @@ class MainWindowStartupTest(unittest.TestCase):
                 ('video_category_tier_1', '启动刷新 视频分类 一档'),
                 ('video_category_tier_2', '启动刷新 视频分类 二档'),
                 ('video_category_tier_3', '启动刷新 视频分类 三档'),
+                ('video_category_filter', '启动刷新 视频分类缓存过滤'),
                 ('path_library', '启动刷新 路径库'),
                 ('queen_library', '启动刷新 女王库'),
                 ('masterpiece', '启动刷新 名作堂'),
@@ -611,6 +615,7 @@ class MainWindowStartupTest(unittest.TestCase):
             list_code_prefixes_snapshot=lambda **kwargs: refresh_calls.append(('prefixes', kwargs)),
             get_data_center_summary=lambda **kwargs: refresh_calls.append(('data_center', kwargs)),
             list_videos_requiring_manual_category_snapshot=lambda **kwargs: refresh_calls.append(('video_category', kwargs)),
+            refresh_video_category_snapshot_filter=lambda: refresh_calls.append(('video_category_filter', {})),
         )
         stub = SimpleNamespace(
             backend_client=backend_client,
@@ -935,7 +940,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(captured['success_handler'], stub._on_snapshot_refresh_specs_discovered)
         self.assertFalse(captured['block_ui'])
         self.assertTrue(captured['kwargs']['allow_deferred_close'])
-        self.assertFalse(captured['kwargs']['show_in_task_queue'])
+        self.assertTrue(captured['kwargs']['show_in_task_queue'])
         self.assertEqual(captured['kwargs']['task_title'], '主界面 准备快照刷新任务')
 
     def test_subtitle_confirmation_queues_one_task_for_each_selected_code(self):

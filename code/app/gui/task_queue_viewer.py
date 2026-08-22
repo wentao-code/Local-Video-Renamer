@@ -22,6 +22,7 @@ from app.gui.task_queue import (
     TASK_STATUS_WAITING,
     get_gui_task_queue,
 )
+from app.gui.task_log_viewer import TaskLogViewerWindow
 
 
 SUCCESS_ROW_COLOR = '#16a34a'
@@ -47,6 +48,9 @@ class TaskQueueViewerWindow(QDialog):
         self.btn_delete_selected = QPushButton('删除选中任务')
         self.btn_delete_selected.setEnabled(False)
         self.btn_delete_selected.clicked.connect(self.delete_selected_tasks)
+        self.btn_view_logs = QPushButton('查看日志')
+        self.btn_view_logs.setEnabled(False)
+        self.btn_view_logs.clicked.connect(self.view_selected_task_logs)
         self.table = QTableWidget()
         self.table.setColumnCount(17)
         self.table.setHorizontalHeaderLabels([
@@ -87,6 +91,7 @@ class TaskQueueViewerWindow(QDialog):
         action_layout = QHBoxLayout()
         action_layout.addWidget(self.btn_pause_resume)
         action_layout.addWidget(self.btn_delete_selected)
+        action_layout.addWidget(self.btn_view_logs)
         action_layout.addStretch(1)
         layout.addWidget(self.summary_label)
         layout.addLayout(action_layout)
@@ -164,6 +169,14 @@ class TaskQueueViewerWindow(QDialog):
         self.refresh_rows()
         return count
 
+    def view_selected_task_logs(self):
+        records = self._selected_records()
+        if len(records) != 1:
+            return False
+        dialog = TaskLogViewerWindow(records[0], self)
+        dialog.exec_()
+        return True
+
     def _selected_records(self):
         records = self.task_queue.records()
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
@@ -183,6 +196,7 @@ class TaskQueueViewerWindow(QDialog):
         ]
         self.btn_delete_selected.setEnabled(bool(eligible))
         selected = self._selected_records()
+        self.btn_view_logs.setEnabled(len(selected) == 1)
         if not selected:
             self.btn_pause_resume.setText('暂停')
             self.btn_pause_resume.setEnabled(False)

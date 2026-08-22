@@ -161,7 +161,7 @@ def test_backend_client_default_request_reads_runtime_timeout(monkeypatch):
     monkeypatch.setattr(
         client_module.requests,
         'get',
-        lambda url, timeout=None: calls.append((url, timeout)) or Response(),
+        lambda url, timeout=None, **kwargs: calls.append((url, timeout)) or Response(),
     )
 
     result = BackendClient(base_url='http://127.0.0.1:8766')._get('/health')
@@ -232,7 +232,7 @@ def test_backend_client_sends_validated_http_timeout(monkeypatch):
             return None
 
     calls = []
-    monkeypatch.setattr(client_module.requests, 'get', lambda url, timeout=None: calls.append(timeout) or Response())
+    monkeypatch.setattr(client_module.requests, 'get', lambda url, timeout=None, **kwargs: calls.append(timeout) or Response())
     assert BackendClient(base_url='http://127.0.0.1:8766', timeout=60)._get('/health') == {'ok': True}
     assert calls == [60.0]
 

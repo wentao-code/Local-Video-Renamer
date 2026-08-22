@@ -33,7 +33,6 @@ class TaskTraceLogger:
         self.task_id = get_task_id() or new_task_id()
         self.log_path = self.log_dir / f'{self.run_id}.log'
         self._lock = Lock()
-        self._cleanup_old_logs()
         self.log(
             'INFO',
             f'任务日志已创建：{self.task_label}',
@@ -89,15 +88,3 @@ class TaskTraceLogger:
         for text_line in text_lines:
             self.log(level, text_line)
         self.log(level, '=' * (len(title) + 38))
-
-    def _cleanup_old_logs(self):
-        log_files = sorted(
-            self.log_dir.glob('*.log'),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        for old_file in log_files[self.keep_count:]:
-            try:
-                old_file.unlink()
-            except Exception:
-                continue

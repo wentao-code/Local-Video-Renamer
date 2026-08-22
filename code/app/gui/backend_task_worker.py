@@ -54,6 +54,7 @@ class AsyncTaskHostMixin:
         self._async_task_pending_queue_count = 0
         self._async_task_failed_message = None
         self._async_task_partial_message = None
+        self._async_task_result = None
 
     def is_async_task_running(self):
         return self._async_task_thread is not None or int(getattr(self, '_async_task_pending_queue_count', 0) or 0) > 0
@@ -204,6 +205,7 @@ class AsyncTaskHostMixin:
         return self.__class__.__name__
 
     def _handle_async_task_finished(self, result):
+        self._async_task_result = result
         handler = self._async_task_success_handler
         self._async_task_success_handler = None
         self._async_task_error_title = ''
@@ -227,6 +229,7 @@ class AsyncTaskHostMixin:
             self._async_task_thread.deleteLater()
         close_pending = bool(self._async_close_pending)
         failed_message = self._async_task_failed_message
+        task_result = getattr(self, '_async_task_result', None)
         error_title = self._async_task_error_title or tr('common.operation_failed')
         queue_record = self._async_task_queue_record
         self._async_task_success_handler = None
@@ -249,10 +252,12 @@ class AsyncTaskHostMixin:
                 get_gui_task_queue().mark_partial(
                     queue_record.task_id,
                     self._async_task_partial_message,
+                    task_result,
                 )
             else:
-                get_gui_task_queue().mark_completed(queue_record.task_id)
+                get_gui_task_queue().mark_completed(queue_record.task_id, task_result)
         self._async_task_partial_message = None
+        self._async_task_result = None
         if close_pending and not failed_message:
             QTimer.singleShot(0, self.close)
 

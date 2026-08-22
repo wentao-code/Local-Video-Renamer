@@ -17,6 +17,7 @@ class GuiTaskRepositoryTest(unittest.TestCase):
                 'source': '主界面',
                 'task_category': '查看任务',
                 'task_kind': 'subtitle_pipeline',
+                'log_path': 'D:/runtime/task_logs/subtitle-AAA-001.log',
                 'status': '等待中',
                 'resume_kind': 'subtitle_pipeline_video',
                 'resume_payload': {'input_dir': 'D:/videos', 'video_code': 'AAA-001'},
@@ -32,6 +33,9 @@ class GuiTaskRepositoryTest(unittest.TestCase):
             self.assertEqual(record['batch_current'], 2)
             self.assertEqual(record['batch_total'], 5)
             self.assertEqual(record['plan_pending_count'], 8)
+            self.assertEqual(record['log_path'], 'D:/runtime/task_logs/subtitle-AAA-001.log')
+            stored = database.list_gui_tasks()[0]
+            self.assertEqual(stored['log_path'], 'D:/runtime/task_logs/subtitle-AAA-001.log')
             self.assertEqual(
                 record['resume_payload'],
                 {'input_dir': 'D:/videos', 'video_code': 'AAA-001'},

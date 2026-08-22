@@ -490,8 +490,7 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             self.assertEqual(service._video_category_overview_snapshot['videos'], [{'code': 'OLD-001'}])
             service._persist_video_category_snapshot.assert_not_called()
 
-    @patch('app.backend.service.threading.Thread')
-    def test_background_filter_thread_starts_only_once(self, thread_class):
+    def test_background_filter_compatibility_entry_runs_synchronously(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             service = self._build_service(Path(temp_dir) / 'video_category_snapshot.json')
             service._video_category_overview_snapshot = {
@@ -505,38 +504,25 @@ class BackendServiceVideoCategorySnapshotTest(unittest.TestCase):
             }
             service._video_category_snapshot_filter_thread = None
 
-            first = BackendService.start_background_video_category_snapshot_filter(service)
-            second = BackendService.start_background_video_category_snapshot_filter(service)
-
-            self.assertTrue(first)
-            self.assertFalse(second)
-            thread_class.assert_called_once_with(
-                target=service._run_background_video_category_snapshot_filter,
-                name='video-category-snapshot-filter',
-                daemon=True,
-            )
-            thread_class.return_value.start.assert_called_once_with()
-
-    @patch('app.backend.service.threading.Thread')
-    def test_background_filter_thread_start_failure_is_non_fatal(self, thread_class):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            service = self._build_service(Path(temp_dir) / 'video_category_snapshot.json')
-            service._video_category_overview_snapshot = {
-                'videos': [],
-                'raw_videos': [{'code': 'IPX-001'}],
-                'staged_count': 0,
-                'source_version': 'db-v1',
-                'refreshed_at': '2026-07-07 11:10:00',
-                'refresh_duration_ms': 0,
-                'refresh_duration_text': '0毫秒',
-            }
-            service._video_category_snapshot_filter_thread = None
-            thread_class.return_value.start.side_effect = RuntimeError('thread unavailable')
-
-            started = BackendService.start_background_video_category_snapshot_filter(service)
-
-            self.assertFalse(started)
+            self.assertTrue(BackendService.start_background_video_category_snapshot_filter(service))
             self.assertIsNone(service._video_category_snapshot_filter_thread)
+
+    def test_background_filter_compatibility_entry_skips_without_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = self._build_service(Path(temp_dir) / 'video_category_snapshot.json')
+            service._video_category_overview_snapshot = {
+                'videos': [],
+                'raw_videos': [{'code': 'IPX-001'}],
+                'staged_count': 0,
+                'source_version': 'db-v1',
+                'refreshed_at': '2026-07-07 11:10:00',
+                'refresh_duration_ms': 0,
+                'refresh_duration_text': '0毫秒',
+            }
+            service._video_category_overview_snapshot = None
+            service._video_category_overview_snapshots = {}
+
+            self.assertFalse(BackendService.start_background_video_category_snapshot_filter(service))
 
     def test_snapshot_rebuilds_when_candidate_source_version_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:

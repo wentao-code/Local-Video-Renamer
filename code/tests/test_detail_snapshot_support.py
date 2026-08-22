@@ -494,6 +494,33 @@ class BackendServiceDetailSnapshotRebuildJobTest(unittest.TestCase):
         expected_timeout = max(30, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         self.assertEqual(calls, [('/masterpiece/detail/enrich', {'code': 'ALDN-514'}, expected_timeout)])
 
+    def test_refresh_queen_library_waits_until_backend_refresh_finishes(self):
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        post_calls = []
+        get_calls = []
+        progress = iter([
+            {'progress': {'is_running': True, 'processed_count': 1}},
+            {'progress': {'is_running': False, 'completed': True, 'processed_count': 2}},
+        ])
+
+        def fake_post(path, payload=None, timeout=None):
+            post_calls.append((path, payload, timeout))
+            return {'progress': {'is_running': True, 'processed_count': 0}}
+
+        def fake_get(path, timeout=None):
+            get_calls.append((path, timeout))
+            return next(progress)
+
+        client._post = fake_post
+        client._get = fake_get
+
+        result = client.refresh_queen_library(show_browser=False, poll_interval=0)
+
+        self.assertFalse(result['progress']['is_running'])
+        self.assertTrue(result['progress']['completed'])
+        self.assertEqual(post_calls[0][0], '/queen-library/refresh')
+        self.assertEqual(len(get_calls), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

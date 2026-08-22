@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -84,6 +85,34 @@ class BackendSubtitleGenerationTest(unittest.TestCase):
 
         self.assertEqual(result, {'success_count': 1})
         service.subtitle_generation_service.generate_from_directory.assert_called_once_with()
+
+    def test_backend_service_refreshes_dedicated_translation_path_before_generation(self):
+        service = BackendService.__new__(BackendService)
+        service.subtitle_generation_service = Mock()
+        service.soft_subtitle_generation_service = Mock()
+        service.subtitle_pipeline_service = Mock()
+        service.subtitle_generation_service.generate_from_directory.return_value = {'success_count': 1}
+        config = SimpleNamespace(input_dir=Path(r'D:\视频库连接入口\2号U盘'))
+
+        with patch('app.backend.service.TranslationConfig.from_environment', return_value=config):
+            service.generate_subtitles()
+
+        self.assertEqual(service.subtitle_generation_service.config, config)
+        self.assertEqual(service.soft_subtitle_generation_service.input_dir, config.input_dir)
+
+    def test_backend_service_refreshes_dedicated_translation_path_before_pipeline(self):
+        service = BackendService.__new__(BackendService)
+        service.subtitle_generation_service = Mock()
+        service.soft_subtitle_generation_service = Mock()
+        service.subtitle_pipeline_service = Mock()
+        service.subtitle_pipeline_service.run.return_value = {'success_count': 1}
+        config = SimpleNamespace(input_dir=Path(r'D:\视频库连接入口\2号U盘'))
+
+        with patch('app.backend.service.TranslationConfig.from_environment', return_value=config):
+            service.generate_subtitles_pipeline()
+
+        self.assertEqual(service.subtitle_generation_service.config, config)
+        self.assertEqual(service.soft_subtitle_generation_service.input_dir, config.input_dir)
 
     def test_client_uses_long_timeout_for_subtitle_generation(self):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)

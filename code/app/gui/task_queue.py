@@ -62,6 +62,7 @@ class TaskRecord:
     pause_reason: str = ''
     last_run_id: str = ''
     last_run_result: dict = field(default_factory=dict)
+    log_path: str = ''
     pause_requested: bool = False
     resume_kind: str = ''
     resume_payload: dict = field(default_factory=dict)
@@ -183,10 +184,28 @@ class GuiTaskQueue(QObject):
                     self._persist_record(record)
         self.changed.emit()
 
-    def mark_completed(self, task_id):
+    @staticmethod
+    def _result_log_path(result):
+        if not isinstance(result, dict):
+            return ''
+        direct = str(result.get('log_path') or '').strip()
+        if direct:
+            return direct
+        for key in ('generation', 'mux', 'result', 'details'):
+            nested = result.get(key)
+            if isinstance(nested, dict):
+                path = GuiTaskQueue._result_log_path(nested)
+                if path:
+                    return path
+        return ''
+
+    def mark_completed(self, task_id, result=None):
         record = self._find_record(task_id)
         if record is None:
             return
+        log_path = self._result_log_path(result)
+        if log_path:
+            record.log_path = log_path
         if record.status in {TASK_STATUS_DELETED, TASK_STATUS_CANCELLING}:
             return
         if record.pause_requested:
@@ -213,10 +232,13 @@ class GuiTaskQueue(QObject):
         self._persist_record(record)
         self._schedule_start_next()
 
-    def mark_partial(self, task_id, error_message):
+    def mark_partial(self, task_id, error_message, result=None):
         record = self._find_record(task_id)
         if record is None:
             return
+        log_path = self._result_log_path(result)
+        if log_path:
+            record.log_path = log_path
         record.status = TASK_STATUS_PARTIAL
         record.partial = True
         record.last_error = str(error_message or '')

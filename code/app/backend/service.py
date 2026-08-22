@@ -253,9 +253,11 @@ class BackendService:
         return {'history': self.db.list_startup_refresh_history()}
 
     def generate_subtitles(self):
+        self._refresh_translation_config()
         return self.subtitle_generation_service.generate_from_directory()
 
     def prepare_subtitle_candidates(self):
+        self._refresh_translation_config()
         return self.subtitle_generation_service.prepare_candidates()
 
     def confirm_subtitle_candidates(self, candidate_run_id, candidate_codes):
@@ -269,6 +271,7 @@ class BackendService:
         return result
 
     def generate_soft_subtitles(self):
+        self._refresh_translation_config()
         return self.soft_subtitle_generation_service.generate_from_directory()
 
     def generate_subtitles_pipeline(
@@ -277,6 +280,7 @@ class BackendService:
         candidate_run_id=None,
         manage_candidate_task=True,
     ):
+        self._refresh_translation_config()
         kwargs = {}
         if candidate_codes is not None:
             kwargs['candidate_codes'] = candidate_codes
@@ -285,6 +289,17 @@ class BackendService:
         if not manage_candidate_task:
             kwargs['manage_candidate_task'] = False
         return self.subtitle_pipeline_service.run(**kwargs)
+
+    def _refresh_translation_config(self):
+        """Reload the dedicated subtitle path for the long-running backend."""
+        config = TranslationConfig.from_environment()
+        subtitle_service = getattr(self, 'subtitle_generation_service', None)
+        if subtitle_service is not None:
+            subtitle_service.config = config
+        soft_subtitle_service = getattr(self, 'soft_subtitle_generation_service', None)
+        if soft_subtitle_service is not None:
+            soft_subtitle_service.input_dir = config.input_dir
+        return config
 
     def rename(self, plans_data):
         return self.local_video_library.execute_renames(plans_data)
@@ -1502,33 +1517,19 @@ class BackendService:
         normalized_board_key = str(board_key or '').strip()
         if not normalized_board_key:
             return {'status': 'ignored'}
-        if not hasattr(self, '_ladder_refresh_lock'):
-            self._ladder_refresh_lock = threading.Lock()
-        if not hasattr(self, '_ladder_refresh_threads'):
-            self._ladder_refresh_threads = {}
-        with self._ladder_refresh_lock:
-            existing = self._ladder_refresh_threads.get(normalized_board_key)
-            if existing is not None and existing.is_alive():
-                return {'status': 'running'}
-            worker = threading.Thread(
-                target=self._run_ladder_board_snapshot_refresh,
-                args=(normalized_board_key,),
-                name=f'ladder-snapshot-{normalized_board_key}',
-                daemon=True,
-            )
-            self._ladder_refresh_threads[normalized_board_key] = worker
-            worker.start()
-        return {'status': 'queued'}
+        self._run_ladder_board_snapshot_refresh(normalized_board_key)
+        return {'status': 'completed'}
 
     def _run_ladder_board_snapshot_refresh(self, board_key):
         try:
-            board = self.ladder_board_service.get_board(board_key)
+            getter = getattr(self.ladder_board_service, 'get_board', None)
+            if not callable(getter):
+                return
+            board = getter(board_key)
             self._store_ladder_board_snapshot(board_key, board)
         except Exception:
             LOGGER.exception('天梯榜后台快照刷新失败 board_key=%s', board_key)
-        finally:
-            with self._ladder_refresh_lock:
-                self._ladder_refresh_threads.pop(str(board_key or '').strip(), None)
+            raise
 
     def update_ladder_entry_medal(self, board_key, entity_name, medal):
         self.ensure_database_loaded()
@@ -2740,33 +2741,20 @@ class BackendService:
         return snapshot
 
     def start_background_video_category_snapshot_filter(self):
-        try:
-            with self._snapshot_guard():
-                if (
-                    getattr(self, '_video_category_overview_snapshot', None) is None
-                    and not dict(getattr(self, '_video_category_overview_snapshots', {}) or {})
-                ):
-                    return False
-                if getattr(self, '_video_category_snapshot_filter_thread', None) is not None:
-                    return False
-                filter_thread = threading.Thread(
-                    target=self._run_background_video_category_snapshot_filter,
-                    name='video-category-snapshot-filter',
-                    daemon=True,
-                )
-                self._video_category_snapshot_filter_thread = filter_thread
-        except Exception:
-            LOGGER.exception('视频分类快照后台过滤线程创建失败')
-            return False
-        try:
-            filter_thread.start()
-        except Exception:
-            with self._snapshot_guard():
-                if getattr(self, '_video_category_snapshot_filter_thread', None) is filter_thread:
-                    self._video_category_snapshot_filter_thread = None
-            LOGGER.exception('视频分类快照后台过滤线程启动失败')
-            return False
-        return True
+        result = self.refresh_video_category_snapshot_filter()
+        return str(result.get('status') or '').strip().lower() == 'completed'
+
+    def refresh_video_category_snapshot_filter(self):
+        """Refresh the loaded category snapshot in the caller's task."""
+        with self._snapshot_guard():
+            has_snapshot = bool(
+                getattr(self, '_video_category_overview_snapshot', None) is not None
+                or dict(getattr(self, '_video_category_overview_snapshots', {}) or {})
+            )
+        if not has_snapshot:
+            return {'status': 'skipped', 'reason': 'snapshot_not_loaded'}
+        updated = self._refilter_loaded_video_category_snapshot()
+        return {'status': 'completed' if updated is not False else 'skipped', 'updated': bool(updated)}
 
     def _run_background_video_category_snapshot_filter(self):
         try:
@@ -4680,17 +4668,10 @@ class BackendService:
             self._invalidate_code_prefix_snapshots()
         rebuild_summary = getattr(self.db, 'rebuild_library_summary_tables', None)
         if callable(rebuild_summary) and source_keys & {'video_library', 'actor_library', 'code_prefix_library'}:
-            threading.Thread(
-                target=self._rebuild_library_summary_tables_safely,
-                name='library-summary-rebuild',
-                daemon=True,
-            ).start()
+            self._rebuild_library_summary_tables_safely()
 
     def _rebuild_library_summary_tables_safely(self):
-        try:
-            self.db.rebuild_library_summary_tables()
-        except Exception:
-            LOGGER.exception('后台重建演员/番号汇总表失败')
+        self.db.rebuild_library_summary_tables()
 
     def _set_cancel_message(self, task_kind):
         if task_kind == 'combo':

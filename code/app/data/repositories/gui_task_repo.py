@@ -9,7 +9,7 @@ class GuiTaskRepositoryMixin:
         'completed_at', 'last_error', 'exhausted', 'partial', 'plan_id',
         'plan_task_kind', 'batch_current', 'batch_total', 'plan_pending_count',
         'plan_success_count', 'plan_failed_count', 'pause_reason', 'last_run_id',
-        'last_run_result_json',
+        'last_run_result_json', 'log_path',
         'pause_requested', 'resume_kind', 'resume_payload_json', 'resumable',
         'non_resumable_reason',
     }
@@ -44,6 +44,7 @@ class GuiTaskRepositoryMixin:
                 pause_reason TEXT NOT NULL DEFAULT '',
                 last_run_id TEXT NOT NULL DEFAULT '',
                 last_run_result_json TEXT NOT NULL DEFAULT '{}',
+                log_path TEXT NOT NULL DEFAULT '',
                 pause_requested INTEGER NOT NULL DEFAULT 0,
                 resume_kind TEXT NOT NULL DEFAULT '',
                 resume_payload_json TEXT NOT NULL DEFAULT '{}',
@@ -59,6 +60,7 @@ class GuiTaskRepositoryMixin:
             ('plan_pending_count', 'INTEGER NOT NULL DEFAULT 0'),
             ('plan_success_count', 'INTEGER NOT NULL DEFAULT 0'),
             ('plan_failed_count', 'INTEGER NOT NULL DEFAULT 0'),
+            ('log_path', "TEXT NOT NULL DEFAULT ''"),
         ):
             self._ensure_column(cursor, 'gui_task_records', column, definition)
         cursor.execute(
@@ -74,7 +76,7 @@ class GuiTaskRepositoryMixin:
             'completed_at', 'last_error', 'exhausted', 'partial', 'plan_id',
             'plan_task_kind', 'batch_current', 'batch_total', 'plan_pending_count',
             'plan_success_count', 'plan_failed_count', 'pause_reason', 'last_run_id',
-            'last_run_result_json',
+            'last_run_result_json', 'log_path',
             'pause_requested', 'resume_kind', 'resume_payload_json', 'resumable',
             'non_resumable_reason',
         ]
@@ -181,6 +183,7 @@ class GuiTaskRepositoryMixin:
             'plan_failed_count': int(source.get('plan_failed_count') or 0),
             'pause_reason': str(source.get('pause_reason') or ''),
             'last_run_id': str(source.get('last_run_id') or ''),
+            'log_path': str(source.get('log_path') or ''),
             'pause_requested': int(bool(source.get('pause_requested'))),
             'resume_kind': str(source.get('resume_kind') or ''),
             'resumable': int(bool(source.get('resumable'))),
