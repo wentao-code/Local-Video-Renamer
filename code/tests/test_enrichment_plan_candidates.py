@@ -266,6 +266,7 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
                     'completed_batch_count': 1,
                     'batch_count_limit': 3,
                     'batch_limit': 25,
+                    'status': 'completed',
                 }
 
             @staticmethod
@@ -286,6 +287,7 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
                 return dict(self.progress)
 
             def update_enrichment_plan_progress(self, *_args, **_kwargs):
+                self.progress['status'] = _kwargs.get('status', self.progress['status'])
                 return dict(self.progress)
 
         service = object.__new__(BackendService)
@@ -294,6 +296,7 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
 
         def append_next_batch(*args, **kwargs):
             appended.append((args, kwargs))
+            self.assertEqual(service.db.progress['status'], 'running')
             service.db.progress['pending_count'] = 25
             return 25
 

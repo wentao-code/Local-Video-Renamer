@@ -4301,6 +4301,12 @@ class BackendService:
                     and int(progress.get('completed_batch_count', 0) or 0)
                     < int(progress.get('batch_count_limit', 0) or 0)
                 ):
+                    progress = self.db.update_enrichment_plan_progress(
+                        normalized_plan_id,
+                        normalized_task_kind,
+                        completed_batch=False,
+                        status='running',
+                    )
                     appended_count = self._ensure_enrichment_batch_plan_batch_candidates(
                         normalized_plan_id,
                         normalized_task_kind,
@@ -4312,6 +4318,13 @@ class BackendService:
                         progress = self.db.get_enrichment_batch_plan_progress(
                             normalized_plan_id,
                             normalized_task_kind,
+                        )
+                    else:
+                        progress = self.db.update_enrichment_plan_progress(
+                            normalized_plan_id,
+                            normalized_task_kind,
+                            completed_batch=False,
+                            status='completed',
                         )
                 has_more_pending = bool(
                     progress.get('pending_count', 0)
