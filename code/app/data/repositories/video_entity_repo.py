@@ -1652,7 +1652,7 @@ class VideoEntityRepositoryMixin:
             rows = conn.execute(
                 f'''
                 SELECT source.code, source.title, source.javtxt_actors,
-                       source.release_date, '', 1,
+                       source.release_date, source.avfan_url, 1,
                        source.javtxt_enrichment_status,
                        source.javtxt_movie_id, source.javtxt_url,
                        source.javtxt_tags, source.javtxt_release_date,

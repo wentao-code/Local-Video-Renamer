@@ -346,6 +346,33 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertEqual(sql_candidates, [])
 
+    def test_video_supplement_candidates_preserve_stored_avfan_url(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            self._insert_processed_video(
+                db_path,
+                code='AAA-010',
+                title='Stored AVFan URL',
+                release_date='2024-01-10',
+                javtxt_status=ENRICHED_STATUS,
+                javtxt_movie_id='m10',
+                javtxt_url='https://javtxt.example/m10',
+                javtxt_title='Stored AVFan URL',
+                javtxt_release_date='2024-01-10',
+            )
+            with closing(sqlite3.connect(str(db_path))) as conn:
+                conn.execute(
+                    'UPDATE video_entities SET avfan_url = ? WHERE code = ?',
+                    ('https://avfan.example/movies/10', 'AAA-010'),
+                )
+                conn.commit()
+
+            candidates = db.list_sql_video_supplement_candidates(10)
+
+        self.assertEqual(candidates[0]['avfan_url'], 'https://avfan.example/movies/10')
+
     def test_video_supplement_reuses_candidates_from_cancelled_plan(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
