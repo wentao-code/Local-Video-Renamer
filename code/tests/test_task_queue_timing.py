@@ -96,6 +96,56 @@ class GuiTaskQueueTimingTest(unittest.TestCase):
         self.assertEqual(timing['resume_count'], 1)
         self.assertTrue(timing['ended_at'])
 
+    def test_new_trace_task_does_not_inherit_timing_from_reused_numeric_task_id(self):
+        self.persistence.records[1] = {
+            'task_id': 1,
+            'trace_task_id': 'old-task',
+            'active_seconds': 23475.0,
+            'paused_seconds': 120.0,
+        }
+
+        record = self.queue.enqueue(
+            '新任务',
+            'test',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            trace_task_id='new-task',
+        )
+
+        self.assertEqual(record.task_id, 1)
+        self.assertEqual(record.trace_task_id, 'new-task')
+        self.assertEqual(record.active_seconds, 0.0)
+        self.assertEqual(record.paused_seconds, 0.0)
+        self.assertEqual(self.persistence.records[1]['trace_task_id'], 'new-task')
+        self.assertEqual(self.persistence.records[1]['active_seconds'], 0.0)
+
+    def test_corrupted_same_trace_timing_is_reset_when_start_is_before_task_creation(self):
+        record = self.queue.enqueue(
+            '新任务',
+            'test',
+            lambda _record: None,
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            trace_task_id='same-trace',
+        )
+        self.persistence.records[record.task_id].update({
+            'started_at': '2000-01-01 00:00:00',
+            'active_seconds': 23475.0,
+            'trace_task_id': record.trace_task_id,
+        })
+        self.queue.reset_for_tests()
+        self.clock = FakeClock()
+        self.queue.configure_timing_persistence(self.persistence, clock=self.clock)
+
+        restored = self.queue.restore_persisted_record({
+            **record.__dict__,
+            'status': '等待中',
+            'started_at': '',
+        }, lambda _record: None)
+        _process_events()
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.active_seconds, 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

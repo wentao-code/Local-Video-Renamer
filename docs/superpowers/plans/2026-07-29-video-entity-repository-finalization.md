@@ -85,7 +85,7 @@ The primitive accepts a code, entity payload, and optional actor/prefix relation
 
 - [ ] **Step 4: Run relation replacement regression tests**
 
-Run: `D:\Anaconda3Data\envs_dirs\video_env\python.exe -m pytest tests/test_video_entity_normalization.py tests/test_video_entity_exclusions.py tests/test_library_status_sync.py -q`
+Run: `D:\Anaconda3Data\envs_dirs\video_env\python.exe -m pytest tests/test_video_entity_normalization.py tests/test_video_entity_exclusions.py -q`
 
 ### Task 3: Make Active Entities One-Way
 

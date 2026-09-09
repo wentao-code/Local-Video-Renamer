@@ -118,9 +118,9 @@ def reset_avfan_browser_profile(profile_dir=None):
     target = target.resolve()
     profile_root = get_browser_profiles_dir().resolve()
     configured_profile_dir = get_avfan_profile_dir().resolve()
-
-    if target != configured_profile_dir:
-        raise ValueError('拒绝清理非 AVFan 专用浏览器档案目录')
+    allowed_roots = (profile_root / 'accounts', configured_profile_dir)
+    if not any(target == root or root in target.parents for root in allowed_roots):
+        raise ValueError('拒绝清理非抓取账号专用浏览器档案目录')
 
     if not target.exists():
         return {

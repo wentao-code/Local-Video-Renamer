@@ -103,13 +103,14 @@ class GuiTaskTimingRepositoryMixin:
 
     def mark_running_gui_task_timings_paused(self, reason='应用重启时中断'):
         normalized_reason = str(reason or '').strip() or '应用重启时中断'
+        paused_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         with self._connect() as conn:
             cursor = conn.execute(
                 '''UPDATE gui_task_timing_records
-                   SET status = '已暂停', paused_at = CURRENT_TIMESTAMP,
+                   SET status = '已暂停', paused_at = ?,
                        close_reason = ?, updated_at = CURRENT_TIMESTAMP
                    WHERE status = '正在执行' ''',
-                (normalized_reason,),
+                (paused_at, normalized_reason),
             )
             conn.commit()
             return int(cursor.rowcount or 0)

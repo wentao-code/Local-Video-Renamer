@@ -41,6 +41,7 @@ class LibraryEnrichmentService:
         video_candidate_filter=None,
         video_filter_settings=None,
         planned_items=None,
+        profile_dir='',
     ):
         self.database = database
         self.show_browser = show_browser
@@ -51,6 +52,7 @@ class LibraryEnrichmentService:
         self.video_candidate_filter = video_candidate_filter
         self.video_filter_settings = video_filter_settings
         self.planned_items = [dict(item or {}) for item in (planned_items or [])]
+        self.profile_dir = str(profile_dir or '').strip()
 
     @staticmethod
     def _unique_values(items, key_name):
@@ -179,6 +181,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     candidate_filter=self._planned_video_candidate_filter(),
+                    profile_dir=self.profile_dir,
                 )
                 result = self._run_enrichment_service(
                     lambda: service.enrich_next_videos(limit), target_type, source_key, limit
@@ -205,6 +208,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     planned_prefixes=self._planned_prefixes(),
+                    profile_dir=self.profile_dir,
                     planned_items=self.planned_items,
                 )
             else:
@@ -252,6 +256,7 @@ class LibraryEnrichmentService:
                     progress_tracker=self.progress_tracker,
                     logger=self.logger,
                     planned_actor_names=self._planned_actor_names(),
+                    profile_dir=self.profile_dir,
                     planned_items=self.planned_items,
                 )
             else:

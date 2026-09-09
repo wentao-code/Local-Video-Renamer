@@ -10,6 +10,7 @@ from pathlib import Path
 from app.backend.client import BackendClient
 from app.core.backend_protocol import BACKEND_API_REVISION, build_backend_code_fingerprint
 from app.core.project_paths import DATABASE_FILE, PROJECT_ROOT, TASK_TRACE_LOG_DIR
+from app.core.python_runtime import resolve_console_python
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 
 
@@ -192,7 +193,7 @@ def wait_for_expected_backend(instance_token, process, logger, startup_timeout_s
 
 def run_launcher(test_mode=False):
     logger = StartupLogger(STARTUP_LOG_FILE)
-    console_python = Path(sys.executable).resolve()
+    console_python = Path(resolve_console_python())
     gui_python = choose_gui_interpreter(console_python)
 
     logger.write(f'项目目录: {PROJECT_ROOT}')

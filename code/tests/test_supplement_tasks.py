@@ -321,6 +321,61 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
             [('AAA-000', 'actors_only'), ('AAA-002', 'full')],
         )
 
+    def test_video_supplement_does_not_requeue_raw_actor_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            self._insert_processed_video(
+                db_path,
+                code='AAA-001',
+                title='Raw Actor Text',
+                release_date='2024-01-01',
+                javtxt_status=ENRICHED_STATUS,
+                javtxt_movie_id='m1',
+                javtxt_url='https://javtxt.example/m1',
+                javtxt_title='Raw Actor Text',
+                javtxt_actors='',
+                javtxt_actors_raw='Actor Raw',
+                javtxt_release_date='2024-01-01',
+            )
+
+            candidates = db.list_video_supplement_candidates(limit=10)
+            sql_candidates = db.list_sql_video_supplement_candidates(10)
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(sql_candidates, [])
+
+    def test_video_supplement_reuses_candidates_from_cancelled_plan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+
+            self._insert_processed_video(
+                db_path,
+                code='AAA-001',
+                title='Cancelled Plan Candidate',
+                release_date='2024-01-01',
+                javtxt_status=ENRICHED_STATUS,
+                javtxt_movie_id='m1',
+                javtxt_url='https://javtxt.example/m1',
+                javtxt_title='Cancelled Plan Candidate',
+                javtxt_release_date='2024-01-01',
+            )
+            plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                'supplement',
+                batch_limit=1,
+                batch_count_limit=1,
+                candidates=[{'code': 'AAA-001', 'supplement_mode': 'actors_only'}],
+            )
+            db.cancel_enrichment_batch_plan(plan['plan_id'], 'video', '用户取消')
+
+            candidates = db.list_video_supplement_candidates(limit=10)
+
+        self.assertEqual([row['code'] for row in candidates], ['AAA-001'])
+
     def test_video_supplement_candidates_prioritize_missing_actor_before_no_search(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

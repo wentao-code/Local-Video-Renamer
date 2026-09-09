@@ -52,7 +52,7 @@ class TaskQueueViewerWindow(QDialog):
         self.btn_view_logs.setEnabled(False)
         self.btn_view_logs.clicked.connect(self.view_selected_task_logs)
         self.table = QTableWidget()
-        self.table.setColumnCount(17)
+        self.table.setColumnCount(18)
         self.table.setHorizontalHeaderLabels([
             '编号',
             '追踪ID',
@@ -71,6 +71,7 @@ class TaskQueueViewerWindow(QDialog):
             '耗时',
             '完成时间/错误',
             '暂停原因',
+            '账号ID',
         ])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -81,8 +82,7 @@ class TaskQueueViewerWindow(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        for column in range(6, 14):
+        for column in range(5, 14):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(14, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(15, QHeaderView.Stretch)
@@ -139,6 +139,7 @@ class TaskQueueViewerWindow(QDialog):
                 self._format_duration(self.task_queue.effective_active_seconds(record.task_id)),
                 error_text,
                 record.pause_reason or getattr(record, "non_resumable_reason", ""),
+                record.account_id or '',
             ]
             row_brush = self._row_foreground(record)
             for column, value in enumerate(values):

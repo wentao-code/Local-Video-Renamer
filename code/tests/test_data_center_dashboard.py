@@ -79,8 +79,8 @@ def test_backend_client_dashboard_api_paths():
     assert client.get_data_dashboard(force_refresh=True) == {'sections': []}
     assert client.get_data_dashboard_items('actor_active', force_refresh=True) == []
     assert calls == [
-        ('/data-center/dashboard?refresh=1', max(30, get_operation_timeout_seconds('list_detail_load'))),
-        ('/data-center/dashboard/items?metric=actor_active&refresh=1', max(30, get_operation_timeout_seconds('list_detail_load'))),
+        ('/data-center/dashboard?refresh=1', max(30, get_operation_timeout_seconds('snapshot_refresh_rebuild'))),
+        ('/data-center/dashboard/items?metric=actor_active&refresh=1', max(30, get_operation_timeout_seconds('snapshot_refresh_rebuild'))),
     ]
 
 

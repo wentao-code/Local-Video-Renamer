@@ -27,6 +27,7 @@ class VideoSourceEnrichmentService:
         logger=None,
         candidate_filter=None,
         minimize_browser_window=True,
+        profile_dir='',
     ):
         self.database = database
         self.source_key = normalize_video_enrichment_source(source_key)
@@ -35,6 +36,7 @@ class VideoSourceEnrichmentService:
         self.logger = logger
         self.candidate_filter = candidate_filter if callable(candidate_filter) else None
         self.minimize_browser_window = bool(minimize_browser_window)
+        self.profile_dir = str(profile_dir or '').strip()
         self.scraper = scraper or self._build_scraper(show_browser, cooldown_before_search)
 
     def _build_scraper(self, show_browser, cooldown_before_search):
@@ -48,6 +50,7 @@ class VideoSourceEnrichmentService:
             headless=not show_browser,
             cooldown_before_search=cooldown_before_search,
             minimize_browser_window=self.minimize_browser_window,
+            profile_dir=self.profile_dir or None,
         )
 
     def enrich_next_videos(self, limit):

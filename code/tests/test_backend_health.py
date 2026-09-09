@@ -108,8 +108,6 @@ class BackendHealthTest(unittest.TestCase):
             ), patch(
                 'app.backend.service.LibraryAdminService'
             ), patch(
-                'app.backend.service.LibraryStatusSyncService'
-            ), patch(
                 'app.backend.service.LadderBoardService'
             ), patch(
                 'app.backend.service.PathLibrary'
@@ -158,8 +156,6 @@ class BackendHealthTest(unittest.TestCase):
         ), patch(
             'app.backend.service.LibraryAdminService'
         ), patch(
-            'app.backend.service.LibraryStatusSyncService'
-        ), patch(
             'app.backend.service.LadderBoardService'
         ), patch(
             'app.backend.service.PathLibrary'
@@ -179,6 +175,7 @@ class BackendHealthTest(unittest.TestCase):
         self.assertEqual(payload['count'], 1)
         self.assertEqual(payload['actor_count'], 2)
         db_mock.ensure_startup_maintenance.assert_called_once_with()
+        db_mock.recover_running_enrichment_plans.assert_called_once_with('程序启动恢复')
         sync_service_mock.sync_from_video_library.assert_called_once_with()
         self.assertTrue(service.database_loaded)
 

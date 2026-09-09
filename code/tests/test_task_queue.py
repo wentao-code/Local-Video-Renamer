@@ -17,6 +17,7 @@ from app.gui.task_queue import (
     TASK_STATUS_DELETED,
     TASK_STATUS_PAUSED,
     TASK_STATUS_PARTIAL,
+    TASK_STATUS_MODE_SWITCH_WAITING,
     TASK_STATUS_RUNNING,
     TASK_STATUS_WAITING,
     get_gui_task_queue,
@@ -314,13 +315,39 @@ class GuiTaskQueueTest(unittest.TestCase):
         records = self.queue.records()
         self.assertEqual(records[0].task_id, record.task_id)
         self.assertEqual(records[0].task_category, TASK_CATEGORY_ENRICHMENT)
-        self.assertEqual(records[0].status, TASK_STATUS_PAUSED)
+        self.assertEqual(records[0].status, TASK_STATUS_MODE_SWITCH_WAITING)
 
         self.queue.set_run_mode(RUN_MODE_TASK)
         _process_events()
 
         self.assertEqual(started, [record.task_id])
         self.assertEqual(self.queue.records()[0].status, TASK_STATUS_RUNNING)
+
+    def test_switching_task_mode_does_not_resume_user_paused_task(self):
+        started = []
+        first = self.queue.enqueue(
+            '第一个任务',
+            'test',
+            lambda task_record: started.append(task_record.task_id),
+            task_category=TASK_CATEGORY_VIEW,
+        )
+        second = self.queue.enqueue(
+            '手动暂停任务',
+            'test',
+            lambda task_record: started.append(task_record.task_id),
+            task_category=TASK_CATEGORY_VIEW,
+        )
+        _process_events()
+
+        self.queue.request_pause(second.task_id, '用户暂停')
+        self.queue.set_run_mode(RUN_MODE_VIEW)
+        self.queue.set_run_mode(RUN_MODE_TASK)
+        _process_events()
+
+        records = {record.task_id: record for record in self.queue.records()}
+        self.assertEqual(records[first.task_id].status, TASK_STATUS_RUNNING)
+        self.assertEqual(records[second.task_id].status, TASK_STATUS_PAUSED)
+        self.assertEqual(started, [first.task_id])
 
     def test_view_tasks_still_run_in_view_mode(self):
         started = []
@@ -401,7 +428,7 @@ class GuiTaskQueueTest(unittest.TestCase):
             records = self.queue.records()
             self.assertEqual(records[0].task_category, TASK_CATEGORY_ENRICHMENT)
             self.assertEqual(records[0].task_kind, 'queen_crawl')
-            self.assertEqual(records[0].status, TASK_STATUS_PAUSED)
+            self.assertEqual(records[0].status, TASK_STATUS_MODE_SWITCH_WAITING)
         finally:
             host.deleteLater()
 

@@ -97,25 +97,25 @@ class EnrichmentDialogActorBirthdayTest(unittest.TestCase):
         self.assertFalse(dialog.combo_single_button.isHidden())
         self.assertFalse(dialog.combo_batch_button.isHidden())
 
-    def test_supplement_source_is_only_available_for_code_prefix_and_actor_targets(self):
+    def test_supplement_source_is_only_available_for_video_target(self):
         dialog = self._create_dialog()
 
-        self.assertFalse(dialog.supplement_source_button.isEnabled())
+        self.assertTrue(dialog.supplement_source_button.isEnabled())
         dialog.supplement_source_button.setChecked(True)
         self.assertEqual(dialog.selected_target_type(), VIDEO_LIBRARY_TARGET)
-        self.assertEqual(dialog.selected_source_key(), JAVTXT_VIDEO_SOURCE)
+        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
 
         dialog.code_prefix_target_button.setChecked(True)
-        self.assertTrue(dialog.supplement_source_button.isEnabled())
+        self.assertFalse(dialog.supplement_source_button.isEnabled())
         dialog.supplement_source_button.setChecked(True)
         self.assertEqual(dialog.selected_target_type(), CODE_PREFIX_LIBRARY_TARGET)
-        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
+        self.assertNotEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
 
         dialog.actor_target_button.setChecked(True)
-        self.assertTrue(dialog.supplement_source_button.isEnabled())
+        self.assertFalse(dialog.supplement_source_button.isEnabled())
         dialog.supplement_source_button.setChecked(True)
         self.assertEqual(dialog.selected_target_type(), ACTOR_LIBRARY_TARGET)
-        self.assertEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
+        self.assertNotEqual(dialog.selected_source_key(), SUPPLEMENT_TASK_SOURCE)
 
         dialog.actor_birthday_target_button.setChecked(True)
         self.assertFalse(dialog.supplement_source_button.isEnabled())

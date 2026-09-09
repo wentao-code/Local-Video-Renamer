@@ -306,6 +306,23 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
         self.assertEqual(selected['plan_id'], plan['plan_id'])
         self.assertEqual(claimed[0]['actor_name'], '演员甲')
 
+    def test_running_plan_with_pending_items_is_selected_for_resume(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            plan = db.create_enrichment_batch_plan(
+                'actor',
+                'actor_library',
+                'supplement',
+                batch_limit=2,
+                batch_count_limit=1,
+                candidates=[{'actor_name': '演员甲', 'code': 'ABC-001'}],
+            )
+
+            selected = db.find_selected_enrichment_plan('actor', 'actor_library', 'supplement')
+
+        self.assertEqual(selected['plan_id'], plan['plan_id'])
+
     def test_append_plan_candidates_writes_incremental_pages_with_plan_cap(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'

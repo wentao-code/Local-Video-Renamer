@@ -77,6 +77,7 @@ from app.core.medal_types import normalize_medal_type, sort_medal_rows
 from app.core.runtime_config import get_avfan_base_url
 from app.data.repositories import (
     ActorRepositoryMixin,
+    AccountRepositoryMixin,
     CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
     GuiTaskRepositoryMixin,
@@ -131,6 +132,7 @@ class VideoDatabase(
     MigrationMixin,
     PathRepositoryMixin,
     ActorRepositoryMixin,
+    AccountRepositoryMixin,
     CandidateLibraryRepositoryMixin,
     CodePrefixRepositoryMixin,
     GuiTaskRepositoryMixin,
@@ -171,6 +173,7 @@ class VideoDatabase(
         with self._connect() as conn:
             cursor = conn.cursor()
             self._ensure_enrichment_batch_plan_tables(cursor)
+            self._ensure_account_tables(cursor)
             self._ensure_gui_task_tables(cursor)
             self._ensure_gui_task_timing_tables(cursor)
             cursor.execute('''
@@ -7521,7 +7524,7 @@ class VideoDatabase(
                 f'''
                 SELECT plan_id, task_kind
                 FROM enrichment_batch_plans
-                WHERE status IN ('selected', 'paused')
+                WHERE status IN ('selected', 'paused', 'running')
                   AND task_kind = ?
                   AND target_type = ?
                   AND source_key = ?
@@ -7537,7 +7540,11 @@ class VideoDatabase(
                             )
                         )
                   )
-                ORDER BY CASE WHEN status = 'selected' THEN 0 ELSE 1 END,
+                ORDER BY CASE status
+                             WHEN 'selected' THEN 0
+                             WHEN 'paused' THEN 1
+                             ELSE 2
+                         END,
                          created_at ASC,
                          plan_id ASC
                 LIMIT 1

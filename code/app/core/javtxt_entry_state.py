@@ -46,6 +46,8 @@ def classify_actor_state(record=None, cached_row=None):
         return JAVTXT_ACTOR_STATE_NAMED
     if is_unpublished_actor_text(raw_text):
         return JAVTXT_ACTOR_STATE_UNPUBLISHED
+    if normalize_second_source_actor_text(raw_text):
+        return JAVTXT_ACTOR_STATE_NAMED
     return JAVTXT_ACTOR_STATE_BLANK
 
 

@@ -21,12 +21,16 @@ class ActorEnrichmentService:
         progress_tracker=None,
         logger=None,
         planned_actor_names=None,
+        profile_dir='',
     ):
         self.database = database
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
-        self.scraper = scraper or AvfanActorScraper(headless=not show_browser)
+        self.scraper = scraper or AvfanActorScraper(
+            headless=not show_browser,
+            profile_dir=profile_dir or None,
+        )
         self.planned_actor_names = self._normalize_planned_actor_names(planned_actor_names)
         self.refresh_tracker = None
 

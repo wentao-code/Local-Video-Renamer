@@ -11,7 +11,7 @@ class GuiTaskRepositoryMixin:
         'plan_success_count', 'plan_failed_count', 'pause_reason', 'last_run_id',
         'last_run_result_json', 'log_path',
         'pause_requested', 'resume_kind', 'resume_payload_json', 'resumable',
-        'non_resumable_reason',
+        'non_resumable_reason', 'account_id',
     }
 
     def _ensure_gui_task_tables(self, cursor):
@@ -50,6 +50,7 @@ class GuiTaskRepositoryMixin:
                 resume_payload_json TEXT NOT NULL DEFAULT '{}',
                 resumable INTEGER NOT NULL DEFAULT 0,
                 non_resumable_reason TEXT NOT NULL DEFAULT '',
+                account_id INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             '''
@@ -61,6 +62,7 @@ class GuiTaskRepositoryMixin:
             ('plan_success_count', 'INTEGER NOT NULL DEFAULT 0'),
             ('plan_failed_count', 'INTEGER NOT NULL DEFAULT 0'),
             ('log_path', "TEXT NOT NULL DEFAULT ''"),
+            ('account_id', 'INTEGER NOT NULL DEFAULT 0'),
         ):
             self._ensure_column(cursor, 'gui_task_records', column, definition)
         cursor.execute(
@@ -78,7 +80,7 @@ class GuiTaskRepositoryMixin:
             'plan_success_count', 'plan_failed_count', 'pause_reason', 'last_run_id',
             'last_run_result_json', 'log_path',
             'pause_requested', 'resume_kind', 'resume_payload_json', 'resumable',
-            'non_resumable_reason',
+            'non_resumable_reason', 'account_id',
         ]
         with self._connect() as conn:
             conn.execute(
@@ -188,6 +190,7 @@ class GuiTaskRepositoryMixin:
             'resume_kind': str(source.get('resume_kind') or ''),
             'resumable': int(bool(source.get('resumable'))),
             'non_resumable_reason': str(source.get('non_resumable_reason') or ''),
+            'account_id': int(source.get('account_id') or 0),
         })
         for target, candidates in (
             ('last_run_result_json', ('last_run_result_json', 'last_run_result')),

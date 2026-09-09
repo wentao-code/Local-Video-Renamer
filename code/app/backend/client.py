@@ -11,6 +11,7 @@ from app.core.timeout_policy import normalize_http_timeout_seconds, validate_tim
 
 _DEFAULT_TIMEOUT = object()
 DETAIL_SNAPSHOT_REBUILD_TIMEOUT_SECONDS = 20 * 60
+ENRICHMENT_PLAN_CREATE_TIMEOUT_SECONDS = 10 * 60
 
 
 class BackendClient:
@@ -115,6 +116,7 @@ class BackendClient:
         batch_mode=False,
         plan_id='',
         plan_task_kind='',
+        account_id=0,
     ):
         cooldown_seconds = 180 if cooldown_before_search else 0
         if target_type in ('code_prefix_library', 'actor_library', 'actor_birthday'):
@@ -132,12 +134,17 @@ class BackendClient:
                 'batch_mode': bool(batch_mode),
                 'plan_id': plan_id,
                 'plan_task_kind': plan_task_kind,
+                'account_id': int(account_id or 0),
             },
             timeout=timeout,
         )
 
     def create_enrichment_batch_plan(self, payload):
-        return self._post('/database/enrich/batch-plan', dict(payload or {}))
+        return self._post(
+            '/database/enrich/batch-plan',
+            dict(payload or {}),
+            timeout=max(self.timeout, ENRICHMENT_PLAN_CREATE_TIMEOUT_SECONDS),
+        )
 
     def select_enrichment_candidates(self, payload):
         return self._post('/database/enrich/select', dict(payload or {}))
@@ -195,15 +202,28 @@ class BackendClient:
     def cancel_enrichment(self):
         return self._post('/database/enrich/cancel')
 
-    def auto_login(self):
+    def list_scraper_accounts(self, enabled_only=False):
+        return self._get('/scraper-accounts', {'enabled_only': '1' if enabled_only else '0'})
+
+    def validate_scraper_accounts(self):
         timeout = max(self.timeout, get_operation_timeout_seconds('automatic_login'))
-        return self._post('/login/auto', timeout=timeout)
+        return self._post('/scraper-accounts/validate', timeout=timeout)
 
-    def reset_browser_profile(self):
-        return self._post('/browser-profile/reset')
+    def create_scraper_account(self, account_name, username='', password=''):
+        return self._post(
+            '/scraper-accounts',
+            {'account_name': account_name, 'username': username, 'password': password},
+        )
 
-    def sync_library_statuses(self):
-        return self._post('/database/library-status/sync')
+    def update_scraper_account(self, account_id, **changes):
+        return self._post(f'/scraper-accounts/{int(account_id)}', changes)
+
+    def auto_login(self, account_id=0):
+        timeout = max(self.timeout, get_operation_timeout_seconds('automatic_login'))
+        return self._post('/login/auto', {'account_id': int(account_id or 0)}, timeout=timeout)
+
+    def reset_browser_profile(self, account_id=0):
+        return self._post('/browser-profile/reset', {'account_id': int(account_id or 0)})
 
     def list_videos(self, search_text='', sort_field=None, sort_order=None, limit=None, offset=0, force_refresh=False):
         return self.list_videos_page(
@@ -311,12 +331,12 @@ class BackendClient:
 
     def get_data_center_summary(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
-        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._get('/data-center/summary' + query, timeout=timeout)
 
     def get_data_dashboard(self, force_refresh=False):
         query = '?refresh=1' if force_refresh else ''
-        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         payload = self._get('/data-center/dashboard' + query, timeout=timeout)
         dashboard = dict(payload.get('dashboard', {}) or {})
         refreshed_at = str(payload.get('refreshed_at', '') or '').strip()
@@ -329,7 +349,7 @@ class BackendClient:
         if force_refresh:
             params['refresh'] = '1'
         query = '?' + urlencode(params)
-        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._get('/data-center/dashboard/items' + query, timeout=timeout).get('items', [])
 
     def list_operation_timeouts(self):

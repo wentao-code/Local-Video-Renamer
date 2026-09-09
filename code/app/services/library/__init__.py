@@ -1,6 +1,6 @@
 """Library management entrypoints.
 
-Use this package for actor/code library views, admin updates, sync services,
+Use this package for actor/code library views and admin updates,
 and path-library helpers.
 """
 
@@ -16,9 +16,8 @@ __all__ = [
     'CodePrefixVideoCategoryBulkService',
     'DataCenterService',
     'LibraryAdminService',
-    'LibraryStatusSyncService',
-    'PathLibrary',
     'build_merged_movie_snapshot',
+    'PathLibrary',
     'extract_code_prefix',
     'get_storage_location_name',
     'summarize_paths',
@@ -44,10 +43,9 @@ _EXPORT_MAP = {
     'DataCenterService': ('app.services.library.data_center_service', 'DataCenterService'),
     'LibraryAdminService': ('app.services.library.library_admin_service', 'LibraryAdminService'),
     'build_merged_movie_snapshot': (
-        'app.services.library.library_status_sync_merger',
+        'app.services.library.movie_snapshot_merger',
         'build_merged_movie_snapshot',
     ),
-    'LibraryStatusSyncService': ('app.services.library.library_status_sync_service', 'LibraryStatusSyncService'),
     'PathLibrary': ('app.services.library.path_library', 'PathLibrary'),
     'get_storage_location_name': ('app.services.library.path_library', 'get_storage_location_name'),
     'summarize_paths': ('app.services.library.path_library', 'summarize_paths'),

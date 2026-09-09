@@ -762,6 +762,28 @@ class DatabaseIndexCoverageTest(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+    def test_code_prefix_dashboard_stats_reads_prefix_from_combined_cte(self):
+        temp_dir = tempfile.mkdtemp()
+        try:
+            db_path = Path(temp_dir) / 'video_database.db'
+            db = VideoDatabase(db_path)
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.execute(
+                    'INSERT INTO video_entities (code, title, release_date) VALUES (?, ?, ?)',
+                    ('AAA-001', 'Title', '2025-01-01'),
+                )
+                conn.execute(
+                    'INSERT INTO video_code_prefix_relations (video_code, prefix) VALUES (?, ?)',
+                    ('AAA-001', 'AAA'),
+                )
+                conn.commit()
+
+            stats = db.list_code_prefix_dashboard_stats()
+
+            self.assertEqual(stats['AAA']['video_count'], 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 if __name__ == '__main__':
     unittest.main()

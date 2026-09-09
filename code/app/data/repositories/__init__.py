@@ -1,4 +1,5 @@
 from app.data.repositories.actor_repo import ActorRepositoryMixin
+from app.data.repositories.account_repo import AccountRepositoryMixin
 from app.data.repositories.candidate_library_repo import CandidateLibraryRepositoryMixin
 from app.data.repositories.code_prefix_repo import CodePrefixRepositoryMixin
 from app.data.repositories.gui_task_repo import GuiTaskRepositoryMixin
@@ -12,6 +13,7 @@ from app.data.repositories.video_entity_repo import VideoEntityRepositoryMixin
 
 __all__ = [
     'ActorRepositoryMixin',
+    'AccountRepositoryMixin',
     'CandidateLibraryRepositoryMixin',
     'CodePrefixRepositoryMixin',
     'GuiTaskRepositoryMixin',

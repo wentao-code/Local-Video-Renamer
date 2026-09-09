@@ -83,6 +83,11 @@ def _build_complete_summary_stub(version):
 
 
 class DataCenterSummarySplitCountsTest(unittest.TestCase):
+    def test_only_video_library_exposes_supplement_source(self):
+        self.assertIn(SUPPLEMENT_TASK_SOURCE, DataCenterService.EXPECTED_SUMMARY_SOURCE_KEYS['video_library'])
+        self.assertNotIn(SUPPLEMENT_TASK_SOURCE, DataCenterService.EXPECTED_SUMMARY_SOURCE_KEYS['code_prefix_library'])
+        self.assertNotIn(SUPPLEMENT_TASK_SOURCE, DataCenterService.EXPECTED_SUMMARY_SOURCE_KEYS['actor_library'])
+
     def test_database_aggregates_actor_video_counts_with_distinct_codes(self):
         temp_dir = tempfile.mkdtemp()
         try:
@@ -194,25 +199,8 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             self.assertEqual(video_summary["pending_count"], 2)
             self.assertEqual(video_summary["count_label"], "待补充")
 
-            code_prefix_summary = summary["code_prefix_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
-            self.assertEqual(code_prefix_summary["total_count"], 2)
-            self.assertEqual(code_prefix_summary["pending_count"], 2)
-            self.assertEqual(code_prefix_summary["list_kind"], "video")
-            self.assertEqual(code_prefix_summary["issue_groups"][0]["key"], "pending")
-            self.assertEqual(
-                {item["code"] for item in code_prefix_summary["issue_groups"][0]["items"]},
-                {"AAA-001", "AAA-002"},
-            )
-
-            actor_summary = summary["actor_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
-            self.assertEqual(actor_summary["total_count"], 2)
-            self.assertEqual(actor_summary["pending_count"], 2)
-            self.assertEqual(actor_summary["list_kind"], "video")
-            self.assertEqual(actor_summary["issue_groups"][0]["key"], "pending")
-            self.assertEqual(
-                {item["code"] for item in actor_summary["issue_groups"][0]["items"]},
-                {"AAA-001", "AAA-002"},
-            )
+            self.assertNotIn(SUPPLEMENT_TASK_SOURCE, summary["code_prefix_library"]["sources"])
+            self.assertNotIn(SUPPLEMENT_TASK_SOURCE, summary["actor_library"]["sources"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -291,21 +279,8 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
                 {"AAA-002"},
             )
 
-            code_prefix_summary = summary["code_prefix_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
-            self.assertEqual(code_prefix_summary["total_count"], 1)
-            self.assertEqual(code_prefix_summary["pending_count"], 1)
-            self.assertEqual(
-                {item["code"] for item in code_prefix_summary["issue_groups"][0]["items"]},
-                {"AAA-002"},
-            )
-
-            actor_summary = summary["actor_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
-            self.assertEqual(actor_summary["total_count"], 1)
-            self.assertEqual(actor_summary["pending_count"], 1)
-            self.assertEqual(
-                {item["code"] for item in actor_summary["issue_groups"][0]["items"]},
-                {"AAA-002"},
-            )
+            self.assertNotIn(SUPPLEMENT_TASK_SOURCE, summary["code_prefix_library"]["sources"])
+            self.assertNotIn(SUPPLEMENT_TASK_SOURCE, summary["actor_library"]["sources"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -385,21 +360,8 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             self.assertEqual(video_summary["no_search_count"], 1)
             self.assertEqual([group["key"] for group in video_summary["issue_groups"]], ["pending", "no_search"])
 
-            code_prefix_summary = summary["code_prefix_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
-            self.assertEqual(code_prefix_summary["total_count"], 3)
-            self.assertEqual(code_prefix_summary["completed_count"], 2)
-            self.assertEqual(code_prefix_summary["success_count"], 1)
-            self.assertEqual(code_prefix_summary["pending_count"], 1)
-            self.assertEqual(code_prefix_summary["no_search_count"], 1)
-            self.assertEqual([group["key"] for group in code_prefix_summary["issue_groups"]], ["pending", "no_search"])
-
-            actor_summary = summary["actor_library"]["sources"][SUPPLEMENT_TASK_SOURCE]
-            self.assertEqual(actor_summary["total_count"], 3)
-            self.assertEqual(actor_summary["completed_count"], 2)
-            self.assertEqual(actor_summary["success_count"], 1)
-            self.assertEqual(actor_summary["pending_count"], 1)
-            self.assertEqual(actor_summary["no_search_count"], 1)
-            self.assertEqual([group["key"] for group in actor_summary["issue_groups"]], ["pending", "no_search"])
+            self.assertNotIn(SUPPLEMENT_TASK_SOURCE, summary["code_prefix_library"]["sources"])
+            self.assertNotIn(SUPPLEMENT_TASK_SOURCE, summary["actor_library"]["sources"])
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -944,6 +906,33 @@ class DataCenterSummarySplitCountsTest(unittest.TestCase):
             release_build.set()
             refresh_thread.join(timeout=2)
             self.assertFalse(refresh_thread.is_alive())
+
+    def test_summary_invalidation_keeps_last_snapshot_available_while_rebuilding(self):
+        service = DataCenterService(
+            database=None,
+            video_filter_service=VideoFilterService(settings_loader=lambda: None),
+        )
+        cached_summary = _build_complete_summary_stub(1)
+        service._summary_cache = cached_summary
+        service._summary_cache_refreshed_at = "2026-06-21 10:00:00"
+        service._summary_cache_refresh_duration_ms = 10
+        service._summary_cache_refresh_duration_text = "0.01秒"
+
+        service.invalidate_views_for_sources({'video_library'})
+
+        with patch.object(
+            service,
+            '_build_summary',
+            side_effect=AssertionError('stale summary should be served before rebuild'),
+        ):
+            result = service.get_summary_snapshot()
+
+        self.assertEqual(result['refreshed_at'], '2026-06-21 10:00:00')
+        self.assertTrue(result['stale'])
+        self.assertEqual(
+            result['summary']['video_library']['sources'][AVFAN_VIDEO_SOURCE]['total_count'],
+            1,
+        )
 
     def test_summary_snapshot_persists_across_service_restarts(self):
         temp_dir = tempfile.mkdtemp()

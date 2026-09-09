@@ -29,7 +29,8 @@ from app.core.javtxt_entry_state import JAVTXT_SEARCH_STATE_NO_RESULT, classify_
 from app.core.supplement_task_state import build_supplement_candidate
 from app.core.javtxt_video_state import is_javtxt_eligible_movie, summarize_javtxt_movies
 from app.core.video_code import standardize_video_code
-from app.services.library import CodePrefixLibrary, build_merged_movie_snapshot, extract_code_prefix
+from app.services.library import CodePrefixLibrary, extract_code_prefix
+from app.services.library.movie_snapshot_merger import build_merged_movie_snapshot
 from app.services.detail import resolve_update_status
 from app.services.video import (
     VIDEO_CATEGORY_COLLECTION,
@@ -55,17 +56,18 @@ MISSING_HEIGHT_LABEL = '\u65e0\u8eab\u9ad8'
 
 
 class DataCenterService:
-    SNAPSHOT_VERSION = 1
+    # Candidate classification changed: valid raw actor text is no longer
+    # counted as a pending supplement candidate.
+    SNAPSHOT_VERSION = 3
     ANALYSIS_SNAPSHOT_VERSION = 1
     EXPECTED_SUMMARY_SOURCE_KEYS = {
         'video_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE),
-        'code_prefix_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE),
+        'code_prefix_library': (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE),
         'actor_library': (
             AVFAN_VIDEO_SOURCE,
             JAVTXT_VIDEO_SOURCE,
             BINGHUO_ACTOR_SOURCE,
             BAOMU_ACTOR_SOURCE,
-            SUPPLEMENT_TASK_SOURCE,
         ),
     }
 
@@ -88,6 +90,7 @@ class DataCenterService:
         self._summary_cache_refreshed_at = ''
         self._summary_cache_refresh_duration_ms = 0
         self._summary_cache_refresh_duration_text = ''
+        self._summary_cache_stale = False
         self._summary_cache_lock = Lock()
         self._summary_build_lock = Lock()
         self._analysis_cache = {}
@@ -115,6 +118,7 @@ class DataCenterService:
                     'refreshed_at': self._summary_cache_refreshed_at,
                     'refresh_duration_ms': self._summary_cache_refresh_duration_ms,
                     'refresh_duration_text': self._summary_cache_refresh_duration_text,
+                    'stale': bool(self._summary_cache_stale),
                 }
 
         if not force_refresh:
@@ -139,6 +143,7 @@ class DataCenterService:
                 self._summary_cache_refreshed_at = refreshed_at
                 self._summary_cache_refresh_duration_ms = refresh_duration_ms
                 self._summary_cache_refresh_duration_text = refresh_duration_text
+                self._summary_cache_stale = False
                 persisted_summary = self._build_persisted_summary_snapshot()
 
             self._persist_snapshots()
@@ -155,6 +160,7 @@ class DataCenterService:
                 'refreshed_at': refreshed_at,
                 'refresh_duration_ms': refresh_duration_ms,
                 'refresh_duration_text': refresh_duration_text,
+                'stale': False,
             }
 
     def get_actor_metric_analysis(self, metric_key, force_refresh=False):
@@ -495,7 +501,7 @@ class DataCenterService:
         if callable(registry_reader):
             try:
                 registry = dict(registry_reader(snapshot_key) or {})
-                if registry and registry.get('dirty'):
+                if registry and registry.get('dirty') and snapshot_key != 'data_center_summary':
                     return False
             except Exception:
                 pass
@@ -506,6 +512,9 @@ class DataCenterService:
                 self._summary_cache_refreshed_at = str(normalized.get('refreshed_at', '') or '').strip()
                 self._summary_cache_refresh_duration_ms = int(normalized.get('refresh_duration_ms', 0) or 0)
                 self._summary_cache_refresh_duration_text = str(normalized.get('refresh_duration_text', '') or '').strip()
+                self._summary_cache_stale = bool(
+                    registry.get('dirty') if callable(registry_reader) and isinstance(registry, dict) else False
+                )
             return normalized is not None
         normalized = self._normalize_analysis_snapshot(view_payload)
         if normalized is not None:
@@ -584,10 +593,8 @@ class DataCenterService:
             affected.update({'code_prefix:'})
         with self._summary_cache_lock:
             if 'data_center_summary' in affected:
-                self._summary_cache = None
-                self._summary_cache_refreshed_at = ''
-                self._summary_cache_refresh_duration_ms = 0
-                self._summary_cache_refresh_duration_text = ''
+                if self._is_complete_summary_snapshot(self._summary_cache):
+                    self._summary_cache_stale = True
         with self._analysis_cache_lock:
             if 'dashboard' in affected:
                 self._analysis_cache.pop('dashboard', None)
@@ -604,7 +611,7 @@ class DataCenterService:
                 for key in list(self._analysis_cache):
                     if key.startswith('code_prefix:') or key.startswith('code_prefix_bucket:'):
                         self._analysis_cache.pop(key, None)
-        self._clear_view_snapshot_files(affected)
+        self._clear_view_snapshot_files(affected - {'data_center_summary'})
         marker = getattr(self.database, 'mark_snapshot_registry_dirty', None)
         if callable(marker):
             try:
@@ -938,9 +945,6 @@ class DataCenterService:
                         JAVTXT_VIDEO_SOURCE,
                         filter_settings=filter_settings,
                     ),
-                    SUPPLEMENT_TASK_SOURCE: self._build_code_prefix_supplement_summary(
-                        filter_settings=filter_settings,
-                    ),
                 },
             },
             'actor_library': {
@@ -960,9 +964,6 @@ class DataCenterService:
                     ),
                     BAOMU_ACTOR_SOURCE: self._build_actor_source_summary(
                         BAOMU_ACTOR_SOURCE,
-                        filter_settings=filter_settings,
-                    ),
-                    SUPPLEMENT_TASK_SOURCE: self._build_actor_supplement_summary(
                         filter_settings=filter_settings,
                     ),
                 },

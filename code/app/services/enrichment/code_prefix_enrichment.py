@@ -22,13 +22,17 @@ class CodePrefixEnrichmentService:
         progress_tracker=None,
         logger=None,
         planned_prefixes=None,
+        profile_dir='',
     ):
         self.database = database
         self.prefix_library = CodePrefixLibrary(database)
         self.should_stop = should_stop or (lambda: False)
         self.progress_tracker = progress_tracker
         self.logger = logger
-        self.scraper = scraper or AvfanCodePrefixScraper(headless=not show_browser)
+        self.scraper = scraper or AvfanCodePrefixScraper(
+            headless=not show_browser,
+            profile_dir=profile_dir or None,
+        )
         self.planned_prefixes = self._normalize_planned_prefixes(planned_prefixes)
         self.refresh_tracker = None
 

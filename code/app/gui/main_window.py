@@ -40,11 +40,17 @@ from app.core.combo_enrichment import get_combo_label
 from app.core.actor_data_analysis import ACTOR_ANALYSIS_METRICS
 from app.core.code_prefix_data_analysis import CODE_PREFIX_ANALYSIS_METRICS
 from app.core.ladder_board import LADDER_BOARD_ACTOR, LADDER_BOARD_CODE_PREFIX
-from app.core.enrichment_sources import get_video_enrichment_source_label
+from app.core.enrichment_sources import (
+    AVFAN_VIDEO_SOURCE,
+    SUPPLEMENT_TASK_SOURCE,
+    get_video_enrichment_source_label,
+)
 from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
 from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
+from app.core.python_runtime import resolve_console_python
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
 from app.gui.actor_viewer import ActorViewerWindow
+from app.gui.account_viewer import AccountManagerDialog
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
 from app.gui.canglangge_viewer import CanglanggeViewerWindow
 from app.gui.candidate_library_viewer import CandidateLibraryWindow
@@ -70,6 +76,7 @@ from app.gui.task_queue import (
     TASK_CATEGORY_ENRICHMENT,
     TASK_CATEGORY_MAINTENANCE,
     TASK_CATEGORY_VIEW,
+    PAUSABLE_TASK_CATEGORIES,
     TASK_STATUS_CANCELLING,
     TASK_STATUS_COMPLETED,
     TASK_STATUS_DELETED,
@@ -132,6 +139,7 @@ class EnrichmentWorker(QObject):
         plan_task_kind='',
         plan_payload=None,
         plan_state=None,
+        account_id=0,
     ):
         super().__init__()
         self.backend_client = backend_client
@@ -145,6 +153,7 @@ class EnrichmentWorker(QObject):
         self.plan_task_kind = str(plan_task_kind or '')
         self.plan_payload = dict(plan_payload or {})
         self.plan_state = plan_state if isinstance(plan_state, dict) else {}
+        self.account_id = int(account_id or 0)
 
     def run(self):
         plan_id = str(self.plan_state.get('plan_id') or self.plan_id or '')
@@ -177,6 +186,7 @@ class EnrichmentWorker(QObject):
                 batch_mode=self.batch_mode,
                 plan_id=plan_id,
                 plan_task_kind=plan_task_kind,
+                account_id=self.account_id,
             )
         except Exception as exc:
             if plan_id and plan_task_kind and hasattr(self.backend_client, 'pause_enrichment_plan'):
@@ -236,13 +246,14 @@ class AutoLoginWorker(QObject):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, backend_client):
+    def __init__(self, backend_client, account_id=0):
         super().__init__()
         self.backend_client = backend_client
+        self.account_id = int(account_id or 0)
 
     def run(self):
         try:
-            result = self.backend_client.auto_login()
+            result = self.backend_client.auto_login(self.account_id)
         except Exception as exc:
             self.failed.emit(str(exc))
             return
@@ -338,8 +349,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.init_ui()
         self.task_queue = get_gui_task_queue()
         self.task_database = self._create_task_database()
+        accounts = self.task_database.list_scraper_accounts(enabled_only=True)
+        self.selected_account_id = int(accounts[0]['account_id']) if accounts else 0
         self.task_queue.configure_persistence(self.task_database)
         self.task_queue.configure_timing_persistence(self.task_database)
+        self.task_queue.set_run_mode(self.runtime_mode)
         self.task_resume_registry = self._build_task_resume_registry()
         self.task_resume_registry.recover_persisted_tasks(
             self.task_queue,
@@ -347,9 +361,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self,
         )
         self.task_queue.changed.connect(self.refresh_task_queue_indicator)
-        self.task_queue.set_run_mode(self.runtime_mode)
-        self.recover_unfinished_enrichment_plans()
         self.refresh_task_queue_indicator()
+        self.recover_unfinished_enrichment_plans()
         self.update_enrichment_controls()
         self.reset_progress_widgets()
         self.start_network_guard()
@@ -485,12 +498,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
 
     @staticmethod
     def _get_backend_python_executable():
-        current_executable = Path(sys.executable)
-        if current_executable.name.lower() == 'pythonw.exe':
-            console_python = current_executable.with_name('python.exe')
-            if console_python.exists():
-                return str(console_python)
-        return str(current_executable)
+        return resolve_console_python()
 
     def is_backend_alive(self):
         return self.get_backend_health() is not None
@@ -755,8 +763,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_generate_subtitles.clicked.connect(self.generate_subtitles)
         self.btn_generate_subtitles.setEnabled(True)
 
-        self.btn_auto_login = QPushButton(tr('main.auto_login'))
-        self.btn_auto_login.clicked.connect(self.auto_login)
+        self.btn_account_manager = QPushButton('抓取账号')
+        self.btn_account_manager.clicked.connect(self.show_account_manager)
 
         self.btn_enrich = QPushButton(tr('main.enrich_info'))
         self.btn_enrich.clicked.connect(self.enrich_video_info)
@@ -764,12 +772,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.btn_stop_enrich = QPushButton(tr('main.stop_enrich'))
         self.btn_stop_enrich.clicked.connect(self.stop_enrichment)
         self.btn_stop_enrich.setEnabled(False)
-
-        self.btn_reset_browser_profile = QPushButton(tr('main.reset_browser_profile'))
-        self.btn_reset_browser_profile.clicked.connect(self.reset_browser_profile)
-
-        self.btn_status_sync = QPushButton(tr('main.status_sync'))
-        self.btn_status_sync.clicked.connect(self.sync_library_statuses)
 
         self.btn_refresh_detail_snapshots = QPushButton('全量刷新快照')
         self.btn_refresh_detail_snapshots.clicked.connect(self.refresh_detail_snapshots)
@@ -815,11 +817,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_scan)
         bottom_button_row.addWidget(self.btn_import_db)
         bottom_button_row.addWidget(self.btn_generate_subtitles)
-        bottom_button_row.addWidget(self.btn_auto_login)
+        bottom_button_row.addWidget(self.btn_account_manager)
         bottom_button_row.addWidget(self.btn_enrich)
         bottom_button_row.addWidget(self.btn_stop_enrich)
-        bottom_button_row.addWidget(self.btn_reset_browser_profile)
-        bottom_button_row.addWidget(self.btn_status_sync)
         bottom_button_row.addWidget(self.btn_refresh_detail_snapshots)
         bottom_button_row.addWidget(self.btn_task_queue)
         bottom_button_row.addWidget(self.btn_background_refresh)
@@ -1008,30 +1008,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 resumable=True,
             )
 
-    def auto_login(self):
-        if self.login_thread is not None or self.login_task_queued:
-            QMessageBox.information(self, tr('main.login_in_progress_title'), tr('main.login_in_progress_message'))
-            return
-        self.start_auto_login()
-
-    def start_auto_login(self):
-        self.login_task_queued = True
-        self.btn_auto_login.setEnabled(False)
-        self.status_label.setText(tr('main.login_status'))
-
-        def assign_login_runner(worker, runner):
-            self.login_worker = worker
-            self.login_task_runner = runner
-            self.login_thread = runner.thread
-
-        self._start_queued_gui_runner(
-            '自动登录',
-            lambda: AutoLoginWorker(self.backend_client),
-            self.on_auto_login_finished,
-            self.on_auto_login_failed,
-            cleanup_handler=self.cleanup_auto_login_thread,
-            assign_runner=assign_login_runner,
-        )
+    def show_account_manager(self):
+        dialog = AccountManagerDialog(self.task_database, self.backend_client, self)
+        dialog.exec_()
+        selected = dialog.selected_account_id()
+        if selected:
+            self.selected_account_id = selected
 
     def enrich_video_info(self):
         if self.batch_enrichment_active:
@@ -1081,13 +1063,29 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         source_key,
         mode='single',
         resume_plan=None,
+        account_id=None,
     ):
+        account_id = int(
+            getattr(self, 'selected_account_id', 0) if account_id is None else account_id
+        )
+        account_required = str(source_key or '').strip() in {AVFAN_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE}
+        if not account_required:
+            account_id = 0
+        self._queued_enrichment_account_id = account_id
+        self._queued_enrichment_source_key = source_key
         self.current_enrichment_kind = 'single'
         self.enrichment_mode = mode
         resume_plan = dict(resume_plan or getattr(self, '_active_enrichment_batch_plan_state', None) or {})
-        # Candidate selection is an explicit action in the library viewers.
-        # Execution must consume an existing selected or resumed plan.
+        # A batch run owns one durable plan. Its first worker creates the
+        # plan with all configured rounds; later workers consume that plan.
         batch_plan_payload = None
+        if mode == 'batch' and not resume_plan:
+            batch_plan_payload = VidNormApp._build_enrichment_batch_plan_payload(
+                target_type,
+                source_key,
+                limit,
+                (self.batch_enrichment_config or {}).get('batch_count_limit', 1),
+            )
         batch_plan_state = dict(resume_plan)
         self._queued_enrichment_worker_factory = (
             lambda: EnrichmentWorker(
@@ -1102,6 +1100,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 plan_task_kind=batch_plan_state.get('task_kind') or (batch_plan_payload or {}).get('task_kind', ''),
                 plan_payload=batch_plan_payload,
                 plan_state=batch_plan_state,
+                account_id=account_id,
             )
         )
         self._queued_enrichment_task_title = VidNormApp._build_enrichment_task_queue_title(
@@ -1250,6 +1249,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             runner_kwargs['plan_task_kind'] = batch_plan_state.get('task_kind', '') if batch_plan_state else ''
         if 'max_attempts' in supported_parameters or accepts_kwargs:
             runner_kwargs['max_attempts'] = 5
+        if 'account_id' in supported_parameters or accepts_kwargs:
+            runner_kwargs['account_id'] = int(getattr(self, '_queued_enrichment_account_id', 0) or 0)
+        if 'account_required' in supported_parameters or accepts_kwargs:
+            runner_kwargs['account_required'] = bool(
+                str(getattr(self, '_queued_enrichment_source_key', '') or '').strip()
+                in {AVFAN_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE}
+            )
         self._start_queued_gui_runner(
             task_title,
             worker_factory,
@@ -1327,6 +1333,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             'cooldown_before_search': values['cooldown_before_search'],
             'target_type': values['target_type'],
             'source_key': values['source_key'],
+            'account_rotation_index': 0,
         }
         self.batch_enrichment_round = 0
         self.status_label.setText(
@@ -1391,6 +1398,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             )
             return
 
+        start_kwargs = {}
+        if VidNormApp._should_rotate_avfan_batch_accounts(self.batch_enrichment_config):
+            start_kwargs['account_id'] = VidNormApp._next_avfan_batch_account_id(self)
         self.start_enrichment(
             self.batch_enrichment_config['limit'],
             self.batch_enrichment_config['show_browser'],
@@ -1398,7 +1408,36 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self.batch_enrichment_config['target_type'],
             self.batch_enrichment_config['source_key'],
             mode='batch',
+            **start_kwargs,
         )
+
+    @staticmethod
+    def _should_rotate_avfan_batch_accounts(config):
+        config = dict(config or {})
+        source_key = str(config.get('source_key') or '').strip()
+        target_type = str(config.get('target_type') or '').strip()
+        return source_key == SUPPLEMENT_TASK_SOURCE or (
+            source_key == AVFAN_VIDEO_SOURCE
+            and target_type in {'actor_library', 'code_prefix_library'}
+        )
+
+    def _next_avfan_batch_account_id(self):
+        database = getattr(self, 'task_database', None)
+        list_accounts = getattr(database, 'list_scraper_accounts', None)
+        if not callable(list_accounts):
+            return 0
+        accounts = [
+            row for row in (list_accounts(enabled_only=True) or [])
+            if bool(row.get('enabled')) and str(row.get('login_status') or '') == '已登录'
+        ]
+        accounts.sort(key=lambda row: int(row.get('account_id') or 0))
+        if not accounts:
+            return 0
+        config = self.batch_enrichment_config or {}
+        index = int(config.get('account_rotation_index', 0) or 0)
+        account = accounts[index % len(accounts)]
+        config['account_rotation_index'] = index + 1
+        return int(account.get('account_id') or 0)
 
     def start_combo_batch_plan(self, values):
         combo_task_settings = self._build_combo_task_settings_for_mode(
@@ -1661,12 +1700,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 and hasattr(queen_window, 'stop_crawl')
             ):
                 queen_window.stop_crawl()
-        elif (
-            previous_mode != normalized_mode
-            and hasattr(self, 'backend_client')
-            and hasattr(self, 'task_queue')
-        ):
-            self.recover_unfinished_enrichment_plans()
         if hasattr(self, 'update_enrichment_controls'):
             self.update_enrichment_controls()
         return normalized_mode
@@ -1714,6 +1747,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
                 'cooldown_before_search': False,
                 'target_type': target_type,
                 'source_key': source_key,
+                'account_rotation_index': 0,
             }
             self.batch_enrichment_round = batch_current
         else:
@@ -1749,7 +1783,14 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         cancel_callback=None,
         plan_task_kind='',
         trace_task_id='',
+        account_id=0,
+        account_required=False,
     ):
+        ensure_task_mode = getattr(self, '_ensure_task_mode_for_task', None)
+        if callable(ensure_task_mode) and not ensure_task_mode(task_category):
+            return None
+        account_id = max(0, int(account_id or 0))
+
         def start_runner(record):
             if callable(before_start):
                 if before_start_with_record:
@@ -1852,7 +1893,28 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             enqueue_kwargs['trace_task_id'] = str(trace_task_id).strip()
         if cancel_callback is not None:
             enqueue_kwargs['cancel_callback'] = cancel_callback
-        return get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
+        queue_parameters = inspect.signature(get_gui_task_queue().enqueue).parameters
+        if 'account_id' in queue_parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in queue_parameters.values()
+        ):
+            enqueue_kwargs['account_id'] = max(0, int(account_id or 0))
+        record = get_gui_task_queue().enqueue(task_title, source, start_runner, **enqueue_kwargs)
+        if task_category == TASK_CATEGORY_ENRICHMENT and account_required:
+            account_error = self._account_preflight_error(account_id)
+            if account_error:
+                get_gui_task_queue().mark_account_waiting(record.task_id, account_error)
+        return record
+
+    def _account_preflight_error(self, account_id):
+        account = self.task_database.get_scraper_account(account_id) if account_id and hasattr(self, 'task_database') else None
+        if account is None:
+            return '未选择抓取账号'
+        if not bool(account.get('enabled')):
+            return '绑定账号已禁用'
+        if str(account.get('login_status') or '未检测') != '已登录':
+            return f"账号当前不可抓取：{account.get('login_status') or '未检测'}"
+        return ''
 
     @staticmethod
     def _is_non_retryable_enrichment_error(message, task_category=''):
@@ -2326,14 +2388,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             lines.append(tr('common.log', value=result.get('log_path')))
         return '\n'.join(lines)
 
-    def cleanup_auto_login_thread(self):
-        self.login_task_queued = False
-        self.btn_auto_login.setEnabled(True)
-        self.status_label.setText('')
-        self.login_worker = None
-        self.login_thread = None
-        self.login_task_runner = None
-
     def cleanup_enrichment_thread(self):
         self.enrichment_task_queued = False
         self.enrichment_worker = None
@@ -2348,24 +2402,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.update_enrichment_controls()
         if not self.batch_enrichment_active:
             self.reset_progress_widgets()
-
-    def reset_browser_profile(self):
-        answer = QMessageBox.question(
-            self,
-            tr('main.reset_browser_profile_title'),
-            tr('main.reset_browser_profile_message'),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
-
-        self.start_async_task(
-            lambda: self.backend_client.reset_browser_profile(),
-            self._on_reset_browser_profile_finished,
-            tr('common.reset_failed'),
-            task_title='主界面 重置浏览器环境',
-        )
 
     def force_exit_application(self):
         answer = QMessageBox.warning(
@@ -2396,8 +2432,6 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             not busy and any(bool(plan.get('can_rename') and plan.get('needs_rename')) for plan in self.pending_renames)
         )
         self.btn_generate_subtitles.setEnabled(not busy)
-        self.btn_reset_browser_profile.setEnabled(not busy)
-        self.btn_status_sync.setEnabled(not busy)
         self.btn_refresh_detail_snapshots.setEnabled(not busy)
         self.btn_task_queue.setEnabled(True)
         self.btn_timeout_settings.setEnabled(True)
@@ -2519,42 +2553,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             ),
         )
 
-    def sync_library_statuses(self):
-        if self.enrichment_thread is not None or self.batch_enrichment_active:
-            QMessageBox.information(
-                self,
-                tr('main.enrichment_in_progress_title'),
-                tr('main.enrichment_in_progress_message'),
-            )
-            return
-
-        self.start_async_task(
-            lambda: self.backend_client.sync_library_statuses(),
-            self._on_sync_library_statuses_finished,
-            tr('common.operation_failed'),
-            task_title='主界面 同步库状态',
-        )
-
-    def _on_sync_library_statuses_finished(self, result):
-        result = dict(result or {})
-        QMessageBox.information(
-            self,
-            tr('main.status_sync_completed_title'),
-            tr(
-                'main.status_sync_completed_message',
-                candidate_code_count=int(result.get('candidate_code_count', 0) or 0),
-                shared_code_count=int(result.get('shared_code_count', 0) or 0),
-                synced_code_count=int(result.get('synced_code_count', 0) or 0),
-                updated_code_prefix_movie_count=int(result.get('updated_code_prefix_movie_count', 0) or 0),
-                updated_actor_movie_count=int(result.get('updated_actor_movie_count', 0) or 0),
-                updated_prefix_count=int(result.get('updated_prefix_count', 0) or 0),
-                updated_actor_count=int(result.get('updated_actor_count', 0) or 0),
-                message=str(result.get('message', '') or tr('main.status_sync_completed_default')),
-            ),
-        )
-
     def refresh_detail_snapshots(self):
         if getattr(self, 'snapshot_refresh_batch', None):
+            return False
+        ensure_task_mode = getattr(self, '_ensure_task_mode_for_task', None)
+        if callable(ensure_task_mode) and not ensure_task_mode(TASK_CATEGORY_MAINTENANCE):
             return False
         self.start_async_task(
             self._discover_snapshot_refresh_metric_keys,
@@ -2568,6 +2571,24 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             task_kind='snapshot_refresh_prepare',
             max_attempts=3,
         )
+        return True
+
+    def _ensure_task_mode_for_task(self, task_category):
+        normalized_category = str(task_category or '').strip()
+        if normalized_category not in PAUSABLE_TASK_CATEGORIES:
+            return True
+        if getattr(self, 'runtime_mode', RUN_MODE_TASK) != RUN_MODE_VIEW:
+            return True
+        answer = QMessageBox.question(
+            self,
+            tr('main.task_mode_required_title'),
+            tr('main.task_mode_required_message'),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        self.set_runtime_mode(RUN_MODE_TASK)
         return True
 
     def _discover_snapshot_refresh_metric_keys(self):

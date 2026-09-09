@@ -1620,10 +1620,14 @@ class VideoEntityRepositoryMixin:
         pending_exclusion_sql = '' if include_queued else '''
               AND NOT EXISTS (
                     SELECT 1 FROM pending_video_avfan AS pending
+                    JOIN enrichment_batch_plans AS pending_plan
+                      ON pending_plan.plan_id = pending.plan_id
                     WHERE pending.code = source.code
                       AND pending.status IN ('pending', 'failed')
+                      AND pending_plan.status IN ('selected', 'running', 'paused')
               )'''
         normalized_running_plan_id = str(running_plan_id or '').strip()
+        effective_actor_sql = "LOWER(TRIM(COALESCE(NULLIF(TRIM(source.javtxt_actors_raw), ''), source.javtxt_actors, '')))"
         if normalized_running_plan_id:
             running_exclusion_sql = '''
               AND NOT EXISTS (
@@ -1666,7 +1670,7 @@ class VideoEntityRepositoryMixin:
                         (
                             (TRIM(COALESCE(source.javtxt_movie_id, '')) <> ''
                              OR TRIM(COALESCE(source.javtxt_url, '')) <> '')
-                            AND LOWER(TRIM(COALESCE(source.javtxt_actors, ''))) IN (
+                            AND {effective_actor_sql} IN (
                                 '', '-', '--', 'na', 'n/a', 'none', 'null', 'unknown',
                                 '无', '無', '暂无', '暫無', '未知', '无记录', '無記錄',
                                 '未公开', '未公開'
@@ -1675,7 +1679,7 @@ class VideoEntityRepositoryMixin:
                         OR (
                             COALESCE(NULLIF(TRIM(source.javtxt_enrichment_status), ''), ?) IN (?, ?)
                             AND (
-                                LOWER(TRIM(COALESCE(source.javtxt_actors, ''))) IN (
+                                {effective_actor_sql} IN (
                                     '', '-', '--', 'na', 'n/a', 'none', 'null', 'unknown',
                                     '无', '無', '暂无', '暫無', '未知', '无记录', '無記錄',
                                     '未公开', '未公開'
@@ -2161,7 +2165,7 @@ class VideoEntityRepositoryMixin:
             JOIN active_video_entities AS entity ON entity.code = relation.video_code
                     WHERE TRIM(COALESCE(entity.code, '')) <> ''
                 )
-                SELECT relation.prefix,
+                SELECT prefix,
                        COUNT(DISTINCT code) AS video_count,
                        MAX(CASE
                            WHEN video_category IN (?, ?) THEN release_date

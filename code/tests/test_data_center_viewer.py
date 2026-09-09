@@ -7,6 +7,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt5.QtWidgets import QApplication
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
+from app.backend.client import BackendClient
 from app.gui.data_center_viewer import DataCenterWindow
 from app.gui.i18n import tr
 
@@ -95,6 +96,27 @@ class _BackendStub:
 
 
 class DataCenterViewerTest(unittest.TestCase):
+    def test_data_center_summary_uses_snapshot_refresh_timeout(self):
+        from app.core.operation_timeout_settings import get_operation_timeout_seconds
+
+        client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
+        calls = []
+        client._get = lambda path, timeout=None: calls.append((path, timeout)) or {
+            'summary': {},
+        }
+
+        client.get_data_center_summary(force_refresh=True)
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    '/data-center/summary?refresh=1',
+                    max(30, get_operation_timeout_seconds('snapshot_refresh_rebuild')),
+                ),
+            ],
+        )
+
     def test_startup_load_uses_snapshot_then_background_refresh(self):
         backend = _BackendStub()
 
@@ -122,6 +144,19 @@ class DataCenterViewerTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_load_failure_is_visible_in_data_center_window(self):
+        backend = _BackendStub()
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_sync_async_task):
+            window = DataCenterWindow(backend)
+            try:
+                window._handle_async_task_failed('请求超时')
+                self.assertIn('请求超时', window.error_label.text())
+                self.assertFalse(window.error_label.isHidden())
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_manual_refresh_still_uses_force_refresh_after_startup_refresh(self):
         backend = _BackendStub()
 
@@ -130,7 +165,7 @@ class DataCenterViewerTest(unittest.TestCase):
             try:
                 window.load_data(force_refresh=True)
 
-                self.assertEqual(backend.summary_refresh_flags, [False, True, True])
+                self.assertEqual(backend.summary_refresh_flags, [False, True, False, True])
                 self.assertIn('2026-06-21 12:35:56', window.last_refreshed_label.text())
                 self.assertEqual(window._captured_async_calls[-1]['task_title'], '数据中心 刷新数据')
             finally:
@@ -169,8 +204,8 @@ class DataCenterViewerTest(unittest.TestCase):
             window = DataCenterWindow(backend)
             try:
                 self.assertEqual(window.video_supplement_card.title_label.text(), '视频库 · 补充任务')
-                self.assertEqual(window.code_prefix_supplement_card.title_label.text(), '番号库 · 补充任务')
-                self.assertEqual(window.actor_supplement_card.title_label.text(), '演员库 · 补充任务')
+                self.assertFalse(hasattr(window, 'code_prefix_supplement_card'))
+                self.assertFalse(hasattr(window, 'actor_supplement_card'))
                 self.assertEqual(window.actor_baomu_card.title_label.text(), '演员库 · 保木')
             finally:
                 window.hide()

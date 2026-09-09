@@ -1,6 +1,12 @@
 import json
 
 from app.core.app_logging import get_logger
+from app.gui.task_queue import (
+    TASK_STATUS_ACCOUNT_WAITING,
+    TASK_STATUS_MODE_SWITCH_WAITING,
+    TASK_STATUS_PAUSED,
+    TASK_STATUS_WAITING,
+)
 
 
 LOGGER = get_logger(__name__)
@@ -42,7 +48,9 @@ class TaskResumeRegistry:
         if callable(mark_timing_paused):
             mark_timing_paused('应用重启时中断')
         restored = []
-        rows = persistence.list_gui_tasks(statuses=['已暂停', '等待中'])
+        rows = persistence.list_gui_tasks(
+            statuses=[TASK_STATUS_PAUSED, TASK_STATUS_MODE_SWITCH_WAITING, TASK_STATUS_WAITING, TASK_STATUS_ACCOUNT_WAITING]
+        )
         for record in rows:
             task_id = int(self._get(record, 'task_id', 0) or 0)
             if not task_id or queue.contains_task(task_id):

@@ -4,6 +4,7 @@ Use this package for user-facing login helpers and browser-backed auth checks.
 """
 
 from app.services.auth.auto_login_service import AutoLoginService
+from app.services.auth.account_service import AccountService
 
 
-__all__ = ['AutoLoginService']
+__all__ = ['AccountService', 'AutoLoginService']

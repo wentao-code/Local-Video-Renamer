@@ -15,6 +15,8 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from app.gui import main_window
 from app.gui.query_context import EntityReference
 from app.gui.task_queue import TASK_CATEGORY_MAINTENANCE
+from app.core.enrichment_sources import AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE
+from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRARY_TARGET, VIDEO_LIBRARY_TARGET
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -25,6 +27,16 @@ def _process_events(rounds=5):
 
 
 class MainWindowStartupTest(unittest.TestCase):
+    def test_startup_invokes_enrichment_plan_recovery(self):
+        init_source = inspect.getsource(main_window.VidNormApp.__init__)
+
+        self.assertIn('self.recover_unfinished_enrichment_plans()', init_source)
+
+    def test_auto_login_and_profile_reset_are_only_available_from_account_manager(self):
+        init_source = inspect.getsource(main_window.VidNormApp.init_ui)
+        self.assertNotIn('btn_auto_login', init_source)
+        self.assertNotIn('btn_reset_browser_profile', init_source)
+
     def test_soft_subtitle_button_is_removed_from_main_window(self):
         init_source = inspect.getsource(main_window.VidNormApp.init_ui)
         self.assertNotIn('btn_generate_soft_subtitles', init_source)
@@ -943,6 +955,52 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertTrue(captured['kwargs']['show_in_task_queue'])
         self.assertEqual(captured['kwargs']['task_title'], '主界面 准备快照刷新任务')
 
+    def test_refresh_detail_snapshots_prompts_to_switch_from_view_mode(self):
+        captured = {}
+        mode_changes = []
+
+        stub = SimpleNamespace(
+            runtime_mode=main_window.RUN_MODE_VIEW,
+            snapshot_refresh_batch=None,
+            set_runtime_mode=lambda mode: mode_changes.append(mode),
+            _ensure_task_mode_for_task=lambda category: main_window.VidNormApp._ensure_task_mode_for_task(stub, category),
+            _discover_snapshot_refresh_metric_keys=lambda: {},
+            _on_snapshot_refresh_specs_discovered=lambda _result: None,
+            start_async_task=lambda *args, **kwargs: captured.update(kwargs),
+        )
+
+        with patch(
+            'app.gui.main_window.QMessageBox.question',
+            return_value=QMessageBox.Yes,
+        ) as question:
+            result = main_window.VidNormApp.refresh_detail_snapshots(stub)
+
+        self.assertTrue(result)
+        question.assert_called_once()
+        self.assertEqual(mode_changes, [main_window.RUN_MODE_TASK])
+        self.assertEqual(captured['task_title'], '主界面 准备快照刷新任务')
+
+    def test_refresh_detail_snapshots_is_not_queued_when_mode_switch_is_declined(self):
+        start_calls = []
+        stub = SimpleNamespace(
+            runtime_mode=main_window.RUN_MODE_VIEW,
+            snapshot_refresh_batch=None,
+            set_runtime_mode=lambda _mode: self.fail('不应切换运行模式'),
+            _ensure_task_mode_for_task=lambda category: main_window.VidNormApp._ensure_task_mode_for_task(stub, category),
+            _discover_snapshot_refresh_metric_keys=lambda: {},
+            _on_snapshot_refresh_specs_discovered=lambda _result: None,
+            start_async_task=lambda *args, **kwargs: start_calls.append((args, kwargs)),
+        )
+
+        with patch(
+            'app.gui.main_window.QMessageBox.question',
+            return_value=QMessageBox.No,
+        ):
+            result = main_window.VidNormApp.refresh_detail_snapshots(stub)
+
+        self.assertFalse(result)
+        self.assertEqual(start_calls, [])
+
     def test_subtitle_confirmation_queues_one_task_for_each_selected_code(self):
         captured = {'tasks': []}
 
@@ -1043,6 +1101,24 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertEqual(calls, ['task'])
         self.assertEqual(mode_label.text, '任务模式')
+
+    def test_switching_to_task_mode_does_not_recreate_backend_plans(self):
+        calls = []
+        mode_label = SimpleNamespace(text='')
+        mode_label.setText = lambda value: setattr(mode_label, 'text', value)
+        stub = SimpleNamespace(
+            runtime_mode='view',
+            task_queue=SimpleNamespace(set_run_mode=lambda mode: calls.append(('mode', mode))),
+            backend_client=SimpleNamespace(
+                recover_enrichment_plans=lambda reason: calls.append(('recover', reason)),
+            ),
+            runtime_mode_label=mode_label,
+            update_enrichment_controls=lambda: None,
+        )
+
+        main_window.VidNormApp.set_runtime_mode(stub, 'task')
+
+        self.assertEqual(calls, [('mode', 'task')])
 
     def test_saved_view_mode_does_not_load_resumable_plans(self):
         calls = []
@@ -1251,6 +1327,121 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertEqual(stub.batch_enrichment_config['batch_count_limit'], 4)
 
+    def test_avfan_batch_rotation_cycles_eligible_accounts(self):
+        selected = []
+        class _Timer:
+            def stop(self):
+                return None
+
+        stub = SimpleNamespace(
+            batch_enrichment_active=True,
+            batch_enrichment_config={
+                'task_kind': 'single',
+                'limit': 5,
+                'target_type': ACTOR_LIBRARY_TARGET,
+                'source_key': AVFAN_VIDEO_SOURCE,
+                'show_browser': False,
+                'cooldown_before_search': False,
+            },
+            batch_timer=_Timer(),
+            batch_countdown_timer=_Timer(),
+            batch_next_run_at=None,
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+            enrichment_thread=None,
+            enrichment_task_queued=False,
+            task_database=SimpleNamespace(list_scraper_accounts=lambda enabled_only=False: [
+                {'account_id': 1, 'enabled': 1, 'login_status': '已登录'},
+                {'account_id': 2, 'enabled': 1, 'login_status': '已登录'},
+                {'account_id': 3, 'enabled': 1, 'login_status': '已登录'},
+            ]),
+            start_enrichment=lambda *args, **kwargs: selected.append(kwargs.get('account_id')),
+        )
+
+        for _ in range(4):
+            main_window.VidNormApp.run_next_batch_enrichment(stub)
+
+        self.assertEqual(selected, [1, 2, 3, 1])
+
+    def test_avfan_batch_rotation_skips_unavailable_accounts(self):
+        selected = []
+        stub = SimpleNamespace(
+            batch_enrichment_active=True,
+            batch_enrichment_config={
+                'task_kind': 'single',
+                'limit': 5,
+                'target_type': CODE_PREFIX_LIBRARY_TARGET,
+                'source_key': AVFAN_VIDEO_SOURCE,
+                'show_browser': False,
+                'cooldown_before_search': False,
+            },
+            batch_timer=SimpleNamespace(stop=lambda: None),
+            batch_countdown_timer=SimpleNamespace(stop=lambda: None),
+            batch_next_run_at=None,
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+            enrichment_thread=None,
+            enrichment_task_queued=False,
+            task_database=SimpleNamespace(list_scraper_accounts=lambda enabled_only=False: [
+                {'account_id': 1, 'enabled': 1, 'login_status': '未登录'},
+                {'account_id': 2, 'enabled': 1, 'login_status': '已登录'},
+                {'account_id': 3, 'enabled': 0, 'login_status': '已登录'},
+            ]),
+            start_enrichment=lambda *args, **kwargs: selected.append(kwargs.get('account_id')),
+        )
+
+        for _ in range(3):
+            main_window.VidNormApp.run_next_batch_enrichment(stub)
+
+        self.assertEqual(selected, [2, 2, 2])
+
+    def test_non_avfan_batch_does_not_use_rotation(self):
+        selected = []
+        stub = SimpleNamespace(
+            batch_enrichment_active=True,
+            batch_enrichment_config={
+                'task_kind': 'single',
+                'limit': 5,
+                'target_type': ACTOR_LIBRARY_TARGET,
+                'source_key': JAVTXT_VIDEO_SOURCE,
+                'show_browser': False,
+                'cooldown_before_search': False,
+            },
+            selected_account_id=3,
+            batch_timer=SimpleNamespace(stop=lambda: None),
+            batch_countdown_timer=SimpleNamespace(stop=lambda: None),
+            batch_next_run_at=None,
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+            enrichment_thread=None,
+            enrichment_task_queued=False,
+            task_database=SimpleNamespace(list_scraper_accounts=lambda enabled_only=False: self.fail('不应查询账号池')),
+            start_enrichment=lambda *args, **kwargs: selected.append(kwargs.get('account_id', '未传入')),
+        )
+
+        main_window.VidNormApp.run_next_batch_enrichment(stub)
+
+        self.assertEqual(selected, ['未传入'])
+
+    def test_avfan_batch_rotation_scope_includes_supplement_only(self):
+        self.assertTrue(main_window.VidNormApp._should_rotate_avfan_batch_accounts({
+            'target_type': VIDEO_LIBRARY_TARGET,
+            'source_key': SUPPLEMENT_TASK_SOURCE,
+        }))
+        self.assertTrue(main_window.VidNormApp._should_rotate_avfan_batch_accounts({
+            'target_type': ACTOR_LIBRARY_TARGET,
+            'source_key': AVFAN_VIDEO_SOURCE,
+        }))
+        self.assertTrue(main_window.VidNormApp._should_rotate_avfan_batch_accounts({
+            'target_type': CODE_PREFIX_LIBRARY_TARGET,
+            'source_key': AVFAN_VIDEO_SOURCE,
+        }))
+        self.assertFalse(main_window.VidNormApp._should_rotate_avfan_batch_accounts({
+            'target_type': VIDEO_LIBRARY_TARGET,
+            'source_key': AVFAN_VIDEO_SOURCE,
+        }))
+        self.assertFalse(main_window.VidNormApp._should_rotate_avfan_batch_accounts({
+            'target_type': ACTOR_LIBRARY_TARGET,
+            'source_key': JAVTXT_VIDEO_SOURCE,
+        }))
+
     def test_batch_plan_stops_at_configured_batch_count(self):
         stopped = []
         scheduled = []
@@ -1281,7 +1472,7 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(scheduled, [])
         self.assertEqual(stopped, ['分批补全已达到设定批次数。'])
 
-    def test_batch_execution_does_not_create_candidates_implicitly(self):
+    def test_batch_execution_creates_one_plan_for_all_configured_batches(self):
         plan_calls = []
         captured = {}
 
@@ -1371,7 +1562,16 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertEqual(plan_calls, [])
         captured['worker_factory']().run()
 
-        self.assertEqual(plan_calls, [])
+        self.assertEqual(
+            plan_calls,
+            [{
+                'task_kind': 'video',
+                'target_type': 'video_library',
+                'source_key': 'supplement',
+                'batch_limit': 5,
+                'batch_count_limit': 2,
+            }],
+        )
 
     def test_single_enrichment_consumes_selected_plan_without_creating_candidates(self):
         plan_calls = []

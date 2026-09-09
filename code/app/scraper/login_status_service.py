@@ -8,13 +8,16 @@ MANUAL_CHECK_TIMEOUT_MS = 600000
 LOGIN_STATUS_LOGGED_IN = 'logged_in'
 LOGIN_STATUS_LOGGED_OUT = 'logged_out'
 LOGIN_STATUS_UNKNOWN = 'unknown'
+LOGIN_STATUS_VERIFICATION_REQUIRED = 'verification_required'
 
 
-def ensure_logged_in_on_home(page, headless=False):
+def ensure_logged_in_on_home(page, headless=False, username=None, password=None):
     home_url = get_setting('SCRAPER_HOME_URL', required=True)
     login_url = get_setting('SCRAPER_LOGIN_URL', required=True)
-    username = get_setting('SCRAPER_USERNAME', required=True)
-    password = get_setting('SCRAPER_PASSWORD', required=True)
+    username = get_setting('SCRAPER_USERNAME', required=True) if username is None else str(username or '').strip()
+    password = get_setting('SCRAPER_PASSWORD', required=True) if password is None else str(password or '')
+    if not username or not password:
+        raise RuntimeError('当前账号未配置完整的用户名和密码，请在抓取账号管理中补充。')
 
     open_home_page(page, home_url, headless)
     status = detect_home_login_status(page, home_url, headless)
@@ -57,15 +60,19 @@ def open_home_page(page, home_url, headless):
     wait_for_page_ready(page)
 
 
-def detect_home_login_status(page, home_url, headless):
+def detect_home_login_status(page, home_url, headless, wait_for_verification=True):
     settings_url = build_settings_url(home_url)
     page.goto(
         settings_url,
         wait_until='domcontentloaded',
         timeout=get_operation_timeout_milliseconds('avfan_page_load'),
     )
+    if is_security_verification_page(page) and not wait_for_verification:
+        return LOGIN_STATUS_VERIFICATION_REQUIRED
     wait_for_security_verification_if_needed(page, headless)
     accept_age_gate_if_needed(page)
+    if is_security_verification_page(page) and not wait_for_verification:
+        return LOGIN_STATUS_VERIFICATION_REQUIRED
     wait_for_security_verification_if_needed(page, headless)
     wait_for_page_ready(page)
 
@@ -176,7 +183,14 @@ def wait_for_security_verification_if_needed(page, headless):
                     'verification failed',
                     'cloudflare',
                     'captcha',
-                    '请验证您是真人'
+                    '请验证您是真人',
+                    '正在进行安全验证',
+                    '安全验证',
+                    '验证您不是自动程序',
+                    '恶意自动程序',
+                    '正在验证',
+                    'checking your browser',
+                    'just a moment'
                 ];
                 const hasMarker = markers.some((marker) => combined.includes(marker));
                 const hasChallengeFrame = Boolean(
@@ -213,6 +227,13 @@ def is_security_verification_page(page):
         'cloudflare',
         'captcha',
         '请验证您是真人',
+        '正在进行安全验证',
+        '安全验证',
+        '验证您不是自动程序',
+        '恶意自动程序',
+        '正在验证',
+        'checking your browser',
+        'just a moment',
     )
     if any(marker in combined for marker in markers):
         return True

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from app.data.database_handler import VideoDatabase
@@ -68,6 +69,10 @@ class GuiTaskTimingRepositoryTest(unittest.TestCase):
             self.assertEqual(timing['status'], '已暂停')
             self.assertEqual(timing['close_reason'], '应用重启时中断')
             self.assertTrue(timing['paused_at'])
+
+            paused_at = datetime.strptime(timing['paused_at'], '%Y-%m-%d %H:%M:%S')
+            elapsed = abs((datetime.now() - paused_at).total_seconds())
+            self.assertLess(elapsed, 5)
 
 
 if __name__ == '__main__':

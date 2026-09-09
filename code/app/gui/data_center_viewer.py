@@ -29,6 +29,7 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.refresh_client = _build_refresh_client(backend_client)
         self._pending_close = False
         self._startup_refresh_pending = True
+        self._refresh_after_cached_load = False
         self._suppress_async_error_dialog = False
         self.analysis_window = None
         self._init_async_task_host()
@@ -45,11 +46,16 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(4)
         self.last_refreshed_label = QLabel(tr('data_center.last_refreshed', value=tr('common.empty')))
+        self.error_label = QLabel('')
+        self.error_label.setStyleSheet('color: #b00020; font-weight: bold;')
+        self.error_label.setWordWrap(True)
+        self.error_label.hide()
         self.btn_analysis = QPushButton(tr('data_center.analysis.entry'))
         self.btn_analysis.clicked.connect(self.show_analysis_window)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
         meta_layout.addWidget(self.last_refreshed_label)
+        meta_layout.addWidget(self.error_label)
         top_layout.addLayout(meta_layout)
         top_layout.addStretch()
         top_layout.addWidget(self.btn_analysis)
@@ -67,22 +73,18 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.video_supplement_card = SummaryCard(tr('data_center.video_supplement'))
         self.code_prefix_avfan_card = SummaryCard(tr('data_center.code_prefix_avfan'))
         self.code_prefix_javtxt_card = SummaryCard(tr('data_center.code_prefix_javtxt'))
-        self.code_prefix_supplement_card = SummaryCard(tr('data_center.code_prefix_supplement'))
         self.actor_avfan_card = SummaryCard(tr('data_center.actor_avfan'))
         self.actor_javtxt_card = SummaryCard(tr('data_center.actor_javtxt'))
         self.actor_binghuo_card = SummaryCard(tr('data_center.actor_binghuo'))
         self.actor_baomu_card = SummaryCard(tr('data_center.actor_baomu'))
-        self.actor_supplement_card = SummaryCard(tr('data_center.actor_supplement'))
 
         summary_layout.addWidget(self.video_avfan_card, 0, 0)
         summary_layout.addWidget(self.video_javtxt_card, 0, 1)
         summary_layout.addWidget(self.video_supplement_card, 0, 2)
         summary_layout.addWidget(self.code_prefix_avfan_card, 1, 0)
         summary_layout.addWidget(self.code_prefix_javtxt_card, 1, 1)
-        summary_layout.addWidget(self.code_prefix_supplement_card, 1, 2)
         summary_layout.addWidget(self.actor_avfan_card, 2, 0)
         summary_layout.addWidget(self.actor_javtxt_card, 2, 1)
-        summary_layout.addWidget(self.actor_supplement_card, 2, 2)
         summary_layout.addWidget(self.actor_binghuo_card, 3, 0)
         summary_layout.addWidget(self.actor_baomu_card, 3, 1)
 
@@ -90,8 +92,12 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.setLayout(layout)
         self.set_async_busy_widgets([self.btn_refresh, self.btn_analysis])
 
-    def load_data(self, force_refresh=False, block_ui=True, silent_errors=False):
+    def load_data(self, force_refresh=False, block_ui=True, silent_errors=False, allow_cached_preload=True):
         if self._pending_close or self.is_async_task_running():
+            return
+        if force_refresh and allow_cached_preload and not self._startup_refresh_pending:
+            self._refresh_after_cached_load = True
+            self.load_data(force_refresh=False, block_ui=False, silent_errors=silent_errors)
             return
         self._suppress_async_error_dialog = bool(silent_errors)
 
@@ -121,6 +127,8 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         if self._pending_close:
             return
         summary = result.get('summary', {}) or {}
+        self.error_label.clear()
+        self.error_label.hide()
         refreshed_at = str(result.get('refreshed_at', '') or '').strip() or tr('common.empty')
         refresh_duration_text = resolve_refresh_duration_text(result) or tr('common.empty')
         self._suppress_async_error_dialog = False
@@ -158,11 +166,6 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             code_prefix_summary.get(JAVTXT_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((CODE_PREFIX_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
         )
-        self.code_prefix_supplement_card.set_summary(
-            code_prefix_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
-            show_terminal_details=True,
-            live_progress=live_progress_map.get((CODE_PREFIX_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
-        )
         self.actor_avfan_card.set_summary(
             actor_summary.get(AVFAN_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, AVFAN_VIDEO_SOURCE)),
@@ -170,11 +173,6 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
         self.actor_javtxt_card.set_summary(
             actor_summary.get(JAVTXT_VIDEO_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, JAVTXT_VIDEO_SOURCE)),
-        )
-        self.actor_supplement_card.set_summary(
-            actor_summary.get(SUPPLEMENT_TASK_SOURCE, {}),
-            show_terminal_details=True,
-            live_progress=live_progress_map.get((ACTOR_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE)),
         )
         self.actor_binghuo_card.set_summary(
             actor_summary.get(BINGHUO_ACTOR_SOURCE, {}),
@@ -184,20 +182,31 @@ class DataCenterWindow(AsyncTaskHostMixin, QDialog):
             actor_summary.get(BAOMU_ACTOR_SOURCE, {}),
             live_progress=live_progress_map.get((ACTOR_BIRTHDAY_TARGET, BAOMU_ACTOR_SOURCE)),
         )
-        if self._startup_refresh_pending:
+        if self._startup_refresh_pending or self._refresh_after_cached_load:
             self._startup_refresh_pending = False
+            self._refresh_after_cached_load = False
             if self.is_async_task_running():
-                QTimer.singleShot(0, lambda: self.load_data(force_refresh=True, block_ui=False, silent_errors=True))
+                QTimer.singleShot(0, lambda: self.load_data(
+                    force_refresh=True,
+                    block_ui=False,
+                    silent_errors=True,
+                    allow_cached_preload=False,
+                ))
             else:
-                self.load_data(force_refresh=True, block_ui=False, silent_errors=True)
+                self.load_data(
+                    force_refresh=True,
+                    block_ui=False,
+                    silent_errors=True,
+                    allow_cached_preload=False,
+                )
 
     def _handle_async_task_failed(self, message):
         if self._suppress_async_error_dialog:
             self._suppress_async_error_dialog = False
-            return
         if self._pending_close:
             return
-        print(tr('data_center.read_failed', error=message))
+        self.error_label.setText(tr('data_center.read_failed', error=message))
+        self.error_label.show()
 
     def _cleanup_async_task_thread(self):
         super()._cleanup_async_task_thread()

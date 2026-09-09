@@ -385,6 +385,7 @@ def make_handler(service):
                     batch_mode=bool(body.get('batch_mode')),
                     plan_id=body.get('plan_id', ''),
                     plan_task_kind=body.get('plan_task_kind', ''),
+                    account_id=body.get('account_id', 0),
                 )
             if method == 'POST' and path == '/database/enrich/batch-plan':
                 return service.create_enrichment_batch_plan(body)
@@ -437,12 +438,22 @@ def make_handler(service):
             if method == 'POST' and path == '/database/enrich/cancel':
                 return service.cancel_enrichment()
             if method == 'POST' and path == '/login/auto':
-                return service.auto_login()
+                return service.auto_login(body.get('account_id', 0))
             if method == 'POST' and path == '/browser-profile/reset':
-                return service.reset_browser_profile()
-            if method == 'POST' and path == '/database/library-status/sync':
-                return service.sync_library_statuses()
-
+                return service.reset_browser_profile(body.get('account_id', 0))
+            if method == 'GET' and path == '/scraper-accounts':
+                return service.list_scraper_accounts(query.get('enabled_only', ['0'])[0] == '1')
+            if method == 'POST' and path == '/scraper-accounts/validate':
+                return {'results': service.validate_scraper_accounts()}
+            if method == 'POST' and path == '/scraper-accounts':
+                return service.create_scraper_account(
+                    body.get('account_name', ''),
+                    username=body.get('username', ''),
+                    password=body.get('password', ''),
+                )
+            if method == 'POST' and path.startswith('/scraper-accounts/'):
+                account_id = int(path.rsplit('/', 1)[-1])
+                return service.update_scraper_account(account_id, **body)
             raise ValueError(f'未知接口: {method} {path}')
 
         def _read_json_body(self):

@@ -110,10 +110,10 @@ def clone_default_selected_sources():
 
 def supported_source_keys_for_target(target_type):
     if target_type == VIDEO_LIBRARY_TARGET:
-        return (JAVTXT_VIDEO_SOURCE, AVFAN_VIDEO_SOURCE)
+        return (JAVTXT_VIDEO_SOURCE, AVFAN_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE)
     if target_type == ACTOR_BIRTHDAY_TARGET:
         return (BINGHUO_ACTOR_SOURCE, BAOMU_ACTOR_SOURCE)
-    return (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE)
+    return (AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE)
 
 
 def is_flat_settings_payload(payload):
@@ -636,7 +636,7 @@ class EnrichmentDialog(QDialog):
         is_avfan_source = self.selected_source_key() == AVFAN_VIDEO_SOURCE and not is_actor_birthday_target
         self.avfan_source_button.setEnabled(not is_actor_birthday_target)
         self.javtxt_source_button.setEnabled(not is_actor_birthday_target)
-        self.supplement_source_button.setEnabled(not is_actor_birthday_target and not is_video_target)
+        self.supplement_source_button.setEnabled(is_video_target)
         self.binghuo_source_button.setEnabled(is_actor_birthday_target)
         self.baomu_source_button.setEnabled(is_actor_birthday_target)
         combo_visible = not is_actor_birthday_target and not is_supplement_source

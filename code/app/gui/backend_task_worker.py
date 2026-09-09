@@ -2,7 +2,11 @@ from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import QMessageBox
 
 from app.gui.i18n import tr
-from app.gui.task_queue import TASK_CATEGORY_VIEW, get_gui_task_queue
+from app.gui.task_queue import (
+    PAUSABLE_TASK_CATEGORIES,
+    TASK_CATEGORY_VIEW,
+    get_gui_task_queue,
+)
 from app.core.app_logging import get_logger, log_context, new_task_id
 
 
@@ -85,6 +89,7 @@ class AsyncTaskHostMixin:
         resume_kind='',
         resume_payload=None,
         resumable=False,
+        account_id=0,
     ):
         queue_task_title = self._build_async_task_title(
             error_title=error_title,
@@ -136,6 +141,14 @@ class AsyncTaskHostMixin:
             start_task()
             return True
 
+        ensure_task_mode = getattr(self, '_ensure_task_mode_for_task', None)
+        if (
+            callable(ensure_task_mode)
+            and str(task_category or '').strip() in PAUSABLE_TASK_CATEGORIES
+            and not ensure_task_mode(task_category)
+        ):
+            return False
+
         self._async_task_pending_queue_count += 1
         get_gui_task_queue().enqueue(
             queue_task_title,
@@ -148,6 +161,7 @@ class AsyncTaskHostMixin:
             resume_kind=resume_kind,
             resume_payload=resume_payload,
             resumable=resumable,
+            account_id=account_id,
         )
         return True
 

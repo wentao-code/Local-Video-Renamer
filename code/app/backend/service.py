@@ -65,6 +65,7 @@ from app.core.project_paths import (
 from app.data.database_handler import VideoDatabase
 from app.scraper.avfan_scraper import reset_avfan_browser_profile
 from app.services.auth import AutoLoginService
+from app.services.auth.account_service import AccountService, ACCOUNT_STATUS_UNKNOWN
 from app.services.detail import ActorDetailLibrary, CodePrefixDetailLibrary, resolve_update_status
 from app.services.enrichment import (
     ActorEnrichmentService,
@@ -92,7 +93,6 @@ from app.services.library import (
     CodePrefixVideoCategoryBulkService,
     DataCenterService,
     LibraryAdminService,
-    LibraryStatusSyncService,
     PathLibrary,
     summarize_paths,
 )
@@ -154,7 +154,6 @@ class BackendService:
             snapshot_store=self.snapshot_coordinator.store,
         )
         self.library_admin_service = LibraryAdminService(self.db)
-        self.library_status_sync_service = LibraryStatusSyncService(self.db)
         self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
         self.queen_library_service = QueenLibraryService(QUEEN_LIBRARY_DB_FILE)
@@ -208,6 +207,9 @@ class BackendService:
 
     def load_database(self):
         self.db.ensure_startup_maintenance()
+        recovered = self.db.recover_running_enrichment_plans('程序启动恢复')
+        if recovered:
+            LOGGER.warning('启动时恢复未完成补全任务: %s', recovered)
         self.actor_library_sync_service.sync_from_video_library()
         self.database_loaded = True
         return {
@@ -3698,19 +3700,24 @@ class BackendService:
         }
         source_key = str(request.get('source_key') or default_sources.get(target_type, '')).strip()
         task_kind = str(request.get('task_kind') or self._batch_plan_task_kind_for_target(target_type)).strip()
+        if source_key == SUPPLEMENT_TASK_SOURCE and target_type != VIDEO_LIBRARY_TARGET:
+            raise ValueError('补充任务仅支持视频库。')
         allowed_sources = {
             'video': {JAVTXT_VIDEO_SOURCE, AVFAN_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE},
-            'code_prefix': {AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE},
-            'actor': {AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE},
+            'code_prefix': {AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE},
+            'actor': {AVFAN_VIDEO_SOURCE, JAVTXT_VIDEO_SOURCE},
             'actor_birthday': {BINGHUO_ACTOR_SOURCE, BAOMU_ACTOR_SOURCE},
         }
         if source_key not in allowed_sources.get(task_kind, set()):
             raise ValueError(f'不支持的补全任务来源组合: {task_kind}/{source_key}')
+        candidate_limit = batch_limit if (
+            source_key == SUPPLEMENT_TASK_SOURCE and batch_count_limit > 1
+        ) else max_items
         candidates = self._build_enrichment_batch_plan_candidates(
             task_kind,
             target_type,
             source_key,
-            max_items,
+            candidate_limit,
         )
         if select_all_candidates:
             candidates = self._exclude_enrichment_queue_candidates(task_kind, source_key, candidates)
@@ -3726,6 +3733,44 @@ class BackendService:
             show_browser=bool(request.get('show_browser', False)),
         )
         return {'plan': plan}
+
+    def _ensure_enrichment_batch_plan_batch_candidates(
+        self,
+        plan_id,
+        task_kind,
+        target_type,
+        source_key,
+        batch_mode=False,
+    ):
+        """Fill only the next batch when a lazy supplement plan needs items."""
+        if not batch_mode or source_key != SUPPLEMENT_TASK_SOURCE or not str(plan_id or '').strip():
+            return 0
+        get_progress = getattr(self.db, 'get_enrichment_batch_plan_progress', None)
+        append_candidates = getattr(self.db, 'append_enrichment_batch_plan_candidates', None)
+        if not callable(get_progress) or not callable(append_candidates):
+            return 0
+        progress = dict(get_progress(plan_id, task_kind) or {})
+        if not progress:
+            return 0
+        if any(
+            int(progress.get(key, 0) or 0) > 0
+            for key in ('pending_count', 'running_count', 'retryable_failed_count')
+        ):
+            return 0
+        if int(progress.get('completed_batch_count', 0) or 0) >= int(
+            progress.get('batch_count_limit', 0) or 0
+        ):
+            return 0
+        batch_limit = max(1, int(progress.get('batch_limit', 1) or 1))
+        candidates = self._build_enrichment_batch_plan_candidates(
+            task_kind,
+            target_type,
+            source_key,
+            batch_limit,
+        )
+        if not candidates:
+            return 0
+        return int(append_candidates(plan_id, task_kind, candidates) or 0)
 
     def select_enrichment_candidates(self, payload):
         request = dict(payload or {})
@@ -4102,7 +4147,12 @@ class BackendService:
         version_key = f'{target_kind}_library'
         versions = self.db.get_data_source_versions([version_key])
         source_version = int(versions.get(version_key, 0) or 0)
-        candidate_fingerprint = json.dumps(filter_settings or {}, ensure_ascii=False, sort_keys=True)
+        fingerprint_settings = dict(filter_settings or {})
+        if target_kind == 'actor' and source_key == SUPPLEMENT_TASK_SOURCE:
+            # Earlier indexes counted actor-to-video relations. Version the
+            # key so those rows are rebuilt as one candidate per video.
+            fingerprint_settings['_candidate_dedupe_version'] = 2
+        candidate_fingerprint = json.dumps(fingerprint_settings, ensure_ascii=False, sort_keys=True)
         cached = self.db.load_enrichment_candidate_index(
             target_kind,
             source_key,
@@ -4111,18 +4161,35 @@ class BackendService:
             limit,
         )
         if cached is not None:
-            return cached
+            return self._deduplicate_supplement_video_candidates(cached)[:limit]
         sql_candidate_getter = getattr(self.db, 'list_sql_supplement_candidates', None)
         if callable(sql_candidate_getter):
-            sql_rows = list(sql_candidate_getter(target_kind, max(limit * 20, limit)) or [])
-            candidates = [
-                {
-                    **dict(movie or {}),
-                    **build_supplement_candidate(movie, filter_settings=filter_settings),
-                }
-                for movie in sql_rows
-                if build_supplement_candidate(movie, filter_settings=filter_settings)
-            ]
+            # The SQL selector is intentionally broad. Grow the window until
+            # filtering has produced this batch's candidates; a fixed prefix
+            # can contain only rows rejected by supplement rules.
+            scan_limit = max(limit * 20, limit)
+            while True:
+                sql_rows = list(sql_candidate_getter(target_kind, scan_limit) or [])
+                candidates = []
+                seen_codes = set()
+                for movie in sql_rows:
+                    candidate = build_supplement_candidate(
+                        movie,
+                        filter_settings=filter_settings,
+                    )
+                    if candidate:
+                        row = {**dict(movie or {}), **candidate}
+                        code = str(row.get('code', '') or '').strip().upper()
+                        if code:
+                            if code in seen_codes:
+                                continue
+                            seen_codes.add(code)
+                        candidates.append(row)
+                        if len(candidates) >= limit:
+                            break
+                if len(candidates) >= limit or len(sql_rows) < scan_limit:
+                    break
+                scan_limit *= 2
         else:
             candidates = list(builder() or [])
         self.db.replace_enrichment_candidate_index(
@@ -4132,7 +4199,22 @@ class BackendService:
             source_version=source_version,
             candidate_fingerprint=candidate_fingerprint,
         )
-        return candidates[:limit]
+        return self._deduplicate_supplement_video_candidates(candidates)[:limit]
+
+    @staticmethod
+    def _deduplicate_supplement_video_candidates(candidates):
+        """Treat one video code as one supplement task across actor relations."""
+        result = []
+        seen_codes = set()
+        for candidate in candidates or []:
+            row = dict(candidate or {})
+            code = str(row.get('code', '') or '').strip().upper()
+            if code:
+                if code in seen_codes:
+                    continue
+                seen_codes.add(code)
+            result.append(row)
+        return result
 
     def _apply_enrichment_batch_plan_result(self, plan_id, task_kind, result):
         normalized_plan_id = str(plan_id or '').strip()
@@ -4378,6 +4460,31 @@ class BackendService:
             'source_key': str(source_key or ''),
         }
 
+    def _find_or_create_enrichment_plan(self, task_kind, target_type, source_key, limit):
+        if source_key == SUPPLEMENT_TASK_SOURCE and target_type != VIDEO_LIBRARY_TARGET:
+            raise ValueError('补充任务仅支持视频库。')
+        plan = self.db.find_selected_enrichment_plan(task_kind, target_type, source_key)
+        if plan is not None:
+            return plan
+
+        candidates = self._build_enrichment_batch_plan_candidates(
+            task_kind,
+            target_type,
+            source_key,
+            limit,
+        )
+        if not candidates:
+            return None
+        return self.db.create_enrichment_batch_plan(
+            task_kind,
+            target_type,
+            source_key,
+            batch_limit=max(1, int(limit or 1)),
+            batch_count_limit=1,
+            candidates=candidates,
+            initial_status='selected',
+        )
+
     def enrich_videos(
         self,
         limit,
@@ -4388,21 +4495,29 @@ class BackendService:
         batch_mode=False,
         plan_id='',
         plan_task_kind='',
+        account_id=0,
     ):
         self.ensure_database_loaded()
         target_type = str(target_type or VIDEO_LIBRARY_TARGET).strip() or VIDEO_LIBRARY_TARGET
         source_key = str(source_key or '').strip()
+        account = {}
+        if source_key in {AVFAN_VIDEO_SOURCE, SUPPLEMENT_TASK_SOURCE}:
+            account = AccountService(self.db).require_usable_account(account_id)
         plan_task_kind = str(plan_task_kind or '').strip() or self._batch_plan_task_kind_for_target(target_type)
         if not str(plan_id or '').strip():
-            selected_plan = self.db.find_selected_enrichment_plan(
+            selected_plan = self._find_or_create_enrichment_plan(
                 plan_task_kind,
                 target_type,
                 source_key,
+                limit,
             )
             if selected_plan is not None:
                 plan_id = str(selected_plan.get('plan_id', '') or '').strip()
+                plan_task_kind = str(selected_plan.get('task_kind', '') or plan_task_kind).strip()
             else:
-                return self._empty_enrichment_plan_result(limit, target_type, source_key)
+                result = self._empty_enrichment_plan_result(limit, target_type, source_key)
+                result['message'] = '当前没有符合条件的待补全对象。'
+                return result
         try:
             if hasattr(self.db, 'update_enrichment_batch_plan_options'):
                 self.db.update_enrichment_batch_plan_options(plan_id, show_browser=bool(show_browser))
@@ -4434,6 +4549,13 @@ class BackendService:
 
         try:
             log_phase('claim', 'started', requested_count=max(0, int(limit or 0)))
+            self._ensure_enrichment_batch_plan_batch_candidates(
+                plan_id,
+                plan_task_kind,
+                target_type,
+                source_key,
+                batch_mode=batch_mode,
+            )
             planned_items = self._pending_enrichment_plan_items_for_run(plan_id, plan_task_kind, limit)
             log_phase('claim', 'completed', claimed_count=len(planned_items))
             if str(plan_id or '').strip() and str(plan_task_kind or '').strip() and not planned_items:
@@ -4470,6 +4592,7 @@ class BackendService:
                 ),
                 video_filter_settings=active_filter_settings,
                 planned_items=planned_items,
+                profile_dir=account.get('profile_dir', ''),
             )
             if target_type == ACTOR_LIBRARY_TARGET:
                 self.actor_library_sync_service.sync_from_video_library()
@@ -4601,17 +4724,37 @@ class BackendService:
     def cancel_enrichment(self):
         return self.enrichment_task_state.request_cancel(self._set_cancel_message)
 
-    def auto_login(self):
-        return AutoLoginService().run()
+    def list_scraper_accounts(self, enabled_only=False):
+        return AccountService(self.db).list_accounts(enabled_only=enabled_only)
 
-    def reset_browser_profile(self):
-        return reset_avfan_browser_profile()
+    def validate_scraper_accounts(self):
+        return AccountService(self.db).validate_accounts()
 
-    def sync_library_statuses(self):
-        self.ensure_database_loaded()
-        if self.enrichment_task_state.is_running:
-            raise RuntimeError('当前有补全任务正在运行，请稍后再执行状态同步。')
-        return self.library_status_sync_service.sync()
+    def create_scraper_account(self, account_name, username='', password=''):
+        return AccountService(self.db).create_account(account_name, username=username, password=password)
+
+    def update_scraper_account(self, account_id, **changes):
+        return AccountService(self.db).update_account(account_id, **changes)
+
+    def auto_login(self, account_id=0):
+        account = AccountService(self.db).get_account(account_id) if account_id else None
+        if account_id and account is None:
+            raise ValueError('未找到抓取账号')
+        if account_id:
+            AccountService(self.db).close_validation_session(account_id)
+        return AutoLoginService(account=account, database=self.db).run()
+
+    def reset_browser_profile(self, account_id=0):
+        account = AccountService(self.db).get_account(account_id) if account_id else None
+        if account_id and account is None:
+            raise ValueError('未找到抓取账号')
+        if account_id:
+            AccountService(self.db).close_validation_session(account_id)
+        result = reset_avfan_browser_profile(account.get('profile_dir') if account else None)
+        if account:
+            self.db.set_scraper_account_status(account_id, ACCOUNT_STATUS_UNKNOWN, '')
+            self.db.set_scraper_account_manual_verification_cooldown(account_id, 0)
+        return result
 
     def _begin_enrichment_task(self, task_kind):
         self._reconcile_stale_enrichment_state()

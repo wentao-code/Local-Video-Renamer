@@ -5,7 +5,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtWidgets import QApplication
 
-from app.gui.task_queue import get_gui_task_queue
+from app.gui.task_queue import RUN_MODE_TASK, get_gui_task_queue
 from app.gui.task_resume_registry import TaskResumeRegistry
 
 
@@ -65,6 +65,30 @@ class TaskPersistenceStartupTest(unittest.TestCase):
         self.assertEqual(started, ['resume'])
         self.assertEqual(self.queue.records()[0].status, '正在执行')
         self.assertEqual(updates, [])
+
+    def test_restart_interrupted_task_runs_automatically_in_task_mode(self):
+        started = []
+        record = self.queue.restore_persisted_record(
+            {
+                'task_id': 43,
+                'trace_task_id': 'task-43',
+                'title': '启动恢复任务',
+                'source': 'test',
+                'status': '已暂停',
+                'pause_reason': '应用重启时中断',
+                'resume_kind': 'test',
+                'resume_payload': {'value': 'auto-resume'},
+                'resumable': True,
+            },
+            lambda _record: started.append('auto-resume'),
+        )
+
+        self.assertIsNotNone(record)
+        self.queue.set_run_mode(RUN_MODE_TASK)
+        _APP.processEvents()
+
+        self.assertEqual(started, ['auto-resume'])
+        self.assertEqual(self.queue.records()[0].status, '正在执行')
 
 
 if __name__ == '__main__':
