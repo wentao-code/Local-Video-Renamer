@@ -254,6 +254,64 @@ class EnrichmentPlanCandidateTest(unittest.TestCase):
         self.assertEqual(appended[0][0:2], ('video-plan', 'video'))
         self.assertEqual(appended[0][2], [{'code': 'AAA-002'}])
 
+    def test_completed_video_supplement_batch_appends_before_result_release(self):
+        class _PlanDatabase:
+            def __init__(self):
+                self.progress = {
+                    'source_key': SUPPLEMENT_TASK_SOURCE,
+                    'target_type': VIDEO_LIBRARY_TARGET,
+                    'pending_count': 0,
+                    'running_count': 0,
+                    'retryable_failed_count': 0,
+                    'completed_batch_count': 1,
+                    'batch_count_limit': 3,
+                    'batch_limit': 25,
+                }
+
+            @staticmethod
+            def list_enrichment_batch_items(*_args, **kwargs):
+                if kwargs.get('status') == 'running':
+                    return [{'sequence_index': 1, 'code': 'AAA-001'}]
+                return []
+
+            @staticmethod
+            def mark_enrichment_batch_item(*_args, **_kwargs):
+                return 1
+
+            @staticmethod
+            def release_enrichment_batch_items(*_args, **_kwargs):
+                return 1
+
+            def get_enrichment_batch_plan_progress(self, *_args):
+                return dict(self.progress)
+
+            def update_enrichment_plan_progress(self, *_args, **_kwargs):
+                return dict(self.progress)
+
+        service = object.__new__(BackendService)
+        service.db = _PlanDatabase()
+        appended = []
+
+        def append_next_batch(*args, **kwargs):
+            appended.append((args, kwargs))
+            service.db.progress['pending_count'] = 25
+            return 25
+
+        service._ensure_enrichment_batch_plan_batch_candidates = append_next_batch
+
+        result = service._apply_enrichment_batch_plan_result(
+            'video-plan',
+            'video',
+            {'processed_count': 1, 'results': [{'code': 'AAA-001', 'status': 'ok'}]},
+        )
+
+        self.assertEqual(len(appended), 1)
+        self.assertEqual(
+            appended[0][0],
+            ('video-plan', 'video', VIDEO_LIBRARY_TARGET, SUPPLEMENT_TASK_SOURCE),
+        )
+        self.assertTrue(result['has_more_pending'])
+
     def test_missing_selected_plan_is_created_from_current_candidates(self):
         with self.assertRaisesRegex(ValueError, '补充任务仅支持视频库'):
             self.service._find_or_create_enrichment_plan(
