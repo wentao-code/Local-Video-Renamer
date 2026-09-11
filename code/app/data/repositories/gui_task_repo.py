@@ -135,8 +135,28 @@ class GuiTaskRepositoryMixin:
                 '''UPDATE gui_task_records
                    SET status = '已暂停', pause_reason = ?, pause_requested = 0,
                        paused_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                   WHERE status = '正在执行' ''',
+                   WHERE status IN ('正在执行', 'running') ''',
                 (normalized_reason,),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def reconcile_terminal_enrichment_gui_tasks(self):
+        """Close legacy GUI records after their persisted enrichment plan is terminal."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                '''UPDATE gui_task_records
+                   SET status = '已完成', pause_requested = 0, pause_reason = '',
+                       completed_at = CASE WHEN completed_at = '' THEN CURRENT_TIMESTAMP ELSE completed_at END,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE plan_id <> ''
+                     AND status IN ('正在执行', 'running', '等待中')
+                     AND EXISTS (
+                         SELECT 1
+                         FROM enrichment_batch_plans AS plan
+                         WHERE plan.plan_id = gui_task_records.plan_id
+                           AND plan.status = 'completed'
+                     )'''
             )
             conn.commit()
             return int(cursor.rowcount or 0)

@@ -205,7 +205,7 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
 
         self.assertEqual(row, ('https://avfan.example/movies/aaa-001', ''))
 
-    def test_supplement_claim_keeps_full_and_actor_only_items_in_separate_batches(self):
+    def test_supplement_claim_keeps_mixed_modes_in_the_same_batch(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'video_database.db'
             db = VideoDatabase(db_path)
@@ -227,8 +227,10 @@ class EnrichmentPendingQueueTest(unittest.TestCase):
                 db.mark_enrichment_batch_item(plan['plan_id'], 'video', item['sequence_index'], 'completed')
             second = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 2)
 
-        self.assertEqual([item['supplement_mode'] for item in first], ['actors_only', 'actors_only'])
-        self.assertEqual([item['supplement_mode'] for item in second], ['full'])
+        self.assertEqual([item['sequence_index'] for item in first], [1, 2])
+        self.assertEqual([item['supplement_mode'] for item in first], ['full', 'actors_only'])
+        self.assertEqual([item['sequence_index'] for item in second], [3])
+        self.assertEqual([item['supplement_mode'] for item in second], ['actors_only'])
 
     def test_supplement_candidates_include_running_items_from_current_plan(self):
         with tempfile.TemporaryDirectory() as temp_dir:

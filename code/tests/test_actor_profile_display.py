@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 
 from app.core.enrichment_sources import (
@@ -246,7 +247,9 @@ class ActorProfileDisplayTest(unittest.TestCase):
 
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]['birthday'], '1990/8/25')
-            self.assertEqual(rows[0]['age'], '35')
+            today = date.today()
+            expected_age = today.year - 1990 - int((today.month, today.day) < (8, 25))
+            self.assertEqual(rows[0]['age'], str(expected_age))
             self.assertEqual(rows[0]['baomu_enrichment_status'], ENRICHED_STATUS)
             expected_status = (
                 f'{get_video_enrichment_source_label(AVFAN_VIDEO_SOURCE)}: f | '

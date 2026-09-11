@@ -210,6 +210,10 @@ class BackendService:
         recovered = self.db.recover_running_enrichment_plans('程序启动恢复')
         if recovered:
             LOGGER.warning('启动时恢复未完成补全任务: %s', recovered)
+        reconcile_gui_tasks = getattr(self.db, 'reconcile_terminal_enrichment_gui_tasks', None)
+        reconciled = reconcile_gui_tasks() if callable(reconcile_gui_tasks) else 0
+        if reconciled:
+            LOGGER.info('启动时收口已完成补全计划的界面任务: %s', reconciled)
         self.actor_library_sync_service.sync_from_video_library()
         self.database_loaded = True
         return {
@@ -4333,6 +4337,10 @@ class BackendService:
                 )
             current_result['plan_progress'] = progress
             current_result['has_more_pending'] = has_more_pending
+            if progress.get('status') == 'completed':
+                reconcile_gui_tasks = getattr(self.db, 'reconcile_terminal_enrichment_gui_tasks', None)
+                if callable(reconcile_gui_tasks):
+                    reconcile_gui_tasks()
             if (
                 not current_result.get('stopped')
                 and normalized_task_kind == 'actor_birthday'

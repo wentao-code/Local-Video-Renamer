@@ -1,7 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from app.scraper.avfan_scraper import AvfanScraper
+from app.scraper.avfan_scraper import AvfanScraper, wait_for_manual_login_if_needed
+from app.scraper.exceptions import EnrichmentStopRequested
 
 
 class AvfanScraperLoginStateTest(unittest.TestCase):
@@ -22,7 +23,16 @@ class AvfanScraperLoginStateTest(unittest.TestCase):
                 patch('app.scraper.avfan_scraper.collect_search_results', return_value=[]):
             scraper.search_movie_url(page, 'ROE-420')
 
-        ensure_login.assert_called_once_with(page, False)
+        ensure_login.assert_called_once_with(page, False, should_stop=scraper.should_stop)
+
+    def test_manual_login_wait_honors_stop_request_before_blocking(self):
+        page = Mock()
+
+        with patch('app.scraper.avfan_scraper.is_login_page', return_value=True):
+            with self.assertRaises(EnrichmentStopRequested):
+                wait_for_manual_login_if_needed(page, False, should_stop=lambda: True)
+
+        page.wait_for_function.assert_not_called()
 
 
 if __name__ == '__main__':

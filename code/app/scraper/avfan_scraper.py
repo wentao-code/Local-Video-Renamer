@@ -1,5 +1,6 @@
 import re
 import shutil
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from app.core.runtime_config import (
 )
 from app.core.video_code import compact_video_code
 from app.scraper.browser_window import minimize_browser_window_if_needed
-from app.scraper.exceptions import HumanVerificationRequiredError
+from app.scraper.exceptions import EnrichmentStopRequested, HumanVerificationRequiredError
 from app.scraper.login_status_service import ensure_logged_in_on_home
 
 
@@ -149,12 +150,14 @@ class AvfanScraper:
         profile_dir=None,
         cooldown_before_search=False,
         minimize_browser_window=True,
+        should_stop=None,
     ):
         self.headless = headless
         self.locale = str(locale or get_scraper_locale()).strip() or get_scraper_locale()
         self.profile_dir = Path(profile_dir) if profile_dir else get_avfan_profile_dir()
         self.cooldown_before_search = cooldown_before_search
         self.minimize_browser_window = bool(minimize_browser_window)
+        self.should_stop = should_stop or (lambda: False)
         self.cooldown_used = False
         self.login_state_checked = False
         self.home_url = get_setting('SCRAPER_HOME_URL', required=True)
@@ -249,9 +252,9 @@ class AvfanScraper:
                 wait_until='domcontentloaded',
                 timeout=get_operation_timeout_milliseconds('avfan_page_load'),
             )
-            wait_for_security_verification_if_needed(page, self.headless)
-            wait_for_manual_login_if_needed(page, self.headless)
-            wait_for_page_ready(page)
+            wait_for_security_verification_if_needed(page, self.headless, self.should_stop)
+            wait_for_manual_login_if_needed(page, self.headless, self.should_stop)
+            wait_for_page_ready(page, self.should_stop)
             movie_info = parse_movie_info_from_page(page)
             movie_info['code'] = movie_info.get('code') or code
             movie_info['avfan_movie_id'] = extract_movie_id(page.url)
@@ -266,11 +269,11 @@ class AvfanScraper:
                 wait_until='domcontentloaded',
                 timeout=get_operation_timeout_milliseconds('avfan_page_load'),
             )
-            wait_for_security_verification_if_needed(page, self.headless)
+            wait_for_security_verification_if_needed(page, self.headless, self.should_stop)
             accept_age_gate_if_needed(page)
-            wait_for_security_verification_if_needed(page, self.headless)
-            wait_for_manual_login_if_needed(page, self.headless)
-            wait_for_page_ready(page)
+            wait_for_security_verification_if_needed(page, self.headless, self.should_stop)
+            wait_for_manual_login_if_needed(page, self.headless, self.should_stop)
+            wait_for_page_ready(page, self.should_stop)
             movie_info = parse_movie_info_from_page(page)
             movie_info['avfan_movie_id'] = extract_movie_id(page.url)
             movie_info['avfan_url'] = page.url
@@ -321,18 +324,18 @@ class AvfanScraper:
                 timeout=get_operation_timeout_milliseconds('avfan_page_load'),
             )
 
-        wait_for_security_verification_if_needed(page, self.headless)
+        wait_for_security_verification_if_needed(page, self.headless, self.should_stop)
         accept_age_gate_if_needed(page)
-        wait_for_security_verification_if_needed(page, self.headless)
-        wait_for_manual_login_if_needed(page, self.headless)
-        wait_for_page_ready(page)
+        wait_for_security_verification_if_needed(page, self.headless, self.should_stop)
+        wait_for_manual_login_if_needed(page, self.headless, self.should_stop)
+        wait_for_page_ready(page, self.should_stop)
         self.wait_before_first_search(page)
         fill_search_box(page, code)
         click_search_button(page)
-        wait_for_page_ready(page)
-        wait_for_security_verification_if_needed(page, self.headless)
-        wait_for_manual_login_if_needed(page, self.headless)
-        wait_for_page_ready(page)
+        wait_for_page_ready(page, self.should_stop)
+        wait_for_security_verification_if_needed(page, self.headless, self.should_stop)
+        wait_for_manual_login_if_needed(page, self.headless, self.should_stop)
+        wait_for_page_ready(page, self.should_stop)
 
         results = collect_search_results(page, code)
         if results:
@@ -342,14 +345,14 @@ class AvfanScraper:
     def ensure_login_state(self, page):
         if self.login_state_checked:
             return
-        ensure_logged_in_on_home(page, self.headless)
+        ensure_logged_in_on_home(page, self.headless, should_stop=self.should_stop)
         self.login_state_checked = True
 
     def wait_before_first_search(self, page):
         if not self.cooldown_before_search or self.cooldown_used:
             return
         self.cooldown_used = True
-        page.wait_for_timeout(SEARCH_COOLDOWN_MS)
+        _wait_with_stop_checks(page, SEARCH_COOLDOWN_MS, self.should_stop)
 
 
 def import_sync_playwright():
@@ -375,45 +378,29 @@ def accept_age_gate_if_needed(page):
             continue
 
 
-def wait_for_security_verification_if_needed(page, headless):
+def _raise_if_stop_requested(should_stop):
+    if callable(should_stop) and should_stop():
+        raise EnrichmentStopRequested('补全任务已请求停止。')
+
+
+def _wait_with_stop_checks(page, timeout_ms, should_stop=None, interval_ms=1000):
+    deadline = time.monotonic() + max(0, int(timeout_ms or 0)) / 1000
+    while True:
+        _raise_if_stop_requested(should_stop)
+        remaining_ms = int((deadline - time.monotonic()) * 1000)
+        if remaining_ms <= 0:
+            return
+        page.wait_for_timeout(min(max(1, int(interval_ms)), remaining_ms))
+
+
+def wait_for_security_verification_if_needed(page, headless, should_stop=None):
     if not is_security_verification_page(page):
         return
-
-    if headless:
-        raise RuntimeError(
-            'AVFan 出现 Cloudflare 真人验证。请重新点击“补全信息”，勾选“显示浏览器窗口”，'
-            '在弹出的浏览器中手动完成验证；如果页面显示 Verification failed，请刷新页面后再验证。'
-        )
-
-    try:
-        page.wait_for_function(
-            """
-            () => {
-                const text = (document.body?.innerText || '').toLowerCase();
-                const title = (document.title || '').toLowerCase();
-                const combined = `${title}\\n${text}`;
-                const markers = [
-                    'security verification',
-                    'please complete the captcha',
-                    'verification failed',
-                    'cloudflare',
-                    'captcha',
-                    '请验证您是真人'
-                ];
-                const hasMarker = markers.some((marker) => combined.includes(marker));
-                const hasChallengeFrame = Boolean(
-                    document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
-                    document.querySelector('input[name="cf-turnstile-response"]') ||
-                    document.querySelector('[class*="cf-turnstile"]')
-                );
-                return !hasMarker && !hasChallengeFrame;
-            }
-            """,
-            timeout=get_operation_timeout_milliseconds('manual_verification'),
-        )
-        wait_for_page_ready(page)
-    except Exception as exc:
-        raise RuntimeError('等待真人验证超时，请刷新验证页面，通过后重新点击“补全信息”。') from exc
+    _raise_if_stop_requested(should_stop)
+    raise HumanVerificationRequiredError(
+        '检测到 AVFan 人机验证，已停止当前补全任务和后续任务。'
+        '请先手动完成验证，再重新点击“补全信息”继续。'
+    )
 
 
 def is_security_verification_page(page):
@@ -453,7 +440,7 @@ def is_security_verification_page(page):
     return False
 
 
-def wait_for_manual_login_if_needed(page, headless):
+def wait_for_manual_login_if_needed(page, headless, should_stop=None):
     if not is_login_page(page):
         return
 
@@ -463,21 +450,13 @@ def wait_for_manual_login_if_needed(page, headless):
             '在弹出的浏览器中完成登录后再继续补全。'
         )
 
-    try:
-        page.wait_for_function(
-            """
-            () => {
-                const path = location.pathname.toLowerCase();
-                if (path.includes('sign_in') || path.includes('login')) return false;
-                const passwordInput = document.querySelector('input[type="password"]');
-                return !passwordInput;
-            }
-            """,
-            timeout=get_operation_timeout_milliseconds('manual_login'),
-        )
-        wait_for_page_ready(page)
-    except Exception as exc:
-        raise RuntimeError('等待登录超时，请重新点击“补全信息”并完成登录。') from exc
+    deadline = time.monotonic() + get_operation_timeout_milliseconds('manual_login') / 1000
+    while is_login_page(page):
+        _raise_if_stop_requested(should_stop)
+        if time.monotonic() >= deadline:
+            raise RuntimeError('等待登录超时，请重新点击“补全信息”并完成登录。')
+        page.wait_for_timeout(1000)
+    wait_for_page_ready(page, should_stop)
 
 
 def is_login_page(page):
@@ -491,7 +470,8 @@ def is_login_page(page):
         return False
 
 
-def wait_for_page_ready(page):
+def wait_for_page_ready(page, should_stop=None):
+    _raise_if_stop_requested(should_stop)
     try:
         page.wait_for_load_state('networkidle', timeout=12000)
     except Exception:
@@ -503,7 +483,7 @@ def wait_for_page_ready(page):
         )
     except Exception:
         pass
-    page.wait_for_timeout(600)
+    _wait_with_stop_checks(page, 600, should_stop, interval_ms=200)
 
 
 def can_search_from_current_page(page):
@@ -755,13 +735,3 @@ def extract_movie_id(url):
 
 def normalize_code(value):
     return compact_video_code(value)
-
-
-def wait_for_security_verification_if_needed(page, headless):
-    if not is_security_verification_page(page):
-        return
-
-    raise HumanVerificationRequiredError(
-        '检测到 AVFan 人机验证，已停止当前补全任务和后续任务。'
-        '请先手动完成验证，再重新点击“补全信息”继续。'
-    )

@@ -6,7 +6,7 @@ from app.core.enrichment_targets import ACTOR_LIBRARY_TARGET, CODE_PREFIX_LIBRAR
 from app.core.runtime_config import get_avfan_base_url
 from app.core.supplement_task_state import SUPPLEMENT_MODE_ACTORS_ONLY, build_supplement_candidate
 from app.scraper.avfan_scraper import AvfanScraper
-from app.scraper.exceptions import HumanVerificationRequiredError
+from app.scraper.exceptions import EnrichmentStopRequested, HumanVerificationRequiredError
 from app.services.enrichment import start_progress_tracker
 from app.services.library import CodePrefixLibrary
 
@@ -73,8 +73,8 @@ class _SupplementBaseService:
         planned_items=None,
     ):
         self.database = database
-        self.scraper = scraper or AvfanScraper(headless=not show_browser)
         self.should_stop = should_stop or (lambda: False)
+        self.scraper = scraper or AvfanScraper(headless=not show_browser, should_stop=self.should_stop)
         self.progress_tracker = progress_tracker
         self.logger = logger
         self.filter_settings = filter_settings
@@ -85,6 +85,10 @@ class _SupplementBaseService:
             if str((item or {}).get('plan_id', '') or '').strip()
         }
         self.running_plan_id = next(iter(planned_plan_ids), '') if len(planned_plan_ids) == 1 else ''
+
+    def _log(self, level, message, **fields):
+        if self.logger is not None:
+            self.logger.log(level, message, service='supplement_enrichment', **fields)
 
     @staticmethod
     def _unique_planned_values(planned_items, key_name):
@@ -329,6 +333,7 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                     return result
                 code = row.get('code', '')
                 try:
+                    self._log('INFO', '补充任务开始处理视频', code=code, plan_id=self.running_plan_id)
                     info = self._fetch_movie_info(row)
                     if not info.get('found'):
                         batch_terminal_rows.append((row, NO_SEARCH_RESULTS_STATUS, info.get('error', '')))
@@ -346,6 +351,49 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                             batch_successful_rows.append(merged_row)
                             success_count += 1
                             results.append({'code': code, 'status': 'ok'})
+                    self._log('INFO', '补充任务完成处理视频', code=code, found=bool(info.get('found')))
+                except EnrichmentStopRequested as exc:
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_processed_videos_for_supplement,
+                    )
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        remaining_loader,
+                        has_more_loader,
+                    )
+                    result = self._result(
+                        limit, results, success_count, failed_count, remaining_count,
+                        stopped=True, message=str(exc),
+                    )
+                    result['has_more_pending'] = has_more_pending
+                    self._finish_progress(self.stop_message, stopped=True)
+                    self._log('WARNING', '补充任务在浏览器等待期间停止', code=code, error=str(exc))
+                    return result
+                except EnrichmentStopRequested as exc:
+                    batch_updated_rows.extend(updated_rows)
+                    batch_successful_rows.extend(successful_rows)
+                    batch_terminal_rows.extend(terminal_rows)
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_code_prefix_movies_for_supplement,
+                    )
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self._remaining_video_count,
+                        lambda: self._candidate_prefix_batches(1),
+                    )
+                    result = self._result(
+                        limit, results, success_count, failed_count, remaining_count,
+                        processed_count=processed_count, stopped=True, message=str(exc),
+                    )
+                    result['has_more_pending'] = has_more_pending
+                    self._finish_progress(self.stop_message, stopped=True)
+                    return result
                 except HumanVerificationRequiredError as exc:
                     batch_terminal_rows.append((row, FAILED_STATUS, str(exc)))
                     self._persist_batch_updates(
@@ -376,6 +424,7 @@ class VideoSupplementEnrichmentService(_SupplementBaseService):
                     self._finish_progress(str(exc), stopped=True)
                     return result
                 except Exception as exc:
+                    self._log('ERROR', '补充任务处理视频失败', code=code, error=str(exc))
                     batch_terminal_rows.append((row, FAILED_STATUS, str(exc)))
                     failed_count += 1
                     results.append({'code': code, 'status': 'failed', 'error': str(exc)})
@@ -474,6 +523,28 @@ class CodePrefixSupplementEnrichmentService(_SupplementBaseService):
                             terminal_rows.append((row, NO_SEARCH_RESULTS_STATUS, info.get('error', '')))
                             failed_count += 1
                         self._update_progress(processed_count, success_count, failed_count, code)
+                except EnrichmentStopRequested as exc:
+                    batch_updated_rows.extend(updated_rows)
+                    batch_successful_rows.extend(successful_rows)
+                    batch_terminal_rows.extend(terminal_rows)
+                    self._persist_batch_updates(
+                        batch_updated_rows,
+                        batch_successful_rows,
+                        batch_terminal_rows,
+                        self.database.bulk_update_actor_movies_for_supplement,
+                    )
+                    remaining_count, has_more_pending = self._resolve_remaining_state(
+                        estimate_remaining,
+                        self._remaining_video_count,
+                        lambda: self._candidate_actor_batches(1),
+                    )
+                    result = self._result(
+                        limit, results, success_count, failed_count, remaining_count,
+                        processed_count=processed_count, stopped=True, message=str(exc),
+                    )
+                    result['has_more_pending'] = has_more_pending
+                    self._finish_progress(self.stop_message, stopped=True)
+                    return result
                 except HumanVerificationRequiredError as exc:
                     batch_updated_rows.extend(updated_rows)
                     batch_successful_rows.extend(successful_rows)

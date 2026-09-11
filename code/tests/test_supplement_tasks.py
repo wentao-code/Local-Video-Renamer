@@ -259,6 +259,29 @@ class SupplementTaskDatabaseTest(unittest.TestCase):
             self.assertEqual(progress['failed_count'], 1)
             self.assertEqual(progress['running_count'], 0)
 
+    def test_video_supplement_claim_does_not_split_a_batch_by_supplement_mode(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = VideoDatabase(Path(temp_dir) / 'video_database.db')
+            plan = db.create_enrichment_batch_plan(
+                'video',
+                'video_library',
+                SUPPLEMENT_TASK_SOURCE,
+                batch_limit=25,
+                batch_count_limit=1,
+                candidates=[
+                    {
+                        'code': f'AAA-{index:03d}',
+                        'supplement_mode': 'actors_only' if index <= 17 else 'full',
+                    }
+                    for index in range(1, 26)
+                ],
+            )
+
+            claimed = db.claim_enrichment_batch_items(plan['plan_id'], 'video', 25)
+
+            self.assertEqual([row['sequence_index'] for row in claimed], list(range(1, 26)))
+            self.assertEqual(len(claimed), 25)
+
     def test_recover_running_enrichment_plan_releases_only_running_items(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = VideoDatabase(Path(temp_dir) / 'video_database.db')

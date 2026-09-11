@@ -824,6 +824,26 @@ class MainWindowStartupTest(unittest.TestCase):
         ])
         self.assertTrue(stopped)
 
+    def test_snapshot_refresh_child_accepts_non_mapping_result(self):
+        completed = []
+        stub = SimpleNamespace(
+            snapshot_refresh_batch={
+                'batch_id': 'batch-1',
+                'total': 1,
+                'pending': 1,
+                'completed': completed,
+                'failed': [],
+            },
+            _finish_snapshot_refresh_batch_if_ready=lambda: None,
+        )
+
+        main_window.VidNormApp._on_snapshot_refresh_child_finished(
+            stub, 'batch-1', 'video_category', '已刷新',
+        )
+
+        self.assertEqual(completed, [{'key': 'video_category', 'result': {'value': '已刷新'}}])
+        self.assertEqual(stub.snapshot_refresh_batch['pending'], 0)
+
     def test_snapshot_refresh_finished_records_88_hour_history(self):
         recorded = []
         snapshot_status = SimpleNamespace(text='')
@@ -1471,6 +1491,57 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertEqual(scheduled, [])
         self.assertEqual(stopped, ['分批补全已达到设定批次数。'])
+
+    def test_batch_due_while_another_task_runs_is_retried(self):
+        timer_starts = []
+        started = []
+
+        class _Timer:
+            def stop(self):
+                return None
+
+            def start(self, interval_ms):
+                timer_starts.append(interval_ms)
+
+        stub = SimpleNamespace(
+            batch_enrichment_active=True,
+            batch_enrichment_config={'task_kind': 'single'},
+            batch_timer=_Timer(),
+            batch_countdown_timer=_Timer(),
+            batch_next_run_at='due',
+            batch_countdown_label=SimpleNamespace(setText=lambda _value: None),
+            enrichment_thread=object(),
+            enrichment_task_queued=True,
+            start_enrichment=lambda *args, **kwargs: started.append(True),
+        )
+
+        main_window.VidNormApp.run_next_batch_enrichment(stub)
+
+        self.assertEqual(timer_starts, [1000])
+        self.assertEqual(started, [])
+
+    def test_queue_idle_event_resumes_deferred_batch_immediately(self):
+        scheduled = []
+        started = []
+        stub = SimpleNamespace(
+            task_queue=SimpleNamespace(
+                records=lambda: [SimpleNamespace(status='已完成')],
+                is_all_done=lambda: True,
+            ),
+            _batch_enrichment_waiting_for_queue=True,
+            run_next_batch_enrichment=lambda: started.append(True),
+            _update_task_queue_indicator=lambda _is_done: None,
+        )
+
+        with patch(
+            'app.gui.main_window.QTimer.singleShot',
+            lambda _delay, callback: scheduled.append(callback),
+        ):
+            main_window.VidNormApp.refresh_task_queue_indicator(stub)
+
+        self.assertEqual(len(scheduled), 1)
+        scheduled[0]()
+        self.assertEqual(started, [True])
 
     def test_batch_execution_creates_one_plan_for_all_configured_batches(self):
         plan_calls = []

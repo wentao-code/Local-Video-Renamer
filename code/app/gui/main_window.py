@@ -337,6 +337,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self._queued_enrichment_batch_plan_payload = None
         self._queued_enrichment_batch_plan_state = None
         self._active_enrichment_batch_plan_state = None
+        self._batch_enrichment_waiting_for_queue = False
         self._queued_gui_task_runners = {}
         self.runtime_mode = load_runtime_mode()
         self.background_refresh_enabled = load_background_refresh_enabled()
@@ -1380,8 +1381,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         if not self.batch_enrichment_active or self.batch_enrichment_config is None:
             return
         if self.enrichment_thread is not None or self.enrichment_task_queued:
+            # The batch timer is single-shot. Keep the due batch alive while the
+            # queue is occupied, otherwise this callback would be the last wake-up.
+            self._batch_enrichment_waiting_for_queue = True
+            self.batch_timer.start(1000)
             return
 
+        self._batch_enrichment_waiting_for_queue = False
         self.batch_timer.stop()
         self.batch_countdown_timer.stop()
         self.batch_next_run_at = None
@@ -1551,6 +1557,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.batch_next_run_at = None
         self.batch_enrichment_active = False
         self.batch_enrichment_config = None
+        self._batch_enrichment_waiting_for_queue = False
         self._active_enrichment_batch_plan_state = None
         self.update_enrichment_controls()
         self.status_label.setText(message)
@@ -2665,7 +2672,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         batch = getattr(self, 'snapshot_refresh_batch', None)
         if not batch or batch.get('batch_id') != batch_id:
             return
-        batch['completed'].append({'key': key, 'result': dict(result or {})})
+        normalized_result = (
+            dict(result)
+            if isinstance(result, dict)
+            else ({'value': str(result)} if result is not None else {})
+        )
+        batch['completed'].append({'key': key, 'result': normalized_result})
         batch['pending'] = max(0, int(batch.get('pending', 0) or 0) - 1)
         self._finish_snapshot_refresh_batch_if_ready()
 
@@ -3244,6 +3256,13 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         reconcile = getattr(self, '_reconcile_snapshot_refresh_auto_batch', None)
         if callable(reconcile):
             reconcile()
+        if getattr(self, '_batch_enrichment_waiting_for_queue', False):
+            has_running_task = any(
+                record.status == TASK_STATUS_RUNNING
+                for record in queue.records()
+            )
+            if not has_running_task:
+                QTimer.singleShot(0, self.run_next_batch_enrichment)
         self._update_task_queue_indicator(queue.is_all_done())
 
     def _update_task_queue_indicator(self, is_done=False):

@@ -1620,11 +1620,14 @@ class VideoEntityRepositoryMixin:
         pending_exclusion_sql = '' if include_queued else '''
               AND NOT EXISTS (
                     SELECT 1 FROM pending_video_avfan AS pending
-                    JOIN enrichment_batch_plans AS pending_plan
+                    LEFT JOIN enrichment_batch_plans AS pending_plan
                       ON pending_plan.plan_id = pending.plan_id
                     WHERE pending.code = source.code
                       AND pending.status IN ('pending', 'failed')
-                      AND pending_plan.status IN ('selected', 'running', 'paused')
+                      AND (
+                            pending_plan.plan_id IS NULL
+                            OR pending_plan.status IN ('selected', 'running', 'paused')
+                      )
               )'''
         normalized_running_plan_id = str(running_plan_id or '').strip()
         effective_actor_sql = "LOWER(TRIM(COALESCE(NULLIF(TRIM(source.javtxt_actors_raw), ''), source.javtxt_actors, '')))"

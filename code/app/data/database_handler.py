@@ -1649,7 +1649,7 @@ class VideoDatabase(
                     javtxt_release_date = '',
                     javtxt_enrichment_status = ?,
                     javtxt_enrichment_error = '',
-                    javtxt_enriched_at = NULL
+                    javtxt_enriched_at = ''
                 WHERE code IN ({placeholders})
                 ''',
                 (UNENRICHED_STATUS, *chunk),
@@ -1737,7 +1737,7 @@ class VideoDatabase(
                     javtxt_release_date = '',
                     javtxt_enrichment_status = ?,
                     javtxt_enrichment_error = '',
-                    javtxt_enriched_at = NULL
+                    javtxt_enriched_at = ''
                 WHERE code IN ({placeholders})
                 ''',
                 (UNENRICHED_STATUS, *chunk),
@@ -6969,28 +6969,6 @@ class VideoDatabase(
             if normalized_limit <= 0:
                 conn.commit()
                 return []
-            mode_filter = ''
-            mode_params = []
-            if str(plan_row[4] or '').strip() == SUPPLEMENT_TASK_SOURCE:
-                mode_row = cursor.execute(
-                    f'''
-                    SELECT supplement_mode
-                    FROM {table_name}
-                    WHERE plan_id = ?
-                      AND (status = 'pending' OR (status = 'failed' AND attempt_count < ?))
-                    ORDER BY CASE supplement_mode
-                               WHEN 'actors_only' THEN 0
-                               WHEN 'full' THEN 1
-                               ELSE 2
-                             END,
-                             sequence_index ASC
-                    LIMIT 1
-                    ''',
-                    (normalized_plan_id, self._ENRICHMENT_ITEM_MAX_ATTEMPTS),
-                ).fetchone()
-                if mode_row is not None:
-                    mode_filter = ' AND supplement_mode = ?'
-                    mode_params.append(str(mode_row[0] or '').strip())
             cursor.execute(
                 f'''
                 SELECT plan_id, sequence_index, target_key, code, prefix, actor_name,
@@ -6998,11 +6976,11 @@ class VideoDatabase(
                        attempt_count, claimed_at, updated_at
                 FROM {table_name}
                 WHERE plan_id = ?
-                  AND (status = 'pending' OR (status = 'failed' AND attempt_count < ?)){mode_filter}
+                  AND (status = 'pending' OR (status = 'failed' AND attempt_count < ?))
                 ORDER BY sequence_index ASC
                 LIMIT ?
                 ''',
-                (normalized_plan_id, self._ENRICHMENT_ITEM_MAX_ATTEMPTS, *mode_params, normalized_limit),
+                (normalized_plan_id, self._ENRICHMENT_ITEM_MAX_ATTEMPTS, normalized_limit),
             )
             rows = cursor.fetchall()
             claimed = []
@@ -7960,7 +7938,7 @@ class VideoDatabase(
                         supplement_enriched_at = '',
                         javtxt_enrichment_status = ?,
                         javtxt_enrichment_error = '',
-                        javtxt_enriched_at = NULL
+                        javtxt_enriched_at = ''
                     WHERE code IN ({placeholders})
                     ''',
                     [UNENRICHED_STATUS, UNENRICHED_STATUS, *normalized_codes],
@@ -8014,7 +7992,7 @@ class VideoDatabase(
                         avfan_enriched_at = NULL,
                         javtxt_enrichment_status = ?,
                         javtxt_enrichment_error = '',
-                        javtxt_enriched_at = NULL
+                        javtxt_enriched_at = ''
                     WHERE code IN ({placeholders})
                     ''',
                     [
@@ -10705,7 +10683,7 @@ class VideoDatabase(
                 javtxt_tags = '',
                 javtxt_enrichment_status = ?,
                 javtxt_enrichment_error = '',
-                javtxt_enriched_at = NULL
+                javtxt_enriched_at = ''
             WHERE code = ?
             ''',
             (UNENRICHED_STATUS, normalized_code),

@@ -151,3 +151,27 @@ def test_sql_supplement_candidates_exclude_pending_rows():
 
             assert database.list_sql_supplement_candidates('video', 10) == []
             assert database.list_sql_supplement_candidates('video', 10, include_queued=True)[0]['code'] == 'ABC-001'
+
+
+def test_clearing_processed_javtxt_state_uses_empty_timestamp_for_video_entities():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        database = VideoDatabase(Path(temp_dir) / 'video_database.db')
+        with database._connect() as connection:
+            connection.execute(
+                '''INSERT INTO video_entities(
+                    code, javtxt_movie_id, javtxt_enrichment_status, javtxt_enriched_at
+                ) VALUES (?, ?, ?, ?)''',
+                ('ABC-001', '123', ENRICHED_STATUS, '2026-09-11 10:55:00'),
+            )
+            cursor = connection.cursor()
+
+            database._clear_processed_video_javtxt_codes(cursor, ['ABC-001'])
+            connection.commit()
+
+            row = connection.execute(
+                '''SELECT javtxt_movie_id, javtxt_enrichment_status, javtxt_enriched_at
+                   FROM video_entities WHERE code = ?''',
+                ('ABC-001',),
+            ).fetchone()
+
+        assert row == ('', UNENRICHED_STATUS, '')

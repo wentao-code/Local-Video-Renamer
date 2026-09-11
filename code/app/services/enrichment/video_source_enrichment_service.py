@@ -9,7 +9,7 @@ from app.core.enrichment_status import ENRICHED_STATUS, FAILED_STATUS, NO_SEARCH
 from app.core.enrichment_targets import VIDEO_LIBRARY_TARGET
 from app.core.second_source_actor_text import normalize_second_source_actor_text
 from app.scraper.avfan_scraper import AvfanScraper
-from app.scraper.exceptions import HumanVerificationRequiredError
+from app.scraper.exceptions import EnrichmentStopRequested, HumanVerificationRequiredError
 from app.scraper.javtxt_scraper import JavtxtScraper
 from app.services.enrichment import start_progress_tracker
 
@@ -51,6 +51,7 @@ class VideoSourceEnrichmentService:
             cooldown_before_search=cooldown_before_search,
             minimize_browser_window=self.minimize_browser_window,
             profile_dir=self.profile_dir or None,
+            should_stop=self.should_stop,
         )
 
     def enrich_next_videos(self, limit):
@@ -186,6 +187,17 @@ class VideoSourceEnrichmentService:
                             status=resolved_status,
                             error=error_message,
                         )
+                except EnrichmentStopRequested as exc:
+                    error_message = str(exc)
+                    stopped = True
+                    self._log(
+                        'WARNING',
+                        '视频补全在浏览器等待期间停止',
+                        code=code,
+                        source_key=self.source_key,
+                        error=error_message,
+                    )
+                    break
                 except HumanVerificationRequiredError as exc:
                     error_message = str(exc)
                     self.database.mark_video_enrichment_failed(
