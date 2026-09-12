@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "status": "completed",
+  "step_order": [
+    "first",
+    "second"
+  ],
+  "steps": {
+    "first": {
+      "key": "first",
+      "status": "completed",
+      "attempts": 2,
+      "started_at": "2026-09-05 20:32:40",
+      "last_error": "",
+      "completed_at": "2026-09-05 20:32:40"
+    },
+    "second": {
+      "key": "second",
+      "status": "completed",
+      "attempts": 1,
+      "started_at": "2026-09-05 20:32:40",
+      "completed_at": "2026-09-05 20:32:40",
+      "last_error": ""
+    }
+  },
+  "updated_at": "2026-09-05 20:32:40"
+}

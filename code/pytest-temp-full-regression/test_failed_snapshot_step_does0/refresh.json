@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "status": "partial",
+  "step_order": [
+    "first",
+    "second"
+  ],
+  "steps": {
+    "first": {
+      "key": "first",
+      "status": "failed",
+      "attempts": 1,
+      "started_at": "2026-09-05 22:59:00",
+      "last_error": "network down"
+    },
+    "second": {
+      "key": "second",
+      "status": "completed",
+      "attempts": 1,
+      "started_at": "2026-09-05 22:59:00",
+      "completed_at": "2026-09-05 22:59:00",
+      "last_error": ""
+    }
+  },
+  "updated_at": "2026-09-05 22:59:00"
+}
