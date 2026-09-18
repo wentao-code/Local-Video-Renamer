@@ -278,6 +278,23 @@ class SnapshotRefreshWorker(QObject):
         self.finished.emit(dict(result or {}))
 
 
+class EnrichmentProgressWorker(QObject):
+    finished = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(self, backend_client):
+        super().__init__()
+        self.backend_client = backend_client
+
+    def run(self):
+        try:
+            progress = self.backend_client.get_enrichment_progress()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(dict(progress or {}))
+
+
 class VidNormApp(QWidget, AsyncTaskHostMixin):
     def __init__(self):
         super().__init__()
@@ -304,6 +321,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.enrichment_progress_timer = QTimer(self)
         self.enrichment_progress_timer.setInterval(1000)
         self.enrichment_progress_timer.timeout.connect(self.refresh_enrichment_progress)
+        self.enrichment_progress_worker = None
+        self.enrichment_progress_runner = None
         self.network_guard_service = NetworkGuardService()
         self.network_guard_timer = QTimer(self)
         self.network_guard_timer.setInterval(5000)
@@ -2085,10 +2104,34 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
 
     def refresh_enrichment_progress(self):
-        try:
-            progress = self.backend_client.get_enrichment_progress()
-        except Exception:
+        if self.enrichment_progress_runner is not None:
             return
+
+        worker = EnrichmentProgressWorker(self.backend_client)
+
+        def handle_finished(progress):
+            self._apply_enrichment_progress(progress)
+
+        def handle_failed(_error_message):
+            return
+
+        def cleanup():
+            self.enrichment_progress_worker = None
+            self.enrichment_progress_runner = None
+
+        runner = GuiTaskRunner(
+            self,
+            worker,
+            handle_finished,
+            handle_failed,
+            cleanup_handler=cleanup,
+        )
+        self.enrichment_progress_worker = worker
+        self.enrichment_progress_runner = runner
+        runner.start()
+
+    def _apply_enrichment_progress(self, progress):
+        progress = dict(progress or {})
         if progress.get('task_kind') == 'combo':
             self.refresh_combo_enrichment_progress(progress)
             return
