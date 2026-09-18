@@ -4,7 +4,7 @@
 
 **Goal:** Configure every repository pytest run to use one disposable temporary directory and remove existing test-only artifacts and caches.
 
-**Architecture:** Add a repository-root `pytest.ini` so pytest behaves consistently whether invoked from the repository root or `code`. The configuration will point test discovery and imports at `code/tests` and `code`, and set pytest's base temporary directory to `code/.pytest-tmp`. Extend `.gitignore` for the unified directory and disposable caches; clean only known test artifacts after verification.
+**Architecture:** Add a repository-root `pytest.ini` so pytest behaves consistently whether invoked from the repository root or `code`. The configuration will point test discovery and imports at `code/tests` and `code`, while `code/conftest.py` resolves pytest's base temporary directory to an absolute path below `code/.pytest-tmp` regardless of the invocation directory. The cache directory also remains below that directory. Extend `.gitignore` for the unified directory and disposable caches; clean only known test artifacts after verification.
 
 **Tech Stack:** Python 3.13, pytest 9.1.1, PowerShell 7, Git.
 
@@ -13,7 +13,7 @@
 - Use `D:\Anaconda3Data\envs_dirs\video_env\python.exe` for Python and pytest commands.
 - Preserve existing uncommitted changes in `code/app/gui/main_window.py` and `code/tests/test_gui_task_runner.py`.
 - Do not delete `runtime/`, `user_data/`, source files, documentation, or databases.
-- Use `code/.pytest-tmp/` for pytest base temporary data.
+- Use `code/.pytest-tmp/` for pytest base temporary data and `code/.pytest-tmp/.pytest_cache/` for pytest's cache.
 
 ### Task 1: Add the pytest configuration regression test
 
@@ -35,6 +35,10 @@ def test_pytest_uses_the_repository_test_temp_directory(pytestconfig):
     configured_options = pytestconfig.getini("addopts")
 
     assert "--basetemp=code/.pytest-tmp" in configured_options
+    configured_base_temp = Path(pytestconfig.getoption("basetemp")).resolve()
+    expected_base_temp = project_root / "code" / ".pytest-tmp"
+    assert pytestconfig.getini("cache_dir") == "code/.pytest-tmp/.pytest_cache"
+    assert configured_base_temp == expected_base_temp
     assert (project_root / "pytest.ini").is_file()
 ```
 
@@ -52,6 +56,7 @@ Expected: FAIL because the repository has no `pytest.ini` and pytest's effective
 
 **Files:**
 - Create: `pytest.ini`
+- Create: `code/conftest.py`
 - Modify: `.gitignore`
 
 **Interfaces:**
@@ -65,9 +70,23 @@ Expected: FAIL because the repository has no `pytest.ini` and pytest's effective
 testpaths = code/tests
 pythonpath = code
 addopts = --basetemp=code/.pytest-tmp
+cache_dir = code/.pytest-tmp/.pytest_cache
 ```
 
-- [ ] **Step 2: Add explicit ignore rules**
+- [ ] **Step 2: Resolve the base directory independent of the current directory**
+
+Create `code/conftest.py`:
+
+```python
+from pathlib import Path
+
+
+def pytest_configure(config):
+    project_root = Path(__file__).resolve().parent.parent
+    config.option.basetemp = str(project_root / "code" / ".pytest-tmp")
+```
+
+- [ ] **Step 3: Add explicit ignore rules**
 
 Append these rules to `.gitignore`:
 
@@ -78,7 +97,7 @@ Append these rules to `.gitignore`:
 /code/.ruff_cache/
 ```
 
-- [ ] **Step 3: Run the focused test to verify it passes**
+- [ ] **Step 4: Run the focused test to verify it passes**
 
 Run from `code`:
 
@@ -93,7 +112,7 @@ Expected: PASS.
 **Files:**
 - Delete: existing `code/pytest-temp-*` directories
 - Delete: existing `code/pytest-*.out.log` and `code/pytest-*.err.log` files
-- Delete: `code/.pytest-tmp/`, `code/.pytest_cache/`, repository-root `.pytest_cache/`, and `code/.ruff_cache/` when present
+- Delete: `code/.pytest-tmp/`, repository-root `.pytest_cache/`, and `code/.ruff_cache/` when present; delete legacy `code/.pytest_cache/` only if permissions allow
 
 **Interfaces:**
 - Consumes: the artifact paths identified during repository inventory.
@@ -137,12 +156,12 @@ Run from the repository root:
 git status --short
 ```
 
-Expected: the focused test passes; no `code/pytest-temp-*` or `code/pytest-*.log` paths remain; existing user changes remain visible in `git status`.
+Expected: the focused test passes; no `code/pytest-temp-*` or `code/pytest-*.log` paths remain; existing user changes remain visible in `git status`. A legacy `code/.pytest_cache` may remain only when Windows permissions deny access.
 
 - [ ] **Step 4: Commit the implementation**
 
 ```powershell
-git add pytest.ini .gitignore code/tests/test_pytest_configuration.py
+git add pytest.ini .gitignore code/conftest.py code/tests/test_pytest_configuration.py
 git commit -m "test: centralize pytest temporary artifacts"
 ```
 

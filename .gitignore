@@ -26,3 +26,8 @@ __pycache__/
 *.db-shm
 *.db-wal
 *.log
+
+# Unified pytest temporary artifacts and local lint cache
+/code/.pytest-tmp/
+/code/.pytest_cache/
+/code/.ruff_cache/
