@@ -3,6 +3,7 @@ import sqlite3
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from app.core.operation_timeout_settings import get_operation_timeout_seconds
 from app.core.app_logging import append_jsonl_log
@@ -134,6 +135,136 @@ class QueenLibraryService:
             )
             self._ensure_column(cursor, 'queen_crawl_queue_log', 'status', "TEXT DEFAULT ''")
             self._ensure_column(cursor, 'queen_crawl_queue_log', 'hand_mark', 'INTEGER DEFAULT 0')
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_authors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    author_name TEXT NOT NULL UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_author_sources (
+                    author_id INTEGER NOT NULL,
+                    queen_name TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(author_id, queen_name),
+                    FOREIGN KEY(author_id) REFERENCES queen_authors(id) ON DELETE CASCADE
+                )
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE UNIQUE INDEX IF NOT EXISTS queen_authors_name_nocase
+                ON queen_authors(author_name COLLATE NOCASE)
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_author_videos (
+                    author_id INTEGER NOT NULL,
+                    video_id INTEGER NOT NULL,
+                    matched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(author_id, video_id),
+                    FOREIGN KEY(author_id) REFERENCES queen_authors(id) ON DELETE CASCADE,
+                    FOREIGN KEY(video_id) REFERENCES queen_videos(id) ON DELETE CASCADE
+                )
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_author_match_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    author_id INTEGER NOT NULL UNIQUE,
+                    last_video_id INTEGER DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    total_count INTEGER DEFAULT 0,
+                    processed_count INTEGER DEFAULT 0,
+                    matched_count INTEGER DEFAULT 0,
+                    error TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    FOREIGN KEY(author_id) REFERENCES queen_authors(id) ON DELETE CASCADE
+                )
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_crawl_staging (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id TEXT NOT NULL,
+                    keyword TEXT NOT NULL,
+                    source_url TEXT DEFAULT '',
+                    raw_title TEXT NOT NULL,
+                    queen_name TEXT NOT NULL,
+                    video_title TEXT NOT NULL,
+                    detail_url TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    route TEXT DEFAULT '',
+                    error TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(batch_id, queen_name, video_title)
+                )
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_author_video_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    raw_title TEXT NOT NULL,
+                    queen_name TEXT NOT NULL,
+                    video_title TEXT NOT NULL,
+                    source_url TEXT DEFAULT '',
+                    detail_url TEXT DEFAULT '',
+                    content_type TEXT DEFAULT '',
+                    content_level TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(queen_name, video_title)
+                )
+                '''
+            )
+            cursor.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS queen_author_video_links (
+                    author_id INTEGER NOT NULL,
+                    record_id INTEGER NOT NULL,
+                    matched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(author_id, record_id),
+                    FOREIGN KEY(author_id) REFERENCES queen_authors(id) ON DELETE CASCADE,
+                    FOREIGN KEY(record_id) REFERENCES queen_author_video_records(id) ON DELETE CASCADE
+                )
+                '''
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_queen_author_videos_author ON queen_author_videos(author_id)'
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_queen_author_videos_video ON queen_author_videos(video_id)'
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_queen_author_match_jobs_status ON queen_author_match_jobs(status)'
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_queen_crawl_staging_batch ON queen_crawl_staging(batch_id, status)'
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_queen_author_video_links_author ON queen_author_video_links(author_id)'
+            )
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS idx_queen_author_video_links_record ON queen_author_video_links(record_id)'
+            )
+            cursor.execute(
+                '''
+                INSERT INTO queen_author_match_jobs(author_id, total_count)
+                SELECT authors.id, (SELECT COUNT(*) FROM queen_videos)
+                FROM queen_authors AS authors
+                LEFT JOIN queen_author_match_jobs AS jobs ON jobs.author_id = authors.id
+                WHERE jobs.id IS NULL
+                '''
+            )
             self._migrate_legacy_domain_values(conn)
             conn.commit()
 
@@ -305,10 +436,14 @@ class QueenLibraryService:
         records = list(scraped.get('records', []) or [])
         imported_count = 0
         skipped_count = 0
+        batch_id = uuid4().hex
 
         with self._connect() as conn:
             cursor = conn.cursor()
             keyword_id = self._resolve_keyword_id(cursor, normalized_keyword, save_keyword=save_keyword)
+            author_rows = cursor.execute(
+                'SELECT id, author_name FROM queen_authors ORDER BY id ASC'
+            ).fetchall()
             for record in records:
                 raw_title, detail_url = self._normalize_scraped_record(record)
                 parsed = self.parse_record_title(raw_title)
@@ -316,6 +451,56 @@ class QueenLibraryService:
                     skipped_count += 1
                     continue
                 parsed['queen_name'] = self._resolve_queen_alias_from_connection(conn, parsed['queen_name'])
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO queen_crawl_staging(
+                        batch_id, keyword, source_url, raw_title, queen_name, video_title, detail_url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        batch_id,
+                        normalized_keyword,
+                        source_url,
+                        parsed['raw_title'],
+                        parsed['queen_name'],
+                        parsed['video_title'],
+                        detail_url,
+                    ),
+                )
+                if not cursor.rowcount:
+                    skipped_count += 1
+
+            staged_rows = cursor.execute(
+                '''
+                SELECT id, raw_title, queen_name, video_title, source_url, detail_url
+                FROM queen_crawl_staging
+                WHERE batch_id = ? AND status = 'pending'
+                ORDER BY id ASC
+                ''',
+                (batch_id,),
+            ).fetchall()
+            for staged in staged_rows:
+                matched_authors = [
+                    author
+                    for author in author_rows
+                    if self._raw_title_contains_author(staged['raw_title'], author['author_name'])
+                ]
+                if matched_authors:
+                    stored = self._store_author_first_record(cursor, staged, matched_authors)
+                    route = 'author'
+                    if stored:
+                        imported_count += 1
+                    else:
+                        skipped_count += 1
+                    cursor.execute(
+                        '''
+                        UPDATE queen_crawl_staging
+                        SET status = 'completed', route = ?
+                        WHERE id = ?
+                        ''',
+                        (route, int(staged['id'])),
+                    )
+                    continue
                 try:
                     cursor.execute(
                         '''
@@ -324,25 +509,47 @@ class QueenLibraryService:
                         ''',
                         (
                             keyword_id,
-                            parsed['raw_title'],
-                            parsed['queen_name'],
-                            parsed['video_title'],
-                            source_url,
-                            detail_url,
+                            staged['raw_title'],
+                            staged['queen_name'],
+                            staged['video_title'],
+                            staged['source_url'],
+                            staged['detail_url'],
                         ),
                     )
-                    imported_count += 1
                 except sqlite3.IntegrityError:
-                    if detail_url:
+                    if staged['detail_url']:
                         cursor.execute(
                             '''
                             UPDATE queen_videos
                             SET detail_url = ?
                             WHERE queen_name = ? AND video_title = ? AND COALESCE(detail_url, '') = ''
                             ''',
-                            (detail_url, parsed['queen_name'], parsed['video_title']),
+                            (
+                                staged['detail_url'],
+                                staged['queen_name'],
+                                staged['video_title'],
+                            ),
                         )
                     skipped_count += 1
+                    cursor.execute(
+                        '''
+                        UPDATE queen_crawl_staging
+                        SET status = 'completed', route = 'queen'
+                        WHERE id = ?
+                        ''',
+                        (int(staged['id']),),
+                    )
+                    continue
+                imported_count += 1
+                cursor.execute(
+                    '''
+                    UPDATE queen_crawl_staging
+                    SET status = 'completed', route = 'queen'
+                    WHERE id = ?
+                    ''',
+                    (int(staged['id']),),
+                )
+            cursor.execute('DELETE FROM queen_crawl_staging WHERE batch_id = ?', (batch_id,))
             if keyword_id != 0:
                 cursor.execute(
                     '''
@@ -388,7 +595,537 @@ class QueenLibraryService:
                 ORDER BY videos.queen_name COLLATE NOCASE ASC
                 '''
             ).fetchall()
-        return [dict(row) for row in rows]
+            source_queens = {
+                str(row['queen_name'] or '').strip()
+                for row in conn.execute(
+                    'SELECT DISTINCT queen_name FROM queen_author_sources'
+                ).fetchall()
+                if str(row['queen_name'] or '').strip()
+            }
+            matched_counts = {
+                str(row['queen_name'] or '').strip(): int(row['matched_count'] or 0)
+                for row in conn.execute(
+                    '''
+                    SELECT videos.queen_name, COUNT(DISTINCT videos.id) AS matched_count
+                    FROM queen_author_videos AS matches
+                    JOIN queen_videos AS videos ON videos.id = matches.video_id
+                    GROUP BY videos.queen_name
+                    '''
+                ).fetchall()
+                if str(row['queen_name'] or '').strip()
+            }
+
+        visible_rows = []
+        for row in rows:
+            queen = dict(row)
+            queen_name = str(queen.get('queen_name', '') or '').strip()
+            if queen_name in source_queens:
+                continue
+            if matched_counts.get(queen_name, 0) >= int(queen.get('video_count', 0) or 0):
+                continue
+            visible_rows.append(queen)
+        return visible_rows
+
+    def add_queen_author(self, author_name, queen_name):
+        normalized_author = str(author_name or '').strip()
+        normalized_queen = str(queen_name or '').strip()
+        if not normalized_author:
+            raise ValueError('\u7f3a\u5c11\u4f5c\u8005\u540d\u79f0')
+        if not normalized_queen:
+            raise ValueError('\u7f3a\u5c11\u5973\u738b\u540d\u79f0')
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            author_row = cursor.execute(
+                'SELECT id, author_name FROM queen_authors WHERE author_name COLLATE NOCASE = ?',
+                (normalized_author,),
+            ).fetchone()
+            if author_row is None:
+                cursor.execute(
+                    'INSERT INTO queen_authors(author_name) VALUES (?)',
+                    (normalized_author,),
+                )
+                author_row = cursor.execute(
+                    'SELECT id, author_name FROM queen_authors WHERE id = last_insert_rowid()'
+                ).fetchone()
+            author_id = int(author_row['id'])
+            stored_author_name = str(author_row['author_name'] or '').strip()
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO queen_author_sources(author_id, queen_name)
+                VALUES (?, ?)
+                ''',
+                (author_id, normalized_queen),
+            )
+            job = self._get_or_create_queen_author_match_job(cursor, author_id)
+            source_queens = [
+                str(row['queen_name'] or '').strip()
+                for row in cursor.execute(
+                    '''
+                    SELECT queen_name
+                    FROM queen_author_sources
+                    WHERE author_id = ?
+                    ORDER BY queen_name COLLATE NOCASE ASC
+                    ''',
+                    (author_id,),
+                ).fetchall()
+            ]
+            conn.commit()
+        return {
+            'author_name': stored_author_name,
+            'source_queens': source_queens,
+            'videos': [],
+            'match_job': job,
+        }
+
+    def list_queen_authors(self):
+        with self._connect() as conn:
+            authors = conn.execute(
+                '''
+                SELECT id, author_name, created_at
+                FROM queen_authors
+                ORDER BY author_name COLLATE NOCASE ASC, id ASC
+                '''
+            ).fetchall()
+            source_rows = conn.execute(
+                'SELECT author_id, queen_name FROM queen_author_sources'
+            ).fetchall()
+            match_rows = conn.execute(
+                '''
+                SELECT matches.author_id, videos.queen_name
+                FROM queen_author_videos AS matches
+                JOIN queen_videos AS videos ON videos.id = matches.video_id
+                '''
+            ).fetchall()
+            owned_match_rows = conn.execute(
+                '''
+                SELECT links.author_id, records.queen_name
+                FROM queen_author_video_links AS links
+                JOIN queen_author_video_records AS records ON records.id = links.record_id
+                '''
+            ).fetchall()
+            match_counts = conn.execute(
+                '''
+                SELECT author_id, COUNT(*) AS video_count
+                FROM queen_author_videos
+                GROUP BY author_id
+                '''
+            ).fetchall()
+            owned_match_counts = conn.execute(
+                '''
+                SELECT author_id, COUNT(*) AS video_count
+                FROM queen_author_video_links
+                GROUP BY author_id
+                '''
+            ).fetchall()
+            job_rows = conn.execute(
+                'SELECT * FROM queen_author_match_jobs'
+            ).fetchall()
+            profile_rows = conn.execute(
+                'SELECT queen_name, like_level FROM queen_profiles'
+            ).fetchall()
+
+        source_map = {}
+        for row in source_rows:
+            source_map.setdefault(int(row['author_id']), []).append(str(row['queen_name'] or '').strip())
+        matched_queen_map = {}
+        for row in match_rows:
+            matched_queen_map.setdefault(int(row['author_id']), set()).add(str(row['queen_name'] or '').strip())
+        for row in owned_match_rows:
+            matched_queen_map.setdefault(int(row['author_id']), set()).add(str(row['queen_name'] or '').strip())
+        match_count_map = {int(row['author_id']): int(row['video_count'] or 0) for row in match_counts}
+        for row in owned_match_counts:
+            author_id = int(row['author_id'])
+            match_count_map[author_id] = match_count_map.get(author_id, 0) + int(row['video_count'] or 0)
+        job_map = {int(row['author_id']): self._normalize_author_match_job_row(row) for row in job_rows}
+        profile_map = {
+            str(row['queen_name'] or '').strip(): str(row['like_level'] or '').strip().upper()
+            for row in profile_rows
+            if str(row['queen_name'] or '').strip()
+        }
+        result = []
+        for author in authors:
+            author_id = int(author['id'] or 0)
+            name = str(author['author_name'] or '').strip()
+            matched_queen_names = set(source_map.get(author_id, [])) | matched_queen_map.get(author_id, set())
+            like_level = next(
+                (
+                    level
+                    for level in ('A', 'B', 'C', 'D')
+                    if level in {profile_map.get(queen_name, '') for queen_name in matched_queen_names}
+                ),
+                '',
+            )
+            result.append({
+                **dict(author),
+                'author_name': name,
+                'source_queens': sorted(set(source_map.get(author_id, [])), key=str.casefold),
+                'like_level': like_level,
+                'video_count': match_count_map.get(author_id, 0),
+                'match_job': job_map.get(author_id),
+            })
+        return result
+
+    def get_queen_author_detail(self, author_name):
+        normalized_author = str(author_name or '').strip()
+        if not normalized_author:
+            raise ValueError('\u7f3a\u5c11\u4f5c\u8005\u540d\u79f0')
+        with self._connect() as conn:
+            author = conn.execute(
+                'SELECT id, author_name, created_at FROM queen_authors WHERE author_name = ?',
+                (normalized_author,),
+            ).fetchone()
+            if author is None:
+                author = conn.execute(
+                    'SELECT id, author_name, created_at FROM queen_authors WHERE author_name COLLATE NOCASE = ?',
+                    (normalized_author,),
+                ).fetchone()
+            if author is None:
+                raise ValueError('\u4f5c\u8005\u4e0d\u5b58\u5728')
+            source_rows = conn.execute(
+                '''
+                SELECT queen_name
+                FROM queen_author_sources
+                WHERE author_id = ?
+                ORDER BY queen_name COLLATE NOCASE ASC
+                ''',
+                (int(author['id']),),
+            ).fetchall()
+            job = conn.execute(
+                'SELECT * FROM queen_author_match_jobs WHERE author_id = ?',
+                (int(author['id']),),
+            ).fetchone()
+            video_rows = conn.execute(
+                '''
+                SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
+                       content_type, content_level, created_at
+                FROM queen_author_videos AS matches
+                JOIN queen_videos AS videos ON videos.id = matches.video_id
+                WHERE matches.author_id = ?
+                ORDER BY videos.created_at DESC, videos.id DESC
+                ''',
+                (int(author['id']),),
+            ).fetchall()
+            owned_video_rows = conn.execute(
+                '''
+                SELECT records.id, records.raw_title, records.queen_name, records.video_title,
+                       records.source_url, records.detail_url, records.content_type,
+                       records.content_level, records.created_at
+                FROM queen_author_video_links AS links
+                JOIN queen_author_video_records AS records ON records.id = links.record_id
+                WHERE links.author_id = ?
+                ORDER BY records.created_at DESC, records.id DESC
+                ''',
+                (int(author['id']),),
+            ).fetchall()
+        videos = [
+            self._normalize_queen_video_row(row)
+            for row in [*video_rows, *owned_video_rows]
+        ]
+        videos.sort(
+            key=lambda row: (str(row.get('created_at', '') or ''), int(row.get('id', 0) or 0)),
+            reverse=True,
+        )
+        return {
+            'author_name': str(author['author_name'] or '').strip(),
+            'source_queens': [str(row['queen_name'] or '').strip() for row in source_rows],
+            'videos': videos,
+            'match_job': self._normalize_author_match_job_row(job) if job is not None else None,
+        }
+
+    def process_queen_author_match_job(self, job_id, batch_size=500):
+        normalized_job_id = int(job_id or 0)
+        normalized_batch_size = max(1, int(batch_size or 500))
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            job = cursor.execute(
+                'SELECT * FROM queen_author_match_jobs WHERE id = ?',
+                (normalized_job_id,),
+            ).fetchone()
+            if job is None:
+                raise ValueError('\u4f5c\u8005\u5339\u914d\u4efb\u52a1\u4e0d\u5b58\u5728')
+            if str(job['status'] or '') == 'completed':
+                return self._normalize_author_match_job_row(job)
+            author = cursor.execute(
+                'SELECT author_name FROM queen_authors WHERE id = ?',
+                (int(job['author_id']),),
+            ).fetchone()
+            if author is None:
+                raise ValueError('\u4f5c\u8005\u4e0d\u5b58\u5728')
+            cursor.execute(
+                '''
+                UPDATE queen_author_match_jobs
+                SET status = 'running', error = '', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (normalized_job_id,),
+            )
+            rows = cursor.execute(
+                '''
+                SELECT id, raw_title
+                FROM queen_videos
+                WHERE id > ?
+                ORDER BY id ASC
+                LIMIT ?
+                ''',
+                (int(job['last_video_id'] or 0), normalized_batch_size),
+            ).fetchall()
+            total_count = int(cursor.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0] or 0)
+            if not rows:
+                cursor.execute(
+                    '''
+                    UPDATE queen_author_match_jobs
+                    SET status = 'completed', total_count = ?, updated_at = CURRENT_TIMESTAMP,
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''',
+                    (total_count, normalized_job_id),
+                )
+            else:
+                matched_count = 0
+                author_name = str(author['author_name'] or '').strip()
+                for row in rows:
+                    if self._raw_title_contains_author(row['raw_title'], author_name):
+                        cursor.execute(
+                            '''
+                            INSERT OR IGNORE INTO queen_author_videos(author_id, video_id)
+                            VALUES (?, ?)
+                            ''',
+                            (int(job['author_id']), int(row['id'])),
+                        )
+                        matched_count += int(cursor.rowcount or 0)
+                processed_count = int(job['processed_count'] or 0) + len(rows)
+                current_matched_count = int(job['matched_count'] or 0) + matched_count
+                status = 'completed' if len(rows) < normalized_batch_size else 'running'
+                cursor.execute(
+                    '''
+                    UPDATE queen_author_match_jobs
+                    SET last_video_id = ?, status = ?, total_count = ?, processed_count = ?,
+                        matched_count = ?, updated_at = CURRENT_TIMESTAMP,
+                        completed_at = CASE WHEN ? = 'completed' THEN CURRENT_TIMESTAMP ELSE completed_at END
+                    WHERE id = ?
+                    ''',
+                    (
+                        int(rows[-1]['id']),
+                        status,
+                        total_count,
+                        processed_count,
+                        current_matched_count,
+                        status,
+                        normalized_job_id,
+                    ),
+                )
+            conn.commit()
+            current = cursor.execute(
+                'SELECT * FROM queen_author_match_jobs WHERE id = ?',
+                (normalized_job_id,),
+            ).fetchone()
+        return self._normalize_author_match_job_row(current)
+
+    def list_pending_queen_author_match_jobs(self):
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM queen_author_match_jobs WHERE status <> 'completed' ORDER BY id ASC"
+            ).fetchall()
+        return [self._normalize_author_match_job_row(row) for row in rows]
+
+    def mark_queen_author_match_job_failed(self, job_id, error):
+        normalized_job_id = int(job_id or 0)
+        with self._connect() as conn:
+            conn.execute(
+                '''
+                UPDATE queen_author_match_jobs
+                SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                ''',
+                (str(error or '').strip(), normalized_job_id),
+            )
+            conn.commit()
+            row = conn.execute(
+                'SELECT * FROM queen_author_match_jobs WHERE id = ?',
+                (normalized_job_id,),
+            ).fetchone()
+        return self._normalize_author_match_job_row(row)
+
+    @staticmethod
+    def _normalize_author_match_job_row(row):
+        if row is None:
+            return None
+        return {
+            'job_id': int(row['id'] or 0),
+            'author_id': int(row['author_id'] or 0),
+            'last_video_id': int(row['last_video_id'] or 0),
+            'status': str(row['status'] or '').strip(),
+            'total_count': int(row['total_count'] or 0),
+            'processed_count': int(row['processed_count'] or 0),
+            'matched_count': int(row['matched_count'] or 0),
+            'error': str(row['error'] or '').strip(),
+            'created_at': str(row['created_at'] or '').strip(),
+            'updated_at': str(row['updated_at'] or '').strip(),
+            'completed_at': str(row['completed_at'] or '').strip(),
+        }
+
+    def _get_or_create_queen_author_match_job(self, cursor, author_id):
+        row = cursor.execute(
+            'SELECT * FROM queen_author_match_jobs WHERE author_id = ?',
+            (int(author_id),),
+        ).fetchone()
+        if row is None:
+            total_count = int(cursor.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0] or 0)
+            cursor.execute(
+                '''
+                INSERT INTO queen_author_match_jobs(author_id, total_count)
+                VALUES (?, ?)
+                ''',
+                (int(author_id), total_count),
+            )
+            row = cursor.execute(
+                'SELECT * FROM queen_author_match_jobs WHERE id = last_insert_rowid()'
+            ).fetchone()
+        return self._normalize_author_match_job_row(row)
+
+    def _match_video_against_authors(self, cursor, video_id, raw_title):
+        authors = cursor.execute(
+            'SELECT id, author_name FROM queen_authors'
+        ).fetchall()
+        for author in authors:
+            if self._raw_title_contains_author(raw_title, author['author_name']):
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO queen_author_videos(author_id, video_id)
+                    VALUES (?, ?)
+                    ''',
+                    (int(author['id']), int(video_id)),
+                )
+
+    def _store_author_first_record(self, cursor, staged_row, matched_authors):
+        existing_queen_video = cursor.execute(
+            '''
+            SELECT id
+            FROM queen_videos
+            WHERE queen_name = ? AND video_title = ?
+            ''',
+            (staged_row['queen_name'], staged_row['video_title']),
+        ).fetchone()
+        if existing_queen_video is not None:
+            linked = 0
+            for author in matched_authors:
+                cursor.execute(
+                    '''
+                    INSERT OR IGNORE INTO queen_author_videos(author_id, video_id)
+                    VALUES (?, ?)
+                    ''',
+                    (int(author['id']), int(existing_queen_video['id'])),
+                )
+                linked += int(cursor.rowcount or 0)
+            return linked > 0
+
+        cursor.execute(
+            '''
+            INSERT OR IGNORE INTO queen_author_video_records(
+                raw_title, queen_name, video_title, source_url, detail_url
+            ) VALUES (?, ?, ?, ?, ?)
+            ''',
+            (
+                staged_row['raw_title'],
+                staged_row['queen_name'],
+                staged_row['video_title'],
+                staged_row['source_url'],
+                staged_row['detail_url'],
+            ),
+        )
+        record = cursor.execute(
+            '''
+            SELECT id
+            FROM queen_author_video_records
+            WHERE queen_name = ? AND video_title = ?
+            ''',
+            (staged_row['queen_name'], staged_row['video_title']),
+        ).fetchone()
+        linked = 0
+        for author in matched_authors:
+            cursor.execute(
+                '''
+                INSERT OR IGNORE INTO queen_author_video_links(author_id, record_id)
+                VALUES (?, ?)
+                ''',
+                (int(author['id']), int(record['id'])),
+            )
+            linked += int(cursor.rowcount or 0)
+        return linked > 0
+
+    def remove_queen_author(self, author_name):
+        normalized_author = str(author_name or '').strip()
+        if not normalized_author:
+            raise ValueError('\u7f3a\u5c11\u4f5c\u8005\u540d\u79f0')
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            author_row = cursor.execute(
+                'SELECT id FROM queen_authors WHERE author_name = ? COLLATE NOCASE',
+                (normalized_author,),
+            ).fetchone()
+            if author_row is not None:
+                owned_record_ids = [
+                    int(row['record_id'])
+                    for row in cursor.execute(
+                        'SELECT record_id FROM queen_author_video_links WHERE author_id = ?',
+                        (int(author_row['id']),),
+                    ).fetchall()
+                ]
+                cursor.execute(
+                    'DELETE FROM queen_author_video_links WHERE author_id = ?',
+                    (int(author_row['id']),),
+                )
+                for record_id in owned_record_ids:
+                    cursor.execute(
+                        '''
+                        DELETE FROM queen_author_video_records
+                        WHERE id = ?
+                          AND NOT EXISTS (
+                              SELECT 1 FROM queen_author_video_links WHERE record_id = ?
+                          )
+                        ''',
+                        (record_id, record_id),
+                    )
+                cursor.execute(
+                    'DELETE FROM queen_author_videos WHERE author_id = ?',
+                    (int(author_row['id']),),
+                )
+                cursor.execute(
+                    'DELETE FROM queen_author_match_jobs WHERE author_id = ?',
+                    (int(author_row['id']),),
+                )
+                cursor.execute(
+                    'DELETE FROM queen_author_sources WHERE author_id = ?',
+                    (int(author_row['id']),),
+                )
+            cursor.execute('DELETE FROM queen_authors WHERE author_name = ?', (normalized_author,))
+            deleted_count = int(cursor.rowcount or 0)
+            if not deleted_count:
+                cursor.execute(
+                    'DELETE FROM queen_authors WHERE author_name COLLATE NOCASE = ?',
+                    (normalized_author,),
+                )
+                deleted_count = int(cursor.rowcount or 0)
+            conn.commit()
+        return {'deleted_count': deleted_count, 'author_name': normalized_author}
+
+    @staticmethod
+    def _raw_title_contains_author(raw_title, author_name):
+        normalized_title = str(raw_title or '')
+        normalized_author = str(author_name or '').strip()
+        return bool(normalized_author) and normalized_author.casefold() in normalized_title.casefold()
+
+    def _queen_has_matching_author_record(self, queen_name, author_names):
+        with self._connect() as conn:
+            rows = conn.execute(
+                'SELECT raw_title FROM queen_videos WHERE queen_name = ?',
+                (queen_name,),
+            ).fetchall()
+        return any(
+            self._raw_title_contains_author(row['raw_title'], author_name)
+            for row in rows
+            for author_name in author_names
+        )
 
     def get_library_stats(self):
         with self._connect() as conn:
@@ -571,6 +1308,7 @@ class QueenLibraryService:
             self._upsert_queen_profile(conn, normalized_new_name, merged_profile)
             self._upsert_queen_alias(conn, normalized_name, normalized_new_name)
             self._retarget_queen_aliases(conn, normalized_name, normalized_new_name)
+            self._retarget_queen_author_sources(conn, normalized_name, normalized_new_name)
             cursor.execute('DELETE FROM queen_profiles WHERE queen_name = ?', (normalized_name,))
             conn.commit()
         return self.get_queen_detail(normalized_new_name)
@@ -615,6 +1353,7 @@ class QueenLibraryService:
             raise ValueError('\u7f3a\u5c11\u8bb0\u5f55\u7f16\u53f7')
         with self._connect() as conn:
             cursor = conn.cursor()
+            cursor.execute('DELETE FROM queen_author_videos WHERE video_id = ?', (normalized_id,))
             cursor.execute('DELETE FROM queen_videos WHERE id = ?', (normalized_id,))
             deleted_count = int(cursor.rowcount or 0)
             conn.commit()
@@ -627,6 +1366,14 @@ class QueenLibraryService:
         with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM queen_profiles WHERE queen_name = ?', (normalized_name,))
+            cursor.execute('DELETE FROM queen_author_sources WHERE queen_name = ?', (normalized_name,))
+            cursor.execute(
+                '''
+                DELETE FROM queen_author_videos
+                WHERE video_id IN (SELECT id FROM queen_videos WHERE queen_name = ?)
+                ''',
+                (normalized_name,),
+            )
             cursor.execute('DELETE FROM queen_videos WHERE queen_name = ?', (normalized_name,))
             deleted_count = int(cursor.rowcount or 0)
             conn.commit()
@@ -644,6 +1391,13 @@ class QueenLibraryService:
                 return 0
             keyword_id = int(row['id'] or 0)
             cursor.execute('DELETE FROM queen_import_logs WHERE keyword_id = ?', (keyword_id,))
+            cursor.execute(
+                '''
+                DELETE FROM queen_author_videos
+                WHERE video_id IN (SELECT id FROM queen_videos WHERE keyword_id = ?)
+                ''',
+                (keyword_id,),
+            )
             cursor.execute('DELETE FROM queen_videos WHERE keyword_id = ?', (keyword_id,))
             cursor.execute('DELETE FROM queen_keywords WHERE id = ?', (keyword_id,))
             deleted_count = int(cursor.rowcount or 0)
@@ -726,6 +1480,23 @@ class QueenLibraryService:
         }
         if column_name not in columns:
             cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}')
+
+    @staticmethod
+    def _retarget_queen_author_sources(conn, old_name, new_name):
+        rows = conn.execute(
+            'SELECT author_id FROM queen_author_sources WHERE queen_name = ?',
+            (old_name,),
+        ).fetchall()
+        for row in rows:
+            author_id = int(row['author_id'] or 0)
+            conn.execute(
+                '''
+                INSERT OR IGNORE INTO queen_author_sources(author_id, queen_name)
+                VALUES (?, ?)
+                ''',
+                (author_id, new_name),
+            )
+        conn.execute('DELETE FROM queen_author_sources WHERE queen_name = ?', (old_name,))
 
     @classmethod
     def _migrate_legacy_domain_values(cls, conn):

@@ -79,6 +79,82 @@ class _SearchHarness(QueenSearchScraper):
 
 
 class QueenSearchScraperTest(unittest.TestCase):
+    def test_build_search_url_supports_sort_and_page(self):
+        self.assertEqual(
+            QueenSearchScraper.build_search_url('\u5957\u8def\u76f4\u64ad'),
+            'https://y.9cili.click/search?q=%E5%A5%97%E8%B7%AF%E7%9B%B4%E6%92%AD',
+        )
+        self.assertEqual(
+            QueenSearchScraper.build_search_url('\u5957\u8def\u76f4\u64ad', page=5),
+            'https://y.9cili.click/search?q=%E5%A5%97%E8%B7%AF%E7%9B%B4%E6%92%AD&page=5',
+        )
+        self.assertEqual(
+            QueenSearchScraper.build_search_url('\u5957\u8def\u76f4\u64ad', sort='relevance', page=2),
+            'https://y.9cili.click/search?q=%E5%A5%97%E8%B7%AF%E7%9B%B4%E6%92%AD&sort=relevance&page=2',
+        )
+
+    def test_search_visits_ten_pages_in_order_and_deduplicates_combined_records(self):
+        page = _SequencedPageStub(
+            [
+                {
+                    'records': [
+                        {'title': f'{QUEEN_PREFIX}QueenA_Title.mp4', 'href': '/hash/a'},
+                        {'title': f'{QUEEN_PREFIX}QueenB_Title.mp4', 'href': '/hash/b'},
+                    ],
+                    'rows': [
+                        f'{QUEEN_PREFIX}QueenA_Title.mp4',
+                        f'{QUEEN_PREFIX}QueenB_Title.mp4',
+                    ],
+                }
+            ]
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None), \
+                patch('app.queen_library.scraper.get_operation_timeout_milliseconds', return_value=120000):
+            result = scraper.search('\u5957\u8def\u76f4\u64ad', show_browser=False, page=page)
+
+        base_url = QueenSearchScraper.build_search_url('\u5957\u8def\u76f4\u64ad')
+        relevance_url = QueenSearchScraper.build_search_url('\u5957\u8def\u76f4\u64ad', sort='relevance')
+        expected_urls = [
+            base_url,
+            *[f'{base_url}&page={page_number}' for page_number in range(2, 6)],
+            relevance_url,
+            *[f'{relevance_url}&page={page_number}' for page_number in range(2, 6)],
+        ]
+        visited = [url for url, _kwargs in page.visited_urls]
+        self.assertEqual(visited, expected_urls)
+        self.assertEqual(
+            result['records'],
+            [
+                {'raw_title': f'{QUEEN_PREFIX}QueenA_Title.mp4', 'detail_url': 'https://y.9cili.click/hash/a'},
+                {'raw_title': f'{QUEEN_PREFIX}QueenB_Title.mp4', 'detail_url': 'https://y.9cili.click/hash/b'},
+            ],
+        )
+        self.assertEqual(result['source_urls'], visited)
+
+    def test_search_uses_backup_domain_for_all_pages_when_primary_first_page_fails(self):
+        page = _SequencedPageStub(
+            [
+                {
+                    'records': [f'{QUEEN_PREFIX}QueenFallback_Title.mp4'],
+                    'rows': [f'{QUEEN_PREFIX}QueenFallback_Title.mp4'],
+                }
+            ],
+            goto_failures=[RuntimeError('primary domain unavailable')],
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None), \
+                patch('app.queen_library.scraper.get_operation_timeout_milliseconds', return_value=120000):
+            result = scraper.search('\u5957\u8def\u76f4\u64ad', show_browser=False, page=page)
+
+        visited = [url for url, _kwargs in page.visited_urls]
+        self.assertEqual(len(visited), 11)
+        self.assertTrue(visited[0].startswith('https://y.9cili.click/search?'))
+        self.assertTrue(all(url.startswith('https://a.1cili.click/search?') for url in visited[1:]))
+        self.assertEqual(result['source_url'], visited[1])
+
     def test_extract_result_row_records_includes_absolute_detail_urls(self):
         page = _SequencedPageStub(
             [
@@ -104,7 +180,7 @@ class QueenSearchScraperTest(unittest.TestCase):
             [
                 {
                     'raw_title': f'{QUEEN_PREFIX}QueenA_Title_01.mp4',
-                    'detail_url': 'https://a.1cili.click/hash/abc123',
+                    'detail_url': 'https://y.9cili.click/hash/abc123',
                 },
                 {
                     'raw_title': f'{QUEEN_PREFIX}QueenB_Title.mp4',
@@ -205,8 +281,8 @@ class QueenSearchScraperTest(unittest.TestCase):
             result = scraper.search(f'{QUEEN_PREFIX}slow-query', show_browser=False, page=page)
 
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenReady_Title.mp4'])
-        self.assertEqual(page.wait_calls, [20000, 20000])
-        self.assertEqual(len(page.reload_calls), 2)
+        self.assertEqual(page.wait_calls[:2], [20000, 20000])
+        self.assertEqual(len(page.reload_calls), 20)
         self.assertEqual(page.visited_urls[0][1]['timeout'], 120000)
 
     def test_search_retries_same_target_after_initial_navigation_failure(self):
@@ -220,8 +296,8 @@ class QueenSearchScraperTest(unittest.TestCase):
             result = scraper.search(f'{QUEEN_PREFIX}recover-query', show_browser=False, page=page)
 
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenRecovered_Title.mp4'])
-        self.assertEqual(page.wait_calls, [20000])
-        self.assertEqual(len(page.visited_urls), 2)
+        self.assertEqual(page.wait_calls, [])
+        self.assertEqual(len(page.visited_urls), 11)
         self.assertEqual(page.reload_calls, [])
 
     def test_search_treats_zero_results_page_as_ready(self):

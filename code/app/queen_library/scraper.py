@@ -1,6 +1,6 @@
 import re
 from contextlib import contextmanager
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 
 from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import get_scraper_browser_channel, get_scraper_locale
@@ -8,7 +8,8 @@ from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_read
 from app.scraper.browser_window import minimize_browser_window_if_needed
 
 
-QUEEN_SEARCH_BASE_URL = 'https://a.1cili.click'
+QUEEN_SEARCH_BASE_URL = 'https://y.9cili.click'
+QUEEN_SEARCH_BACKUP_URL = 'https://a.1cili.click'
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 TITLE_PATTERN = re.compile(r'\u5957\u8def\u76f4\u64ad_[^<>"\'\r\n\t ]+')
 QUEEN_SEARCH_LOAD_TIMEOUT_MS = 120000
@@ -97,18 +98,63 @@ class QueenSearchScraper:
         normalized_keyword = str(keyword or '').strip()
         if not normalized_keyword:
             raise ValueError('\u7f3a\u5c11\u5173\u952e\u8bcd')
-        target_url = self.build_search_url(normalized_keyword)
         if page is None:
             with self.session(show_browser=show_browser) as active_page:
                 return self.search(normalized_keyword, show_browser=show_browser, page=active_page)
-        self._open_results_page(page, target_url)
-        records = self.extract_candidate_titles_from_page(page)
+
+        search_specs = [
+            ('', 1),
+            *[('', page_number) for page_number in range(2, 6)],
+            *[('relevance', page_number) for page_number in range(1, 6)],
+        ]
+        first_sort, first_page = search_specs[0]
+        first_url = self.build_search_url(
+            normalized_keyword,
+            sort=first_sort,
+            page=first_page,
+            base_url=QUEEN_SEARCH_BASE_URL,
+        )
+        selected_first_url = self._open_results_page(
+            page,
+            first_url,
+            fallback_url=self.build_search_url(
+                normalized_keyword,
+                sort=first_sort,
+                page=first_page,
+                base_url=QUEEN_SEARCH_BACKUP_URL,
+            ),
+        )
+        selected_url_parts = urlparse(selected_first_url)
+        selected_base_url = (
+            f'{selected_url_parts.scheme}://{selected_url_parts.netloc}'
+            if selected_url_parts.scheme and selected_url_parts.netloc
+            else QUEEN_SEARCH_BASE_URL
+        )
+        source_urls = [selected_first_url]
+        records = self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
+        for sort, page_number in search_specs[1:]:
+            target_url = self.build_search_url(
+                normalized_keyword,
+                sort=sort,
+                page=page_number,
+                base_url=selected_base_url,
+            )
+            self._open_results_page(page, target_url)
+            source_urls.append(target_url)
+            records.extend(
+                self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
+            )
+        records = self._dedupe_records(records)
         return {
-            'source_url': target_url,
+            'source_url': source_urls[0],
+            'source_urls': source_urls,
             'records': records,
         }
 
-    def _open_results_page(self, page, target_url):
+    def _open_results_page(self, page, target_url, fallback_url=''):
+        active_url = str(target_url or '').strip()
+        normalized_fallback_url = str(fallback_url or '').strip()
+        fallback_attempted = False
         has_loaded_target_once = False
         while True:
             try:
@@ -116,18 +162,28 @@ class QueenSearchScraper:
                 if has_loaded_target_once:
                     page.reload(wait_until='domcontentloaded', timeout=load_timeout_ms)
                 else:
-                    page.goto(target_url, wait_until='domcontentloaded', timeout=load_timeout_ms)
+                    page.goto(active_url, wait_until='domcontentloaded', timeout=load_timeout_ms)
                     has_loaded_target_once = True
                 wait_for_page_ready(page)
             except Exception:
+                if normalized_fallback_url and not fallback_attempted and not has_loaded_target_once:
+                    active_url = normalized_fallback_url
+                    fallback_attempted = True
+                    has_loaded_target_once = False
+                    continue
                 if self._is_cloudflare_522_page(page):
                     raise QueenSearchTransientError('Cloudflare 522 Connection timed out')
                 page.wait_for_timeout(QUEEN_SEARCH_RELOAD_WAIT_MS)
                 continue
             if self._is_cloudflare_522_page(page):
+                if normalized_fallback_url and not fallback_attempted:
+                    active_url = normalized_fallback_url
+                    fallback_attempted = True
+                    has_loaded_target_once = False
+                    continue
                 raise QueenSearchTransientError('Cloudflare 522 Connection timed out')
             if self._is_results_page_ready(page):
-                return
+                return active_url
             page.wait_for_timeout(QUEEN_SEARCH_RELOAD_WAIT_MS)
 
     @staticmethod
@@ -179,12 +235,20 @@ class QueenSearchScraper:
         )
 
     @staticmethod
-    def build_search_url(keyword):
-        return f'{QUEEN_SEARCH_BASE_URL}/search?q={quote(str(keyword or "").strip())}'
+    def build_search_url(keyword, sort='', page=1, base_url=None):
+        normalized_base_url = str(base_url or QUEEN_SEARCH_BASE_URL).rstrip('/')
+        query_parts = [f'q={quote(str(keyword or "").strip())}']
+        normalized_sort = str(sort or '').strip()
+        if normalized_sort:
+            query_parts.append(f'sort={quote(normalized_sort)}')
+        normalized_page = max(1, int(page or 1))
+        if normalized_page > 1:
+            query_parts.append(f'page={normalized_page}')
+        return f'{normalized_base_url}/search?{"&".join(query_parts)}'
 
     @classmethod
-    def extract_candidate_titles_from_page(cls, page):
-        structured_records = cls.extract_result_row_records(page)
+    def extract_candidate_titles_from_page(cls, page, base_url=None):
+        structured_records = cls.extract_result_row_records(page, base_url=base_url)
         if structured_records:
             return structured_records
 
@@ -205,7 +269,7 @@ class QueenSearchScraper:
         return cls.extract_candidate_titles(body_text=body_text, html=html)
 
     @classmethod
-    def extract_result_row_records(cls, page):
+    def extract_result_row_records(cls, page, base_url=None):
         try:
             rows = page.evaluate(
                 """
@@ -243,9 +307,25 @@ class QueenSearchScraper:
             detail_url = str(payload.get('href', '') or '').strip()
             records.append({
                 'raw_title': raw_title,
-                'detail_url': urljoin(QUEEN_SEARCH_BASE_URL, detail_url) if detail_url else '',
+                'detail_url': urljoin(base_url or QUEEN_SEARCH_BASE_URL, detail_url) if detail_url else '',
             })
         return records
+
+    @staticmethod
+    def _dedupe_records(records):
+        seen = set()
+        deduped = []
+        for record in list(records or []):
+            if isinstance(record, dict):
+                identity = record.get('raw_title', record.get('title', ''))
+            else:
+                identity = record
+            normalized_identity = ' '.join(str(identity or '').split()).strip()
+            if not normalized_identity or normalized_identity in seen:
+                continue
+            seen.add(normalized_identity)
+            deduped.append(record)
+        return deduped
 
     @classmethod
     def extract_result_row_titles(cls, page):

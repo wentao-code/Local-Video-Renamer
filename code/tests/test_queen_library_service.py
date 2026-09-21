@@ -100,6 +100,298 @@ class QueenLibraryServiceTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_queen_author_library_enrolls_idempotently_and_matches_raw_titles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub(
+                    [
+                        '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u9ed1\u55b5\u548cCat\u5171\u540c.mp4',
+                        '\u5957\u8def\u76f4\u64ad_\u767d\u4e00\u6657_\u53ea\u6709Cat.mp4',
+                    ]
+                ),
+            )
+            service.search_keyword('\u521d\u59cb')
+
+            first = service.add_queen_author(' \u9ed1\u55b5 ', '\u9ed1\u55b5')
+            second = service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            cat_result = service.add_queen_author(' cat ', '\u767d\u4e00\u6657')
+            service.add_queen_author(' CAT ', '\u767d\u4e00\u6657')
+            service.process_queen_author_match_job(first['match_job']['job_id'])
+            service.process_queen_author_match_job(cat_result['match_job']['job_id'])
+
+            self.assertEqual(first['author_name'], '\u9ed1\u55b5')
+            self.assertEqual(second['author_name'], '\u9ed1\u55b5')
+            self.assertEqual([row['author_name'] for row in service.list_queen_authors()], ['cat', '\u9ed1\u55b5'])
+            self.assertEqual(
+                [row['queen_name'] for row in service.get_queen_author_detail('\u9ed1\u55b5')['videos']],
+                ['\u9ed1\u55b5'],
+            )
+            self.assertEqual(
+                {row['queen_name'] for row in service.get_queen_author_detail('CAT')['videos']},
+                {'\u9ed1\u55b5', '\u767d\u4e00\u6657'},
+            )
+            self.assertEqual(service.list_queens(), [])
+
+    def test_queen_author_with_no_matching_record_hides_source_and_removal_restores_queen(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub(['\u5957\u8def\u76f4\u64ad_\u5c0f7s_\u666e\u901a\u6807\u9898.mp4']),
+            )
+            service.search_keyword('\u521d\u59cb')
+
+            detail = service.add_queen_author('\u4e0d\u5728\u539f\u59cb\u8bb0\u5f55', '\u5c0f7s')
+
+            self.assertEqual(detail['author_name'], '\u4e0d\u5728\u539f\u59cb\u8bb0\u5f55')
+            self.assertEqual(detail['source_queens'], ['\u5c0f7s'])
+            self.assertEqual(detail['videos'], [])
+            self.assertEqual(service.list_queens(), [])
+
+            self.assertEqual(service.remove_queen_author('\u4e0d\u5728\u539f\u59cb\u8bb0\u5f55')['deleted_count'], 1)
+            self.assertEqual([row['queen_name'] for row in service.list_queens()], ['\u5c0f7s'])
+            self.assertEqual(service.get_queen_detail('\u5c0f7s')['videos'][0]['video_title'], '\u666e\u901a\u6807\u9898')
+
+    def test_queen_button_remains_until_all_queen_records_are_author_matched(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub(
+                    [
+                        '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5S_\u8bb0\u5f551.mp4',
+                        '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5S_\u8bb0\u5f552.mp4',
+                    ]
+                ),
+            )
+            service.search_keyword('\u521d\u59cb')
+            enrolled = service.add_queen_author('\u9ed1\u55b5', '\u5176\u4ed6\u5973\u738b')
+
+            service.process_queen_author_match_job(enrolled['match_job']['job_id'], batch_size=1)
+
+            self.assertEqual(
+                [row['queen_name'] for row in service.list_queens()],
+                ['\u9ed1\u55b5S'],
+            )
+
+            while service.process_queen_author_match_job(
+                enrolled['match_job']['job_id'],
+                batch_size=1,
+            )['status'] != 'completed':
+                pass
+
+            self.assertEqual(service.list_queens(), [])
+
+    def test_queen_author_match_job_processes_in_batches_and_detail_uses_relations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub(
+                    [
+                        '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u8bb0\u5f55\u9ed1.mp4',
+                        '\u5957\u8def\u76f4\u64ad_\u767d\u4e00\u6657_\u8bb0\u5f55.mp4',
+                        '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u8bb0\u5f55\u9ed2.mp4',
+                    ]
+                ),
+            )
+            service.search_keyword('\u521d\u59cb')
+
+            enrolled = service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            job_id = enrolled['match_job']['job_id']
+
+            self.assertEqual(enrolled['videos'], [])
+            first_progress = service.process_queen_author_match_job(job_id, batch_size=1)
+            self.assertEqual(first_progress['status'], 'running')
+            self.assertEqual(first_progress['processed_count'], 1)
+            self.assertEqual(len(service.get_queen_author_detail('\u9ed1\u55b5')['videos']), 1)
+
+            while first_progress['status'] != 'completed':
+                first_progress = service.process_queen_author_match_job(job_id, batch_size=1)
+
+            detail = service.get_queen_author_detail('\u9ed1\u55b5')
+            self.assertEqual(len(detail['videos']), 2)
+            self.assertEqual(detail['match_job']['status'], 'completed')
+
+            conn = sqlite3.connect(Path(temp_dir) / 'queen_library.db')
+            try:
+                relation_count = conn.execute(
+                    'SELECT COUNT(*) FROM queen_author_videos'
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(relation_count, 2)
+
+    def test_new_video_import_matches_existing_authors_without_historical_scan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub(
+                records_by_keyword={
+                    '\u521d\u59cb': ['\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u65e7.mp4'],
+                    '\u65b0\u8bcd': ['\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u65b0.mp4'],
+                }
+            )
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('\u521d\u59cb')
+            enrolled = service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            service.process_queen_author_match_job(enrolled['match_job']['job_id'])
+
+            service.search_keyword('\u65b0\u8bcd')
+
+            self.assertEqual(
+                {row['video_title'] for row in service.get_queen_author_detail('\u9ed1\u55b5')['videos']},
+                {'\u65e7', '\u65b0'},
+            )
+
+    def test_new_crawl_routes_author_match_before_queen_library(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub([
+                    '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u4f5c\u8005\u8bb0\u5f55.mp4',
+                    '\u5957\u8def\u76f4\u64ad_\u666e\u901a_\u5973\u738b\u8bb0\u5f55.mp4',
+                ]),
+            )
+            service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+
+            result = service.search_keyword('\u521d\u59cb')
+
+            self.assertEqual(result['imported_count'], 2)
+            detail = service.get_queen_author_detail('\u9ed1\u55b5')
+            self.assertEqual([row['video_title'] for row in detail['videos']], ['\u4f5c\u8005\u8bb0\u5f55'])
+            self.assertEqual(
+                [row['video_title'] for row in service.get_queen_detail('\u666e\u901a') ['videos']],
+                ['\u5973\u738b\u8bb0\u5f55'],
+            )
+
+            conn = sqlite3.connect(Path(temp_dir) / 'queen_library.db')
+            try:
+                self.assertEqual(
+                    conn.execute(
+                        'SELECT COUNT(*) FROM queen_videos WHERE video_title = ?',
+                        ('\u4f5c\u8005\u8bb0\u5f55',),
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_crawl_staging').fetchone()[0], 0)
+            finally:
+                conn.close()
+
+    def test_author_first_routing_is_idempotent_and_supports_multiple_authors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub([
+                    '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u8bb0\u5f55.mp4',
+                ]),
+            )
+            service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            service.add_queen_author('\u55b5', '\u55b5')
+
+            service.search_keyword('\u521d\u59c21')
+            service.search_keyword('\u521d\u59c22')
+
+            for author_name in ('\u9ed1\u55b5', '\u55b5'):
+                self.assertEqual(
+                    [row['video_title'] for row in service.get_queen_author_detail(author_name)['videos']],
+                    ['\u8bb0\u5f55'],
+                )
+            conn = sqlite3.connect(Path(temp_dir) / 'queen_library.db')
+            try:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_video_records').fetchone()[0], 1)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_video_links').fetchone()[0], 2)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0], 0)
+            finally:
+                conn.close()
+
+    def test_removing_author_cleans_author_owned_records_without_touching_queen_videos(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub([
+                    '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u4f5c\u8005\u8bb0\u5f55.mp4',
+                    '\u5957\u8def\u76f4\u64ad_\u666e\u901a_\u5973\u738b\u8bb0\u5f55.mp4',
+                ]),
+            )
+            service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            service.search_keyword('\u521d\u59cb')
+
+            service.remove_queen_author('\u9ed1\u55b5')
+
+            conn = sqlite3.connect(Path(temp_dir) / 'queen_library.db')
+            try:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_video_records').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_video_links').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0], 1)
+            finally:
+                conn.close()
+
+    def test_removing_author_cleans_match_job_and_relations_but_keeps_videos(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub(['\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u6807\u9898.mp4']),
+            )
+            service.search_keyword('\u521d\u59cb')
+            enrolled = service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            service.process_queen_author_match_job(enrolled['match_job']['job_id'])
+
+            service.remove_queen_author('\u9ed1\u55b5')
+
+            conn = sqlite3.connect(Path(temp_dir) / 'queen_library.db')
+            try:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_videos').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_match_jobs').fetchone()[0], 0)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0], 1)
+            finally:
+                conn.close()
+
+    def test_existing_author_without_match_job_gets_resumable_job_on_database_upgrade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            service = QueenLibraryService(
+                db_path,
+                scraper=_ScraperStub(['\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u6807\u9898.mp4']),
+            )
+            service.search_keyword('\u521d\u59cb')
+            service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute('DELETE FROM queen_author_match_jobs')
+                conn.commit()
+            finally:
+                conn.close()
+
+            upgraded = QueenLibraryService(db_path, scraper=_ScraperStub())
+
+            pending = upgraded.list_pending_queen_author_match_jobs()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]['status'], 'pending')
+
+    def test_queen_author_list_uses_highest_source_queen_like_level(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = QueenLibraryService(
+                Path(temp_dir) / 'queen_library.db',
+                scraper=_ScraperStub(
+                    [
+                        '\u5957\u8def\u76f4\u64ad_\u9ed1\u55b5_\u5171\u540c\u8bb0\u5f55.mp4',
+                        '\u5957\u8def\u76f4\u64ad_\u767d\u4e00\u6657_\u5171\u540c\u8bb0\u5f55.mp4',
+                    ]
+                ),
+            )
+            service.search_keyword('\u521d\u59cb')
+            profile = {
+                'body_type': '\u82d7\u6761',
+                'style': '\u7c97\u66b4',
+                'face': '\u662f',
+                'age_group': '\u5c11\u5987',
+            }
+            service.save_queen_profile('\u9ed1\u55b5', {**profile, 'like_level': 'C'})
+            service.save_queen_profile('\u767d\u4e00\u6657', {**profile, 'like_level': 'A'})
+            service.add_queen_author('\u9ed1\u55b5', '\u9ed1\u55b5')
+            service.add_queen_author('\u9ed1\u55b5', '\u767d\u4e00\u6657')
+
+            author = service.list_queen_authors()[0]
+
+            self.assertEqual(author['like_level'], 'A')
+
     def test_search_keyword_imports_unique_records_and_blocks_duplicate_keyword(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = _ScraperStub(

@@ -337,6 +337,8 @@ def make_handler(service):
                 return service.list_queen_library_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'GET' and path == '/queen-library/keywords':
                 return service.list_queen_keywords_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
+            if method == 'GET' and path == '/queen-library/authors':
+                return service.list_queen_author_library_snapshot(force_refresh=_is_truthy_query_value(query, 'refresh'))
             if method == 'GET' and path == '/queen-library/stats':
                 return service.get_queen_library_stats()
             if method == 'POST' and path == '/queen-library/search':
@@ -355,6 +357,15 @@ def make_handler(service):
                     query.get('name', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
+            if method == 'GET' and path == '/queen-library/author/detail':
+                return service.get_queen_author_detail_snapshot(
+                    query.get('name', [''])[0],
+                    force_refresh=_is_truthy_query_value(query, 'refresh'),
+                )
+            if method == 'POST' and path == '/queen-library/authors/add':
+                return service.add_queen_author(body.get('author_name'), body.get('queen_name'))
+            if method == 'POST' and path == '/queen-library/authors/remove':
+                return service.remove_queen_author(body.get('author_name'))
             if method == 'POST' and path == '/queen-library/profile':
                 return service.update_queen_profile(body.get('queen_name'), body.get('profile', {}))
             if method == 'POST' and path == '/queen-library/queens/rename':

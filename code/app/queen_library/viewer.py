@@ -222,6 +222,8 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.btn_save_queen_name.clicked.connect(self.save_queen_name)
         self.btn_cancel_queen_name = QPushButton(tr('common.cancel'))
         self.btn_cancel_queen_name.clicked.connect(self.cancel_edit_queen_name)
+        self.btn_add_queen_author = QPushButton(tr('queen.detail.add_author'))
+        self.btn_add_queen_author.clicked.connect(self.add_queen_author)
         self.btn_delete_queen = QPushButton(tr('queen.detail.delete_queen'))
         self.btn_delete_queen.clicked.connect(self.delete_queen)
         self.btn_refresh = QPushButton(tr('common.refresh'))
@@ -232,6 +234,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_save_queen_name)
         top_layout.addWidget(self.btn_cancel_queen_name)
         top_layout.addWidget(self.btn_edit_queen_name)
+        top_layout.addWidget(self.btn_add_queen_author)
         top_layout.addStretch()
         top_layout.addWidget(self.btn_delete_queen)
         top_layout.addWidget(self.btn_refresh)
@@ -277,6 +280,7 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
                 self.btn_save_queen_name,
                 self.btn_cancel_queen_name,
                 self.btn_delete_queen,
+                self.btn_add_queen_author,
                 self.btn_refresh,
                 self.table,
             ]
@@ -336,6 +340,16 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
 
     def _on_queen_renamed(self, result):
         self._on_load_data_finished(result)
+
+    def add_queen_author(self):
+        self.start_async_task(
+            lambda: self.backend_client.add_queen_author(self.queen_name, self.queen_name),
+            self._on_queen_author_added,
+            tr('queen.detail.add_author_failed'),
+        )
+
+    def _on_queen_author_added(self, result):
+        self.accept()
 
     def _apply_profile_to_fields(self, profile):
         payload = dict(profile or {})
@@ -501,6 +515,223 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         self.accept()
 
 
+class QueenAuthorLibraryWindow(AsyncTaskHostMixin, QDialog):
+    def __init__(self, backend_client, parent=None):
+        super().__init__(parent)
+        self.backend_client = backend_client
+        self.authors = []
+        self.author_detail_window = None
+        self._init_async_task_host()
+        self.init_ui()
+        self.load_data()
+
+    def init_ui(self):
+        self.setWindowTitle(tr('queen.author_library.title'))
+        self.resize(980, 580)
+        self.setWindowModality(Qt.NonModal)
+
+        layout = QVBoxLayout()
+        top_layout = QHBoxLayout()
+        self.info_label = QLabel('')
+        self.btn_refresh = QPushButton(tr('common.refresh'))
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
+        top_layout.addWidget(self.info_label)
+        top_layout.addStretch()
+        top_layout.addWidget(self.btn_refresh)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_widget = QWidget()
+        self.grid_layout = QGridLayout(self.scroll_widget)
+        self.grid_layout.setContentsMargins(12, 12, 12, 12)
+        self.grid_layout.setHorizontalSpacing(10)
+        self.grid_layout.setVerticalSpacing(10)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.scroll_area.setWidget(self.scroll_widget)
+
+        layout.addLayout(top_layout)
+        layout.addWidget(self.scroll_area)
+        self.setLayout(layout)
+        self.set_async_busy_widgets([self.btn_refresh])
+
+    def load_data(self, force_refresh=False):
+        self.start_async_task(
+            lambda: self.backend_client.list_queen_author_library_snapshot(force_refresh=force_refresh),
+            self._on_load_data_finished,
+            tr('common.read_failed'),
+        )
+
+    def _on_load_data_finished(self, result):
+        self.authors = list(dict(result or {}).get('authors', []) or [])
+        self.info_label.setText(tr('queen.author_library.count', count=len(self.authors)))
+        self._render_author_buttons()
+
+    def _render_author_buttons(self):
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for index, row in enumerate(self.authors):
+            author_name = str((row or {}).get('author_name', '') or '').strip()
+            button = QPushButton(author_name)
+            button.setFixedSize(120, 36)
+            button_style = QueenLibraryWindow._build_queen_button_like_level_style(
+                (row or {}).get('like_level', '')
+            )
+            if button_style:
+                button.setStyleSheet(button_style)
+            button.clicked.connect(lambda _checked=False, value=author_name: self.show_author_detail(value))
+            self.grid_layout.addWidget(button, index // BUTTONS_PER_ROW, index % BUTTONS_PER_ROW)
+
+    def show_author_detail(self, author_name):
+        self.author_detail_window = QueenAuthorDetailWindow(self.backend_client, author_name, self)
+        self.author_detail_window.exec_()
+        self.load_data(force_refresh=True)
+
+
+class QueenAuthorDetailWindow(AsyncTaskHostMixin, QDialog):
+    def __init__(self, backend_client, author_name, parent=None):
+        super().__init__(parent)
+        self.backend_client = backend_client
+        self.author_name = str(author_name or '').strip()
+        self.rows = []
+        self.match_job = None
+        self._init_async_task_host()
+        self.init_ui()
+        self.load_data()
+
+    def init_ui(self):
+        self.setWindowTitle(tr('queen.author_detail.title', author_name=self.author_name))
+        self.resize(1120, 620)
+        self.setWindowModality(Qt.WindowModal)
+        self.match_poll_timer = QTimer(self)
+        self.match_poll_timer.setInterval(1500)
+        self.match_poll_timer.timeout.connect(self._poll_match_job)
+
+        layout = QVBoxLayout()
+        top_layout = QHBoxLayout()
+        self.info_label = QLabel('')
+        self.btn_remove_author = QPushButton(tr('queen.author_detail.remove'))
+        self.btn_remove_author.clicked.connect(self.remove_author)
+        self.btn_refresh = QPushButton(tr('common.refresh'))
+        self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
+        top_layout.addWidget(self.info_label)
+        top_layout.addStretch()
+        top_layout.addWidget(self.btn_remove_author)
+        top_layout.addWidget(self.btn_refresh)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(tr('queen.author_detail.headers'))
+        for column in range(6):
+            self.table.horizontalHeader().setSectionResizeMode(
+                column,
+                self.table.horizontalHeader().Stretch if column in (0, 1) else self.table.horizontalHeader().ResizeToContents,
+            )
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+
+        layout.addLayout(top_layout)
+        layout.addWidget(self.table)
+        self.setLayout(layout)
+        self.set_async_busy_widgets([self.btn_remove_author, self.btn_refresh, self.table])
+
+    def load_data(self, force_refresh=False):
+        self.start_async_task(
+            lambda: self.backend_client.get_queen_author_detail_snapshot(
+                self.author_name,
+                force_refresh=force_refresh,
+            ),
+            self._on_load_data_finished,
+            tr('common.read_failed'),
+        )
+
+    def _on_load_data_finished(self, result):
+        payload = dict(result or {})
+        self.author_name = str(payload.get('author_name', self.author_name) or '').strip()
+        self.rows = list(payload.get('videos', []) or [])
+        self.match_job = dict(payload.get('match_job', {}) or {}) or None
+        self.setWindowTitle(tr('queen.author_detail.title', author_name=self.author_name))
+        self._update_match_job_status()
+        self._render_rows()
+
+    def _poll_match_job(self):
+        if self.is_async_task_running():
+            return
+        self.load_data(force_refresh=True)
+
+    def _update_match_job_status(self):
+        job = dict(self.match_job or {})
+        status = str(job.get('status', '') or '').strip().lower()
+        if status in {'pending', 'running'}:
+            if not self.match_poll_timer.isActive():
+                self.match_poll_timer.start()
+            self.info_label.setText(
+                tr(
+                    'queen.author_detail.matching',
+                    author_name=self.author_name,
+                    processed_count=int(job.get('processed_count', 0) or 0),
+                    total_count=int(job.get('total_count', 0) or 0),
+                    count=len(self.rows),
+                )
+            )
+            return
+        if self.match_poll_timer.isActive():
+            self.match_poll_timer.stop()
+        if status == 'failed':
+            self.info_label.setText(
+                tr('queen.author_detail.match_failed', error=str(job.get('error', '') or ''))
+            )
+            return
+        self.info_label.setText(
+            tr('queen.author_detail.video_count', author_name=self.author_name, count=len(self.rows))
+        )
+
+    def _render_rows(self):
+        self.table.setRowCount(0)
+        for row_index, row_data in enumerate(self.rows):
+            self.table.insertRow(row_index)
+            values = (
+                row_data.get('video_title', ''),
+                row_data.get('raw_title', ''),
+                row_data.get('queen_name', ''),
+                row_data.get('content_type', ''),
+                row_data.get('content_level', ''),
+            )
+            for column_index, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ''))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(row_index, column_index, item)
+            self.table.setCellWidget(
+                row_index,
+                5,
+                QueenDetailWindow._build_detail_indicator(row_data.get('detail_url', '')),
+            )
+
+    def remove_author(self):
+        answer = QMessageBox.question(
+            self,
+            tr('queen.common.confirm_delete'),
+            tr('queen.author_detail.remove_confirm', author_name=self.author_name),
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.start_async_task(
+            lambda: self.backend_client.remove_queen_author(self.author_name),
+            self._on_remove_author_finished,
+            tr('queen.author_detail.remove_failed'),
+        )
+
+    def _on_remove_author_finished(self, _result):
+        self.match_poll_timer.stop()
+        self.accept()
+
+    def closeEvent(self, event):
+        self.match_poll_timer.stop()
+        super().closeEvent(event)
+
+
 class QueenLibraryDataCenterWindow(AsyncTaskHostMixin, QDialog):
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
@@ -584,6 +815,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.stats = {}
         self.keyword_window = None
         self.data_center_window = None
+        self.author_library_window = None
         self.crawl_progress_timer = None
         self._init_async_task_host()
         self.init_ui()
@@ -623,6 +855,8 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_search.clicked.connect(self.search_keyword)
         self.btn_keyword_library = QPushButton(tr('queen.keyword_library.title'))
         self.btn_keyword_library.clicked.connect(self.show_keyword_library)
+        self.btn_queen_author_library = QPushButton(tr('queen.author_library.button'))
+        self.btn_queen_author_library.clicked.connect(self.show_queen_author_library)
         self.btn_data_center = QPushButton(tr('queen.data_center.button'))
         self.btn_data_center.clicked.connect(self.show_data_center)
         self.btn_start_crawl = QPushButton(tr('queen.library.start_crawl'))
@@ -636,6 +870,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.keyword_input, 1)
         top_layout.addWidget(self.btn_search)
         top_layout.addWidget(self.btn_keyword_library)
+        top_layout.addWidget(self.btn_queen_author_library)
         top_layout.addWidget(self.btn_data_center)
         top_layout.addWidget(self.btn_start_crawl)
         top_layout.addWidget(self.btn_stop_crawl)
@@ -664,6 +899,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
                 self.keyword_input,
                 self.btn_search,
                 self.btn_keyword_library,
+                self.btn_queen_author_library,
                 self.btn_data_center,
                 self.btn_start_crawl,
                 self.btn_stop_crawl,
@@ -916,6 +1152,12 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
     def show_keyword_library(self):
         self.keyword_window = KeywordLibraryWindow(self.backend_client, self)
         self.keyword_window.exec_()
+
+    def show_queen_author_library(self):
+        self.author_library_window = QueenAuthorLibraryWindow(self.backend_client, self)
+        self.author_library_window.show()
+        self.author_library_window.raise_()
+        self.author_library_window.activateWindow()
 
     def show_queen_detail(self, queen_name):
         viewer = QueenDetailWindow(self.backend_client, queen_name, self)

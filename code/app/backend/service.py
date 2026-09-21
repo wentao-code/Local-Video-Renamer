@@ -157,6 +157,9 @@ class BackendService:
         self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
         self.queen_library_service = QueenLibraryService(QUEEN_LIBRARY_DB_FILE)
+        self._queen_author_match_threads = {}
+        self._queen_author_match_lock = threading.Lock()
+        self._resume_queen_author_match_jobs()
         self._init_queen_refresh_task_state()
         self.enrichment_progress = EnrichmentProgressService()
         self.combo_progress = ComboProgressService()
@@ -1923,6 +1926,19 @@ class BackendService:
         self._write_page_snapshot(key, payload)
         return payload
 
+    def list_queen_author_library_snapshot(self, force_refresh=False):
+        key = 'queen_library/authors'
+        if not force_refresh:
+            cached = self._read_page_snapshot(key)
+            if cached is not None:
+                return cached
+        payload = {
+            'authors': self.queen_library_service.list_queen_authors(),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+        self._write_page_snapshot(key, payload)
+        return payload
+
     def get_queen_library_stats(self):
         return {
             **dict(self.queen_library_service.get_library_stats() or {}),
@@ -1977,6 +1993,22 @@ class BackendService:
                 return cached
         payload = {
             **dict(self.queen_library_service.get_queen_detail(queen_name) or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+        self._write_page_snapshot(key, payload)
+        return payload
+
+    def get_queen_author_detail_snapshot(self, author_name, force_refresh=False):
+        normalized_name = str(author_name or '').strip()
+        if not normalized_name:
+            raise ValueError('\u7f3a\u5c11\u4f5c\u8005\u540d\u79f0')
+        key = f'queen_library/author_detail/{quote(normalized_name.casefold(), safe="")}'
+        if not force_refresh:
+            cached = self._read_page_snapshot(key)
+            if cached is not None:
+                return cached
+        payload = {
+            **dict(self.queen_library_service.get_queen_author_detail(normalized_name) or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
         self._write_page_snapshot(key, payload)
@@ -2126,6 +2158,66 @@ class BackendService:
             'profile': dict(saved_profile or {}),
             'refreshed_at': self._current_snapshot_timestamp(),
         }
+
+    def add_queen_author(self, author_name, queen_name):
+        result = self.queen_library_service.add_queen_author(author_name, queen_name)
+        match_job = dict(result.get('match_job', {}) or {})
+        job_id = int(match_job.get('job_id', 0) or 0)
+        if job_id > 0 and match_job.get('status') != 'completed':
+            self._start_queen_author_match_job(job_id)
+        self._delete_page_snapshot_prefix('queen_library')
+        return {
+            **dict(result or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def remove_queen_author(self, author_name):
+        result = self.queen_library_service.remove_queen_author(author_name)
+        self._delete_page_snapshot_prefix('queen_library')
+        return {
+            **dict(result or {}),
+            'refreshed_at': self._current_snapshot_timestamp(),
+        }
+
+    def _resume_queen_author_match_jobs(self):
+        for job in self.queen_library_service.list_pending_queen_author_match_jobs():
+            job_id = int((job or {}).get('job_id', 0) or 0)
+            if job_id > 0:
+                self._start_queen_author_match_job(job_id)
+
+    def _start_queen_author_match_job(self, job_id):
+        normalized_job_id = int(job_id or 0)
+        if normalized_job_id <= 0:
+            return
+        with self._queen_author_match_lock:
+            current = self._queen_author_match_threads.get(normalized_job_id)
+            if current is not None and current.is_alive():
+                return
+            worker = threading.Thread(
+                target=self._run_queen_author_match_job,
+                args=(normalized_job_id,),
+                daemon=True,
+            )
+            self._queen_author_match_threads[normalized_job_id] = worker
+            worker.start()
+
+    def _run_queen_author_match_job(self, job_id):
+        normalized_job_id = int(job_id or 0)
+        try:
+            while True:
+                progress = self.queen_library_service.process_queen_author_match_job(
+                    normalized_job_id,
+                    batch_size=500,
+                )
+                if str((progress or {}).get('status', '') or '').strip() == 'completed':
+                    break
+        except Exception as exc:
+            mark_failed = getattr(self.queen_library_service, 'mark_queen_author_match_job_failed', None)
+            if callable(mark_failed):
+                mark_failed(normalized_job_id, str(exc))
+        finally:
+            with self._queen_author_match_lock:
+                self._queen_author_match_threads.pop(normalized_job_id, None)
 
     def rename_queen(self, queen_name, new_queen_name, profile=None):
         detail = self.queen_library_service.rename_queen(queen_name, new_queen_name, profile=profile)

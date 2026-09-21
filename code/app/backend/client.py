@@ -738,6 +738,11 @@ class BackendClient:
         timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
         return self._get('/queen-library/keywords' + query, timeout=timeout)
 
+    def list_queen_author_library_snapshot(self, force_refresh=False):
+        query = '?refresh=1' if force_refresh else ''
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/queen-library/authors' + query, timeout=timeout)
+
     def get_queen_library_stats(self):
         timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
         return self._get('/queen-library/stats', timeout=timeout)
@@ -783,6 +788,25 @@ class BackendClient:
             params['refresh'] = '1'
         timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
         return self._get('/queen-library/detail?' + urlencode(params), timeout=timeout)
+
+    def get_queen_author_detail_snapshot(self, author_name, force_refresh=False):
+        params = {'name': author_name}
+        if force_refresh:
+            params['refresh'] = '1'
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/queen-library/author/detail?' + urlencode(params), timeout=timeout)
+
+    def add_queen_author(self, author_name, queen_name):
+        return self._post(
+            '/queen-library/authors/add',
+            {'author_name': author_name, 'queen_name': queen_name},
+        )
+
+    def remove_queen_author(self, author_name):
+        return self._post(
+            '/queen-library/authors/remove',
+            {'author_name': author_name},
+        )
 
     def update_queen_profile(self, queen_name, profile):
         return self._post(

@@ -6,11 +6,18 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QShowEvent
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QDialog
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.main_window import VidNormApp
-from app.queen_library.viewer import KeywordLibraryWindow, QueenDetailWindow, QueenLibraryDataCenterWindow, QueenLibraryWindow
+from app.queen_library.viewer import (
+    KeywordLibraryWindow,
+    QueenAuthorDetailWindow,
+    QueenAuthorLibraryWindow,
+    QueenDetailWindow,
+    QueenLibraryDataCenterWindow,
+    QueenLibraryWindow,
+)
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -108,6 +115,9 @@ class _QueenBackendStub:
             'skipped_count': 0,
         }
 
+    def list_queen_author_library_snapshot(self, force_refresh=False):
+        return {'authors': [{'author_name': '\u9ed1\u55b5'}]}
+
 
 
 class _QueenDetailBackendStub:
@@ -116,6 +126,7 @@ class _QueenDetailBackendStub:
         self.saved_video_metadata = []
         self.rename_calls = []
         self.confirmed = confirmed
+        self.added_authors = []
 
     def get_queen_detail_snapshot(self, queen_name, force_refresh=False):
         profile = {
@@ -183,6 +194,50 @@ class _QueenDetailBackendStub:
                 'content_level': content_level,
             }
         }
+
+    def add_queen_author(self, author_name, queen_name):
+        self.added_authors.append((author_name, queen_name))
+        return {'author_name': author_name, 'source_queens': [queen_name]}
+
+
+class _QueenAuthorBackendStub:
+    def __init__(self):
+        self.removed_authors = []
+        self.detail_calls = 0
+
+    def list_queen_author_library_snapshot(self, force_refresh=False):
+        return {
+            'authors': [
+                {'author_name': '\u9ed1\u55b5', 'like_level': 'A'},
+                {'author_name': 'cat', 'like_level': 'D'},
+            ]
+        }
+
+    def get_queen_author_detail_snapshot(self, author_name, force_refresh=False):
+        self.detail_calls += 1
+        return {
+            'author_name': author_name,
+            'match_job': {
+                'status': 'completed',
+                'processed_count': 1,
+                'total_count': 1,
+                'matched_count': 1,
+            },
+            'videos': [
+                {
+                    'queen_name': '\u9ed1\u55b5',
+                    'video_title': '\u6807\u9898',
+                    'raw_title': '\u539f\u59cb\u8bb0\u5f55\u9ed1\u55b5',
+                    'content_type': '\u804a\u5929',
+                    'content_level': 'B',
+                    'detail_url': '',
+                },
+            ],
+        }
+
+    def remove_queen_author(self, author_name):
+        self.removed_authors.append(author_name)
+        return {'deleted_count': 1, 'author_name': author_name}
 
 
 class _KeywordBackendStub:
@@ -515,6 +570,105 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
                 self.assertTrue(window.profile_fields['body_type'].isEnabled())
                 self.assertTrue(window.btn_confirm_profile.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_detail_has_join_author_library_button(self):
+        backend = _QueenDetailBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenDetailWindow(backend, '\u9ed1\u55b5')
+            try:
+                self.assertEqual(window.btn_add_queen_author.text(), '\u52a0\u5165\u4f5c\u8005\u5e93')
+                window.btn_add_queen_author.click()
+                self.assertEqual(backend.added_authors, [('\u9ed1\u55b5', '\u9ed1\u55b5')])
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_adding_author_closes_detail_dialog_after_success(self):
+        backend = _QueenDetailBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenDetailWindow(backend, '\u9ed1\u55b5')
+            try:
+                self.assertNotEqual(window.result(), QDialog.Accepted)
+                window.add_queen_author()
+                self.assertEqual(window.result(), QDialog.Accepted)
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_opens_independent_author_library(self):
+        backend = _QueenBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                self.assertEqual(window.btn_queen_author_library.text(), '\u4f5c\u8005\u5e93')
+                window.show_queen_author_library()
+                self.assertIsInstance(window.author_library_window, QueenAuthorLibraryWindow)
+            finally:
+                if window.author_library_window is not None:
+                    window.author_library_window.close()
+                window.hide()
+                window.deleteLater()
+
+    def test_author_detail_is_read_only_except_for_removal(self):
+        backend = _QueenAuthorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenAuthorDetailWindow(backend, '\u9ed1\u55b5')
+            try:
+                self.assertEqual(window.table.rowCount(), 1)
+                self.assertEqual(window.table.item(0, 0).text(), '\u6807\u9898')
+                self.assertEqual(window.table.item(0, 2).text(), '\u9ed1\u55b5')
+                self.assertFalse(hasattr(window, 'btn_delete_queen'))
+                self.assertFalse(hasattr(window, 'btn_delete_video'))
+                self.assertEqual(window.btn_remove_author.text(), '\u79fb\u51fa\u4f5c\u8005\u5e93')
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_author_library_buttons_reuse_queen_like_level_colors(self):
+        backend = _QueenAuthorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenAuthorLibraryWindow(backend)
+            try:
+                first_button = window.grid_layout.itemAt(0).widget()
+                second_button = window.grid_layout.itemAt(1).widget()
+                self.assertEqual(
+                    first_button.styleSheet(),
+                    QueenLibraryWindow._build_queen_button_like_level_style('A'),
+                )
+                self.assertEqual(
+                    second_button.styleSheet(),
+                    QueenLibraryWindow._build_queen_button_like_level_style('D'),
+                )
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_author_detail_polls_matching_until_job_completes(self):
+        backend = _QueenAuthorBackendStub()
+        original_detail = backend.get_queen_author_detail_snapshot
+
+        def detail_with_progress(author_name, force_refresh=False):
+            payload = original_detail(author_name, force_refresh)
+            if backend.detail_calls == 1:
+                payload['match_job'] = {
+                    'status': 'running',
+                    'processed_count': 1,
+                    'total_count': 3,
+                    'matched_count': 1,
+                }
+            return payload
+
+        backend.get_queen_author_detail_snapshot = detail_with_progress
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenAuthorDetailWindow(backend, '\u9ed1\u55b5')
+            try:
+                self.assertTrue(window.match_poll_timer.isActive())
+                window.match_poll_timer.timeout.emit()
+                self.assertFalse(window.match_poll_timer.isActive())
+                self.assertGreaterEqual(backend.detail_calls, 2)
             finally:
                 window.hide()
                 window.deleteLater()
