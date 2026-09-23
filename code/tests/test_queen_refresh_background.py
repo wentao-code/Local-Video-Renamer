@@ -11,6 +11,9 @@ class _BlockingQueenRefreshService:
         self.batch_sizes = []
         self.stop_checks = 0
 
+    def build_refresh_keywords(self):
+        return [f'关键词{index}' for index in range(1, 21)]
+
     def refresh_all(self, show_browser=True, batch_size=None, progress_callback=None, should_stop=None):
         self.batch_sizes.append(batch_size)
         self.started.set()
@@ -62,6 +65,7 @@ class QueenRefreshBackgroundTest(unittest.TestCase):
         started = service.refresh_queen_library(show_browser=False)
 
         self.assertTrue(started['progress']['is_running'])
+        self.assertEqual(started['progress']['total_count'], 20)
         self.assertTrue(service.queen_library_service.started.wait(timeout=1))
         self.assertEqual(service.queen_library_service.batch_sizes, [10])
 

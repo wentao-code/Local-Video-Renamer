@@ -79,6 +79,38 @@ class _SearchHarness(QueenSearchScraper):
 
 
 class QueenSearchScraperTest(unittest.TestCase):
+    def test_open_results_page_stops_after_bounded_navigation_failures(self):
+        page = _SequencedPageStub(
+            states=[{'body_text': '', 'html': '', 'rows': []}],
+            goto_failures=[RuntimeError('connection reset')] * 5,
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.get_operation_timeout_milliseconds', return_value=1), \
+                patch('app.queen_library.scraper.QUEEN_SEARCH_RELOAD_WAIT_MS', 0):
+            with self.assertRaises(QueenSearchTransientError):
+                scraper._open_results_page(page, 'https://y.9cili.click/search?q=test')
+
+        self.assertLessEqual(len(page.visited_urls), 3)
+
+    def test_open_results_page_honors_stop_request_during_navigation_retry(self):
+        page = _SequencedPageStub(
+            states=[{'body_text': '', 'html': '', 'rows': []}],
+            goto_failures=[RuntimeError('connection reset')],
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.get_operation_timeout_milliseconds', return_value=1), \
+                patch('app.queen_library.scraper.QUEEN_SEARCH_RELOAD_WAIT_MS', 0):
+            with self.assertRaisesRegex(QueenSearchTransientError, '停止'):
+                scraper._open_results_page(
+                    page,
+                    'https://y.9cili.click/search?q=test',
+                    should_stop=lambda: True,
+                )
+
+        self.assertEqual(len(page.visited_urls), 0)
+
     def test_build_search_url_supports_sort_and_page(self):
         self.assertEqual(
             QueenSearchScraper.build_search_url('\u5957\u8def\u76f4\u64ad'),
@@ -281,7 +313,7 @@ class QueenSearchScraperTest(unittest.TestCase):
             result = scraper.search(f'{QUEEN_PREFIX}slow-query', show_browser=False, page=page)
 
         self.assertEqual(result['records'], [f'{QUEEN_PREFIX}QueenReady_Title.mp4'])
-        self.assertEqual(page.wait_calls[:2], [20000, 20000])
+        self.assertEqual(page.wait_calls[:2], [200, 200])
         self.assertEqual(len(page.reload_calls), 20)
         self.assertEqual(page.visited_urls[0][1]['timeout'], 120000)
 

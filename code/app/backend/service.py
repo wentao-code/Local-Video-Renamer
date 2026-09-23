@@ -1960,6 +1960,8 @@ class BackendService:
             return {'progress': progress, 'refreshed_at': self._current_snapshot_timestamp()}
 
         started_at = self._current_snapshot_timestamp()
+        keywords = self.queen_library_service.build_refresh_keywords()
+        total_count = len(list(keywords or []))
         self._queen_refresh_cancel_event.clear()
         self._update_queen_refresh_progress({
             **self._build_empty_queen_refresh_progress(),
@@ -1967,6 +1969,9 @@ class BackendService:
             'stopped': False,
             'started_at': started_at,
             'batch_size': 10,
+            'query_count': total_count,
+            'total_count': total_count,
+            'remaining_count': total_count,
             'message_key': 'queen.backend.batch_started',
             'message': 'Queen library batch crawl started',
         })

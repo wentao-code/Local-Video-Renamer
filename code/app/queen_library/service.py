@@ -330,15 +330,22 @@ class QueenLibraryService:
         session_context = session_factory() if callable(session_factory) else nullcontext(None)
         with session_context as page:
             for keyword in keywords:
+                if callable(should_stop) and should_stop():
+                    stopped = True
+                    break
                 try:
                     result = self._search_and_import_keyword(
                         keyword,
                         show_browser=show_browser,
                         page=page,
                         save_keyword=False,
+                        should_stop=should_stop,
                     )
                     transient_error = ''
                 except QueenSearchTransientError as exc:
+                    if callable(should_stop) and should_stop():
+                        stopped = True
+                        break
                     result = {
                         'keyword': keyword,
                         'source_url': '',
@@ -423,15 +430,25 @@ class QueenLibraryService:
         self._append_crawl_log(payload)
         return payload
 
-    def _search_and_import_keyword(self, keyword, show_browser=True, page=None, save_keyword=True):
+    def _search_and_import_keyword(
+        self,
+        keyword,
+        show_browser=True,
+        page=None,
+        save_keyword=True,
+        should_stop=None,
+    ):
         normalized_keyword = str(keyword or '').strip()
         if not normalized_keyword:
             raise ValueError('\u7f3a\u5c11\u5173\u952e\u8bcd')
 
         if page is None:
-            scraped = dict(self.scraper.search(normalized_keyword, show_browser=show_browser) or {})
+            search_kwargs = {'show_browser': show_browser}
         else:
-            scraped = dict(self.scraper.search(normalized_keyword, show_browser=show_browser, page=page) or {})
+            search_kwargs = {'show_browser': show_browser, 'page': page}
+        if should_stop is not None:
+            search_kwargs['should_stop'] = should_stop
+        scraped = dict(self.scraper.search(normalized_keyword, **search_kwargs) or {})
         source_url = str(scraped.get('source_url', '') or '').strip()
         records = list(scraped.get('records', []) or [])
         imported_count = 0
@@ -585,12 +602,13 @@ class QueenLibraryService:
                 '''
                 SELECT
                     videos.queen_name,
-                    COUNT(*) AS video_count,
+                    COUNT(DISTINCT videos.id) - COUNT(DISTINCT matches.video_id) AS video_count,
                     MAX(videos.created_at) AS last_created_at,
                     COALESCE(profiles.like_level, '') AS like_level,
                     COALESCE(profiles.profile_confirmed, 0) AS profile_confirmed
                 FROM queen_videos AS videos
                 LEFT JOIN queen_profiles AS profiles ON profiles.queen_name = videos.queen_name
+                LEFT JOIN queen_author_videos AS matches ON matches.video_id = videos.id
                 GROUP BY videos.queen_name
                 ORDER BY videos.queen_name COLLATE NOCASE ASC
                 '''
@@ -602,26 +620,13 @@ class QueenLibraryService:
                 ).fetchall()
                 if str(row['queen_name'] or '').strip()
             }
-            matched_counts = {
-                str(row['queen_name'] or '').strip(): int(row['matched_count'] or 0)
-                for row in conn.execute(
-                    '''
-                    SELECT videos.queen_name, COUNT(DISTINCT videos.id) AS matched_count
-                    FROM queen_author_videos AS matches
-                    JOIN queen_videos AS videos ON videos.id = matches.video_id
-                    GROUP BY videos.queen_name
-                    '''
-                ).fetchall()
-                if str(row['queen_name'] or '').strip()
-            }
-
         visible_rows = []
         for row in rows:
             queen = dict(row)
             queen_name = str(queen.get('queen_name', '') or '').strip()
             if queen_name in source_queens:
                 continue
-            if matched_counts.get(queen_name, 0) >= int(queen.get('video_count', 0) or 0):
+            if int(queen.get('video_count', 0) or 0) <= 0:
                 continue
             visible_rows.append(queen)
         return visible_rows
@@ -1181,6 +1186,11 @@ class QueenLibraryService:
                        content_type, content_level, created_at
                 FROM queen_videos
                 WHERE queen_name = ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM queen_author_videos AS matches
+                      WHERE matches.video_id = queen_videos.id
+                  )
                 ORDER BY created_at DESC, id DESC
                 ''',
                 (normalized_name,),

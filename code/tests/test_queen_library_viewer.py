@@ -6,7 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QShowEvent
-from PyQt5.QtWidgets import QApplication, QDialog
+from PyQt5.QtWidgets import QApplication, QDialog, QWidget
 
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.main_window import VidNormApp
@@ -43,6 +43,7 @@ class _QueenBackendStub:
     def __init__(self):
         self.refresh_calls = []
         self.cancel_calls = 0
+        self.refresh_progress_running = False
 
     def list_queen_library_snapshot(self, force_refresh=False):
         return {
@@ -83,9 +84,9 @@ class _QueenBackendStub:
             ],
         }
 
-    def refresh_queen_library(self, show_browser=True):
+    def refresh_queen_library(self, show_browser=True, progress_callback=None):
         self.refresh_calls.append(bool(show_browser))
-        return {
+        result = {
             'progress': {
                 'is_running': True,
                 'completed': False,
@@ -98,6 +99,9 @@ class _QueenBackendStub:
                 'message': '正在启动批量抓取...',
             }
         }
+        if callable(progress_callback):
+            progress_callback(result)
+        return result
 
     def cancel_queen_library_refresh(self):
         self.cancel_calls += 1
@@ -108,7 +112,7 @@ class _QueenBackendStub:
 
     def get_queen_refresh_progress(self):
         return {
-            'is_running': True,
+            'is_running': self.refresh_progress_running,
             'processed_count': 1,
             'total_count': 3,
             'imported_count': 0,
@@ -117,6 +121,17 @@ class _QueenBackendStub:
 
     def list_queen_author_library_snapshot(self, force_refresh=False):
         return {'authors': [{'author_name': '\u9ed1\u55b5'}]}
+
+
+class _QueenWindowParent(QWidget):
+    def __init__(self, allow_task_mode=True):
+        super().__init__()
+        self.allow_task_mode = bool(allow_task_mode)
+        self.task_mode_checks = []
+
+    def _ensure_task_mode_for_task(self, task_category):
+        self.task_mode_checks.append(task_category)
+        return self.allow_task_mode
 
 
 
@@ -397,6 +412,95 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_queen_library_start_crawl_delegates_task_mode_check_to_parent(self):
+        backend = _QueenBackendStub()
+        parent = _QueenWindowParent()
+        captured = []
+
+        def _capture_async_task(self, task, success_handler, error_title=None, **kwargs):
+            captured.append(dict(kwargs))
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend, parent)
+            try:
+                captured.clear()
+                window.start_crawl()
+
+                self.assertEqual(parent.task_mode_checks, ['补全任务'])
+                self.assertEqual(len(captured), 1)
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
+    def test_queen_library_start_crawl_resets_controls_when_task_mode_declined(self):
+        backend = _QueenBackendStub()
+        parent = _QueenWindowParent(allow_task_mode=False)
+        captured = []
+
+        def _capture_async_task(self, task, success_handler, error_title=None, **kwargs):
+            captured.append(dict(kwargs))
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend, parent)
+            try:
+                captured.clear()
+                window.start_crawl()
+
+                self.assertEqual(parent.task_mode_checks, ['补全任务'])
+                self.assertEqual(captured, [])
+                self.assertTrue(window.btn_start_crawl.isEnabled())
+                self.assertFalse(window.btn_stop_crawl.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+                parent.deleteLater()
+
+    def test_queen_library_start_crawl_does_not_duplicate_backend_crawl(self):
+        backend = _QueenBackendStub()
+        backend.refresh_progress_running = True
+        captured = []
+
+        def _capture_async_task(self, task, success_handler, error_title=None, **kwargs):
+            captured.append(dict(kwargs))
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                captured.clear()
+                window.start_crawl()
+
+                self.assertEqual(captured, [])
+                self.assertFalse(window.btn_start_crawl.isEnabled())
+                self.assertTrue(window.btn_stop_crawl.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_queen_library_start_crawl_does_not_duplicate_pending_dialog_task(self):
+        backend = _QueenBackendStub()
+        captured = []
+
+        def _capture_async_task(self, task, success_handler, error_title=None, **kwargs):
+            captured.append(dict(kwargs))
+            return True
+
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _capture_async_task):
+            window = QueenLibraryWindow(backend)
+            try:
+                captured.clear()
+                window._async_task_pending_queue_count = 1
+                window.start_crawl()
+
+                self.assertEqual(captured, [])
+                self.assertTrue(window.btn_start_crawl.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_queen_library_poll_crawl_progress_stays_out_of_task_queue(self):
         backend = _QueenBackendStub()
         captured = []
@@ -484,6 +588,7 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
 
     def test_queen_library_close_hides_window_while_crawl_is_running(self):
         backend = _QueenBackendStub()
+        backend.refresh_progress_running = True
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = QueenLibraryWindow(backend)
             try:

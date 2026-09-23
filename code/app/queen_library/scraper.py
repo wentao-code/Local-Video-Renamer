@@ -13,7 +13,8 @@ QUEEN_SEARCH_BACKUP_URL = 'https://a.1cili.click'
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 TITLE_PATTERN = re.compile(r'\u5957\u8def\u76f4\u64ad_[^<>"\'\r\n\t ]+')
 QUEEN_SEARCH_LOAD_TIMEOUT_MS = 120000
-QUEEN_SEARCH_RELOAD_WAIT_MS = 20000
+QUEEN_SEARCH_RELOAD_WAIT_MS = 200
+QUEEN_SEARCH_MAX_ATTEMPTS = 3
 
 
 class QueenSearchTransientError(RuntimeError):
@@ -94,13 +95,18 @@ class QueenSearchScraper:
                     self._playwright = None
                     self._playwright_manager = None
 
-    def search(self, keyword, show_browser=True, page=None):
+    def search(self, keyword, show_browser=True, page=None, should_stop=None):
         normalized_keyword = str(keyword or '').strip()
         if not normalized_keyword:
             raise ValueError('\u7f3a\u5c11\u5173\u952e\u8bcd')
         if page is None:
             with self.session(show_browser=show_browser) as active_page:
-                return self.search(normalized_keyword, show_browser=show_browser, page=active_page)
+                return self.search(
+                    normalized_keyword,
+                    show_browser=show_browser,
+                    page=active_page,
+                    should_stop=should_stop,
+                )
 
         search_specs = [
             ('', 1),
@@ -123,6 +129,7 @@ class QueenSearchScraper:
                 page=first_page,
                 base_url=QUEEN_SEARCH_BACKUP_URL,
             ),
+            should_stop=should_stop,
         )
         selected_url_parts = urlparse(selected_first_url)
         selected_base_url = (
@@ -139,7 +146,7 @@ class QueenSearchScraper:
                 page=page_number,
                 base_url=selected_base_url,
             )
-            self._open_results_page(page, target_url)
+            self._open_results_page(page, target_url, should_stop=should_stop)
             source_urls.append(target_url)
             records.extend(
                 self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
@@ -151,12 +158,14 @@ class QueenSearchScraper:
             'records': records,
         }
 
-    def _open_results_page(self, page, target_url, fallback_url=''):
+    def _open_results_page(self, page, target_url, fallback_url='', should_stop=None):
         active_url = str(target_url or '').strip()
         normalized_fallback_url = str(fallback_url or '').strip()
         fallback_attempted = False
         has_loaded_target_once = False
-        while True:
+        last_error = None
+        for attempt in range(1, QUEEN_SEARCH_MAX_ATTEMPTS + 1):
+            self._raise_if_stop_requested(should_stop)
             try:
                 load_timeout_ms = get_operation_timeout_milliseconds('queen_page_load')
                 if has_loaded_target_once:
@@ -164,8 +173,15 @@ class QueenSearchScraper:
                 else:
                     page.goto(active_url, wait_until='domcontentloaded', timeout=load_timeout_ms)
                     has_loaded_target_once = True
-                wait_for_page_ready(page)
-            except Exception:
+                if callable(should_stop):
+                    wait_for_page_ready(page, should_stop)
+                else:
+                    wait_for_page_ready(page)
+            except QueenSearchTransientError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                self._raise_if_stop_requested(should_stop)
                 if normalized_fallback_url and not fallback_attempted and not has_loaded_target_once:
                     active_url = normalized_fallback_url
                     fallback_attempted = True
@@ -173,7 +189,9 @@ class QueenSearchScraper:
                     continue
                 if self._is_cloudflare_522_page(page):
                     raise QueenSearchTransientError('Cloudflare 522 Connection timed out')
-                page.wait_for_timeout(QUEEN_SEARCH_RELOAD_WAIT_MS)
+                if attempt >= QUEEN_SEARCH_MAX_ATTEMPTS:
+                    break
+                self._wait_before_retry(page, should_stop)
                 continue
             if self._is_cloudflare_522_page(page):
                 if normalized_fallback_url and not fallback_attempted:
@@ -181,10 +199,37 @@ class QueenSearchScraper:
                     fallback_attempted = True
                     has_loaded_target_once = False
                     continue
-                raise QueenSearchTransientError('Cloudflare 522 Connection timed out')
+                last_error = QueenSearchTransientError('Cloudflare 522 Connection timed out')
+                if attempt >= QUEEN_SEARCH_MAX_ATTEMPTS:
+                    break
+                self._wait_before_retry(page, should_stop)
+                continue
             if self._is_results_page_ready(page):
                 return active_url
-            page.wait_for_timeout(QUEEN_SEARCH_RELOAD_WAIT_MS)
+            if attempt >= QUEEN_SEARCH_MAX_ATTEMPTS:
+                break
+            self._wait_before_retry(page, should_stop)
+
+        self._raise_if_stop_requested(should_stop)
+        if isinstance(last_error, QueenSearchTransientError):
+            raise last_error
+        detail = f': {last_error}' if last_error else ''
+        raise QueenSearchTransientError(
+            f'女王库页面在 {QUEEN_SEARCH_MAX_ATTEMPTS} 次尝试后仍未准备完成{detail}'
+        ) from last_error
+
+    @staticmethod
+    def _raise_if_stop_requested(should_stop):
+        if callable(should_stop) and should_stop():
+            raise QueenSearchTransientError('女王库抓取已请求停止')
+
+    @classmethod
+    def _wait_before_retry(cls, page, should_stop=None):
+        cls._raise_if_stop_requested(should_stop)
+        wait_ms = max(0, int(QUEEN_SEARCH_RELOAD_WAIT_MS))
+        if wait_ms:
+            page.wait_for_timeout(wait_ms)
+        cls._raise_if_stop_requested(should_stop)
 
     @staticmethod
     def _is_cloudflare_522_page(page):

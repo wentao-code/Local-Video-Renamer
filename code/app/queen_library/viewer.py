@@ -1,4 +1,5 @@
 from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -807,8 +808,11 @@ class QueenLibraryDataCenterWindow(AsyncTaskHostMixin, QDialog):
 
 
 class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
+    crawl_progress_received = pyqtSignal(dict)
+
     def __init__(self, backend_client, parent=None):
         super().__init__(parent)
+        self._owner_window = parent
         self.backend_client = backend_client
         self.queens = []
         self.keywords = []
@@ -818,6 +822,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.author_library_window = None
         self.crawl_progress_timer = None
         self._init_async_task_host()
+        self.crawl_progress_received.connect(self._apply_crawl_progress)
         self.init_ui()
         self.load_data()
 
@@ -841,6 +846,12 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         except Exception:
             progress = {}
         return bool(progress.get('is_running'))
+
+    def _ensure_task_mode_for_task(self, task_category):
+        ensure_task_mode = getattr(self._owner_window, '_ensure_task_mode_for_task', None)
+        if callable(ensure_task_mode):
+            return bool(ensure_task_mode(task_category))
+        return True
 
     def init_ui(self):
         self.setWindowTitle(tr('queen.library.title'))
@@ -1021,10 +1032,26 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self._sync_keyword_window()
 
     def start_crawl(self):
+        if self.is_async_task_running():
+            return False
+        try:
+            existing_progress = dict(self.backend_client.get_queen_refresh_progress() or {})
+        except Exception:
+            existing_progress = {}
+        if bool(existing_progress.get('is_running')):
+            self._apply_crawl_progress(existing_progress)
+            return False
+        if not self._ensure_task_mode_for_task(TASK_CATEGORY_ENRICHMENT):
+            self._set_crawl_running_state(False)
+            self._update_status_summary()
+            return False
         self._set_crawl_running_state(True)
         self.status_label.setText(tr('queen.library.starting_crawl'))
-        self.start_async_task(
-            lambda: self.backend_client.refresh_queen_library(show_browser=True),
+        accepted = self.start_async_task(
+            lambda: self.backend_client.refresh_queen_library(
+                show_browser=True,
+                progress_callback=self._emit_crawl_progress,
+            ),
             self._on_crawl_finished,
             tr('queen.library.crawl_failed'),
             block_ui=False,
@@ -1032,6 +1059,15 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             task_category=TASK_CATEGORY_ENRICHMENT,
             task_kind='queen_crawl',
         )
+        if not accepted:
+            self._set_crawl_running_state(False)
+            self._update_status_summary()
+        return bool(accepted)
+
+    def _emit_crawl_progress(self, payload):
+        progress = dict((payload or {}).get('progress', {}) or {})
+        if progress:
+            self.crawl_progress_received.emit(progress)
 
     def stop_crawl(self):
         try:
@@ -1076,8 +1112,6 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         )
 
     def poll_crawl_progress(self):
-        if self.is_async_task_running():
-            return
         self.start_async_task(
             lambda: {'progress': self.backend_client.get_queen_refresh_progress()},
             self._on_crawl_progress_loaded,

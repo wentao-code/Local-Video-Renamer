@@ -15,7 +15,7 @@ class _ScraperStub:
         self.records_by_keyword = dict(records_by_keyword or {})
         self.calls = []
 
-    def search(self, keyword, show_browser=True):
+    def search(self, keyword, show_browser=True, should_stop=None):
         self.calls.append((keyword, bool(show_browser)))
         records = self.records_by_keyword.get(keyword, self.records)
         return {
@@ -171,6 +171,11 @@ class QueenLibraryServiceTest(unittest.TestCase):
             self.assertEqual(
                 [row['queen_name'] for row in service.list_queens()],
                 ['\u9ed1\u55b5S'],
+            )
+            self.assertEqual(service.list_queens()[0]['video_count'], 1)
+            self.assertEqual(
+                [row['video_title'] for row in service.get_queen_detail('\u9ed1\u55b5S')['videos']],
+                ['\u8bb0\u5f552'],
             )
 
             while service.process_queen_author_match_job(

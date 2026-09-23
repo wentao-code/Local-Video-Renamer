@@ -498,6 +498,7 @@ class BackendServiceDetailSnapshotRebuildJobTest(unittest.TestCase):
         client = BackendClient(base_url='http://127.0.0.1:8766', timeout=30)
         post_calls = []
         get_calls = []
+        progress_events = []
         progress = iter([
             {'progress': {'is_running': True, 'processed_count': 1}},
             {'progress': {'is_running': False, 'completed': True, 'processed_count': 2}},
@@ -514,12 +515,20 @@ class BackendServiceDetailSnapshotRebuildJobTest(unittest.TestCase):
         client._post = fake_post
         client._get = fake_get
 
-        result = client.refresh_queen_library(show_browser=False, poll_interval=0)
+        result = client.refresh_queen_library(
+            show_browser=False,
+            poll_interval=0,
+            progress_callback=lambda payload: progress_events.append(dict(payload or {})),
+        )
 
         self.assertFalse(result['progress']['is_running'])
         self.assertTrue(result['progress']['completed'])
         self.assertEqual(post_calls[0][0], '/queen-library/refresh')
         self.assertEqual(len(get_calls), 2)
+        self.assertEqual(
+            [event['progress']['processed_count'] for event in progress_events],
+            [0, 1, 2],
+        )
 
 
 if __name__ == '__main__':
