@@ -57,6 +57,9 @@ class _SequencedPageStub:
         return self.current_state.get('html', '')
 
     def evaluate(self, _script):
+        if 'a[href*="page="]' in str(_script or ''):
+            pages = self.current_state.get('pagination_pages')
+            return max(pages) if pages else None
         if 'href' in str(_script or ''):
             return list(self.current_state.get('records', []))
         return list(self.current_state.get('rows', []))
@@ -125,7 +128,7 @@ class QueenSearchScraperTest(unittest.TestCase):
             'https://y.9cili.click/search?q=%E5%A5%97%E8%B7%AF%E7%9B%B4%E6%92%AD&sort=relevance&page=2',
         )
 
-    def test_search_visits_ten_pages_in_order_and_deduplicates_combined_records(self):
+    def test_search_caps_each_sort_at_five_pages_and_deduplicates_records(self):
         page = _SequencedPageStub(
             [
                 {
@@ -137,6 +140,7 @@ class QueenSearchScraperTest(unittest.TestCase):
                         f'{QUEEN_PREFIX}QueenA_Title.mp4',
                         f'{QUEEN_PREFIX}QueenB_Title.mp4',
                     ],
+                    'pagination_pages': [1, 2, 3, 4, 5, 6],
                 }
             ]
         )
@@ -164,6 +168,34 @@ class QueenSearchScraperTest(unittest.TestCase):
             ],
         )
         self.assertEqual(result['source_urls'], visited)
+
+    def test_search_stops_after_actual_last_page_when_fewer_than_five(self):
+        page = _SequencedPageStub(
+            [
+                {
+                    'records': [f'{QUEEN_PREFIX}QueenA_Title.mp4'],
+                    'rows': [f'{QUEEN_PREFIX}QueenA_Title.mp4'],
+                    'pagination_pages': [2],
+                }
+            ]
+        )
+        scraper = _SearchHarness(page)
+
+        with patch('app.queen_library.scraper.wait_for_page_ready', lambda _page: None), \
+                patch('app.queen_library.scraper.get_operation_timeout_milliseconds', return_value=120000):
+            result = scraper.search('short-query', show_browser=False, page=page)
+
+        base_url = QueenSearchScraper.build_search_url('short-query')
+        relevance_url = QueenSearchScraper.build_search_url('short-query', sort='relevance')
+        expected_urls = [
+            base_url,
+            f'{base_url}&page=2',
+            relevance_url,
+            f'{relevance_url}&page=2',
+        ]
+        visited = [url for url, _kwargs in page.visited_urls]
+        self.assertEqual(visited, expected_urls)
+        self.assertEqual(result['source_urls'], expected_urls)
 
     def test_search_uses_backup_domain_for_all_pages_when_primary_first_page_fails(self):
         page = _SequencedPageStub(

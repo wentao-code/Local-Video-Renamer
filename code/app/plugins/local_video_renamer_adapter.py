@@ -21,6 +21,10 @@ class LocalVideoRenamerAdapter:
     LABEL = "Local Video Renamer"
     VERSION = "0.1.0"
     UNBOUND_REASON = "Local Video Renamer 控制适配器尚未绑定 GUI 业务入口"
+    ACTIVE_TASK_STATUSES = frozenset({"正在执行", "取消中", "running", "cancelling"})
+    QUEUED_TASK_STATUSES = frozenset(
+        {"等待中", "等待模式切换", "等待账号可用", "queued", "waiting"}
+    )
 
     def __init__(
         self,
@@ -33,10 +37,11 @@ class LocalVideoRenamerAdapter:
         self._stop_handler = stop_handler
         self._status = status_snapshot or StatusSnapshot(
             plugin_id=self.PLUGIN_ID,
-            gui_running=True,
+            gui_running=False,
             ready=True,
             busy=False,
             task_id=None,
+            task_status_known=False,
         )
 
     @property
@@ -57,6 +62,42 @@ class LocalVideoRenamerAdapter:
     def update_status(self, **values: Any) -> None:
         """Allow a future GUI/task bridge to publish state without changing routes."""
         self._status.update(**values)
+
+    def sync_task_queue_status(self, records: Any) -> None:
+        """Publish a read-only summary of GUI queue records to the status endpoint."""
+        active_tasks = []
+        queued_tasks = []
+        for record in records or ():
+            if isinstance(record, Mapping):
+                get_value = record.get
+            else:
+                get_value = lambda key, default=None: getattr(record, key, default)
+            status = str(get_value("status", "") or "").strip()
+            if status not in self.ACTIVE_TASK_STATUSES | self.QUEUED_TASK_STATUSES:
+                continue
+            task_id = str(
+                get_value("trace_task_id", "") or get_value("task_id", "") or ""
+            ).strip()
+            task = {
+                "task_id": task_id or None,
+                "title": str(get_value("title", "") or "").strip(),
+                "status": status,
+            }
+            if status in self.ACTIVE_TASK_STATUSES:
+                active_tasks.append(task)
+            else:
+                queued_tasks.append(task)
+
+        self._status.update(
+            gui_running=True,
+            task_status_known=True,
+            busy=bool(active_tasks),
+            task_id=active_tasks[0]["task_id"] if active_tasks else None,
+            task_title=active_tasks[0]["title"] if active_tasks else None,
+            active_tasks=active_tasks,
+            queue_depth=len(queued_tasks),
+            queued_tasks=queued_tasks,
+        )
 
     def manifest(self) -> dict[str, Any]:
         return PluginManifest(

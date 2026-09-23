@@ -303,6 +303,19 @@ class QueenLibraryService:
             if queen_name:
                 candidates.append(queen_name)
                 candidates.append(f'{QUEEN_RECORD_PREFIX}{queen_name}')
+        with self._connect() as conn:
+            source_queens = conn.execute(
+                '''
+                SELECT DISTINCT queen_name
+                FROM queen_author_sources
+                ORDER BY queen_name COLLATE NOCASE ASC
+                '''
+            ).fetchall()
+        for row in source_queens:
+            queen_name = str(row['queen_name'] or '').strip()
+            if queen_name:
+                candidates.append(queen_name)
+                candidates.append(f'{QUEEN_RECORD_PREFIX}{queen_name}')
         return self._dedupe_keep_order(candidates)
 
     def _refresh_all_with_resume(self, show_browser=True, batch_size=None, progress_callback=None, should_stop=None):

@@ -28,6 +28,8 @@ from PyQt5.QtWidgets import (
 )
 
 from app.backend.client import BackendClient
+from app.core.app_config import get_setting
+from app.core.app_logging import get_logger
 from app.core.backend_protocol import BACKEND_API_REVISION, build_backend_code_fingerprint
 from app.core.local_video_labels import (
     ENRICHMENT_REQUIRED_STATUS,
@@ -70,6 +72,7 @@ from app.gui.medal_catalog_viewer import MedalCatalogWindow
 from app.gui.masterpiece_viewer import MasterpieceDetailWindow, MasterpieceWindow
 from app.gui.path_library_viewer import PathLibraryWindow
 from app.queen_library.viewer import QueenLibraryWindow
+from app.plugins.local_video_renamer_adapter import LocalVideoRenamerAdapter
 from app.gui.task_queue import (
     RUN_MODE_TASK,
     RUN_MODE_VIEW,
@@ -111,6 +114,9 @@ from app.services.video import (
     MANUAL_CATEGORY_TIER_SECOND,
     MANUAL_CATEGORY_TIER_THIRD,
 )
+
+
+LOGGER = get_logger(__name__)
 
 
 SNAPSHOT_REFRESH_STARTUP_DELAY_MS = 15000
@@ -381,6 +387,12 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self,
         )
         self.task_queue.changed.connect(self.refresh_task_queue_indicator)
+        self._feishu_status_adapter = LocalVideoRenamerAdapter()
+        self._feishu_control_server = None
+        self._feishu_control_timer = None
+        self.task_queue.changed.connect(self._sync_feishu_task_status)
+        self._sync_feishu_task_status()
+        self._start_feishu_control_server()
         self.refresh_task_queue_indicator()
         self.recover_unfinished_enrichment_plans()
         self.update_enrichment_controls()
@@ -403,6 +415,43 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             lambda payload, host: lambda record: host._start_resumed_subtitle_task(record, payload),
         )
         return registry
+
+    def _sync_feishu_task_status(self):
+        adapter = self.__dict__.get('_feishu_status_adapter')
+        task_queue = self.__dict__.get('task_queue')
+        if adapter is not None and task_queue is not None:
+            adapter.sync_task_queue_status(task_queue.records())
+
+    def _start_feishu_control_server(self):
+        token = str(get_setting('FEISHU_CONTROL_TOKEN', default='') or '').strip()
+        if not token:
+            LOGGER.info('Feishu task status endpoint is disabled: FEISHU_CONTROL_TOKEN is not configured')
+            return
+
+        try:
+            host = str(
+                get_setting('LOCAL_VIDEO_RENAMER_CONTROL_HOST', default='127.0.0.1')
+                or '127.0.0.1'
+            ).strip()
+            port = int(get_setting('LOCAL_VIDEO_RENAMER_CONTROL_PORT', default='8763'))
+            timeout = float(get_setting('LOCAL_VIDEO_RENAMER_CONTROL_TIMEOUT', default='2'))
+            server = self._feishu_status_adapter.create_control_server(
+                token=token,
+                host=host,
+                port=port,
+                command_timeout=timeout,
+            )
+            server.start_in_thread()
+        except Exception:
+            LOGGER.exception('Failed to start Feishu task status endpoint')
+            return
+
+        self._feishu_control_server = server
+        self._feishu_control_timer = QTimer(self)
+        self._feishu_control_timer.setInterval(50)
+        self._feishu_control_timer.timeout.connect(server.drain)
+        self._feishu_control_timer.start()
+        LOGGER.info('Feishu task status endpoint listening on %s', server.base_url)
 
     def _start_resumed_subtitle_task(self, record, payload):
         video_code = str(payload.get('video_code') or '').strip()
@@ -3704,6 +3753,15 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             )
             event.ignore()
             return
+        adapter = self.__dict__.get('_feishu_status_adapter')
+        if adapter is not None:
+            adapter.update_status(gui_running=False)
+        timer = self.__dict__.get('_feishu_control_timer')
+        if timer is not None:
+            timer.stop()
+        server = self.__dict__.get('_feishu_control_server')
+        if server is not None:
+            server.stop()
         self.snapshot_refresh_timer.stop()
         self.snapshot_refresh_elapsed_timer.stop()
         self.stop_owned_backend()

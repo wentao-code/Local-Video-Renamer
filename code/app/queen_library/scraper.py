@@ -15,6 +15,7 @@ TITLE_PATTERN = re.compile(r'\u5957\u8def\u76f4\u64ad_[^<>"\'\r\n\t ]+')
 QUEEN_SEARCH_LOAD_TIMEOUT_MS = 120000
 QUEEN_SEARCH_RELOAD_WAIT_MS = 200
 QUEEN_SEARCH_MAX_ATTEMPTS = 3
+QUEEN_SEARCH_MAX_PAGES_PER_SORT = 5
 
 
 class QueenSearchTransientError(RuntimeError):
@@ -108,16 +109,11 @@ class QueenSearchScraper:
                     should_stop=should_stop,
                 )
 
-        search_specs = [
-            ('', 1),
-            *[('', page_number) for page_number in range(2, 6)],
-            *[('relevance', page_number) for page_number in range(1, 6)],
-        ]
-        first_sort, first_page = search_specs[0]
+        first_sort = ''
         first_url = self.build_search_url(
             normalized_keyword,
             sort=first_sort,
-            page=first_page,
+            page=1,
             base_url=QUEEN_SEARCH_BASE_URL,
         )
         selected_first_url = self._open_results_page(
@@ -126,7 +122,7 @@ class QueenSearchScraper:
             fallback_url=self.build_search_url(
                 normalized_keyword,
                 sort=first_sort,
-                page=first_page,
+                page=1,
                 base_url=QUEEN_SEARCH_BACKUP_URL,
             ),
             should_stop=should_stop,
@@ -139,10 +135,12 @@ class QueenSearchScraper:
         )
         source_urls = [selected_first_url]
         records = self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
-        for sort, page_number in search_specs[1:]:
+
+        default_total_pages = self._detect_total_pages(page)
+        for page_number in range(2, default_total_pages + 1):
             target_url = self.build_search_url(
                 normalized_keyword,
-                sort=sort,
+                sort='',
                 page=page_number,
                 base_url=selected_base_url,
             )
@@ -151,12 +149,74 @@ class QueenSearchScraper:
             records.extend(
                 self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
             )
+
+        relevance_first_url = self.build_search_url(
+            normalized_keyword,
+            sort='relevance',
+            page=1,
+            base_url=selected_base_url,
+        )
+        relevance_url = self._open_results_page(
+            page,
+            relevance_first_url,
+            should_stop=should_stop,
+        )
+        source_urls.append(relevance_url)
+        records.extend(self.extract_candidate_titles_from_page(page, base_url=selected_base_url))
+        relevance_total_pages = self._detect_total_pages(page)
+        for page_number in range(2, relevance_total_pages + 1):
+            target_url = self.build_search_url(
+                normalized_keyword,
+                sort='relevance',
+                page=page_number,
+                base_url=selected_base_url,
+            )
+            self._open_results_page(page, target_url, should_stop=should_stop)
+            source_urls.append(target_url)
+            records.extend(
+                self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
+            )
+
         records = self._dedupe_records(records)
         return {
             'source_url': source_urls[0],
             'source_urls': source_urls,
             'records': records,
         }
+
+    @staticmethod
+    def _detect_total_pages(page):
+        try:
+            detected_pages = page.evaluate(
+                """
+                () => {
+                    const current = new URL(location.href);
+                    const currentSort = current.searchParams.get('sort') || '';
+                    const pageNumbers = new Set();
+                    for (const link of document.querySelectorAll('a[href*="page="]')) {
+                        try {
+                            const target = new URL(link.href, location.href);
+                            if (target.pathname !== current.pathname
+                                || target.searchParams.get('q') !== current.searchParams.get('q')
+                                || (target.searchParams.get('sort') || '') !== currentSort) {
+                                continue;
+                            }
+                            const pageNumber = Number.parseInt(target.searchParams.get('page') || '', 10);
+                            if (Number.isInteger(pageNumber) && pageNumber > 0) {
+                                pageNumbers.add(pageNumber);
+                            }
+                        } catch (error) {
+                        }
+                    }
+                    return pageNumbers.size ? Math.max(...pageNumbers) : null;
+                }
+                """
+            )
+            if detected_pages is None:
+                return QUEEN_SEARCH_MAX_PAGES_PER_SORT
+            return max(1, min(int(detected_pages), QUEEN_SEARCH_MAX_PAGES_PER_SORT))
+        except Exception:
+            return QUEEN_SEARCH_MAX_PAGES_PER_SORT
 
     def _open_results_page(self, page, target_url, fallback_url='', should_stop=None):
         active_url = str(target_url or '').strip()
