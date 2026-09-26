@@ -42,6 +42,23 @@ class MainWindowStartupTest(unittest.TestCase):
         self.assertNotIn('btn_generate_soft_subtitles', init_source)
         self.assertNotIn('软字幕生成', init_source)
 
+    def test_rename_button_follows_status_rules_and_remaining_actions_are_left_aligned(self):
+        init_source = inspect.getsource(main_window.VidNormApp.init_ui)
+
+        status_rules_position = init_source.find('bottom_button_row.addWidget(self.btn_status_rules)')
+        execute_position = init_source.find('bottom_button_row.addWidget(self.btn_execute)')
+        disguise_position = init_source.find('third_button_row.addWidget(self.btn_disguise)')
+        force_exit_position = init_source.find('third_button_row.addWidget(self.btn_force_exit)')
+
+        self.assertGreaterEqual(status_rules_position, 0)
+        self.assertGreaterEqual(execute_position, 0)
+        self.assertGreaterEqual(disguise_position, 0)
+        self.assertGreaterEqual(force_exit_position, 0)
+        self.assertLess(status_rules_position, execute_position)
+        self.assertLess(execute_position, disguise_position)
+        self.assertLess(disguise_position, force_exit_position)
+        self.assertNotIn('third_button_row.addWidget(self.btn_execute)', init_source)
+
     def test_generate_subtitles_creates_one_pipeline_task_per_confirmed_video(self):
         calls = []
 

@@ -31,10 +31,12 @@ class LocalVideoRenamerAdapter:
         *,
         start_handler: Handler | None = None,
         stop_handler: Handler | None = None,
+        shutdown_handler: Handler | None = None,
         status_snapshot: StatusSnapshot | None = None,
     ) -> None:
         self._start_handler = start_handler
         self._stop_handler = stop_handler
+        self._shutdown_handler = shutdown_handler
         self._status = status_snapshot or StatusSnapshot(
             plugin_id=self.PLUGIN_ID,
             gui_running=False,
@@ -130,7 +132,33 @@ class LocalVideoRenamerAdapter:
     def handle_command(self, action: str, request_id: str) -> dict[str, Any]:
         normalized_action = str(action or "").strip().lower()
         normalized_request_id = str(request_id or "").strip()
-        if normalized_action not in {"start", "stop"}:
+        if normalized_action == "shutdown":
+            status = self.status()
+            if not status.get("gui_running"):
+                return {
+                    "request_id": normalized_request_id,
+                    "accepted": False,
+                    "status": "rejected",
+                    "reason": "Local Video Renamer 未运行。",
+                }
+            if status.get("busy") or int(status.get("queue_depth") or 0) > 0:
+                return {
+                    "request_id": normalized_request_id,
+                    "accepted": False,
+                    "status": "rejected",
+                    "reason": "当前任务正在运行或排队，请先结束任务。",
+                }
+            if self._shutdown_handler is None:
+                return {
+                    "request_id": normalized_request_id,
+                    "accepted": False,
+                    "status": "rejected",
+                    "reason": "Local Video Renamer 尚未绑定 GUI 关闭入口。",
+                }
+            handler = self._shutdown_handler
+        elif normalized_action in {"start", "stop"}:
+            handler = self._start_handler if normalized_action == "start" else self._stop_handler
+        else:
             return {
                 "request_id": normalized_request_id,
                 "accepted": False,
@@ -138,7 +166,6 @@ class LocalVideoRenamerAdapter:
                 "reason": f"不支持的控制动作：{normalized_action or '空动作'}",
             }
 
-        handler = self._start_handler if normalized_action == "start" else self._stop_handler
         if handler is None:
             return {
                 "request_id": normalized_request_id,

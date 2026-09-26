@@ -2,12 +2,14 @@ import re
 from contextlib import contextmanager
 from urllib.parse import quote, urljoin, urlparse
 
+from app.core.app_logging import get_logger
 from app.core.operation_timeout_settings import get_operation_timeout_milliseconds
 from app.core.runtime_config import get_scraper_browser_channel, get_scraper_locale
 from app.scraper.avfan_scraper import import_sync_playwright, wait_for_page_ready
 from app.scraper.browser_window import minimize_browser_window_if_needed
 
 
+LOGGER = get_logger(__name__)
 QUEEN_SEARCH_BASE_URL = 'https://y.9cili.click'
 QUEEN_SEARCH_BACKUP_URL = 'https://a.1cili.click'
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
@@ -16,6 +18,8 @@ QUEEN_SEARCH_LOAD_TIMEOUT_MS = 120000
 QUEEN_SEARCH_RELOAD_WAIT_MS = 200
 QUEEN_SEARCH_MAX_ATTEMPTS = 3
 QUEEN_SEARCH_MAX_PAGES_PER_SORT = 5
+QUEEN_SEARCH_RESULTS_PER_PAGE = 50
+QUEEN_SEARCH_RELEVANCE_THRESHOLD = 250
 
 
 class QueenSearchTransientError(RuntimeError):
@@ -136,7 +140,13 @@ class QueenSearchScraper:
         source_urls = [selected_first_url]
         records = self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
 
-        default_total_pages = self._detect_total_pages(page)
+        default_result_count = self._read_reported_result_count(page)
+        if default_result_count is None:
+            LOGGER.warning(
+                '女王库搜索结果总数无法读取，按单页处理 keyword=%s sort=default',
+                normalized_keyword,
+            )
+        default_total_pages = self._page_count_for_result_count(default_result_count)
         for page_number in range(2, default_total_pages + 1):
             target_url = self.build_search_url(
                 normalized_keyword,
@@ -150,32 +160,39 @@ class QueenSearchScraper:
                 self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
             )
 
-        relevance_first_url = self.build_search_url(
-            normalized_keyword,
-            sort='relevance',
-            page=1,
-            base_url=selected_base_url,
-        )
-        relevance_url = self._open_results_page(
-            page,
-            relevance_first_url,
-            should_stop=should_stop,
-        )
-        source_urls.append(relevance_url)
-        records.extend(self.extract_candidate_titles_from_page(page, base_url=selected_base_url))
-        relevance_total_pages = self._detect_total_pages(page)
-        for page_number in range(2, relevance_total_pages + 1):
-            target_url = self.build_search_url(
+        if default_result_count is not None and default_result_count >= QUEEN_SEARCH_RELEVANCE_THRESHOLD:
+            relevance_first_url = self.build_search_url(
                 normalized_keyword,
                 sort='relevance',
-                page=page_number,
+                page=1,
                 base_url=selected_base_url,
             )
-            self._open_results_page(page, target_url, should_stop=should_stop)
-            source_urls.append(target_url)
-            records.extend(
-                self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
+            relevance_url = self._open_results_page(
+                page,
+                relevance_first_url,
+                should_stop=should_stop,
             )
+            source_urls.append(relevance_url)
+            records.extend(self.extract_candidate_titles_from_page(page, base_url=selected_base_url))
+            relevance_result_count = self._read_reported_result_count(page)
+            if relevance_result_count is None:
+                LOGGER.warning(
+                    '女王库相关度搜索结果总数无法读取，按单页处理 keyword=%s',
+                    normalized_keyword,
+                )
+            relevance_total_pages = self._page_count_for_result_count(relevance_result_count)
+            for page_number in range(2, relevance_total_pages + 1):
+                target_url = self.build_search_url(
+                    normalized_keyword,
+                    sort='relevance',
+                    page=page_number,
+                    base_url=selected_base_url,
+                )
+                self._open_results_page(page, target_url, should_stop=should_stop)
+                source_urls.append(target_url)
+                records.extend(
+                    self.extract_candidate_titles_from_page(page, base_url=selected_base_url)
+                )
 
         records = self._dedupe_records(records)
         return {
@@ -184,39 +201,38 @@ class QueenSearchScraper:
             'records': records,
         }
 
-    @staticmethod
-    def _detect_total_pages(page):
+    @classmethod
+    def _read_reported_result_count(cls, page):
         try:
-            detected_pages = page.evaluate(
-                """
-                () => {
-                    const current = new URL(location.href);
-                    const currentSort = current.searchParams.get('sort') || '';
-                    const pageNumbers = new Set();
-                    for (const link of document.querySelectorAll('a[href*="page="]')) {
-                        try {
-                            const target = new URL(link.href, location.href);
-                            if (target.pathname !== current.pathname
-                                || target.searchParams.get('q') !== current.searchParams.get('q')
-                                || (target.searchParams.get('sort') || '') !== currentSort) {
-                                continue;
-                            }
-                            const pageNumber = Number.parseInt(target.searchParams.get('page') || '', 10);
-                            if (Number.isInteger(pageNumber) && pageNumber > 0) {
-                                pageNumbers.add(pageNumber);
-                            }
-                        } catch (error) {
-                        }
-                    }
-                    return pageNumbers.size ? Math.max(...pageNumbers) : null;
-                }
-                """
-            )
-            if detected_pages is None:
-                return QUEEN_SEARCH_MAX_PAGES_PER_SORT
-            return max(1, min(int(detected_pages), QUEEN_SEARCH_MAX_PAGES_PER_SORT))
+            body_text = page.locator('body').inner_text(timeout=5000)
         except Exception:
-            return QUEEN_SEARCH_MAX_PAGES_PER_SORT
+            return None
+        return cls._extract_reported_result_count(body_text)
+
+    @staticmethod
+    def _extract_reported_result_count(body_text):
+        chinese_match = re.search(r'(?:\u7ea6\s*)?([\d,]+)\s*\u4e2a\u7ed3\u679c', body_text or '')
+        if chinese_match:
+            return int(chinese_match.group(1).replace(',', ''))
+        english_match = re.search(
+            r'(?:about\s+)?([\d,]+)\s+results?\b',
+            body_text or '',
+            re.IGNORECASE,
+        )
+        if english_match:
+            return int(english_match.group(1).replace(',', ''))
+        return None
+
+    @staticmethod
+    def _page_count_for_result_count(result_count):
+        if result_count is None:
+            return 1
+        calculated_pages = max(
+            1,
+            (max(0, int(result_count)) + QUEEN_SEARCH_RESULTS_PER_PAGE - 1)
+            // QUEEN_SEARCH_RESULTS_PER_PAGE,
+        )
+        return min(calculated_pages, QUEEN_SEARCH_MAX_PAGES_PER_SORT)
 
     def _open_results_page(self, page, target_url, fallback_url='', should_stop=None):
         active_url = str(target_url or '').strip()
@@ -328,7 +344,10 @@ class QueenSearchScraper:
             html = ''
         if cls._is_zero_results_page(body_text=body_text, html=html):
             return True
-        return bool(cls.extract_candidate_titles(body_text=body_text, html=html))
+        return (
+            cls._extract_reported_result_count(body_text) is not None
+            or bool(cls.extract_candidate_titles(body_text=body_text, html=html))
+        )
 
     @staticmethod
     def _is_zero_results_page(body_text='', html=''):

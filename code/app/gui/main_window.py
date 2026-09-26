@@ -387,7 +387,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             self,
         )
         self.task_queue.changed.connect(self.refresh_task_queue_indicator)
-        self._feishu_status_adapter = LocalVideoRenamerAdapter()
+        self._feishu_status_adapter = LocalVideoRenamerAdapter(
+            shutdown_handler=self._request_feishu_shutdown,
+        )
         self._feishu_control_server = None
         self._feishu_control_timer = None
         self.task_queue.changed.connect(self._sync_feishu_task_status)
@@ -421,6 +423,17 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         task_queue = self.__dict__.get('task_queue')
         if adapter is not None and task_queue is not None:
             adapter.sync_task_queue_status(task_queue.records())
+
+    def _request_feishu_shutdown(self, request_id):
+        del request_id
+        status = self._feishu_status_adapter.status()
+        if status.get('busy') or int(status.get('queue_depth') or 0) > 0:
+            return {
+                'accepted': False,
+                'reason': '当前任务正在运行或排队，请先结束任务。',
+            }
+        QTimer.singleShot(0, self.close)
+        return {'accepted': True, 'message': '项目关闭请求已接受。'}
 
     def _start_feishu_control_server(self):
         token = str(get_setting('FEISHU_CONTROL_TOKEN', default='') or '').strip()
@@ -894,9 +907,9 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         bottom_button_row.addWidget(self.btn_background_refresh)
         bottom_button_row.addWidget(self.btn_timeout_settings)
         bottom_button_row.addWidget(self.btn_status_rules)
+        bottom_button_row.addWidget(self.btn_execute)
         bottom_button_row.addStretch()
 
-        third_button_row.addWidget(self.btn_execute)
         third_button_row.addWidget(self.btn_disguise)
         third_button_row.addWidget(self.btn_force_exit)
         third_button_row.addStretch()

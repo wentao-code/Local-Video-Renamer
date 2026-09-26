@@ -102,6 +102,36 @@ def test_adapter_invokes_only_explicitly_injected_handlers():
     assert calls == [("start", "req-start"), ("stop", "req-stop")]
 
 
+def test_adapter_shutdown_uses_only_an_explicit_idle_gui_handler():
+    calls = []
+    adapter = LocalVideoRenamerAdapter(
+        shutdown_handler=lambda request_id: calls.append(request_id)
+        or {"message": "关闭请求已接受"}
+    )
+    adapter.update_status(gui_running=True, busy=False, queue_depth=0)
+
+    response = adapter.handle_command("shutdown", "close-1")
+
+    assert response["accepted"] is True
+    assert response["message"] == "关闭请求已接受"
+    assert calls == ["close-1"]
+
+
+def test_adapter_shutdown_is_refused_while_queue_is_busy_or_nonempty():
+    calls = []
+    adapter = LocalVideoRenamerAdapter(shutdown_handler=lambda request_id: calls.append(request_id))
+    adapter.update_status(gui_running=True, busy=True, queue_depth=0)
+
+    active = adapter.handle_command("shutdown", "close-active")
+    adapter.update_status(busy=False, queue_depth=1)
+    queued = adapter.handle_command("shutdown", "close-queued")
+
+    assert active["accepted"] is False
+    assert queued["accepted"] is False
+    assert "先结束任务" in active["reason"]
+    assert calls == []
+
+
 def test_adapter_control_server_exposes_authenticated_status_and_gui_queue():
     calls = []
     adapter = LocalVideoRenamerAdapter(
