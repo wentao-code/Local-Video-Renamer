@@ -168,11 +168,32 @@ class QueenSearchScraperTest(unittest.TestCase):
         self.assertEqual(
             result['records'],
             [
-                {'raw_title': f'{QUEEN_PREFIX}QueenA_Title.mp4', 'detail_url': 'https://y.9cili.click/hash/a'},
-                {'raw_title': f'{QUEEN_PREFIX}QueenB_Title.mp4', 'detail_url': 'https://y.9cili.click/hash/b'},
+                {
+                    'raw_title': f'{QUEEN_PREFIX}QueenA_Title.mp4',
+                    'detail_url': 'https://y.9cili.click/hash/a',
+                    'file_size_bytes': None,
+                    'published_at': None,
+                },
+                {
+                    'raw_title': f'{QUEEN_PREFIX}QueenB_Title.mp4',
+                    'detail_url': 'https://y.9cili.click/hash/b',
+                    'file_size_bytes': None,
+                    'published_at': None,
+                },
             ],
         )
         self.assertEqual(result['source_urls'], visited)
+
+    def test_search_dedupe_merges_metadata_from_duplicate_result_rows(self):
+        scraper = _SearchHarness(_SequencedPageStub())
+        records = scraper._dedupe_records([
+            {'raw_title': f'{QUEEN_PREFIX}QueenA_Title.mp4', 'file_size_bytes': None, 'published_at': None},
+            {'raw_title': f'{QUEEN_PREFIX}QueenA_Title.mp4', 'file_size_bytes': 1536, 'published_at': '2024-01-02'},
+        ])
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['file_size_bytes'], 1536)
+        self.assertEqual(records[0]['published_at'], '2024-01-02')
 
     def test_search_uses_result_count_for_page_count_and_skips_relevance_below_250(self):
         page = _SequencedPageStub(
@@ -333,13 +354,89 @@ class QueenSearchScraperTest(unittest.TestCase):
                 {
                     'raw_title': f'{QUEEN_PREFIX}QueenA_Title_01.mp4',
                     'detail_url': 'https://y.9cili.click/hash/abc123',
+                    'file_size_bytes': None,
+                    'published_at': None,
                 },
                 {
                     'raw_title': f'{QUEEN_PREFIX}QueenB_Title.mp4',
                     'detail_url': 'https://a.1cili.click/hash/def456',
+                    'file_size_bytes': None,
+                    'published_at': None,
                 },
             ],
         )
+
+    def test_extract_result_row_records_parses_size_and_preserves_published_date(self):
+        page = _SequencedPageStub([
+            {
+                'records': [
+                    {
+                        'title': f'{QUEEN_PREFIX}QueenA_Title.mp4',
+                        'href': '/hash/abc123',
+                        'file_size': '1.5 GB',
+                        'published_at': '2024-05-06 07:08:09',
+                    },
+                    {
+                        'title': f'{QUEEN_PREFIX}QueenB_Title.mp4',
+                        'href': '/hash/def456',
+                        'file_size': 'unknown',
+                        'published_at': '',
+                    },
+                ],
+            }
+        ])
+
+        records = QueenSearchScraper.extract_result_row_records(page)
+
+        self.assertEqual(records[0]['file_size_bytes'], 1610612736)
+        self.assertEqual(records[0]['published_at'], '2024-05-06 07:08:09')
+        self.assertIsNone(records[1]['file_size_bytes'])
+        self.assertIsNone(records[1]['published_at'])
+
+    def test_extract_result_row_records_reads_real_table_cells_with_playwright(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception as exc:
+            self.skipTest(f'Playwright unavailable: {exc}')
+
+        html = '''
+            <table class="file-list">
+                <thead><tr><th>Name</th><th>Date</th><th>Size</th></tr></thead>
+                <tbody><tr>
+                    <td><a href="/hash/abc123">套路直播_QueenA_Title.mp4</a></td>
+                    <td><time datetime="2024-05-06 07:08:09">2024-05-06</time></td>
+                    <td>1,5 GB</td>
+                </tr></tbody>
+            </table>
+        '''
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(headless=True)
+            except Exception as exc:
+                self.skipTest(f'Chromium unavailable: {exc}')
+            try:
+                page = browser.new_page()
+                page.set_content(html)
+                records = QueenSearchScraper.extract_result_row_records(page)
+            finally:
+                browser.close()
+
+        self.assertEqual(records[0]['detail_url'], 'https://y.9cili.click/hash/abc123')
+        self.assertEqual(records[0]['file_size_bytes'], 1610612736)
+        self.assertEqual(records[0]['published_at'], '2024-05-06 07:08:09')
+
+    def test_parse_file_size_supports_common_units(self):
+        cases = {
+            '500 B': 500,
+            '1 KB': 1024,
+            '1 MiB': 1048576,
+            '2 GB': 2147483648,
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(QueenSearchScraper.parse_file_size(source), expected)
+        self.assertIsNone(QueenSearchScraper.parse_file_size('not available'))
+        self.assertEqual(QueenSearchScraper.parse_file_size('1,5 GB'), 1610612736)
 
     def test_extract_candidate_titles_from_rows_dedupes_and_preserves_full_title(self):
         rows = [

@@ -68,6 +68,23 @@ def _add_empty_and_options(combo, options, label_key_prefix):
         combo.addItem(tr(f'{label_key_prefix}.{option}'), option)
 
 
+def _format_file_size(value):
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return ''
+    if size < 0:
+        return ''
+    if size < 1024:
+        return f'{size} B'
+    for unit in ('KB', 'MB', 'GB', 'TB'):
+        size /= 1024
+        if size < 1024 or unit == 'TB':
+            formatted = f'{size:.1f}'.rstrip('0').rstrip('.')
+            return f'{formatted} {unit}'
+    return ''
+
+
 def _profile_label(field_key):
     return tr(f'queen.profile.field.{field_key}')
 
@@ -258,15 +275,13 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
         profile_layout.addStretch()
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(tr('queen.detail.headers'))
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, self.table.horizontalHeader().Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, self.table.horizontalHeader().Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(2, self.table.horizontalHeader().ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(3, self.table.horizontalHeader().ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, self.table.horizontalHeader().ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(5, self.table.horizontalHeader().ResizeToContents)
+        for column in range(2, 8):
+            self.table.horizontalHeader().setSectionResizeMode(column, self.table.horizontalHeader().ResizeToContents)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
 
@@ -406,6 +421,13 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
                 item = QTableWidgetItem(str(value or ''))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.table.setItem(row_index, column_index, item)
+            for column_index, value in enumerate(
+                (_format_file_size(row_data.get('file_size_bytes')), row_data.get('published_at') or ''),
+                start=2,
+            ):
+                item = QTableWidgetItem(str(value or ''))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(row_index, column_index, item)
             record_id = int(row_data.get('id', 0) or 0)
             content_combo = self._build_content_type_combo(row_data.get('content_type', ''))
             level_combo = self._build_level_combo(row_data.get('content_level', ''))
@@ -415,10 +437,10 @@ class QueenDetailWindow(AsyncTaskHostMixin, QDialog):
             }
             content_combo.currentIndexChanged.connect(lambda _index, value=record_id: self.save_video_metadata(value))
             level_combo.currentIndexChanged.connect(lambda _index, value=record_id: self.save_video_metadata(value))
-            self.table.setCellWidget(row_index, 2, content_combo)
-            self.table.setCellWidget(row_index, 3, level_combo)
-            self.table.setCellWidget(row_index, 4, self._build_delete_button(record_id))
-            self.table.setCellWidget(row_index, 5, self._build_detail_indicator(row_data.get('detail_url', '')))
+            self.table.setCellWidget(row_index, 4, content_combo)
+            self.table.setCellWidget(row_index, 5, level_combo)
+            self.table.setCellWidget(row_index, 6, self._build_delete_button(record_id))
+            self.table.setCellWidget(row_index, 7, self._build_detail_indicator(row_data.get('detail_url', '')))
 
     def _build_content_type_combo(self, current_value):
         combo = QComboBox()
@@ -623,9 +645,9 @@ class QueenAuthorDetailWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_refresh)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(8)
         self.table.setHorizontalHeaderLabels(tr('queen.author_detail.headers'))
-        for column in range(6):
+        for column in range(8):
             self.table.horizontalHeader().setSectionResizeMode(
                 column,
                 self.table.horizontalHeader().Stretch if column in (0, 1) else self.table.horizontalHeader().ResizeToContents,
@@ -697,6 +719,8 @@ class QueenAuthorDetailWindow(AsyncTaskHostMixin, QDialog):
                 row_data.get('video_title', ''),
                 row_data.get('raw_title', ''),
                 row_data.get('queen_name', ''),
+                _format_file_size(row_data.get('file_size_bytes')),
+                row_data.get('published_at') or '',
                 row_data.get('content_type', ''),
                 row_data.get('content_level', ''),
             )
@@ -706,7 +730,7 @@ class QueenAuthorDetailWindow(AsyncTaskHostMixin, QDialog):
                 self.table.setItem(row_index, column_index, item)
             self.table.setCellWidget(
                 row_index,
-                5,
+                7,
                 QueenDetailWindow._build_detail_indicator(row_data.get('detail_url', '')),
             )
 

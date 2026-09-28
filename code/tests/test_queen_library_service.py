@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from app.queen_library.scraper import QueenSearchTransientError
@@ -427,6 +427,172 @@ class QueenLibraryServiceTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, '\u5173\u952e\u8bcd\u5df2\u5b58\u5728'):
                 service.search_keyword('\u5c0f7s')
+
+    def test_existing_schema_migration_adds_video_metadata_columns_without_changing_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.executescript(
+                    '''
+                    CREATE TABLE queen_videos (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        keyword_id INTEGER NOT NULL,
+                        raw_title TEXT NOT NULL,
+                        queen_name TEXT NOT NULL,
+                        video_title TEXT NOT NULL,
+                        source_url TEXT DEFAULT '',
+                        detail_url TEXT DEFAULT '',
+                        content_type TEXT DEFAULT '',
+                        content_level TEXT DEFAULT '',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(queen_name, video_title)
+                    );
+                    CREATE TABLE queen_crawl_staging (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        batch_id TEXT NOT NULL,
+                        keyword TEXT NOT NULL,
+                        source_url TEXT DEFAULT '',
+                        raw_title TEXT NOT NULL,
+                        queen_name TEXT NOT NULL,
+                        video_title TEXT NOT NULL,
+                        detail_url TEXT DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        route TEXT DEFAULT '',
+                        error TEXT DEFAULT '',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(batch_id, queen_name, video_title)
+                    );
+                    CREATE TABLE queen_author_video_records (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        raw_title TEXT NOT NULL,
+                        queen_name TEXT NOT NULL,
+                        video_title TEXT NOT NULL,
+                        source_url TEXT DEFAULT '',
+                        detail_url TEXT DEFAULT '',
+                        content_type TEXT DEFAULT '',
+                        content_level TEXT DEFAULT '',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(queen_name, video_title)
+                    );
+                    INSERT INTO queen_videos(keyword_id, raw_title, queen_name, video_title)
+                    VALUES (1, 'raw', 'QueenA', 'OldVideo');
+                    '''
+                )
+            finally:
+                conn.close()
+
+            QueenLibraryService(db_path, scraper=_ScraperStub())
+
+            conn = sqlite3.connect(db_path)
+            try:
+                for table in ('queen_crawl_staging', 'queen_videos', 'queen_author_video_records'):
+                    columns = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+                    self.assertIn('file_size_bytes', columns)
+                    self.assertIn('published_at', columns)
+                self.assertEqual(
+                    conn.execute('SELECT raw_title, queen_name, video_title FROM queen_videos').fetchone(),
+                    ('raw', 'QueenA', 'OldVideo'),
+                )
+                self.assertEqual(
+                    conn.execute('SELECT file_size_bytes, published_at FROM queen_videos').fetchone(),
+                    (None, None),
+                )
+            finally:
+                conn.close()
+
+    def test_duplicate_queen_video_fills_missing_fields_without_overwriting_values(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub([
+                {
+                    'raw_title': '\u5957\u8def\u76f4\u64ad_QueenA_Video.mp4',
+                    'file_size_bytes': 1024,
+                    'published_at': None,
+                }
+            ])
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('first')
+            scraper.records = [
+                {
+                    'raw_title': '\u5957\u8def\u76f4\u64ad_QueenA_Video.mp4',
+                    'file_size_bytes': 2048,
+                    'published_at': '2024-05-06 07:08:09',
+                }
+            ]
+
+            service.search_keyword('second')
+
+            video = service.get_queen_detail('QueenA')['videos'][0]
+            self.assertEqual(video['file_size_bytes'], 1024)
+            self.assertEqual(video['published_at'], '2024-05-06 07:08:09')
+            with closing(sqlite3.connect(Path(temp_dir) / 'queen_library.db')) as conn:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0], 1)
+
+    def test_duplicate_author_video_fills_missing_fields_without_adding_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub([
+                {
+                    'raw_title': '\u5957\u8def\u76f4\u64ad_BlackCat_Video.mp4',
+                    'file_size_bytes': None,
+                    'published_at': None,
+                }
+            ])
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.add_queen_author('BlackCat', 'BlackCat')
+            service.search_keyword('first')
+            scraper.records = [
+                {
+                    'raw_title': '\u5957\u8def\u76f4\u64ad_BlackCat_Video.mp4',
+                    'file_size_bytes': 512000,
+                    'published_at': '2024-02-03',
+                }
+            ]
+
+            service.search_keyword('second')
+
+            video = service.get_queen_author_detail('BlackCat')['videos'][0]
+            self.assertEqual(video['file_size_bytes'], 512000)
+            self.assertEqual(video['published_at'], '2024-02-03')
+            with closing(sqlite3.connect(Path(temp_dir) / 'queen_library.db')) as conn:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_video_records').fetchone()[0], 1)
+
+    def test_author_routing_enriches_existing_queen_video_before_linking(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            scraper = _ScraperStub([
+                {'raw_title': '\u5957\u8def\u76f4\u64ad_BlackCat_Video.mp4'},
+            ])
+            service = QueenLibraryService(Path(temp_dir) / 'queen_library.db', scraper=scraper)
+            service.search_keyword('first')
+            service.add_queen_author('BlackCat', 'BlackCat')
+            scraper.records = [
+                {
+                    'raw_title': '\u5957\u8def\u76f4\u64ad_BlackCat_Video.mp4',
+                    'file_size_bytes': 4096,
+                    'published_at': '2024-05-06',
+                },
+            ]
+
+            service.search_keyword('second')
+
+            author_video = service.get_queen_author_detail('BlackCat')['videos'][0]
+            self.assertEqual(author_video['file_size_bytes'], 4096)
+            self.assertEqual(author_video['published_at'], '2024-05-06')
+            with closing(sqlite3.connect(Path(temp_dir) / 'queen_library.db')) as conn:
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0], 1)
+                self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_author_video_records').fetchone()[0], 0)
+
+    def test_queen_video_merge_preserves_file_size_and_publish_date(self):
+        merged = QueenLibraryService._build_merged_queen_video_row(
+            [
+                {'file_size_bytes': None, 'published_at': None},
+                {'file_size_bytes': 4096, 'published_at': '2024-05-06'},
+            ],
+            'QueenA',
+            'Video',
+        )
+
+        self.assertEqual(merged['file_size_bytes'], 4096)
+        self.assertEqual(merged['published_at'], '2024-05-06')
 
     def test_parse_record_extracts_queen_and_video_title_with_index(self):
         parsed = QueenLibraryService.parse_record_title(

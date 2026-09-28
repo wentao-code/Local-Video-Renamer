@@ -14,6 +14,7 @@ QUEEN_SEARCH_BASE_URL = 'https://y.9cili.click'
 QUEEN_SEARCH_BACKUP_URL = 'https://a.1cili.click'
 QUEEN_RECORD_PREFIX = '\u5957\u8def\u76f4\u64ad_'
 TITLE_PATTERN = re.compile(r'\u5957\u8def\u76f4\u64ad_[^<>"\'\r\n\t ]+')
+FILE_SIZE_PATTERN = re.compile(r'(?<![\w.])(\d+(?:[.,]\d+)*)\s*(bytes?|b|[kmgt]i?b)\b', re.IGNORECASE)
 QUEEN_SEARCH_LOAD_TIMEOUT_MS = 120000
 QUEEN_SEARCH_RELOAD_WAIT_MS = 200
 QUEEN_SEARCH_MAX_ATTEMPTS = 3
@@ -404,9 +405,25 @@ class QueenSearchScraper:
                         .filter((node) => !(node.nodeType === Node.ELEMENT_NODE && node.matches('p.sample')))
                         .map((node) => node.textContent || '')
                         .join('');
+                    const cells = Array.from(row.querySelectorAll('td'));
+                    const headers = Array.from(row.closest('table').querySelectorAll('thead th'));
+                    const sizeIndex = headers.findIndex((cell) => /size|\u5927\u5c0f|\u5bb9\u91cf/i.test(cell.innerText || ''));
+                    const dateIndex = headers.findIndex((cell) => /date|\u65e5\u671f|\u65f6\u95f4|\u4e0a\u4f20|\u53d1\u5e03/i.test(cell.innerText || ''));
+                    const cellText = (cell) => (cell?.innerText || cell?.textContent || '').replace(/\\s+/g, ' ').trim();
+                    const sizePattern = /\\d+(?:[.,]\\d+)?\\s*(?:bytes?|b|[kmgt]i?b)\\b/i;
+                    const datePattern = /\\b\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}(?:[ T]\\d{1,2}:\\d{2}(?::\\d{2})?)?\\b/;
+                    const sizeCell = sizeIndex >= 0
+                        ? cells[sizeIndex]
+                        : cells.find((cell) => sizePattern.test(cellText(cell)));
+                    const dateCell = dateIndex >= 0
+                        ? cells[dateIndex]
+                        : cells.find((cell) => datePattern.test(cellText(cell)));
+                    const time = dateCell?.querySelector('time');
                     return {
                         title: title.replace(/\\s+/g, ' ').trim(),
                         href: link.getAttribute('href') || '',
+                        file_size: cellText(sizeCell),
+                        published_at: (time?.getAttribute('datetime') || cellText(dateCell)),
                     };
                 }).filter(Boolean)
                 """
@@ -432,12 +449,39 @@ class QueenSearchScraper:
             records.append({
                 'raw_title': raw_title,
                 'detail_url': urljoin(base_url or QUEEN_SEARCH_BASE_URL, detail_url) if detail_url else '',
+                'file_size_bytes': cls.parse_file_size(payload.get('file_size')),
+                'published_at': str(payload.get('published_at', '') or '').strip() or None,
             })
         return records
 
     @staticmethod
+    def parse_file_size(value):
+        match = FILE_SIZE_PATTERN.search(str(value or ''))
+        if not match:
+            return None
+        number_text = match.group(1)
+        if ',' in number_text and '.' in number_text:
+            decimal_separator = ',' if number_text.rfind(',') > number_text.rfind('.') else '.'
+            grouping_separator = '.' if decimal_separator == ',' else ','
+            number_text = number_text.replace(grouping_separator, '').replace(decimal_separator, '.')
+        elif ',' in number_text:
+            groups = number_text.split(',')
+            if len(groups[-1]) == 3 and all(len(group) == 3 for group in groups[1:]):
+                number_text = ''.join(groups)
+            else:
+                number_text = number_text.replace(',', '.')
+        number = float(number_text)
+        unit = match.group(2).lower()
+        if unit.startswith('byte') or unit == 'b':
+            multiplier = 1
+        else:
+            prefix = unit[0]
+            multiplier = 1024 ** {'k': 1, 'm': 2, 'g': 3, 't': 4}[prefix]
+        return int(number * multiplier + 0.5)
+
+    @staticmethod
     def _dedupe_records(records):
-        seen = set()
+        seen = {}
         deduped = []
         for record in list(records or []):
             if isinstance(record, dict):
@@ -445,9 +489,20 @@ class QueenSearchScraper:
             else:
                 identity = record
             normalized_identity = ' '.join(str(identity or '').split()).strip()
-            if not normalized_identity or normalized_identity in seen:
+            if not normalized_identity:
                 continue
-            seen.add(normalized_identity)
+            if normalized_identity in seen:
+                existing_index = seen[normalized_identity]
+                existing_record = deduped[existing_index]
+                if isinstance(existing_record, dict) and isinstance(record, dict):
+                    merged_record = dict(existing_record)
+                    for key, value in record.items():
+                        current_value = merged_record.get(key)
+                        if current_value in (None, '') and value not in (None, ''):
+                            merged_record[key] = value
+                    deduped[existing_index] = merged_record
+                continue
+            seen[normalized_identity] = len(deduped)
             deduped.append(record)
         return deduped
 

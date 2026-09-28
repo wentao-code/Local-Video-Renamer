@@ -728,9 +728,54 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 self.assertFalse(hasattr(window, 'btn_delete_queen'))
                 self.assertFalse(hasattr(window, 'btn_delete_video'))
                 self.assertEqual(window.btn_remove_author.text(), '\u79fb\u51fa\u4f5c\u8005\u5e93')
+                self.assertEqual(window.table.item(0, 3).text(), '')
+                self.assertEqual(window.table.item(0, 4).text(), '')
             finally:
                 window.hide()
                 window.deleteLater()
+
+    def test_queen_and_author_detail_tables_show_file_size_and_publish_date(self):
+        queen_backend = _QueenDetailBackendStub()
+        queen_snapshot = queen_backend.get_queen_detail_snapshot
+
+        def queen_snapshot_with_video_metadata(queen_name, force_refresh=False):
+            payload = queen_snapshot(queen_name, force_refresh=force_refresh)
+            payload['videos'][0].update({
+                'file_size_bytes': 1610612736,
+                'published_at': '2024-05-06 07:08:09',
+            })
+            return payload
+
+        queen_backend.get_queen_detail_snapshot = queen_snapshot_with_video_metadata
+        author_backend = _QueenAuthorBackendStub()
+        author_snapshot = author_backend.get_queen_author_detail_snapshot
+
+        def author_snapshot_with_video_metadata(author_name, force_refresh=False):
+            payload = author_snapshot(author_name, force_refresh=force_refresh)
+            payload['videos'][0].update({
+                'file_size_bytes': 512000,
+                'published_at': '2024-02-03',
+            })
+            return payload
+
+        author_backend.get_queen_author_detail_snapshot = author_snapshot_with_video_metadata
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            queen_window = QueenDetailWindow(queen_backend, 'QueenA')
+            author_window = QueenAuthorDetailWindow(author_backend, 'BlackCat')
+            try:
+                self.assertEqual(queen_window.table.columnCount(), 8)
+                self.assertEqual(queen_window.table.item(0, 2).text(), '1.5 GB')
+                self.assertEqual(queen_window.table.item(0, 3).text(), '2024-05-06 07:08:09')
+                self.assertEqual(queen_window.table.horizontalHeaderItem(2).text(), '\u6587\u4ef6\u5927\u5c0f')
+                self.assertEqual(queen_window.table.horizontalHeaderItem(3).text(), '\u53d1\u5e03\u65e5\u671f')
+                self.assertEqual(author_window.table.columnCount(), 8)
+                self.assertEqual(author_window.table.item(0, 3).text(), '500 KB')
+                self.assertEqual(author_window.table.item(0, 4).text(), '2024-02-03')
+            finally:
+                queen_window.hide()
+                queen_window.deleteLater()
+                author_window.hide()
+                author_window.deleteLater()
 
     def test_author_library_buttons_reuse_queen_like_level_colors(self):
         backend = _QueenAuthorBackendStub()
@@ -800,8 +845,8 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
         with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
             window = QueenDetailWindow(backend, '\u5c0f7s')
             try:
-                content_combo = window.table.cellWidget(0, 2)
-                level_combo = window.table.cellWidget(0, 3)
+                content_combo = window.table.cellWidget(0, 4)
+                level_combo = window.table.cellWidget(0, 5)
 
                 self.assertEqual(content_combo.currentText(), '\u804a\u5929')
                 self.assertEqual(level_combo.currentText(), 'B')

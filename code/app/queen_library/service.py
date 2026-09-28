@@ -81,6 +81,8 @@ class QueenLibraryService:
                 '''
             )
             self._ensure_column(cursor, 'queen_videos', 'detail_url', "TEXT DEFAULT ''")
+            self._ensure_column(cursor, 'queen_videos', 'file_size_bytes', 'INTEGER')
+            self._ensure_column(cursor, 'queen_videos', 'published_at', 'TEXT')
             self._ensure_column(cursor, 'queen_videos', 'content_type', "TEXT DEFAULT ''")
             self._ensure_column(cursor, 'queen_videos', 'content_level', "TEXT DEFAULT ''")
             cursor.execute(
@@ -202,6 +204,8 @@ class QueenLibraryService:
                     queen_name TEXT NOT NULL,
                     video_title TEXT NOT NULL,
                     detail_url TEXT DEFAULT '',
+                    file_size_bytes INTEGER,
+                    published_at TEXT,
                     status TEXT NOT NULL DEFAULT 'pending',
                     route TEXT DEFAULT '',
                     error TEXT DEFAULT '',
@@ -210,6 +214,8 @@ class QueenLibraryService:
                 )
                 '''
             )
+            self._ensure_column(cursor, 'queen_crawl_staging', 'file_size_bytes', 'INTEGER')
+            self._ensure_column(cursor, 'queen_crawl_staging', 'published_at', 'TEXT')
             cursor.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS queen_author_video_records (
@@ -219,6 +225,8 @@ class QueenLibraryService:
                     video_title TEXT NOT NULL,
                     source_url TEXT DEFAULT '',
                     detail_url TEXT DEFAULT '',
+                    file_size_bytes INTEGER,
+                    published_at TEXT,
                     content_type TEXT DEFAULT '',
                     content_level TEXT DEFAULT '',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -226,6 +234,8 @@ class QueenLibraryService:
                 )
                 '''
             )
+            self._ensure_column(cursor, 'queen_author_video_records', 'file_size_bytes', 'INTEGER')
+            self._ensure_column(cursor, 'queen_author_video_records', 'published_at', 'TEXT')
             cursor.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS queen_author_video_links (
@@ -475,7 +485,7 @@ class QueenLibraryService:
                 'SELECT id, author_name FROM queen_authors ORDER BY id ASC'
             ).fetchall()
             for record in records:
-                raw_title, detail_url = self._normalize_scraped_record(record)
+                raw_title, detail_url, file_size_bytes, published_at = self._normalize_scraped_record(record)
                 parsed = self.parse_record_title(raw_title)
                 if parsed is None:
                     skipped_count += 1
@@ -484,8 +494,9 @@ class QueenLibraryService:
                 cursor.execute(
                     '''
                     INSERT OR IGNORE INTO queen_crawl_staging(
-                        batch_id, keyword, source_url, raw_title, queen_name, video_title, detail_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        batch_id, keyword, source_url, raw_title, queen_name, video_title, detail_url,
+                        file_size_bytes, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         batch_id,
@@ -495,6 +506,8 @@ class QueenLibraryService:
                         parsed['queen_name'],
                         parsed['video_title'],
                         detail_url,
+                        file_size_bytes,
+                        published_at,
                     ),
                 )
                 if not cursor.rowcount:
@@ -502,7 +515,8 @@ class QueenLibraryService:
 
             staged_rows = cursor.execute(
                 '''
-                SELECT id, raw_title, queen_name, video_title, source_url, detail_url
+                SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
+                       file_size_bytes, published_at
                 FROM queen_crawl_staging
                 WHERE batch_id = ? AND status = 'pending'
                 ORDER BY id ASC
@@ -534,8 +548,10 @@ class QueenLibraryService:
                 try:
                     cursor.execute(
                         '''
-                        INSERT INTO queen_videos(keyword_id, raw_title, queen_name, video_title, source_url, detail_url)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO queen_videos(
+                            keyword_id, raw_title, queen_name, video_title, source_url, detail_url,
+                            file_size_bytes, published_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ''',
                         (
                             keyword_id,
@@ -544,22 +560,12 @@ class QueenLibraryService:
                             staged['video_title'],
                             staged['source_url'],
                             staged['detail_url'],
+                            staged['file_size_bytes'],
+                            staged['published_at'],
                         ),
                     )
                 except sqlite3.IntegrityError:
-                    if staged['detail_url']:
-                        cursor.execute(
-                            '''
-                            UPDATE queen_videos
-                            SET detail_url = ?
-                            WHERE queen_name = ? AND video_title = ? AND COALESCE(detail_url, '') = ''
-                            ''',
-                            (
-                                staged['detail_url'],
-                                staged['queen_name'],
-                                staged['video_title'],
-                            ),
-                        )
+                    self._fill_missing_video_metadata(cursor, 'queen_videos', staged)
                     skipped_count += 1
                     cursor.execute(
                         '''
@@ -815,7 +821,7 @@ class QueenLibraryService:
             video_rows = conn.execute(
                 '''
                 SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
-                       content_type, content_level, created_at
+                       file_size_bytes, published_at, content_type, content_level, created_at
                 FROM queen_author_videos AS matches
                 JOIN queen_videos AS videos ON videos.id = matches.video_id
                 WHERE matches.author_id = ?
@@ -826,8 +832,8 @@ class QueenLibraryService:
             owned_video_rows = conn.execute(
                 '''
                 SELECT records.id, records.raw_title, records.queen_name, records.video_title,
-                       records.source_url, records.detail_url, records.content_type,
-                       records.content_level, records.created_at
+                       records.source_url, records.detail_url, records.file_size_bytes,
+                       records.published_at, records.content_type, records.content_level, records.created_at
                 FROM queen_author_video_links AS links
                 JOIN queen_author_video_records AS records ON records.id = links.record_id
                 WHERE links.author_id = ?
@@ -1025,6 +1031,7 @@ class QueenLibraryService:
             (staged_row['queen_name'], staged_row['video_title']),
         ).fetchone()
         if existing_queen_video is not None:
+            self._fill_missing_video_metadata(cursor, 'queen_videos', staged_row)
             linked = 0
             for author in matched_authors:
                 cursor.execute(
@@ -1040,8 +1047,8 @@ class QueenLibraryService:
         cursor.execute(
             '''
             INSERT OR IGNORE INTO queen_author_video_records(
-                raw_title, queen_name, video_title, source_url, detail_url
-            ) VALUES (?, ?, ?, ?, ?)
+                raw_title, queen_name, video_title, source_url, detail_url, file_size_bytes, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 staged_row['raw_title'],
@@ -1049,8 +1056,11 @@ class QueenLibraryService:
                 staged_row['video_title'],
                 staged_row['source_url'],
                 staged_row['detail_url'],
+                staged_row['file_size_bytes'],
+                staged_row['published_at'],
             ),
         )
+        self._fill_missing_video_metadata(cursor, 'queen_author_video_records', staged_row)
         record = cursor.execute(
             '''
             SELECT id
@@ -1070,6 +1080,27 @@ class QueenLibraryService:
             )
             linked += int(cursor.rowcount or 0)
         return linked > 0
+
+    @staticmethod
+    def _fill_missing_video_metadata(cursor, table_name, staged_row):
+        if table_name not in {'queen_videos', 'queen_author_video_records'}:
+            raise ValueError('Unsupported queen video table')
+        cursor.execute(
+            f'''
+            UPDATE {table_name}
+            SET detail_url = COALESCE(NULLIF(detail_url, ''), NULLIF(?, '')),
+                file_size_bytes = COALESCE(file_size_bytes, ?),
+                published_at = COALESCE(NULLIF(published_at, ''), NULLIF(?, ''))
+            WHERE queen_name = ? AND video_title = ?
+            ''',
+            (
+                staged_row['detail_url'],
+                staged_row['file_size_bytes'],
+                staged_row['published_at'],
+                staged_row['queen_name'],
+                staged_row['video_title'],
+            ),
+        )
 
     def remove_queen_author(self, author_name):
         normalized_author = str(author_name or '').strip()
@@ -1196,7 +1227,7 @@ class QueenLibraryService:
             rows = conn.execute(
                 '''
                 SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
-                       content_type, content_level, created_at
+                       file_size_bytes, published_at, content_type, content_level, created_at
                 FROM queen_videos
                 WHERE queen_name = ?
                   AND NOT EXISTS (
@@ -1313,7 +1344,7 @@ class QueenLibraryService:
                     '''
                     UPDATE queen_videos
                     SET queen_name = ?, raw_title = ?, video_title = ?, source_url = ?, detail_url = ?,
-                        content_type = ?, content_level = ?
+                        file_size_bytes = ?, published_at = ?, content_type = ?, content_level = ?
                     WHERE id = ?
                     ''',
                     (
@@ -1322,6 +1353,8 @@ class QueenLibraryService:
                         merged_video['video_title'],
                         merged_video['source_url'],
                         merged_video['detail_url'],
+                        merged_video['file_size_bytes'],
+                        merged_video['published_at'],
                         merged_video['content_type'],
                         merged_video['content_level'],
                         keeper_id,
@@ -1362,7 +1395,7 @@ class QueenLibraryService:
             row = conn.execute(
                 '''
                 SELECT id, raw_title, queen_name, video_title, source_url, detail_url,
-                       content_type, content_level, created_at
+                       file_size_bytes, published_at, content_type, content_level, created_at
                 FROM queen_videos
                 WHERE id = ?
                 ''',
@@ -1572,8 +1605,13 @@ class QueenLibraryService:
         if isinstance(record, dict):
             raw_title = str(record.get('raw_title', record.get('title', '')) or '').strip()
             detail_url = str(record.get('detail_url', record.get('href', '')) or '').strip()
-            return raw_title, detail_url
-        return str(record or '').strip(), ''
+            try:
+                file_size_bytes = int(record.get('file_size_bytes')) if record.get('file_size_bytes') is not None else None
+            except (TypeError, ValueError):
+                file_size_bytes = None
+            published_at = str(record.get('published_at', '') or '').strip() or None
+            return raw_title, detail_url, file_size_bytes, published_at
+        return str(record or '').strip(), '', None, None
 
     @staticmethod
     def parse_record_title(raw_title):
@@ -1910,6 +1948,11 @@ class QueenLibraryService:
             'raw_title': _pick('raw_title'),
             'source_url': _pick('source_url'),
             'detail_url': _pick('detail_url'),
+            'file_size_bytes': next(
+                (row.get('file_size_bytes') for row in ordered_rows if row.get('file_size_bytes') is not None),
+                None,
+            ),
+            'published_at': _pick('published_at') or None,
             'content_type': normalize_queen_video_content_type(_pick('content_type')),
             'content_level': normalize_queen_video_content_level(_pick('content_level')),
         }
@@ -1917,6 +1960,13 @@ class QueenLibraryService:
     @staticmethod
     def _normalize_queen_video_row(row):
         payload = dict(row or {})
+        try:
+            payload['file_size_bytes'] = (
+                int(payload['file_size_bytes']) if payload.get('file_size_bytes') is not None else None
+            )
+        except (TypeError, ValueError):
+            payload['file_size_bytes'] = None
+        payload['published_at'] = str(payload.get('published_at', '') or '').strip() or None
         payload['content_type'] = normalize_queen_video_content_type(payload.get('content_type', ''))
         payload['content_level'] = normalize_queen_video_content_level(payload.get('content_level', ''))
         return payload
@@ -1927,7 +1977,7 @@ class QueenLibraryService:
         rows = conn.execute(
             '''
             SELECT id, keyword_id, raw_title, queen_name, video_title, source_url, detail_url,
-                   content_type, content_level, created_at
+                   file_size_bytes, published_at, content_type, content_level, created_at
             FROM queen_videos
             WHERE queen_name = ?
             ORDER BY created_at DESC, id DESC

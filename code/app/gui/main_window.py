@@ -51,6 +51,7 @@ from app.core.enrichment_targets import ENRICHMENT_TARGET_LABELS
 from app.core.project_paths import DATABASE_FILE, GUI_INSTANCE_LOCK_FILE, PROJECT_ROOT, SNAPSHOT_REFRESH_LOG_FILE
 from app.core.python_runtime import resolve_console_python
 from app.core.runtime_config import get_backend_port, get_backend_timeout_seconds
+from feishu_plugin_sdk import LifecycleEventClient, LifecycleReporter
 from app.gui.actor_viewer import ActorViewerWindow
 from app.gui.account_viewer import AccountManagerDialog
 from app.gui.backend_task_worker import AsyncTaskHostMixin, BackendTaskWorker
@@ -390,6 +391,11 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self._feishu_status_adapter = LocalVideoRenamerAdapter(
             shutdown_handler=self._request_feishu_shutdown,
         )
+        lifecycle_token = str(get_setting('FEISHU_CONTROL_TOKEN', default='') or '').strip()
+        self._feishu_lifecycle_reporter = LifecycleReporter(
+            'local_video_renamer',
+            client=LifecycleEventClient(token=lifecycle_token),
+        )
         self._feishu_control_server = None
         self._feishu_control_timer = None
         self.task_queue.changed.connect(self._sync_feishu_task_status)
@@ -402,6 +408,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         self.start_network_guard()
         self.check_network_guard()
         self.start_snapshot_refresh_scheduler()
+        self._report_feishu_lifecycle_started()
 
     @staticmethod
     def _create_task_database():
@@ -425,15 +432,27 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             adapter.sync_task_queue_status(task_queue.records())
 
     def _request_feishu_shutdown(self, request_id):
-        del request_id
         status = self._feishu_status_adapter.status()
         if status.get('busy') or int(status.get('queue_depth') or 0) > 0:
             return {
                 'accepted': False,
                 'reason': '当前任务正在运行或排队，请先结束任务。',
             }
+        reporter = self.__dict__.get('_feishu_lifecycle_reporter')
+        if reporter is not None:
+            reporter.set_shutdown_context(request_id)
         QTimer.singleShot(0, self.close)
         return {'accepted': True, 'message': '项目关闭请求已接受。'}
+
+    def _report_feishu_lifecycle_started(self):
+        reporter = self.__dict__.get('_feishu_lifecycle_reporter')
+        if reporter is not None:
+            reporter.started()
+
+    def _report_feishu_lifecycle_stopped(self):
+        reporter = self.__dict__.get('_feishu_lifecycle_reporter')
+        if reporter is not None:
+            reporter.stopped('normal_exit')
 
     def _start_feishu_control_server(self):
         token = str(get_setting('FEISHU_CONTROL_TOKEN', default='') or '').strip()
@@ -3767,6 +3786,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             event.ignore()
             return
         adapter = self.__dict__.get('_feishu_status_adapter')
+        self._report_feishu_lifecycle_stopped()
         if adapter is not None:
             adapter.update_status(gui_running=False)
         timer = self.__dict__.get('_feishu_control_timer')
