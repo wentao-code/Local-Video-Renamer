@@ -2052,8 +2052,11 @@ class BackendService:
     def get_standard_reference_crawl_progress(self):
         return {'progress': self._standard_reference_progress_snapshot()}
 
-    def start_standard_reference_crawl(self, page_count):
-        normalized_page_count = self.standard_reference_library_service.validate_page_count(page_count)
+    def start_standard_reference_crawl(self, start_page, end_page):
+        normalized_start_page, normalized_end_page = (
+            self.standard_reference_library_service.validate_page_range(start_page, end_page)
+        )
+        total_pages = normalized_end_page - normalized_start_page + 1
         task_id = str(get_task_id() or new_task_id('standard_reference_crawl')).strip()
         with self._standard_reference_crawl_lock:
             if self._standard_reference_crawl_progress.get('is_running'):
@@ -2068,7 +2071,9 @@ class BackendService:
                 'pages_completed': 0,
                 'page_number': 0,
                 'page_state': 'opening_session',
-                'total_pages': normalized_page_count,
+                'start_page': normalized_start_page,
+                'end_page': normalized_end_page,
+                'total_pages': total_pages,
                 'records_seen': 0,
                 'records_added': 0,
                 'authors': [],
@@ -2076,7 +2081,7 @@ class BackendService:
             self._standard_reference_crawl_task_id = task_id
             self._standard_reference_crawl_thread = threading.Thread(
                 target=self._run_standard_reference_crawl,
-                args=(normalized_page_count, task_id),
+                args=(normalized_start_page, normalized_end_page, task_id),
                 daemon=True,
             )
             self._standard_reference_crawl_thread.start()
@@ -2087,17 +2092,19 @@ class BackendService:
             self._standard_reference_crawl_progress.update(dict(updates or {}))
             return dict(self._standard_reference_crawl_progress)
 
-    def _run_standard_reference_crawl(self, page_count, task_id=''):
+    def _run_standard_reference_crawl(self, start_page, end_page, task_id=''):
         with log_context(task_id=task_id):
             LOGGER.info(
-                '标准对照库抓取开始 page_count=%s source=%s',
-                page_count,
+                '标准对照库抓取开始 start_page=%s end_page=%s source=%s',
+                start_page,
+                end_page,
                 STANDARD_REFERENCE_URL,
             )
             try:
                 result = self.standard_reference_library_service.crawl_pages(
                     StandardReferenceScraper(),
-                    page_count,
+                    start_page,
+                    end_page,
                     progress_callback=self._on_standard_reference_crawl_page,
                     should_stop=self._standard_reference_crawl_cancel_event.is_set,
                 )
@@ -2113,7 +2120,7 @@ class BackendService:
                     '标准对照库抓取%s pages_completed=%s total_pages=%s records_seen=%s records_added=%s authors=%s',
                     '已停止' if stopped else '完成',
                     result.get('pages_completed', 0),
-                    result.get('total_pages', page_count),
+                    result.get('total_pages', end_page - start_page + 1),
                     result.get('records_seen', 0),
                     result.get('records_added', 0),
                     len(result.get('authors') or []),
@@ -2121,8 +2128,9 @@ class BackendService:
             except Exception as exc:
                 progress = self._standard_reference_progress_snapshot()
                 LOGGER.exception(
-                    '标准对照库抓取失败 page_count=%s current_page=%s page_state=%s',
-                    page_count,
+                    '标准对照库抓取失败 start_page=%s end_page=%s current_page=%s page_state=%s',
+                    start_page,
+                    end_page,
                     progress.get('page_number', 0),
                     progress.get('page_state', 'opening_session'),
                 )

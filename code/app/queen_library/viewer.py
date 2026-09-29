@@ -658,10 +658,14 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         layout = QVBoxLayout()
         controls = QHBoxLayout()
         self.info_label = QLabel('')
-        self.page_count = QSpinBox()
-        self.page_count.setRange(1, 99999)
-        self.page_count.setValue(5)
-        self.page_count.setFixedWidth(90)
+        self.start_page = QSpinBox()
+        self.start_page.setRange(1, 99999)
+        self.start_page.setValue(1)
+        self.start_page.setFixedWidth(90)
+        self.end_page = QSpinBox()
+        self.end_page.setRange(1, 99999)
+        self.end_page.setValue(5)
+        self.end_page.setFixedWidth(90)
         self.btn_login = QPushButton(tr('standard_reference.login'))
         self.btn_login.clicked.connect(self.open_standard_reference_login)
         self.btn_start = QPushButton(tr('standard_reference.start'))
@@ -672,8 +676,10 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_refresh.clicked.connect(lambda: self.load_data())
         controls.addWidget(self.info_label)
         controls.addStretch()
-        controls.addWidget(QLabel(tr('standard_reference.page_count')))
-        controls.addWidget(self.page_count)
+        controls.addWidget(QLabel(tr('standard_reference.start_page')))
+        controls.addWidget(self.start_page)
+        controls.addWidget(QLabel(tr('standard_reference.end_page')))
+        controls.addWidget(self.end_page)
         controls.addWidget(self.btn_login)
         controls.addWidget(self.btn_start)
         controls.addWidget(self.btn_stop)
@@ -753,15 +759,25 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
                 tr('standard_reference.close_browser_message'),
             )
             return
-        page_count = self.page_count.value()
+        start_page = self.start_page.value()
+        end_page = self.end_page.value()
+        if end_page < start_page:
+            QMessageBox.warning(
+                self,
+                tr('standard_reference.invalid_page_range_title'),
+                tr('standard_reference.invalid_page_range'),
+            )
+            return
         self._crawl_running = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.page_count.setEnabled(False)
+        self.start_page.setEnabled(False)
+        self.end_page.setEnabled(False)
         self.status_label.setText(tr('standard_reference.starting'))
         accepted = self.start_async_task(
             lambda: self.backend_client.crawl_standard_reference(
-                page_count,
+                start_page,
+                end_page,
                 progress_callback=self._emit_crawl_progress,
             ),
             self._on_crawl_finished,
@@ -799,7 +815,8 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self._crawl_running = bool(progress.get('is_running'))
         self.btn_start.setEnabled(not self._crawl_running)
         self.btn_stop.setEnabled(self._crawl_running)
-        self.page_count.setEnabled(not self._crawl_running)
+        self.start_page.setEnabled(not self._crawl_running)
+        self.end_page.setEnabled(not self._crawl_running)
         if self._crawl_running:
             self.status_label.setText(tr(
                 'standard_reference.progress',
@@ -851,7 +868,8 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.progress_timer.stop()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        self.page_count.setEnabled(True)
+        self.start_page.setEnabled(True)
+        self.end_page.setEnabled(True)
         self.status_label.setText(tr('standard_reference.failed', error=message))
 
 

@@ -367,7 +367,10 @@ def make_handler(service):
             if method == 'GET' and path == '/standard-reference/author/detail':
                 return service.get_standard_reference_author_detail(query.get('name', [''])[0])
             if method == 'POST' and path == '/standard-reference/crawl':
-                return service.start_standard_reference_crawl(body.get('page_count'))
+                return service.start_standard_reference_crawl(
+                    body.get('start_page'),
+                    body.get('end_page'),
+                )
             if method == 'GET' and path == '/standard-reference/crawl/progress':
                 return service.get_standard_reference_crawl_progress()
             if method == 'POST' and path == '/standard-reference/crawl/cancel':

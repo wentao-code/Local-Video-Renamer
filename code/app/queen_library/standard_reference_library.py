@@ -89,6 +89,14 @@ class StandardReferenceLibraryService:
             raise ValueError(f'抓取页数必须在 1 到 {MAX_STANDARD_REFERENCE_PAGES} 之间')
         return normalized
 
+    @classmethod
+    def validate_page_range(cls, start_page, end_page):
+        normalized_start = cls.validate_page_count(start_page)
+        normalized_end = cls.validate_page_count(end_page)
+        if normalized_end < normalized_start:
+            raise ValueError('终止页不能小于起始页')
+        return normalized_start, normalized_end
+
     def save_page_records(self, records):
         normalized_records = []
         for raw_record in records or []:
@@ -161,8 +169,9 @@ class StandardReferenceLibraryService:
             ).fetchall()
         return {'author_name': author['author_name'], 'videos': [dict(row) for row in videos]}
 
-    def crawl_pages(self, scraper, page_count, progress_callback=None, should_stop=None):
-        normalized_page_count = self.validate_page_count(page_count)
+    def crawl_pages(self, scraper, start_page, end_page, progress_callback=None, should_stop=None):
+        normalized_start_page, normalized_end_page = self.validate_page_range(start_page, end_page)
+        total_pages = normalized_end_page - normalized_start_page + 1
         pages_completed = 0
         records_seen = 0
         inserted_count = 0
@@ -170,7 +179,7 @@ class StandardReferenceLibraryService:
         with scraper.session() as page:
             if callable(progress_callback):
                 progress_callback({'event': 'session_started'})
-            for page_number in range(1, normalized_page_count + 1):
+            for page_number in range(normalized_start_page, normalized_end_page + 1):
                 if callable(should_stop) and should_stop():
                     stopped = True
                     break
@@ -179,7 +188,7 @@ class StandardReferenceLibraryService:
                     progress_callback({
                         'event': 'page_started',
                         'page_number': page_number,
-                        'total_pages': normalized_page_count,
+                        'total_pages': total_pages,
                     })
                 page_records_seen = 0
                 try:
@@ -198,7 +207,7 @@ class StandardReferenceLibraryService:
                             'error_type': type(exc).__name__,
                         })
                     raise
-                pages_completed = page_number
+                pages_completed += 1
                 if callable(progress_callback):
                     progress_callback({
                         'event': 'page_completed',
@@ -208,7 +217,7 @@ class StandardReferenceLibraryService:
                         'page_records_not_added': len(records) - (inserted_count - records_added_before_page),
                         'page_elapsed_seconds': round(perf_counter() - page_started_at, 3),
                         'pages_completed': pages_completed,
-                        'total_pages': normalized_page_count,
+                        'total_pages': total_pages,
                         'records_seen': records_seen,
                         'records_added': inserted_count,
                     })
@@ -217,7 +226,7 @@ class StandardReferenceLibraryService:
                     break
         return {
             'pages_completed': pages_completed,
-            'total_pages': normalized_page_count,
+            'total_pages': total_pages,
             'records_seen': records_seen,
             'records_added': inserted_count,
             'stopped': stopped,
