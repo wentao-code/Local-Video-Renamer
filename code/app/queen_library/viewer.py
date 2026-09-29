@@ -2,6 +2,7 @@ from PyQt5.QtCore import QTimer, Qt, QUrl
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QGridLayout,
@@ -666,6 +667,7 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.end_page.setRange(1, 99999)
         self.end_page.setValue(5)
         self.end_page.setFixedWidth(90)
+        self.silent_mode_checkbox = QCheckBox(tr('standard_reference.silent_mode'))
         self.btn_login = QPushButton(tr('standard_reference.login'))
         self.btn_login.clicked.connect(self.open_standard_reference_login)
         self.btn_start = QPushButton(tr('standard_reference.start'))
@@ -680,6 +682,7 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         controls.addWidget(self.start_page)
         controls.addWidget(QLabel(tr('standard_reference.end_page')))
         controls.addWidget(self.end_page)
+        controls.addWidget(self.silent_mode_checkbox)
         controls.addWidget(self.btn_login)
         controls.addWidget(self.btn_start)
         controls.addWidget(self.btn_stop)
@@ -761,6 +764,7 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
             return
         start_page = self.start_page.value()
         end_page = self.end_page.value()
+        headless = self.silent_mode_checkbox.isChecked()
         if end_page < start_page:
             QMessageBox.warning(
                 self,
@@ -773,11 +777,13 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_stop.setEnabled(True)
         self.start_page.setEnabled(False)
         self.end_page.setEnabled(False)
+        self.silent_mode_checkbox.setEnabled(False)
         self.status_label.setText(tr('standard_reference.starting'))
         accepted = self.start_async_task(
             lambda: self.backend_client.crawl_standard_reference(
                 start_page,
                 end_page,
+                headless=headless,
                 progress_callback=self._emit_crawl_progress,
             ),
             self._on_crawl_finished,
@@ -828,6 +834,7 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_stop.setEnabled(self._crawl_running)
         self.start_page.setEnabled(not self._crawl_running)
         self.end_page.setEnabled(not self._crawl_running)
+        self.silent_mode_checkbox.setEnabled(not self._crawl_running)
         if self._crawl_running:
             self.status_label.setText(tr(
                 'standard_reference.progress',
@@ -881,6 +888,7 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_stop.setEnabled(False)
         self.start_page.setEnabled(True)
         self.end_page.setEnabled(True)
+        self.silent_mode_checkbox.setEnabled(True)
         self.status_label.setText(tr('standard_reference.failed', error=message))
 
 
@@ -1217,6 +1225,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.btn_data_center.clicked.connect(self.show_data_center)
         self.btn_start_crawl = QPushButton(tr('queen.library.start_crawl'))
         self.btn_start_crawl.clicked.connect(self.start_crawl)
+        self.silent_mode_checkbox = QCheckBox(tr('queen.library.silent_mode'))
         self.btn_stop_crawl = QPushButton(tr('queen.library.stop_crawl'))
         self.btn_stop_crawl.clicked.connect(self.stop_crawl)
         self.btn_refresh = QPushButton(tr('common.refresh'))
@@ -1228,6 +1237,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         top_layout.addWidget(self.btn_keyword_library)
         top_layout.addWidget(self.btn_queen_author_library)
         top_layout.addWidget(self.btn_data_center)
+        top_layout.addWidget(self.silent_mode_checkbox)
         top_layout.addWidget(self.btn_start_crawl)
         top_layout.addWidget(self.btn_stop_crawl)
         top_layout.addWidget(self.btn_refresh)
@@ -1257,6 +1267,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
                 self.btn_keyword_library,
                 self.btn_queen_author_library,
                 self.btn_data_center,
+                self.silent_mode_checkbox,
                 self.btn_start_crawl,
                 self.btn_stop_crawl,
                 self.btn_refresh,
@@ -1352,8 +1363,9 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         if keyword in existing_keywords:
             QMessageBox.information(self, tr('common.prompt'), tr('queen.library.keyword_exists'))
             return
+        show_browser = not self.silent_mode_checkbox.isChecked()
         self.start_async_task(
-            lambda: self.backend_client.search_queen_keyword(keyword, show_browser=True),
+            lambda: self.backend_client.search_queen_keyword(keyword, show_browser=show_browser),
             self._on_search_finished,
             tr('queen.library.search_failed'),
         )
@@ -1390,11 +1402,12 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
             self._set_crawl_running_state(False)
             self._update_status_summary()
             return False
+        show_browser = not self.silent_mode_checkbox.isChecked()
         self._set_crawl_running_state(True)
         self.status_label.setText(tr('queen.library.starting_crawl'))
         accepted = self.start_async_task(
             lambda: self.backend_client.refresh_queen_library(
-                show_browser=True,
+                show_browser=show_browser,
                 progress_callback=self._emit_crawl_progress,
             ),
             self._on_crawl_finished,
@@ -1428,6 +1441,7 @@ class QueenLibraryWindow(AsyncTaskHostMixin, QDialog):
         running = bool(is_running)
         self.btn_start_crawl.setEnabled(not running)
         self.btn_stop_crawl.setEnabled(running)
+        self.silent_mode_checkbox.setEnabled(not running)
 
     def _on_crawl_finished(self, result):
         payload = dict(result or {})

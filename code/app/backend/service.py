@@ -2052,7 +2052,7 @@ class BackendService:
     def get_standard_reference_crawl_progress(self):
         return {'progress': self._standard_reference_progress_snapshot()}
 
-    def start_standard_reference_crawl(self, start_page, end_page):
+    def start_standard_reference_crawl(self, start_page, end_page, headless=False):
         normalized_start_page, normalized_end_page = (
             self.standard_reference_library_service.validate_page_range(start_page, end_page)
         )
@@ -2073,6 +2073,7 @@ class BackendService:
                 'page_state': 'opening_session',
                 'start_page': normalized_start_page,
                 'end_page': normalized_end_page,
+                'headless': bool(headless),
                 'total_pages': total_pages,
                 'records_seen': 0,
                 'records_added': 0,
@@ -2081,7 +2082,7 @@ class BackendService:
             self._standard_reference_crawl_task_id = task_id
             self._standard_reference_crawl_thread = threading.Thread(
                 target=self._run_standard_reference_crawl,
-                args=(normalized_start_page, normalized_end_page, task_id),
+                args=(normalized_start_page, normalized_end_page, bool(headless), task_id),
                 daemon=True,
             )
             self._standard_reference_crawl_thread.start()
@@ -2092,17 +2093,18 @@ class BackendService:
             self._standard_reference_crawl_progress.update(dict(updates or {}))
             return dict(self._standard_reference_crawl_progress)
 
-    def _run_standard_reference_crawl(self, start_page, end_page, task_id=''):
+    def _run_standard_reference_crawl(self, start_page, end_page, headless=False, task_id=''):
         with log_context(task_id=task_id):
             LOGGER.info(
-                '标准对照库抓取开始 start_page=%s end_page=%s source=%s',
+                '标准对照库抓取开始 start_page=%s end_page=%s headless=%s source=%s',
                 start_page,
                 end_page,
+                bool(headless),
                 STANDARD_REFERENCE_URL,
             )
             try:
                 result = self.standard_reference_library_service.crawl_pages(
-                    StandardReferenceScraper(),
+                    StandardReferenceScraper(headless=headless),
                     start_page,
                     end_page,
                     progress_callback=self._on_standard_reference_crawl_page,

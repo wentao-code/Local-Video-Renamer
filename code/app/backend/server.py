@@ -370,6 +370,7 @@ def make_handler(service):
                 return service.start_standard_reference_crawl(
                     body.get('start_page'),
                     body.get('end_page'),
+                    headless=bool(body.get('headless', False)),
                 )
             if method == 'GET' and path == '/standard-reference/crawl/progress':
                 return service.get_standard_reference_crawl_progress()

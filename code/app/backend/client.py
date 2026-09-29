@@ -811,17 +811,28 @@ class BackendClient:
             timeout=timeout,
         )
 
-    def start_standard_reference_crawl(self, start_page, end_page):
+    def start_standard_reference_crawl(self, start_page, end_page, headless=False):
         timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
         return self._post(
             '/standard-reference/crawl',
-            {'start_page': int(start_page), 'end_page': int(end_page)},
+            {
+                'start_page': int(start_page),
+                'end_page': int(end_page),
+                'headless': bool(headless),
+            },
             timeout=timeout,
         )
 
-    def crawl_standard_reference(self, start_page, end_page, poll_interval=1.0, progress_callback=None):
+    def crawl_standard_reference(
+        self,
+        start_page,
+        end_page,
+        poll_interval=1.0,
+        progress_callback=None,
+        headless=False,
+    ):
         timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
-        result = self.start_standard_reference_crawl(start_page, end_page)
+        result = self.start_standard_reference_crawl(start_page, end_page, headless=headless)
         if callable(progress_callback):
             progress_callback(result)
         while bool((result or {}).get('progress', {}).get('is_running')):

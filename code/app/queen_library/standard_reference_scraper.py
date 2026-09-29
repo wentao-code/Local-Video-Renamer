@@ -33,9 +33,10 @@ def parse_forum_rows(rows, page_number, base_url=STANDARD_REFERENCE_URL):
 
 
 class StandardReferenceScraper:
-    def __init__(self, profile_dir=None, playwright_factory=None):
+    def __init__(self, profile_dir=None, playwright_factory=None, headless=False):
         self.profile_dir = profile_dir or STANDARD_REFERENCE_PROFILE_DIR
         self.playwright_factory = playwright_factory or (lambda: import_sync_playwright()())
+        self.headless = bool(headless)
         self._manager = None
         self._playwright = None
         self._context = None
@@ -49,7 +50,7 @@ class StandardReferenceScraper:
         self._context = self._playwright.chromium.launch_persistent_context(
             str(self.profile_dir),
             channel='chrome',
-            headless=False,
+            headless=self.headless,
             locale=get_scraper_locale(),
             viewport={'width': 1440, 'height': 1000},
         )
