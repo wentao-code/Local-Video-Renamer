@@ -404,7 +404,7 @@ class QueenSearchScraperTest(unittest.TestCase):
                 <thead><tr><th>Name</th><th>Date</th><th>Size</th></tr></thead>
                 <tbody><tr>
                     <td><a href="/hash/abc123">套路直播_QueenA_Title.mp4</a></td>
-                    <td><time datetime="2024-05-06 07:08:09">2024-05-06</time></td>
+                    <td>466.06MB 2024-05-06</td>
                     <td>1,5 GB</td>
                 </tr></tbody>
             </table>
@@ -423,7 +423,7 @@ class QueenSearchScraperTest(unittest.TestCase):
 
         self.assertEqual(records[0]['detail_url'], 'https://y.9cili.click/hash/abc123')
         self.assertEqual(records[0]['file_size_bytes'], 1610612736)
-        self.assertEqual(records[0]['published_at'], '2024-05-06 07:08:09')
+        self.assertEqual(records[0]['published_at'], '2024-05-06')
 
     def test_parse_file_size_supports_common_units(self):
         cases = {

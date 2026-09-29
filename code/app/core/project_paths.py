@@ -59,6 +59,7 @@ SNAPSHOT_REFRESH_LOG_FILE = LOG_DIR / 'snapshot_refresh.log'
 
 DATABASE_FILE = DATA_DIR / 'video_database.db'
 QUEEN_LIBRARY_DB_FILE = DATA_DIR / 'queen_library.db'
+STANDARD_REFERENCE_DB_FILE = DATA_DIR / 'standard_reference_library.db'
 QUEEN_LIBRARY_CRAWL_LOG_FILE = LOG_DIR / 'queen_library_crawl.log'
 AVFAN_PROFILE_DIR = BROWSER_PROFILES_DIR / 'avfan'
 COMBO_BROWSER_PROFILES_DIR = BROWSER_PROFILES_DIR / 'combo'

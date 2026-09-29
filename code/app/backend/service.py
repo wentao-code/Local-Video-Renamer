@@ -102,6 +102,9 @@ from app.services.translation.soft_subtitle_generation_service import SoftSubtit
 from app.services.translation.subtitle_generation_service import SubtitleGenerationService
 from app.services.translation.subtitle_pipeline_service import SubtitlePipelineService
 from app.queen_library.service import QueenLibraryService
+from app.queen_library.standard_reference_browser import STANDARD_REFERENCE_URL
+from app.queen_library.standard_reference_library import StandardReferenceLibraryService
+from app.queen_library.standard_reference_scraper import StandardReferenceScraper, build_forum_page_url
 from app.services.video import (
     MANUAL_CATEGORY_TIER_FIRST,
     MANUAL_CATEGORY_TIER_SECOND,
@@ -109,7 +112,7 @@ from app.services.video import (
     VIDEO_CATEGORY_SINGLE,
     VideoFilterService,
 )
-from app.core.project_paths import QUEEN_LIBRARY_DB_FILE
+from app.core.project_paths import QUEEN_LIBRARY_DB_FILE, STANDARD_REFERENCE_DB_FILE
 from app.core.translation_config import TranslationConfig
 
 
@@ -157,6 +160,23 @@ class BackendService:
         self.ladder_board_service = LadderBoardService(self.db)
         self.path_library = PathLibrary()
         self.queen_library_service = QueenLibraryService(QUEEN_LIBRARY_DB_FILE)
+        self.standard_reference_library_service = StandardReferenceLibraryService(STANDARD_REFERENCE_DB_FILE)
+        self._standard_reference_crawl_lock = threading.Lock()
+        self._standard_reference_crawl_cancel_event = threading.Event()
+        self._standard_reference_crawl_thread = None
+        self._standard_reference_crawl_task_id = ''
+        self._standard_reference_crawl_progress = {
+            'is_running': False,
+            'completed': False,
+            'stopped': False,
+            'failed': False,
+            'error': '',
+            'pages_completed': 0,
+            'total_pages': 0,
+            'records_seen': 0,
+            'records_added': 0,
+            'authors': [],
+        }
         self._queen_author_match_threads = {}
         self._queen_author_match_lock = threading.Lock()
         self._resume_queen_author_match_jobs()
@@ -2018,6 +2038,169 @@ class BackendService:
         }
         self._write_page_snapshot(key, payload)
         return payload
+
+    def list_standard_reference_authors(self):
+        return {'authors': self.standard_reference_library_service.list_authors()}
+
+    def get_standard_reference_author_detail(self, author_name):
+        return self.standard_reference_library_service.get_author_detail(author_name)
+
+    def _standard_reference_progress_snapshot(self):
+        with self._standard_reference_crawl_lock:
+            return dict(self._standard_reference_crawl_progress or {})
+
+    def get_standard_reference_crawl_progress(self):
+        return {'progress': self._standard_reference_progress_snapshot()}
+
+    def start_standard_reference_crawl(self, page_count):
+        normalized_page_count = self.standard_reference_library_service.validate_page_count(page_count)
+        task_id = str(get_task_id() or new_task_id('standard_reference_crawl')).strip()
+        with self._standard_reference_crawl_lock:
+            if self._standard_reference_crawl_progress.get('is_running'):
+                return {'progress': dict(self._standard_reference_crawl_progress)}
+            self._standard_reference_crawl_cancel_event.clear()
+            self._standard_reference_crawl_progress = {
+                'is_running': True,
+                'completed': False,
+                'stopped': False,
+                'failed': False,
+                'error': '',
+                'pages_completed': 0,
+                'page_number': 0,
+                'page_state': 'opening_session',
+                'total_pages': normalized_page_count,
+                'records_seen': 0,
+                'records_added': 0,
+                'authors': [],
+            }
+            self._standard_reference_crawl_task_id = task_id
+            self._standard_reference_crawl_thread = threading.Thread(
+                target=self._run_standard_reference_crawl,
+                args=(normalized_page_count, task_id),
+                daemon=True,
+            )
+            self._standard_reference_crawl_thread.start()
+            return {'progress': dict(self._standard_reference_crawl_progress)}
+
+    def _update_standard_reference_crawl_progress(self, updates):
+        with self._standard_reference_crawl_lock:
+            self._standard_reference_crawl_progress.update(dict(updates or {}))
+            return dict(self._standard_reference_crawl_progress)
+
+    def _run_standard_reference_crawl(self, page_count, task_id=''):
+        with log_context(task_id=task_id):
+            LOGGER.info(
+                '标准对照库抓取开始 page_count=%s source=%s',
+                page_count,
+                STANDARD_REFERENCE_URL,
+            )
+            try:
+                result = self.standard_reference_library_service.crawl_pages(
+                    StandardReferenceScraper(),
+                    page_count,
+                    progress_callback=self._on_standard_reference_crawl_page,
+                    should_stop=self._standard_reference_crawl_cancel_event.is_set,
+                )
+                stopped = bool(result.get('stopped'))
+                self._update_standard_reference_crawl_progress({
+                    **result,
+                    'is_running': False,
+                    'completed': not stopped,
+                    'stopped': stopped,
+                    'failed': False,
+                })
+                LOGGER.info(
+                    '标准对照库抓取%s pages_completed=%s total_pages=%s records_seen=%s records_added=%s authors=%s',
+                    '已停止' if stopped else '完成',
+                    result.get('pages_completed', 0),
+                    result.get('total_pages', page_count),
+                    result.get('records_seen', 0),
+                    result.get('records_added', 0),
+                    len(result.get('authors') or []),
+                )
+            except Exception as exc:
+                progress = self._standard_reference_progress_snapshot()
+                LOGGER.exception(
+                    '标准对照库抓取失败 page_count=%s current_page=%s page_state=%s',
+                    page_count,
+                    progress.get('page_number', 0),
+                    progress.get('page_state', 'opening_session'),
+                )
+                self._update_standard_reference_crawl_progress({
+                    'is_running': False,
+                    'completed': False,
+                    'stopped': False,
+                    'failed': True,
+                    'error': str(exc),
+                })
+            finally:
+                self._standard_reference_crawl_cancel_event.clear()
+                with self._standard_reference_crawl_lock:
+                    self._standard_reference_crawl_task_id = ''
+
+    def _on_standard_reference_crawl_page(self, updates):
+        event = str(updates.get('event') or 'page_completed')
+        if event == 'session_started':
+            self._update_standard_reference_crawl_progress({'page_state': 'browser_ready'})
+            LOGGER.info('标准对照库抓取浏览器会话已启动')
+            return
+        progress = self._update_standard_reference_crawl_progress({
+            **updates,
+            'page_state': event,
+        })
+        if event == 'page_started':
+            LOGGER.info(
+                '标准对照库抓取页面开始 page=%s total_pages=%s url=%s',
+                updates.get('page_number', 0),
+                updates.get('total_pages', 0),
+                build_forum_page_url(updates.get('page_number', 0)),
+            )
+            return
+        if event == 'page_failed':
+            LOGGER.error(
+                '标准对照库抓取页面失败 page=%s elapsed_seconds=%s page_records_seen=%s error_type=%s url=%s',
+                updates.get('page_number', 0),
+                updates.get('page_elapsed_seconds', 0),
+                updates.get('page_records_seen', 0),
+                updates.get('error_type', 'unknown'),
+                build_forum_page_url(updates.get('page_number', 0)),
+            )
+            return
+        LOGGER.info(
+            '标准对照库抓取页面完成 page=%s elapsed_seconds=%s page_records_seen=%s '
+            'page_records_added=%s page_records_not_added=%s records_seen=%s records_added=%s total_pages=%s',
+            updates.get('page_number', progress.get('pages_completed', 0)),
+            updates.get('page_elapsed_seconds', 0),
+            updates.get('page_records_seen', 0),
+            updates.get('page_records_added', 0),
+            updates.get('page_records_not_added', 0),
+            progress.get('records_seen', 0),
+            progress.get('records_added', 0),
+            progress.get('total_pages', 0),
+        )
+
+    def cancel_standard_reference_crawl(self):
+        progress = self._standard_reference_progress_snapshot()
+        if not progress.get('is_running'):
+            return {
+                'stopped': False,
+                'message': '当前没有正在运行的标准对照库抓取。',
+            }
+        self._standard_reference_crawl_cancel_event.set()
+        with self._standard_reference_crawl_lock:
+            crawl_task_id = self._standard_reference_crawl_task_id
+        requested_by_task_id = get_task_id()
+        with log_context(task_id=crawl_task_id or get_task_id()):
+            LOGGER.info(
+                '标准对照库抓取收到停止请求 current_page=%s page_state=%s requested_by_task_id=%s',
+                progress.get('page_number', 0),
+                progress.get('page_state', 'unknown'),
+                requested_by_task_id or '-',
+            )
+        return {
+            'stopped': True,
+            'message': '已提交停止请求，当前页处理完成后停止。',
+        }
 
     def _attach_actor_display_statuses(self, rows):
         queue_keys = {

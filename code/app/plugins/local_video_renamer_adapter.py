@@ -1,8 +1,4 @@
-"""Control adapter scaffold for Local Video Renamer.
-
-This module deliberately contains no GUI or business-operation bindings yet.
-Callers can inject task callbacks later and keep the Feishu protocol stable.
-"""
+"""Feishu control adapter for Local Video Renamer."""
 
 from __future__ import annotations
 
@@ -52,7 +48,7 @@ class LocalVideoRenamerAdapter:
 
     @property
     def control_bound(self) -> bool:
-        return self._start_handler is not None or self._stop_handler is not None
+        return self._start_handler is not None and self._stop_handler is not None
 
     def status(self) -> dict[str, Any]:
         status = self._status.get()
@@ -114,7 +110,7 @@ class LocalVideoRenamerAdapter:
                 },
                 {
                     "name": "stop",
-                    "label": "停止本地视频处理",
+                    "label": "停止当前可安全停止的补全任务",
                     "aliases": ["本地视频：停止处理", "local video renamer stop"],
                 },
                 {

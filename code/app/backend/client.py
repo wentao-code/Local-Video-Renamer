@@ -800,6 +800,45 @@ class BackendClient:
         timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
         return self._get('/queen-library/author/detail?' + urlencode(params), timeout=timeout)
 
+    def list_standard_reference_authors(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get('/standard-reference/authors', timeout=timeout)
+
+    def get_standard_reference_author_detail(self, author_name):
+        timeout = max(self.timeout, get_operation_timeout_seconds('list_detail_load'))
+        return self._get(
+            '/standard-reference/author/detail?' + urlencode({'name': author_name}),
+            timeout=timeout,
+        )
+
+    def start_standard_reference_crawl(self, page_count):
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        return self._post('/standard-reference/crawl', {'page_count': int(page_count)}, timeout=timeout)
+
+    def crawl_standard_reference(self, page_count, poll_interval=1.0, progress_callback=None):
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        result = self.start_standard_reference_crawl(page_count)
+        if callable(progress_callback):
+            progress_callback(result)
+        while bool((result or {}).get('progress', {}).get('is_running')):
+            if float(poll_interval or 0) > 0:
+                time.sleep(float(poll_interval))
+            result = {'progress': self.get_standard_reference_crawl_progress()}
+            if callable(progress_callback):
+                progress_callback(result)
+        progress = dict((result or {}).get('progress', {}) or {})
+        if progress.get('failed'):
+            raise RuntimeError(str(progress.get('error') or '标准对照库抓取失败'))
+        return result
+
+    def get_standard_reference_crawl_progress(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        return self._get('/standard-reference/crawl/progress', timeout=timeout).get('progress', {})
+
+    def cancel_standard_reference_crawl(self):
+        timeout = max(self.timeout, get_operation_timeout_seconds('snapshot_refresh_rebuild'))
+        return self._post('/standard-reference/crawl/cancel', timeout=timeout)
+
     def add_queen_author(self, author_name, queen_name):
         return self._post(
             '/queen-library/authors/add',

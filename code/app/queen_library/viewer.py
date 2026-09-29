@@ -1,5 +1,6 @@
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, QUrl
 from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -11,6 +12,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -29,9 +31,14 @@ from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
 from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
 from app.queen_library.sorting import sort_queen_rows
+from app.queen_library.standard_reference_browser import (
+    is_standard_reference_browser_open,
+    open_standard_reference_login,
+)
 
 
 BUTTONS_PER_ROW = 9
+QUEEN_AUTHOR_BUTTONS_PER_ROW = 7
 KEYWORDS_PER_ROW = 6
 QUEEN_PROFILE_LIKE_LEVEL_STYLES = {
     'A': {'background': '#E74C3C', 'foreground': '#FFFFFF', 'border': '#C0392B'},
@@ -544,6 +551,7 @@ class QueenAuthorLibraryWindow(AsyncTaskHostMixin, QDialog):
         self.backend_client = backend_client
         self.authors = []
         self.author_detail_window = None
+        self.standard_reference_window = None
         self._init_async_task_host()
         self.init_ui()
         self.load_data()
@@ -556,10 +564,13 @@ class QueenAuthorLibraryWindow(AsyncTaskHostMixin, QDialog):
         layout = QVBoxLayout()
         top_layout = QHBoxLayout()
         self.info_label = QLabel('')
+        self.btn_standard_reference = QPushButton(tr('queen.author_library.standard_reference'))
+        self.btn_standard_reference.clicked.connect(self.show_standard_reference_library)
         self.btn_refresh = QPushButton(tr('common.refresh'))
         self.btn_refresh.clicked.connect(lambda: self.load_data(force_refresh=True))
         top_layout.addWidget(self.info_label)
         top_layout.addStretch()
+        top_layout.addWidget(self.btn_standard_reference)
         top_layout.addWidget(self.btn_refresh)
 
         self.scroll_area = QScrollArea()
@@ -605,12 +616,293 @@ class QueenAuthorLibraryWindow(AsyncTaskHostMixin, QDialog):
             if button_style:
                 button.setStyleSheet(button_style)
             button.clicked.connect(lambda _checked=False, value=author_name: self.show_author_detail(value))
-            self.grid_layout.addWidget(button, index // BUTTONS_PER_ROW, index % BUTTONS_PER_ROW)
+            self.grid_layout.addWidget(
+                button,
+                index // QUEEN_AUTHOR_BUTTONS_PER_ROW,
+                index % QUEEN_AUTHOR_BUTTONS_PER_ROW,
+            )
 
     def show_author_detail(self, author_name):
         self.author_detail_window = QueenAuthorDetailWindow(self.backend_client, author_name, self)
         self.author_detail_window.exec_()
         self.load_data(force_refresh=True)
+
+    def show_standard_reference_library(self):
+        self.standard_reference_window = StandardReferenceLibraryWindow(self.backend_client, self)
+        self.standard_reference_window.show()
+
+
+class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
+    crawl_progress_received = pyqtSignal(dict)
+
+    def __init__(self, backend_client, parent=None):
+        super().__init__(parent)
+        self.backend_client = backend_client
+        self.authors = []
+        self.author_detail_window = None
+        self._crawl_running = False
+        self._init_async_task_host()
+        self.crawl_progress_received.connect(self._apply_progress)
+        self.init_ui()
+        self.progress_timer = QTimer(self)
+        self.progress_timer.setInterval(1000)
+        self.progress_timer.timeout.connect(self.poll_crawl_progress)
+        self.load_data()
+        self.poll_crawl_progress()
+
+    def init_ui(self):
+        self.setWindowTitle(tr('standard_reference.title'))
+        self.resize(980, 600)
+        self.setWindowModality(Qt.NonModal)
+
+        layout = QVBoxLayout()
+        controls = QHBoxLayout()
+        self.info_label = QLabel('')
+        self.page_count = QSpinBox()
+        self.page_count.setRange(1, 99999)
+        self.page_count.setValue(5)
+        self.page_count.setFixedWidth(90)
+        self.btn_login = QPushButton(tr('standard_reference.login'))
+        self.btn_login.clicked.connect(self.open_standard_reference_login)
+        self.btn_start = QPushButton(tr('standard_reference.start'))
+        self.btn_start.clicked.connect(self.start_crawl)
+        self.btn_stop = QPushButton(tr('standard_reference.stop'))
+        self.btn_stop.clicked.connect(self.stop_crawl)
+        self.btn_refresh = QPushButton(tr('common.refresh'))
+        self.btn_refresh.clicked.connect(lambda: self.load_data())
+        controls.addWidget(self.info_label)
+        controls.addStretch()
+        controls.addWidget(QLabel(tr('standard_reference.page_count')))
+        controls.addWidget(self.page_count)
+        controls.addWidget(self.btn_login)
+        controls.addWidget(self.btn_start)
+        controls.addWidget(self.btn_stop)
+        controls.addWidget(self.btn_refresh)
+
+        self.status_label = QLabel(tr('standard_reference.idle'))
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_widget = QWidget()
+        self.grid_layout = QGridLayout(self.scroll_widget)
+        self.grid_layout.setContentsMargins(12, 12, 12, 12)
+        self.grid_layout.setHorizontalSpacing(10)
+        self.grid_layout.setVerticalSpacing(10)
+        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.scroll_area.setWidget(self.scroll_widget)
+        layout.addLayout(controls)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.scroll_area)
+        self.setLayout(layout)
+        self.btn_stop.setEnabled(False)
+        self.set_async_busy_widgets([])
+
+    def open_standard_reference_login(self):
+        try:
+            open_standard_reference_login()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                tr('standard_reference.login_failed_title'),
+                tr('standard_reference.login_failed', error=exc),
+            )
+
+    def load_data(self):
+        if self.is_async_task_running():
+            return
+        self.start_async_task(
+            self.backend_client.list_standard_reference_authors,
+            self._on_authors_loaded,
+            tr('common.read_failed'),
+            task_title=tr('standard_reference.load_task'),
+            show_in_task_queue=False,
+        )
+
+    def _on_authors_loaded(self, result):
+        self.authors = list(dict(result or {}).get('authors', []) or [])
+        self._render_author_buttons()
+
+    def _render_author_buttons(self):
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.info_label.setText(tr('standard_reference.author_count', count=len(self.authors)))
+        for index, row in enumerate(self.authors):
+            author_name = str((row or {}).get('author_name', '') or '').strip()
+            button = QPushButton(f"{author_name} ({int((row or {}).get('video_count', 0) or 0)})")
+            button.setFixedSize(150, 36)
+            button.clicked.connect(lambda _checked=False, value=author_name: self.show_author_detail(value))
+            self.grid_layout.addWidget(button, index // QUEEN_AUTHOR_BUTTONS_PER_ROW, index % QUEEN_AUTHOR_BUTTONS_PER_ROW)
+
+    def show_author_detail(self, author_name):
+        self.author_detail_window = StandardReferenceAuthorDetailWindow(
+            self.backend_client,
+            author_name,
+            self,
+        )
+        self.author_detail_window.show()
+
+    def start_crawl(self):
+        if self._crawl_running or self.is_async_task_running():
+            return
+        if is_standard_reference_browser_open():
+            QMessageBox.information(
+                self,
+                tr('standard_reference.close_browser_title'),
+                tr('standard_reference.close_browser_message'),
+            )
+            return
+        page_count = self.page_count.value()
+        self._crawl_running = True
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.page_count.setEnabled(False)
+        self.status_label.setText(tr('standard_reference.starting'))
+        accepted = self.start_async_task(
+            lambda: self.backend_client.crawl_standard_reference(
+                page_count,
+                progress_callback=self._emit_crawl_progress,
+            ),
+            self._on_crawl_finished,
+            tr('standard_reference.crawl_failed_title'),
+            block_ui=False,
+            task_title=tr('standard_reference.crawl_task'),
+            task_category=TASK_CATEGORY_ENRICHMENT,
+            task_kind='standard_reference_crawl',
+        )
+        if not accepted:
+            self._apply_progress({'is_running': False})
+        return bool(accepted)
+
+    def _emit_crawl_progress(self, payload):
+        progress = dict((payload or {}).get('progress', {}) or {})
+        if progress:
+            self.crawl_progress_received.emit(progress)
+
+    def _on_crawl_finished(self, result):
+        self._apply_progress(dict((result or {}).get('progress', {}) or {}))
+
+    def poll_crawl_progress(self):
+        if self.is_async_task_running():
+            return
+        self.start_async_task(
+            self.backend_client.get_standard_reference_crawl_progress,
+            self._apply_progress,
+            tr('standard_reference.progress_failed_title'),
+            task_title=tr('standard_reference.progress_task'),
+            show_in_task_queue=False,
+        )
+
+    def _apply_progress(self, progress):
+        progress = dict(progress or {})
+        self._crawl_running = bool(progress.get('is_running'))
+        self.btn_start.setEnabled(not self._crawl_running)
+        self.btn_stop.setEnabled(self._crawl_running)
+        self.page_count.setEnabled(not self._crawl_running)
+        if self._crawl_running:
+            self.status_label.setText(tr(
+                'standard_reference.progress',
+                pages_completed=int(progress.get('pages_completed', 0) or 0),
+                total_pages=int(progress.get('total_pages', 0) or 0),
+                records_seen=int(progress.get('records_seen', 0) or 0),
+                records_added=int(progress.get('records_added', 0) or 0),
+            ))
+            if not self.progress_timer.isActive():
+                self.progress_timer.start()
+            return
+        self.progress_timer.stop()
+        if progress.get('failed'):
+            self.status_label.setText(tr('standard_reference.failed', error=progress.get('error', '')))
+            QTimer.singleShot(100, self.load_data)
+        elif progress.get('stopped'):
+            self.status_label.setText(tr(
+                'standard_reference.stopped',
+                pages_completed=int(progress.get('pages_completed', 0) or 0),
+            ))
+            QTimer.singleShot(100, self.load_data)
+        elif progress.get('completed'):
+            self.status_label.setText(tr(
+                'standard_reference.completed',
+                pages_completed=int(progress.get('pages_completed', 0) or 0),
+                records_added=int(progress.get('records_added', 0) or 0),
+            ))
+            QTimer.singleShot(100, self.load_data)
+        else:
+            self.status_label.setText(tr('standard_reference.idle'))
+
+    def stop_crawl(self):
+        if not self._crawl_running:
+            return
+        try:
+            self.backend_client.cancel_standard_reference_crawl()
+            self.status_label.setText(tr('standard_reference.stopping'))
+            self.btn_stop.setEnabled(False)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                tr('standard_reference.stop_failed_title'),
+                str(exc),
+            )
+
+    def _handle_async_task_failed(self, message):
+        super()._handle_async_task_failed(message)
+        self._crawl_running = False
+        self.progress_timer.stop()
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.page_count.setEnabled(True)
+        self.status_label.setText(tr('standard_reference.failed', error=message))
+
+
+class StandardReferenceAuthorDetailWindow(AsyncTaskHostMixin, QDialog):
+    def __init__(self, backend_client, author_name, parent=None):
+        super().__init__(parent)
+        self.backend_client = backend_client
+        self.author_name = str(author_name or '').strip()
+        self._init_async_task_host()
+        self.setWindowTitle(tr('standard_reference.author_detail_title', author_name=self.author_name))
+        self.resize(1000, 560)
+        layout = QVBoxLayout()
+        self.info_label = QLabel('')
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(tr('standard_reference.headers'))
+        self.table.horizontalHeader().setSectionResizeMode(0, self.table.horizontalHeader().Stretch)
+        for column in (1, 2, 3):
+            self.table.horizontalHeader().setSectionResizeMode(column, self.table.horizontalHeader().ResizeToContents)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(self._open_thread)
+        layout.addWidget(self.info_label)
+        layout.addWidget(self.table)
+        self.setLayout(layout)
+        self.start_async_task(
+            lambda: self.backend_client.get_standard_reference_author_detail(self.author_name),
+            self._on_detail_loaded,
+            tr('common.read_failed'),
+            task_title=tr('standard_reference.detail_task'),
+            show_in_task_queue=False,
+        )
+
+    def _on_detail_loaded(self, result):
+        payload = dict(result or {})
+        rows = list(payload.get('videos', []) or [])
+        self.info_label.setText(tr('standard_reference.video_count', count=len(rows)))
+        self.table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            self.table.setItem(row_index, 0, QTableWidgetItem(str(row.get('video_title', '') or '')))
+            self.table.setItem(row_index, 1, QTableWidgetItem(str(row.get('raw_title', '') or '')))
+            self.table.setItem(row_index, 2, QTableWidgetItem(str(row.get('page_number', '') or '')))
+            link_item = QTableWidgetItem(str(row.get('thread_url', '') or ''))
+            link_item.setData(Qt.UserRole, str(row.get('thread_url', '') or ''))
+            self.table.setItem(row_index, 3, link_item)
+
+    def _open_thread(self, row, column):
+        if column != 3:
+            return
+        item = self.table.item(row, column)
+        url = str(item.data(Qt.UserRole) or '') if item else ''
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
 
 
 class QueenAuthorDetailWindow(AsyncTaskHostMixin, QDialog):

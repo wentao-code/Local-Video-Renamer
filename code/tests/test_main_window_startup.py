@@ -32,6 +32,12 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertIn('self.recover_unfinished_enrichment_plans()', init_source)
 
+    def test_startup_binds_feishu_start_and_stop_handlers(self):
+        init_source = inspect.getsource(main_window.VidNormApp.__init__)
+
+        self.assertIn('start_handler=self._start_feishu_task_processing', init_source)
+        self.assertIn('stop_handler=self._stop_feishu_task_processing', init_source)
+
     def test_auto_login_and_profile_reset_are_only_available_from_account_manager(self):
         init_source = inspect.getsource(main_window.VidNormApp.init_ui)
         self.assertNotIn('btn_auto_login', init_source)
@@ -1138,6 +1144,77 @@ class MainWindowStartupTest(unittest.TestCase):
 
         self.assertEqual(calls, ['task'])
         self.assertEqual(mode_label.text, '任务模式')
+
+    def test_feishu_start_enables_task_mode_and_resumes_resumable_paused_tasks(self):
+        calls = []
+        records = [
+            SimpleNamespace(task_id=11, status=main_window.TASK_STATUS_PAUSED, resumable=True),
+            SimpleNamespace(task_id=12, status=main_window.TASK_STATUS_PAUSED, resumable=False),
+            SimpleNamespace(task_id=13, status=main_window.TASK_STATUS_COMPLETED, resumable=True),
+        ]
+        queue = SimpleNamespace(
+            records=lambda: records,
+            resume_tasks=lambda task_ids: calls.append(('resume', list(task_ids))) or 1,
+        )
+        stub = SimpleNamespace(
+            task_queue=queue,
+            set_runtime_mode=lambda mode: calls.append(('mode', mode)),
+        )
+
+        response = main_window.VidNormApp._start_feishu_task_processing(stub, 'req-start')
+
+        self.assertTrue(response['accepted'])
+        self.assertEqual(response['request_id'], 'req-start')
+        self.assertEqual(calls, [('mode', main_window.RUN_MODE_TASK), ('resume', [11])])
+
+    def test_feishu_stop_requests_safe_stop_for_only_active_enrichment_task(self):
+        record = SimpleNamespace(
+            task_id=21,
+            title='补全视频信息',
+            status=main_window.TASK_STATUS_RUNNING,
+            task_category=main_window.TASK_CATEGORY_ENRICHMENT,
+        )
+        calls = []
+        stub = SimpleNamespace(
+            task_queue=SimpleNamespace(records=lambda: [record]),
+            stop_enrichment=lambda: calls.append('stop_enrichment'),
+        )
+
+        response = main_window.VidNormApp._stop_feishu_task_processing(stub, 'req-stop')
+
+        self.assertTrue(response['accepted'])
+        self.assertEqual(response['request_id'], 'req-stop')
+        self.assertEqual(calls, ['stop_enrichment'])
+
+    def test_feishu_stop_refuses_unsupported_or_queued_work(self):
+        active = SimpleNamespace(
+            task_id=21,
+            title='扫描本地视频',
+            status=main_window.TASK_STATUS_RUNNING,
+            task_category=main_window.TASK_CATEGORY_VIEW,
+        )
+        calls = []
+        stub = SimpleNamespace(
+            task_queue=SimpleNamespace(records=lambda: [active]),
+            stop_enrichment=lambda: calls.append('stop_enrichment'),
+        )
+
+        unsupported = main_window.VidNormApp._stop_feishu_task_processing(stub, 'req-view')
+        active.task_category = main_window.TASK_CATEGORY_ENRICHMENT
+        queued = SimpleNamespace(
+            task_id=22,
+            title='后续补全任务',
+            status=main_window.TASK_STATUS_WAITING,
+            task_category=main_window.TASK_CATEGORY_ENRICHMENT,
+        )
+        stub.task_queue.records = lambda: [active, queued]
+        with_queued_work = main_window.VidNormApp._stop_feishu_task_processing(stub, 'req-queued')
+
+        self.assertFalse(unsupported['accepted'])
+        self.assertFalse(with_queued_work['accepted'])
+        self.assertIn('不支持安全停止', unsupported['reason'])
+        self.assertIn('排队', with_queued_work['reason'])
+        self.assertEqual(calls, [])
 
     def test_switching_to_task_mode_does_not_recreate_backend_plans(self):
         calls = []

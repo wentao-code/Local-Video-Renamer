@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 from contextlib import contextmanager, nullcontext
 from datetime import datetime
@@ -266,6 +267,7 @@ class QueenLibraryService:
             cursor.execute(
                 'CREATE INDEX IF NOT EXISTS idx_queen_author_video_links_record ON queen_author_video_links(record_id)'
             )
+            self._migrate_legacy_published_at_values(cursor)
             cursor.execute(
                 '''
                 INSERT INTO queen_author_match_jobs(author_id, total_count)
@@ -1536,6 +1538,32 @@ class QueenLibraryService:
         }
         if column_name not in columns:
             cursor.execute(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}')
+
+    @staticmethod
+    def _migrate_legacy_published_at_values(cursor):
+        contaminated_value = re.compile(
+            r'^\s*\d+(?:\.\d+)?\s*(?:B|KB|MB|GB|TB)\s+'
+            r'(\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?)\s*$',
+            re.IGNORECASE,
+        )
+        for table_name in ('queen_videos', 'queen_author_video_records'):
+            rows = cursor.execute(
+                f'SELECT rowid, published_at FROM {table_name} '
+                'WHERE published_at IS NOT NULL AND published_at <> ""'
+            ).fetchall()
+            for row_id, published_at in rows:
+                match = contaminated_value.fullmatch(str(published_at or ''))
+                if match is None:
+                    continue
+                normalized_date = match.group(1).replace(' ', 'T')
+                try:
+                    datetime.fromisoformat(normalized_date)
+                except ValueError:
+                    continue
+                cursor.execute(
+                    f'UPDATE {table_name} SET published_at = ? WHERE rowid = ?',
+                    (match.group(1), row_id),
+                )
 
     @staticmethod
     def _retarget_queen_author_sources(conn, old_name, new_name):

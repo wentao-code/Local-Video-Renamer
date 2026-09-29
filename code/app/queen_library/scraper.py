@@ -419,11 +419,12 @@ class QueenSearchScraper:
                         ? cells[dateIndex]
                         : cells.find((cell) => datePattern.test(cellText(cell)));
                     const time = dateCell?.querySelector('time');
+                    const dateMatch = cellText(dateCell).match(datePattern);
                     return {
                         title: title.replace(/\\s+/g, ' ').trim(),
                         href: link.getAttribute('href') || '',
                         file_size: cellText(sizeCell),
-                        published_at: (time?.getAttribute('datetime') || cellText(dateCell)),
+                        published_at: (time?.getAttribute('datetime') || (dateMatch && dateMatch[0]) || cellText(dateCell)),
                     };
                 }).filter(Boolean)
                 """

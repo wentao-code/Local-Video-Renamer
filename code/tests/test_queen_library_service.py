@@ -528,6 +528,62 @@ class QueenLibraryServiceTest(unittest.TestCase):
             with closing(sqlite3.connect(Path(temp_dir) / 'queen_library.db')) as conn:
                 self.assertEqual(conn.execute('SELECT COUNT(*) FROM queen_videos').fetchone()[0], 1)
 
+    def test_database_init_repairs_legacy_published_at_values_containing_file_size(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'queen_library.db'
+            service = QueenLibraryService(db_path, scraper=_ScraperStub())
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute("INSERT INTO queen_keywords(keyword) VALUES ('legacy')")
+                keyword_id = conn.execute('SELECT id FROM queen_keywords').fetchone()[0]
+                conn.execute(
+                    '''
+                    INSERT INTO queen_videos(
+                        keyword_id, raw_title, queen_name, video_title,
+                        file_size_bytes, published_at
+                    ) VALUES (?, 'raw', 'QueenA', 'VideoA', 333143081, '317.71MB 2024-10-12')
+                    ''',
+                    (keyword_id,),
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO queen_author_video_records(
+                        raw_title, queen_name, video_title,
+                        file_size_bytes, published_at
+                    ) VALUES ('raw', 'QueenB', 'VideoB', 489746432, '466.06MB 2025-10-25')
+                    '''
+                )
+                conn.execute(
+                    '''
+                    INSERT INTO queen_author_video_records(
+                        raw_title, queen_name, video_title, published_at
+                    ) VALUES ('raw', 'QueenC', 'VideoC', '2024-05-06 07:08:09')
+                    '''
+                )
+                conn.commit()
+
+            QueenLibraryService(db_path, scraper=_ScraperStub())
+
+            with closing(sqlite3.connect(db_path)) as conn:
+                queen_metadata = conn.execute(
+                    'SELECT file_size_bytes, published_at FROM queen_videos'
+                ).fetchone()
+                author_metadata = conn.execute(
+                    '''
+                    SELECT file_size_bytes, published_at
+                    FROM queen_author_video_records WHERE queen_name = 'QueenB'
+                    '''
+                ).fetchone()
+                untouched_date = conn.execute(
+                    '''
+                    SELECT published_at
+                    FROM queen_author_video_records WHERE queen_name = 'QueenC'
+                    '''
+                ).fetchone()[0]
+
+            self.assertEqual(queen_metadata, (333143081, '2024-10-12'))
+            self.assertEqual(author_metadata, (489746432, '2025-10-25'))
+            self.assertEqual(untouched_date, '2024-05-06 07:08:09')
+
     def test_duplicate_author_video_fills_missing_fields_without_adding_record(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             scraper = _ScraperStub([

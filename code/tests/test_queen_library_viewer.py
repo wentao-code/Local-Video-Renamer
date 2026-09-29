@@ -17,6 +17,7 @@ from app.queen_library.viewer import (
     QueenDetailWindow,
     QueenLibraryDataCenterWindow,
     QueenLibraryWindow,
+    StandardReferenceLibraryWindow,
 )
 
 
@@ -227,6 +228,22 @@ class _QueenAuthorBackendStub:
                 {'author_name': 'cat', 'like_level': 'D'},
             ]
         }
+
+    def list_standard_reference_authors(self):
+        return {'authors': [{'author_name': 'Author A', 'video_count': 2}]}
+
+    def get_standard_reference_crawl_progress(self):
+        return {'is_running': False, 'completed': False}
+
+    def start_standard_reference_crawl(self, page_count):
+        self.standard_reference_page_count = page_count
+        return {'progress': {'is_running': True, 'total_pages': page_count}}
+
+    def cancel_standard_reference_crawl(self):
+        return {'stopped': True}
+
+    def get_standard_reference_author_detail(self, author_name):
+        return {'author_name': author_name, 'videos': []}
 
     def get_queen_author_detail_snapshot(self, author_name, force_refresh=False):
         self.detail_calls += 1
@@ -792,6 +809,88 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                     second_button.styleSheet(),
                     QueenLibraryWindow._build_queen_button_like_level_style('D'),
                 )
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_author_library_displays_seven_buttons_per_row(self):
+        backend = _QueenAuthorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenAuthorLibraryWindow(backend)
+            try:
+                window.authors = [
+                    {'author_name': f'Author{index}'}
+                    for index in range(8)
+                ]
+                window._render_author_buttons()
+
+                self.assertIsNotNone(window.grid_layout.itemAtPosition(0, 6))
+                self.assertIsNone(window.grid_layout.itemAtPosition(0, 7))
+                self.assertIsNotNone(window.grid_layout.itemAtPosition(1, 0))
+                self.assertEqual(window.grid_layout.rowCount(), 2)
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_author_library_opens_standard_reference_library_page(self):
+        backend = _QueenAuthorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = QueenAuthorLibraryWindow(backend)
+            try:
+                with patch('app.queen_library.viewer.StandardReferenceLibraryWindow') as library_window:
+                    window.btn_standard_reference.click()
+
+                library_window.assert_called_once_with(backend, window)
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_standard_reference_login_button_is_on_library_page(self):
+        backend = _QueenAuthorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = StandardReferenceLibraryWindow(backend)
+            try:
+                with patch('app.queen_library.viewer.open_standard_reference_login') as open_login:
+                    window.btn_login.click()
+
+                open_login.assert_called_once_with()
+                self.assertEqual(window.authors[0]['author_name'], 'Author A')
+                self.assertFalse(window.btn_stop.isEnabled())
+                window._set_async_busy(False)
+                self.assertFalse(window.btn_stop.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_standard_reference_crawl_uses_requested_page_count(self):
+        backend = _QueenAuthorBackendStub()
+        with (
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task),
+            patch('app.queen_library.viewer.is_standard_reference_browser_open', return_value=False),
+        ):
+            window = StandardReferenceLibraryWindow(backend)
+            try:
+                window.page_count.setValue(5)
+                window.start_crawl()
+                self.assertEqual(backend.standard_reference_page_count, 5)
+                self.assertIn('5', window.status_label.text())
+                self.assertTrue(window.btn_stop.isEnabled())
+            finally:
+                window.hide()
+                window.deleteLater()
+
+    def test_standard_reference_crawl_prompts_if_login_browser_is_open(self):
+        backend = _QueenAuthorBackendStub()
+        with (
+            patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task),
+            patch('app.queen_library.viewer.is_standard_reference_browser_open', return_value=True),
+            patch('app.queen_library.viewer.QMessageBox.information') as information,
+        ):
+            window = StandardReferenceLibraryWindow(backend)
+            try:
+                window.start_crawl()
+                information.assert_called_once()
+                self.assertFalse(hasattr(backend, 'standard_reference_page_count'))
             finally:
                 window.hide()
                 window.deleteLater()

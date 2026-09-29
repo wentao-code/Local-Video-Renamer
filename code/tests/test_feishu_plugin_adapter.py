@@ -100,6 +100,18 @@ def test_adapter_invokes_only_explicitly_injected_handlers():
     assert adapter.handle_command("start", "req-start")["accepted"] is True
     assert adapter.handle_command("stop", "req-stop")["accepted"] is True
     assert calls == [("start", "req-start"), ("stop", "req-stop")]
+    assert adapter.control_bound is True
+    assert adapter.manifest()["integration"]["bound"] is True
+
+
+def test_adapter_is_not_control_bound_until_start_and_stop_are_both_injected():
+    start_only = LocalVideoRenamerAdapter(start_handler=lambda _request_id: {})
+    stop_only = LocalVideoRenamerAdapter(stop_handler=lambda _request_id: {})
+
+    assert start_only.control_bound is False
+    assert start_only.manifest()["integration"]["bound"] is False
+    assert stop_only.control_bound is False
+    assert stop_only.status()["control_bound"] is False
 
 
 def test_adapter_shutdown_uses_only_an_explicit_idle_gui_handler():
@@ -137,6 +149,7 @@ def test_adapter_control_server_exposes_authenticated_status_and_gui_queue():
     adapter = LocalVideoRenamerAdapter(
         start_handler=lambda request_id: calls.append(request_id)
         or {"task_id": "task-1"},
+        stop_handler=lambda _request_id: {},
     )
     adapter.sync_task_queue_status(
         [{"task_id": 1, "trace_task_id": "trace-1", "title": "扫描本地视频", "status": "正在执行"}]

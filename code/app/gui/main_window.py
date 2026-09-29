@@ -84,6 +84,7 @@ from app.gui.task_queue import (
     TASK_STATUS_CANCELLING,
     TASK_STATUS_COMPLETED,
     TASK_STATUS_DELETED,
+    TASK_STATUS_MODE_SWITCH_WAITING,
     TASK_STATUS_PARTIAL,
     TASK_STATUS_PAUSED,
     TASK_STATUS_RUNNING,
@@ -389,6 +390,8 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         )
         self.task_queue.changed.connect(self.refresh_task_queue_indicator)
         self._feishu_status_adapter = LocalVideoRenamerAdapter(
+            start_handler=self._start_feishu_task_processing,
+            stop_handler=self._stop_feishu_task_processing,
             shutdown_handler=self._request_feishu_shutdown,
         )
         lifecycle_token = str(get_setting('FEISHU_CONTROL_TOKEN', default='') or '').strip()
@@ -430,6 +433,69 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
         task_queue = self.__dict__.get('task_queue')
         if adapter is not None and task_queue is not None:
             adapter.sync_task_queue_status(task_queue.records())
+
+    def _start_feishu_task_processing(self, request_id):
+        queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
+        self.set_runtime_mode(RUN_MODE_TASK)
+        resumable_task_ids = [
+            record.task_id
+            for record in queue.records()
+            if record.status == TASK_STATUS_PAUSED and record.resumable
+        ]
+        resumed_count = queue.resume_tasks(resumable_task_ids)
+        message = '任务模式已启用，队列将继续处理。'
+        if resumed_count:
+            message = f'任务模式已启用，已恢复 {resumed_count} 个可恢复任务。'
+        return {
+            'request_id': str(request_id or ''),
+            'accepted': True,
+            'status': 'accepted',
+            'message': message,
+        }
+
+    def _stop_feishu_task_processing(self, request_id):
+        queue = getattr(self, 'task_queue', None) or get_gui_task_queue()
+        records = queue.records()
+        active_records = [
+            record
+            for record in records
+            if record.status == TASK_STATUS_RUNNING
+        ]
+        if not active_records:
+            return {
+                'request_id': str(request_id or ''),
+                'accepted': False,
+                'status': 'rejected',
+                'reason': '当前没有正在运行的任务，无需停止。',
+            }
+        if len(active_records) != 1 or active_records[0].task_category != TASK_CATEGORY_ENRICHMENT:
+            title = getattr(active_records[0], 'title', '') if active_records else ''
+            return {
+                'request_id': str(request_id or ''),
+                'accepted': False,
+                'status': 'rejected',
+                'reason': f'当前任务{f"“{title}”" if title else ""}不支持安全停止。',
+            }
+        queued_records = [
+            record
+            for record in records
+            if record.status in {TASK_STATUS_WAITING, TASK_STATUS_MODE_SWITCH_WAITING}
+        ]
+        if queued_records:
+            return {
+                'request_id': str(request_id or ''),
+                'accepted': False,
+                'status': 'rejected',
+                'reason': '当前还有排队任务，为避免停止后自动继续其他任务，请先处理队列。',
+            }
+
+        self.stop_enrichment()
+        return {
+            'request_id': str(request_id or ''),
+            'accepted': True,
+            'status': 'stopping',
+            'message': '已提交当前补全任务的安全停止请求。',
+        }
 
     def _request_feishu_shutdown(self, request_id):
         status = self._feishu_status_adapter.status()

@@ -362,6 +362,16 @@ def make_handler(service):
                     query.get('name', [''])[0],
                     force_refresh=_is_truthy_query_value(query, 'refresh'),
                 )
+            if method == 'GET' and path == '/standard-reference/authors':
+                return service.list_standard_reference_authors()
+            if method == 'GET' and path == '/standard-reference/author/detail':
+                return service.get_standard_reference_author_detail(query.get('name', [''])[0])
+            if method == 'POST' and path == '/standard-reference/crawl':
+                return service.start_standard_reference_crawl(body.get('page_count'))
+            if method == 'GET' and path == '/standard-reference/crawl/progress':
+                return service.get_standard_reference_crawl_progress()
+            if method == 'POST' and path == '/standard-reference/crawl/cancel':
+                return service.cancel_standard_reference_crawl()
             if method == 'POST' and path == '/queen-library/authors/add':
                 return service.add_queen_author(body.get('author_name'), body.get('queen_name'))
             if method == 'POST' and path == '/queen-library/authors/remove':

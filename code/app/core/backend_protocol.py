@@ -25,6 +25,12 @@ _BACKEND_FINGERPRINT_TARGETS = (
     'app/data',
     'app/scraper',
     'app/services',
+    'app/queen_library/service.py',
+    'app/queen_library/scraper.py',
+    'app/queen_library/domain.py',
+    'app/queen_library/standard_reference_library.py',
+    'app/queen_library/standard_reference_scraper.py',
+    'app/queen_library/standard_reference_browser.py',
 )
 
 
