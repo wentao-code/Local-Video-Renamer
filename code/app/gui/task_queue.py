@@ -379,6 +379,20 @@ class GuiTaskQueue(QObject):
         self._persist_record(record)
         self.changed.emit()
 
+    def update_record_progress(self, task_id, current, total):
+        record = self._find_record(task_id)
+        if record is None:
+            return False
+        normalized_current = max(0, int(current or 0))
+        normalized_total = max(0, int(total or 0))
+        if record.batch_current == normalized_current and record.batch_total == normalized_total:
+            return False
+        record.batch_current = normalized_current
+        record.batch_total = normalized_total
+        self._persist_record(record)
+        self.changed.emit()
+        return True
+
     def update_plan_progress(self, plan_id, progress):
         normalized_plan_id = str(plan_id or '').strip()
         if not normalized_plan_id:

@@ -29,7 +29,7 @@ from app.queen_library.domain import (
 )
 from app.gui.backend_task_worker import AsyncTaskHostMixin
 from app.gui.i18n import tr
-from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT
+from app.gui.task_queue import TASK_CATEGORY_ENRICHMENT, get_gui_task_queue
 from app.queen_library.sorting import sort_queen_rows
 from app.queen_library.standard_reference_browser import (
     is_standard_reference_browser_open,
@@ -783,7 +783,11 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
             self._on_crawl_finished,
             tr('standard_reference.crawl_failed_title'),
             block_ui=False,
-            task_title=tr('standard_reference.crawl_task'),
+            task_title=tr(
+                'standard_reference.crawl_task',
+                start_page=start_page,
+                end_page=end_page,
+            ),
             task_category=TASK_CATEGORY_ENRICHMENT,
             task_kind='standard_reference_crawl',
         )
@@ -813,6 +817,13 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
     def _apply_progress(self, progress):
         progress = dict(progress or {})
         self._crawl_running = bool(progress.get('is_running'))
+        queue_record = self._async_task_queue_record
+        if queue_record is not None and progress.get('total_pages'):
+            get_gui_task_queue().update_record_progress(
+                queue_record.task_id,
+                progress.get('pages_completed', 0),
+                progress.get('total_pages', 0),
+            )
         self.btn_start.setEnabled(not self._crawl_running)
         self.btn_stop.setEnabled(self._crawl_running)
         self.start_page.setEnabled(not self._crawl_running)

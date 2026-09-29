@@ -121,6 +121,11 @@ class TaskQueueViewerWindow(QDialog):
             error_text = record.completed_at or ''
             if record.last_error:
                 error_text = f'{error_text} | {record.last_error}' if error_text else record.last_error
+            batch_progress = ''
+            if record.batch_total:
+                batch_progress = f'{record.batch_current}/{record.batch_total}'
+                if record.task_kind == 'standard_reference_crawl':
+                    batch_progress = f'{batch_progress} 页'
             values = [
                 record.task_id,
                 getattr(record, 'trace_task_id', ''),
@@ -130,7 +135,7 @@ class TaskQueueViewerWindow(QDialog):
                 record.status,
                 f'{record.attempts}/{record.max_attempts}',
                 record.plan_id,
-                f'{record.batch_current}/{record.batch_total}' if record.batch_total else '',
+                batch_progress,
                 record.plan_pending_count if record.plan_id else '',
                 record.plan_success_count if record.plan_id else '',
                 record.plan_failed_count if record.plan_id else '',

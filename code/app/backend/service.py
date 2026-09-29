@@ -2158,15 +2158,20 @@ class BackendService:
         })
         if event == 'page_started':
             LOGGER.info(
-                '标准对照库抓取页面开始 page=%s total_pages=%s url=%s',
+                '标准对照库抓取页面开始 range=%s~%s page=%s pages_completed=%s total_pages=%s url=%s',
+                progress.get('start_page', 0),
+                progress.get('end_page', 0),
                 updates.get('page_number', 0),
+                progress.get('pages_completed', 0),
                 updates.get('total_pages', 0),
                 build_forum_page_url(updates.get('page_number', 0)),
             )
             return
         if event == 'page_failed':
             LOGGER.error(
-                '标准对照库抓取页面失败 page=%s elapsed_seconds=%s page_records_seen=%s error_type=%s url=%s',
+                '标准对照库抓取页面失败 range=%s~%s page=%s elapsed_seconds=%s page_records_seen=%s error_type=%s url=%s',
+                progress.get('start_page', 0),
+                progress.get('end_page', 0),
                 updates.get('page_number', 0),
                 updates.get('page_elapsed_seconds', 0),
                 updates.get('page_records_seen', 0),
@@ -2175,9 +2180,13 @@ class BackendService:
             )
             return
         LOGGER.info(
-            '标准对照库抓取页面完成 page=%s elapsed_seconds=%s page_records_seen=%s '
+            '标准对照库抓取页面完成 range=%s~%s page=%s pages_completed=%s/%s elapsed_seconds=%s page_records_seen=%s '
             'page_records_added=%s page_records_not_added=%s records_seen=%s records_added=%s total_pages=%s',
+            progress.get('start_page', 0),
+            progress.get('end_page', 0),
             updates.get('page_number', progress.get('pages_completed', 0)),
+            progress.get('pages_completed', 0),
+            progress.get('total_pages', 0),
             updates.get('page_elapsed_seconds', 0),
             updates.get('page_records_seen', 0),
             updates.get('page_records_added', 0),
@@ -2200,7 +2209,9 @@ class BackendService:
         requested_by_task_id = get_task_id()
         with log_context(task_id=crawl_task_id or get_task_id()):
             LOGGER.info(
-                '标准对照库抓取收到停止请求 current_page=%s page_state=%s requested_by_task_id=%s',
+                '标准对照库抓取收到停止请求 range=%s~%s current_page=%s page_state=%s requested_by_task_id=%s',
+                progress.get('start_page', 0),
+                progress.get('end_page', 0),
                 progress.get('page_number', 0),
                 progress.get('page_state', 'unknown'),
                 requested_by_task_id or '-',
