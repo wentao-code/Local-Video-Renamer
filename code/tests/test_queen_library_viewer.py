@@ -862,6 +862,25 @@ class QueenLibraryViewerEntryTest(unittest.TestCase):
                 window.hide()
                 window.deleteLater()
 
+    def test_standard_reference_library_displays_six_buttons_per_row(self):
+        backend = _QueenAuthorBackendStub()
+        with patch.object(AsyncTaskHostMixin, 'start_async_task', _run_sync_async_task):
+            window = StandardReferenceLibraryWindow(backend)
+            try:
+                window.authors = [
+                    {'author_name': f'Author{index}', 'video_count': index}
+                    for index in range(7)
+                ]
+                window._render_author_buttons()
+
+                self.assertIsNotNone(window.grid_layout.itemAtPosition(0, 5))
+                self.assertIsNone(window.grid_layout.itemAtPosition(0, 6))
+                self.assertIsNotNone(window.grid_layout.itemAtPosition(1, 0))
+                self.assertEqual(window.grid_layout.rowCount(), 2)
+            finally:
+                window.hide()
+                window.deleteLater()
+
     def test_standard_reference_crawl_uses_requested_page_count(self):
         backend = _QueenAuthorBackendStub()
         with (

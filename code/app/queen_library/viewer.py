@@ -40,6 +40,7 @@ from app.queen_library.standard_reference_browser import (
 
 BUTTONS_PER_ROW = 9
 QUEEN_AUTHOR_BUTTONS_PER_ROW = 7
+STANDARD_REFERENCE_BUTTONS_PER_ROW = 6
 KEYWORDS_PER_ROW = 6
 QUEEN_PROFILE_LIKE_LEVEL_STYLES = {
     'A': {'background': '#E74C3C', 'foreground': '#FFFFFF', 'border': '#C0392B'},
@@ -742,7 +743,11 @@ class StandardReferenceLibraryWindow(AsyncTaskHostMixin, QDialog):
             button = QPushButton(f"{author_name} ({int((row or {}).get('video_count', 0) or 0)})")
             button.setFixedSize(150, 36)
             button.clicked.connect(lambda _checked=False, value=author_name: self.show_author_detail(value))
-            self.grid_layout.addWidget(button, index // QUEEN_AUTHOR_BUTTONS_PER_ROW, index % QUEEN_AUTHOR_BUTTONS_PER_ROW)
+            self.grid_layout.addWidget(
+                button,
+                index // STANDARD_REFERENCE_BUTTONS_PER_ROW,
+                index % STANDARD_REFERENCE_BUTTONS_PER_ROW,
+            )
 
     def show_author_detail(self, author_name):
         self.author_detail_window = StandardReferenceAuthorDetailWindow(
