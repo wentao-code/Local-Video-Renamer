@@ -71,13 +71,60 @@ class StandardReferenceLibraryService:
                     thread_url TEXT NOT NULL UNIQUE,
                     page_number INTEGER NOT NULL,
                     crawled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    first_crawled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_crawled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(author_id) REFERENCES standard_reference_authors(id) ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS idx_standard_reference_videos_author
                     ON standard_reference_videos(author_id, id DESC);
+                CREATE TABLE IF NOT EXISTS standard_reference_thread_pages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    video_id INTEGER NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_run_id TEXT NOT NULL DEFAULT '',
+                    UNIQUE(video_id, page_number),
+                    FOREIGN KEY(video_id) REFERENCES standard_reference_videos(id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_standard_reference_thread_pages_video
+                    ON standard_reference_thread_pages(video_id, page_number);
+                '''
+            )
+            self._ensure_video_timestamp_columns(connection)
+            connection.execute(
+                '''
+                INSERT OR IGNORE INTO standard_reference_thread_pages(
+                    video_id, page_number, first_seen_at, last_seen_at
+                )
+                SELECT id, page_number,
+                       COALESCE(NULLIF(crawled_at, ''), CURRENT_TIMESTAMP),
+                       COALESCE(NULLIF(crawled_at, ''), CURRENT_TIMESTAMP)
+                FROM standard_reference_videos
                 '''
             )
             connection.commit()
+
+    @staticmethod
+    def _ensure_video_timestamp_columns(connection):
+        columns = {
+            str(row['name'])
+            for row in connection.execute('PRAGMA table_info(standard_reference_videos)')
+        }
+        for column in ('first_crawled_at', 'last_crawled_at', 'updated_at'):
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE standard_reference_videos ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                )
+        connection.execute(
+            '''
+            UPDATE standard_reference_videos
+            SET first_crawled_at = COALESCE(NULLIF(first_crawled_at, ''), NULLIF(crawled_at, ''), CURRENT_TIMESTAMP),
+                last_crawled_at = COALESCE(NULLIF(last_crawled_at, ''), NULLIF(crawled_at, ''), CURRENT_TIMESTAMP),
+                updated_at = COALESCE(NULLIF(updated_at, ''), NULLIF(crawled_at, ''), CURRENT_TIMESTAMP)
+            '''
+        )
 
     @staticmethod
     def validate_page_count(page_count):
@@ -97,7 +144,8 @@ class StandardReferenceLibraryService:
             raise ValueError('终止页不能小于起始页')
         return normalized_start, normalized_end
 
-    def save_page_records(self, records):
+    def save_page_records(self, records, run_id=''):
+        normalized_run_id = str(run_id or '').strip()
         normalized_records = []
         for raw_record in records or []:
             row = dict(raw_record or {})
@@ -122,15 +170,64 @@ class StandardReferenceLibraryService:
                     'SELECT id FROM standard_reference_authors WHERE author_name = ? COLLATE NOCASE',
                     (author_name,),
                 ).fetchone()
+                video_exists = cursor.execute(
+                    'SELECT 1 FROM standard_reference_videos WHERE thread_url = ?',
+                    (thread_url,),
+                ).fetchone() is not None
                 cursor.execute(
                     '''
-                    INSERT OR IGNORE INTO standard_reference_videos(
-                        author_id, video_title, raw_title, thread_url, page_number
-                    ) VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO standard_reference_videos(
+                        author_id, video_title, raw_title, thread_url, page_number,
+                        crawled_at, first_crawled_at, last_crawled_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(thread_url) DO UPDATE SET
+                        author_id = excluded.author_id,
+                        video_title = excluded.video_title,
+                        raw_title = excluded.raw_title,
+                        crawled_at = CURRENT_TIMESTAMP,
+                        last_crawled_at = CURRENT_TIMESTAMP,
+                        updated_at = CASE
+                            WHEN standard_reference_videos.author_id <> excluded.author_id
+                              OR standard_reference_videos.video_title <> excluded.video_title
+                              OR standard_reference_videos.raw_title <> excluded.raw_title
+                            THEN CURRENT_TIMESTAMP
+                            ELSE standard_reference_videos.updated_at
+                        END
                     ''',
                     (int(author['id']), video_title, raw_title, thread_url, page_number),
                 )
-                inserted_count += int(cursor.rowcount or 0)
+                inserted_count += int(not video_exists)
+                video = cursor.execute(
+                    'SELECT id FROM standard_reference_videos WHERE thread_url = ?',
+                    (thread_url,),
+                ).fetchone()
+                page_exists = cursor.execute(
+                    '''
+                    SELECT 1
+                    FROM standard_reference_thread_pages
+                    WHERE video_id = ? AND page_number = ?
+                    ''',
+                    (int(video['id']), page_number),
+                ).fetchone() is not None
+                cursor.execute(
+                    '''
+                    INSERT INTO standard_reference_thread_pages(
+                        video_id, page_number, first_seen_at, last_seen_at, last_run_id
+                    ) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(video_id, page_number) DO UPDATE SET
+                        last_seen_at = CURRENT_TIMESTAMP,
+                        last_run_id = CASE
+                            WHEN excluded.last_run_id <> '' THEN excluded.last_run_id
+                            ELSE standard_reference_thread_pages.last_run_id
+                        END
+                    ''',
+                    (int(video['id']), page_number, normalized_run_id),
+                )
+                if not page_exists:
+                    cursor.execute(
+                        'UPDATE standard_reference_videos SET updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (int(video['id']),),
+                    )
             connection.commit()
         return inserted_count
 
@@ -160,17 +257,43 @@ class StandardReferenceLibraryService:
                 raise FileNotFoundError(f'标准对照库中不存在博主：{normalized_name}')
             videos = connection.execute(
                 '''
-                SELECT video_title, raw_title, thread_url, page_number, crawled_at
+                SELECT video_title, raw_title, thread_url, page_number, crawled_at,
+                       first_crawled_at, last_crawled_at, updated_at,
+                       (SELECT GROUP_CONCAT(page_number, ',')
+                        FROM (
+                            SELECT page_number
+                            FROM standard_reference_thread_pages
+                            WHERE video_id = standard_reference_videos.id
+                            ORDER BY page_number
+                        )) AS page_list
                 FROM standard_reference_videos
                 WHERE author_id = ?
                 ORDER BY id DESC
                 ''',
                 (int(author['id']),),
             ).fetchall()
-        return {'author_name': author['author_name'], 'videos': [dict(row) for row in videos]}
+        video_rows = []
+        for row in videos:
+            item = dict(row)
+            item['page_numbers'] = [
+                int(value)
+                for value in str(item.pop('page_list') or item['page_number']).split(',')
+                if value
+            ]
+            video_rows.append(item)
+        return {'author_name': author['author_name'], 'videos': video_rows}
 
-    def crawl_pages(self, scraper, start_page, end_page, progress_callback=None, should_stop=None):
+    def crawl_pages(
+        self,
+        scraper,
+        start_page,
+        end_page,
+        progress_callback=None,
+        should_stop=None,
+        run_id='',
+    ):
         normalized_start_page, normalized_end_page = self.validate_page_range(start_page, end_page)
+        normalized_run_id = str(run_id or '').strip()
         total_pages = normalized_end_page - normalized_start_page + 1
         pages_completed = 0
         records_seen = 0
@@ -196,7 +319,7 @@ class StandardReferenceLibraryService:
                     page_records_seen = len(records)
                     records_seen += len(records)
                     records_added_before_page = inserted_count
-                    inserted_count += self.save_page_records(records)
+                    inserted_count += self.save_page_records(records, run_id=normalized_run_id)
                 except Exception as exc:
                     if callable(progress_callback):
                         progress_callback({
@@ -230,5 +353,6 @@ class StandardReferenceLibraryService:
             'records_seen': records_seen,
             'records_added': inserted_count,
             'stopped': stopped,
+            'run_id': normalized_run_id,
             'authors': self.list_authors(),
         }

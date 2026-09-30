@@ -2109,6 +2109,7 @@ class BackendService:
                     end_page,
                     progress_callback=self._on_standard_reference_crawl_page,
                     should_stop=self._standard_reference_crawl_cancel_event.is_set,
+                    run_id=task_id,
                 )
                 stopped = bool(result.get('stopped'))
                 self._update_standard_reference_crawl_progress({

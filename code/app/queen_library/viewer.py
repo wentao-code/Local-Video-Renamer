@@ -933,7 +933,13 @@ class StandardReferenceAuthorDetailWindow(AsyncTaskHostMixin, QDialog):
         for row_index, row in enumerate(rows):
             self.table.setItem(row_index, 0, QTableWidgetItem(str(row.get('video_title', '') or '')))
             self.table.setItem(row_index, 1, QTableWidgetItem(str(row.get('raw_title', '') or '')))
-            self.table.setItem(row_index, 2, QTableWidgetItem(str(row.get('page_number', '') or '')))
+            page_numbers = row.get('page_numbers') or [row.get('page_number', '')]
+            page_text = ', '.join(
+                str(page_number)
+                for page_number in page_numbers
+                if str(page_number or '').strip()
+            )
+            self.table.setItem(row_index, 2, QTableWidgetItem(page_text))
             link_item = QTableWidgetItem(str(row.get('thread_url', '') or ''))
             link_item.setData(Qt.UserRole, str(row.get('thread_url', '') or ''))
             self.table.setItem(row_index, 3, link_item)
