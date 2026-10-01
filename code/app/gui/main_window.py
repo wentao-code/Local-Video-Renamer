@@ -399,6 +399,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
             'local_video_renamer',
             client=LifecycleEventClient(token=lifecycle_token),
         )
+        self._feishu_lifecycle_reporter.starting()
         self._feishu_control_server = None
         self._feishu_control_timer = None
         self.task_queue.changed.connect(self._sync_feishu_task_status)
@@ -518,6 +519,7 @@ class VidNormApp(QWidget, AsyncTaskHostMixin):
     def _report_feishu_lifecycle_stopped(self):
         reporter = self.__dict__.get('_feishu_lifecycle_reporter')
         if reporter is not None:
+            reporter.stopping()
             reporter.stopped('normal_exit')
 
     def _start_feishu_control_server(self):

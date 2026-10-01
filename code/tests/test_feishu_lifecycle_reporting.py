@@ -9,6 +9,9 @@ def test_local_video_renamer_reports_start_and_accepted_normal_close():
         def started(self):
             self.calls.append(("started",))
 
+        def stopping(self):
+            self.calls.append(("stopping",))
+
         def stopped(self, reason):
             self.calls.append(("stopped", reason))
 
@@ -20,6 +23,7 @@ def test_local_video_renamer_reports_start_and_accepted_normal_close():
 
     assert window._feishu_lifecycle_reporter.calls == [
         ("started",),
+        ("stopping",),
         ("stopped", "normal_exit"),
     ]
 
